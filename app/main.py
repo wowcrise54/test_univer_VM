@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import os
 import copy
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 import requests
+import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,6 +23,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from . import db
 from .mpvm_client import (
+    ASSET_CARD_PDQL,
     SOFTWARE_VULN_PDQL,
     VULNER_PASSPORT_PDQL,
     AuthConfig,
@@ -29,6 +33,7 @@ from .mpvm_client import (
     build_default_token_url,
     build_scanner_task_payload,
     extract_asset_ids_from_csv,
+    extract_uuid,
     extract_ips_from_csv,
     normalize_url,
 )
@@ -51,6 +56,7 @@ class RuntimeSession:
 
 
 SESSION = RuntimeSession()
+DATABASE_STARTUP_ERROR: str | None = None
 
 
 class ConnectionRequest(BaseModel):
@@ -133,6 +139,25 @@ class VulnerabilityPassportQueryRequest(BaseModel):
     save_to_db: bool = True
 
 
+class AssetCardAssetQueryRequest(BaseModel):
+    pdql: str = ASSET_CARD_PDQL
+    utc_offset: str | None = "+05:00"
+    group_ids: list[str] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list)
+    include_nested_groups: bool = True
+    limit: int = Field(default=1001, ge=1, le=50000)
+    batch_size: int = Field(default=5000, ge=1, le=10000)
+
+
+class AssetCardBuildRequest(BaseModel):
+    asset_id: str
+    timeline_timestamp: int | None = None
+    limit_per_collection: int = Field(default=500, ge=1, le=1000)
+    max_items_per_collection: int = Field(default=500, ge=1, le=50000)
+    max_depth: int = Field(default=4, ge=0, le=8)
+    save_to_db: bool = True
+
+
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -146,9 +171,22 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.on_event("startup")
 def startup() -> None:
-    db.init_db()
+    global DATABASE_STARTUP_ERROR
+    try:
+        db.init_db()
+        DATABASE_STARTUP_ERROR = None
+    except psycopg.Error as exc:
+        DATABASE_STARTUP_ERROR = str(exc)
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
+
+
+@app.exception_handler(psycopg.Error)
+def database_error_handler(_request, exc: psycopg.Error) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"Database is unavailable: {exc}"},
+    )
 
 
 @app.get("/")
@@ -162,6 +200,8 @@ def health() -> dict[str, Any]:
         "ok": True,
         "app": "mpvm-rest-client",
         "database": db.database_label(),
+        "database_ready": DATABASE_STARTUP_ERROR is None,
+        "database_error": DATABASE_STARTUP_ERROR,
         "connected": SESSION.client is not None and SESSION.access_token is not None,
         "api_url": SESSION.api_url,
     }
@@ -176,6 +216,7 @@ def defaults() -> dict[str, Any]:
         "utc_offset": os.getenv("MPVM_UTC_OFFSET") or os.getenv("MP10_UTC_OFFSET") or "+05:00",
         "software_vuln_pdql": SOFTWARE_VULN_PDQL,
         "vulnerability_passport_pdql": VULNER_PASSPORT_PDQL,
+        "asset_card_pdql": ASSET_CARD_PDQL,
         "sample_csv_exists": SAMPLE_CSV.exists(),
     }
 
@@ -433,6 +474,81 @@ def assets(q: str | None = None, severity: str | None = None, limit: int = 200, 
 @app.get("/api/assets/summary")
 def assets_summary() -> dict[str, Any]:
     return db.get_summary()
+
+
+@app.post("/api/asset-cards/query-assets")
+def query_asset_card_assets(payload: AssetCardAssetQueryRequest) -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        pdql_token = client.create_pdql_token(
+            token,
+            payload.pdql,
+            utc_offset=payload.utc_offset,
+            selected_group_ids=payload.group_ids,
+            include_nested_groups=payload.include_nested_groups,
+            asset_ids=payload.asset_ids,
+        )
+        records, raw_response = fetch_asset_grid_records(
+            client=client,
+            token=token,
+            pdql_token=pdql_token,
+            limit=payload.limit,
+            batch_size=payload.batch_size,
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+    normalized = dedupe_asset_candidates([normalize_asset_candidate_record(record) for record in records])
+    return {
+        "pdql": payload.pdql,
+        "pdql_token": pdql_token,
+        "limit": payload.limit,
+        "batch_size": payload.batch_size,
+        "total": len(normalized),
+        "records": normalized,
+        "raw": raw_response,
+    }
+
+
+@app.post("/api/asset-cards/build")
+def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
+    client, token = require_mpvm()
+    asset_id = payload.asset_id.strip()
+    if not asset_id:
+        raise HTTPException(status_code=422, detail="asset_id is required")
+
+    try:
+        card = build_asset_card(
+            client=client,
+            token=token,
+            asset_id=asset_id,
+            timeline_timestamp=payload.timeline_timestamp,
+            limit_per_collection=payload.limit_per_collection,
+            max_items_per_collection=payload.max_items_per_collection,
+            max_depth=payload.max_depth,
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+    saved_card = db.upsert_asset_card(card) if payload.save_to_db else None
+    return {
+        "asset_id": asset_id,
+        "card": saved_card or sanitize_asset_card_for_response(card),
+        "saved": saved_card is not None,
+    }
+
+
+@app.get("/api/asset-cards/local")
+def local_asset_cards(q: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    return db.list_asset_cards(q=q, limit=limit, offset=offset)
+
+
+@app.get("/api/asset-cards/{asset_id}")
+def local_asset_card(asset_id: str) -> dict[str, Any]:
+    card = db.get_asset_card(asset_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return card
 
 
 @app.post("/api/vulnerability-passports/query")
@@ -943,6 +1059,487 @@ def extract_asset_grid_total(raw_response: Any) -> int | None:
     return None
 
 
+def build_asset_card(
+    *,
+    client: MpVmClient,
+    token: str,
+    asset_id: str,
+    timeline_timestamp: int | None,
+    limit_per_collection: int,
+    max_items_per_collection: int,
+    max_depth: int,
+) -> dict[str, Any]:
+    timestamp = timeline_timestamp or int(datetime.now(timezone.utc).timestamp())
+    timeline_token = client.create_asset_timeline_token(token, asset_id, timestamp)
+    root = client.get_asset_tree_root(token, timeline_token)
+    root_asset_id = str(first_present(root.get("objectId"), asset_id))
+
+    metadata_cache: dict[str, dict[str, Any]] = {}
+    nodes: list[dict[str, Any]] = []
+    collections: list[dict[str, Any]] = []
+    table_rows: list[dict[str, Any]] = []
+    seen_nodes: set[str] = set()
+    seen_collections: set[str] = set()
+    stats: dict[str, Any] = {
+        "metadata_requests": 0,
+        "node_requests": 0,
+        "collection_requests": 0,
+        "nodes": 0,
+        "collections": 0,
+        "table_rows": 0,
+        "warnings": [],
+    }
+
+    def warn(message: str) -> None:
+        stats["warnings"].append(message)
+
+    def metadata_for(asset_type: str | None) -> dict[str, Any]:
+        if not asset_type:
+            return {}
+        if asset_type in metadata_cache:
+            return metadata_cache[asset_type]
+        try:
+            metadata = client.get_asset_metadata(token, asset_type)
+            stats["metadata_requests"] += 1
+        except (MpVmApiError, requests.RequestException) as exc:
+            warn(f"metadata {asset_type}: {exc}")
+            metadata = {}
+        metadata_cache[asset_type] = metadata
+        return metadata
+
+    def add_table_row(
+        *,
+        path: str,
+        name: str,
+        title: str | None,
+        value: Any,
+        value_type: str | None = None,
+        kind: str | None = None,
+        parent_type: str | None = None,
+        parent_object_id: str | None = None,
+    ) -> None:
+        table_rows.append(
+            {
+                "path": path,
+                "name": name,
+                "title": title or name,
+                "type": value_type,
+                "kind": kind,
+                "value": asset_value_to_text(value),
+                "parent_type": parent_type,
+                "parent_object_id": parent_object_id,
+            }
+        )
+
+    def fetch_node(asset_type: str, object_id: str, path: str) -> dict[str, Any] | None:
+        try:
+            node = client.get_asset_tree_node(token, asset_type, object_id, timeline_token)
+            stats["node_requests"] += 1
+            return node
+        except (MpVmApiError, requests.RequestException) as exc:
+            warn(f"node {path} ({asset_type}/{object_id}): {exc}")
+            return None
+
+    def fetch_collection(parent_type: str, object_id: str, name: str, path: str) -> tuple[list[Any], int | None, bool]:
+        items: list[Any] = []
+        reported_count: int | None = None
+        offset = 0
+        while len(items) < max_items_per_collection:
+            current_limit = min(limit_per_collection, max_items_per_collection - len(items))
+            if current_limit <= 0:
+                break
+            try:
+                response = client.get_asset_tree_collection(
+                    token,
+                    parent_type,
+                    object_id,
+                    name,
+                    timeline_token,
+                    full=True,
+                    limit=current_limit,
+                    offset=offset,
+                )
+                stats["collection_requests"] += 1
+            except (MpVmApiError, requests.RequestException) as exc:
+                warn(f"collection {path} ({parent_type}/{object_id}/{name}): {exc}")
+                break
+
+            batch = extract_collection_items(response)
+            count = extract_collection_count(response)
+            if count is not None:
+                reported_count = count
+            items.extend(batch)
+            if not batch or len(batch) < current_limit:
+                break
+            offset += len(batch)
+            if reported_count is not None and offset >= reported_count:
+                break
+
+        truncated = False
+        if reported_count is not None:
+            truncated = len(items) < reported_count
+        elif len(items) >= max_items_per_collection:
+            truncated = True
+        if truncated:
+            warn(f"collection {path}: fetched {len(items)} item(s), reported count {reported_count or 'unknown'}")
+        return items, reported_count, truncated
+
+    def traverse_node(node: dict[str, Any], path: str, depth: int, relation_title: str | None = None) -> None:
+        node_type = clean_text(first_present(node.get("type"), ""))
+        object_id = clean_text(first_present(node.get("objectId"), ""))
+        node_key = f"{node_type}|{object_id}"
+        if object_id and node_key in seen_nodes:
+            return
+        if object_id:
+            seen_nodes.add(node_key)
+        if path != "asset":
+            nodes.append(
+                {
+                    "path": path,
+                    "title": relation_title or node.get("displayName") or path,
+                    "display_name": node.get("displayName"),
+                    "object_id": object_id,
+                    "type": node_type,
+                    "vulnerability_level": node.get("vulnerabilityLevel"),
+                    "data": node.get("data") if isinstance(node.get("data"), dict) else {},
+                }
+            )
+            stats["nodes"] += 1
+
+        metadata = metadata_for(node_type)
+        properties = metadata_properties_by_name(metadata)
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        for name, value in data.items():
+            prop = properties.get(name, {})
+            title = clean_text(first_present(prop.get("title"), name))
+            value_type = clean_text(first_present(prop.get("type"), value.get("type") if isinstance(value, dict) else None))
+            kind = clean_text(prop.get("kind"))
+            current_path = f"{path}.{name}"
+
+            if should_fetch_collection(prop, value):
+                add_table_row(
+                    path=current_path,
+                    name=name,
+                    title=title,
+                    value=value,
+                    value_type=value_type,
+                    kind=kind or "collection",
+                    parent_type=node_type,
+                    parent_object_id=object_id,
+                )
+                if not collection_has_items(value):
+                    continue
+                if depth >= max_depth:
+                    warn(f"max depth reached before collection {current_path}")
+                    continue
+                collect_collection(
+                    parent_type=node_type,
+                    object_id=object_id or root_asset_id,
+                    name=name,
+                    prop=prop,
+                    path=current_path,
+                    depth=depth + 1,
+                )
+                continue
+
+            if is_object_ref(value):
+                add_table_row(
+                    path=current_path,
+                    name=name,
+                    title=title,
+                    value=value,
+                    value_type=value_type,
+                    kind=kind or "node",
+                    parent_type=node_type,
+                    parent_object_id=object_id,
+                )
+                if depth >= max_depth:
+                    warn(f"max depth reached before node {current_path}")
+                    continue
+                child_type = clean_text(value.get("type"))
+                child_id = clean_text(value.get("objectId"))
+                if child_type and child_id:
+                    child = fetch_node(child_type, child_id, current_path)
+                    if child:
+                        traverse_node(child, current_path, depth + 1, title)
+                continue
+
+            add_table_row(
+                path=current_path,
+                name=name,
+                title=title,
+                value=value,
+                value_type=value_type,
+                kind=kind,
+                parent_type=node_type,
+                parent_object_id=object_id,
+            )
+
+    def collect_collection(
+        *,
+        parent_type: str,
+        object_id: str,
+        name: str,
+        prop: dict[str, Any],
+        path: str,
+        depth: int,
+    ) -> None:
+        if not parent_type or not object_id:
+            warn(f"collection {path}: parent type or object id is empty")
+            return
+        collection_key = f"{parent_type}|{object_id}|{name}"
+        if collection_key in seen_collections:
+            return
+        seen_collections.add(collection_key)
+
+        items, reported_count, truncated = fetch_collection(parent_type, object_id, name, path)
+        collection_doc: dict[str, Any] = {
+            "path": path,
+            "name": name,
+            "title": clean_text(first_present(prop.get("title"), name)),
+            "type": prop.get("type"),
+            "kind": prop.get("kind"),
+            "parent_type": parent_type,
+            "parent_object_id": object_id,
+            "count": reported_count if reported_count is not None else len(items),
+            "fetched_count": len(items),
+            "truncated": truncated,
+            "items": [],
+        }
+        collections.append(collection_doc)
+        stats["collections"] += 1
+
+        for index, item in enumerate(items):
+            item_path = f"{path}[{index}]"
+            if isinstance(item, dict):
+                item_doc = {
+                    "path": item_path,
+                    "display_name": item.get("displayName"),
+                    "object_id": item.get("objectId"),
+                    "type": item.get("type"),
+                    "vulnerability_level": item.get("vulnerabilityLevel"),
+                    "data": item.get("data") if isinstance(item.get("data"), dict) else {},
+                }
+                collection_doc["items"].append(item_doc)
+                add_table_row(
+                    path=item_path,
+                    name=name,
+                    title=collection_doc["title"],
+                    value=item,
+                    value_type=item.get("type") or prop.get("type"),
+                    kind=prop.get("kind"),
+                    parent_type=parent_type,
+                    parent_object_id=object_id,
+                )
+                if depth <= max_depth and is_object_ref(item):
+                    child_type = clean_text(item.get("type"))
+                    child_id = clean_text(item.get("objectId"))
+                    if child_type and child_id:
+                        child = fetch_node(child_type, child_id, item_path)
+                        if child:
+                            item_doc["node"] = child
+                            traverse_node(child, item_path, depth, item_doc.get("display_name"))
+                elif depth > max_depth:
+                    warn(f"max depth reached inside collection {item_path}")
+                else:
+                    add_embedded_data_rows(item, item_path, parent_type, object_id)
+            else:
+                collection_doc["items"].append({"path": item_path, "value": item})
+                add_table_row(
+                    path=item_path,
+                    name=name,
+                    title=collection_doc["title"],
+                    value=item,
+                    value_type=prop.get("type"),
+                    kind=prop.get("kind"),
+                    parent_type=parent_type,
+                    parent_object_id=object_id,
+                )
+
+    def add_embedded_data_rows(item: dict[str, Any], path: str, parent_type: str, parent_object_id: str) -> None:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for key, embedded_value in data.items():
+            add_table_row(
+                path=f"{path}.{key}",
+                name=key,
+                title=key,
+                value=embedded_value,
+                value_type=None,
+                kind=None,
+                parent_type=parent_type,
+                parent_object_id=parent_object_id,
+            )
+
+    traverse_node(root, "asset", 0)
+    stats["table_rows"] = len(table_rows)
+
+    return {
+        "asset_id": root_asset_id,
+        "requested_asset_id": asset_id,
+        "display_name": root.get("displayName"),
+        "asset_type": root.get("type"),
+        "vulnerability_level": root.get("vulnerabilityLevel"),
+        "timeline_timestamp": timestamp,
+        "timeline_token": timeline_token,
+        "root": root,
+        "metadata": metadata_cache,
+        "nodes": nodes,
+        "collections": collections,
+        "table_rows": table_rows,
+        "stats": stats,
+    }
+
+
+def extract_collection_items(response: Any) -> list[Any]:
+    if isinstance(response, dict):
+        items = response.get("items")
+        if isinstance(items, list):
+            return items
+        data = response.get("data")
+        if isinstance(data, list):
+            return data
+    if isinstance(response, list):
+        return response
+    return []
+
+
+def extract_collection_count(response: Any) -> int | None:
+    if not isinstance(response, dict):
+        return None
+    for key in ("count", "total", "totalCount", "totalItems"):
+        try:
+            if response.get(key) is not None:
+                return int(response[key])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def metadata_properties_by_name(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    properties = metadata.get("properties")
+    if not isinstance(properties, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for prop in properties:
+        if isinstance(prop, dict) and prop.get("name"):
+            result[str(prop["name"])] = prop
+    return result
+
+
+def should_fetch_collection(prop: dict[str, Any], value: Any) -> bool:
+    if isinstance(value, dict) and "hasItems" in value:
+        return True
+    return bool(prop.get("isCollection"))
+
+
+def collection_has_items(value: Any) -> bool:
+    if isinstance(value, dict) and value.get("hasItems") is False:
+        return False
+    return True
+
+
+def is_object_ref(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value.get("objectId")) and bool(value.get("type"))
+
+
+def asset_value_to_text(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if "hasItems" in value:
+            return "есть элементы" if value.get("hasItems") else "нет элементов"
+        label = first_present(value.get("displayName"), value.get("name"), value.get("title"), value.get("objectId"))
+        if label:
+            return str(label)
+    try:
+        return json_dumps_compact(value)
+    except TypeError:
+        return str(value)
+
+
+def json_dumps_compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_asset_candidate_record(record: dict[str, Any]) -> dict[str, Any]:
+    host = record.get("@Host") if isinstance(record.get("@Host"), dict) else {}
+    host_value = record.get("@Host")
+    asset_id = first_present(
+        host.get("internalId"),
+        host.get("id"),
+        host.get("objectId"),
+        record.get("Host.@Id"),
+        record.get("AssetId"),
+        record.get("assetId"),
+    )
+    if not asset_id and isinstance(host_value, str):
+        asset_id = extract_uuid(host_value)
+    display_name = first_present(
+        host.get("displayName"),
+        host.get("name"),
+        host.get("title"),
+        record.get("HostName"),
+        host_value if isinstance(host_value, str) else None,
+    )
+    return {
+        "asset_id": asset_id,
+        "display_name": display_name,
+        "os_name": first_present(record.get("Host.OsName"), host.get("osName")),
+        "creation_time": first_present(record.get("Host.@CreationTime"), host.get("creationTime")),
+        "update_time": first_present(record.get("Host.@UpdateTime"), host.get("updateTime")),
+        "raw_record": record,
+    }
+
+
+def dedupe_asset_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for candidate in candidates:
+        key = candidate.get("asset_id") or candidate.get("display_name")
+        if key is None:
+            result.append(candidate)
+            continue
+        key_text = str(key)
+        if key_text in seen:
+            continue
+        seen.add(key_text)
+        result.append(candidate)
+    return result
+
+
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def sanitize_asset_card_for_response(card: dict[str, Any]) -> dict[str, Any]:
+    cleaned = strip_raw_asset_values(card)
+    if isinstance(cleaned, dict):
+        cleaned.pop("timeline_token", None)
+        cleaned.pop("asset_token", None)
+    return cleaned if isinstance(cleaned, dict) else {}
+
+
+def strip_raw_asset_values(value: Any) -> Any:
+    raw_keys = {"raw", "raw_card", "raw_record", "raw_detail", "raw_value"}
+    if isinstance(value, list):
+        return [strip_raw_asset_values(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: strip_raw_asset_values(item)
+            for key, item in value.items()
+            if key not in raw_keys
+        }
+    return value
+
+
 def normalize_vulnerability_passport_record(record: dict[str, Any]) -> dict[str, Any]:
     passport = record.get("@VulnerPassport") if isinstance(record.get("@VulnerPassport"), dict) else {}
     cves = normalize_compact_items(
@@ -1026,3 +1623,10 @@ def decode_csv_bytes(content: bytes) -> str:
 
 def http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str) -> FileResponse:
+    if full_path.startswith(("api/", "static/")):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(STATIC_DIR / "index.html")

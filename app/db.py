@@ -143,6 +143,31 @@ def init_db() -> None:
             detail_updated_at TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_cards (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT UNIQUE NOT NULL,
+            display_name TEXT,
+            asset_type TEXT,
+            fqdn TEXT,
+            hostname TEXT,
+            ip_address TEXT,
+            os_name TEXT,
+            os_version TEXT,
+            vulnerability_level TEXT,
+            token_timestamp BIGINT,
+            asset_token TEXT,
+            root_json TEXT NOT NULL DEFAULT '{}',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            nodes_json TEXT NOT NULL DEFAULT '[]',
+            collections_json TEXT NOT NULL DEFAULT '[]',
+            table_rows_json TEXT NOT NULL DEFAULT '[]',
+            stats_json TEXT NOT NULL DEFAULT '{}',
+            raw_card_json TEXT NOT NULL DEFAULT '{}',
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets(ip_address)",
         "CREATE INDEX IF NOT EXISTS idx_assets_fqdn_lower ON assets((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_assets_mp_asset_id ON assets(mp_asset_id)",
@@ -155,6 +180,10 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_external_id ON vulnerability_passports(external_id)",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_severity_lower ON vulnerability_passports((LOWER(severity)))",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_package ON vulnerability_passports(package_id, package_version)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_cards_display_name_lower ON asset_cards((LOWER(display_name)))",
+        "CREATE INDEX IF NOT EXISTS idx_asset_cards_fqdn_lower ON asset_cards((LOWER(fqdn)))",
+        "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_cards_type ON asset_cards(asset_type)",
     ]
     with connect() as conn:
         for statement in statements:
@@ -763,6 +792,127 @@ def list_vulnerability_passports(
     }
 
 
+def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
+    init_db()
+    root = card.get("root") if isinstance(card.get("root"), dict) else {}
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    asset_id = clean_value(first_non_empty(card.get("asset_id"), root.get("objectId")))
+    if not asset_id:
+        return None
+
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO asset_cards (
+                asset_id, display_name, asset_type, fqdn, hostname, ip_address,
+                os_name, os_version, vulnerability_level, token_timestamp, asset_token,
+                root_json, metadata_json, nodes_json, collections_json, table_rows_json,
+                stats_json, raw_card_json, first_seen, last_seen
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                display_name = EXCLUDED.display_name,
+                asset_type = EXCLUDED.asset_type,
+                fqdn = EXCLUDED.fqdn,
+                hostname = EXCLUDED.hostname,
+                ip_address = EXCLUDED.ip_address,
+                os_name = EXCLUDED.os_name,
+                os_version = EXCLUDED.os_version,
+                vulnerability_level = EXCLUDED.vulnerability_level,
+                token_timestamp = EXCLUDED.token_timestamp,
+                asset_token = EXCLUDED.asset_token,
+                root_json = EXCLUDED.root_json,
+                metadata_json = EXCLUDED.metadata_json,
+                nodes_json = EXCLUDED.nodes_json,
+                collections_json = EXCLUDED.collections_json,
+                table_rows_json = EXCLUDED.table_rows_json,
+                stats_json = EXCLUDED.stats_json,
+                raw_card_json = EXCLUDED.raw_card_json,
+                last_seen = EXCLUDED.last_seen
+            RETURNING *
+            """,
+            (
+                asset_id,
+                clean_value(first_non_empty(card.get("display_name"), root.get("displayName"))),
+                clean_value(first_non_empty(card.get("asset_type"), root.get("type"))),
+                clean_value(data.get("fqdn")),
+                clean_value(data.get("hostname")),
+                clean_value(data.get("ipAddress")),
+                clean_value(data.get("osName")),
+                clean_value(data.get("osVersion")),
+                clean_value(first_non_empty(card.get("vulnerability_level"), root.get("vulnerabilityLevel"))),
+                card.get("timeline_timestamp"),
+                clean_value(card.get("timeline_token")),
+                json.dumps(root, ensure_ascii=False),
+                json.dumps(card.get("metadata") or {}, ensure_ascii=False),
+                json.dumps(strip_asset_card_raw(card.get("nodes") or []), ensure_ascii=False),
+                json.dumps(strip_asset_card_raw(card.get("collections") or []), ensure_ascii=False),
+                json.dumps(strip_asset_card_raw(card.get("table_rows") or []), ensure_ascii=False),
+                json.dumps(card.get("stats") or {}, ensure_ascii=False),
+                "{}",
+                current,
+                current,
+            ),
+        ).fetchone()
+    return decode_asset_card(dict(row)) if row else None
+
+
+def get_asset_card(asset_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone()
+    return decode_asset_card(dict(row)) if row else None
+
+
+def list_asset_cards(
+    *,
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    init_db()
+    filters: list[str] = []
+    params: list[Any] = []
+    if q:
+        like = f"%{q}%"
+        filters.append(
+            """
+            (
+                asset_id ILIKE %s OR display_name ILIKE %s OR asset_type ILIKE %s OR
+                fqdn ILIKE %s OR hostname ILIKE %s OR ip_address ILIKE %s OR
+                os_name ILIKE %s OR os_version ILIKE %s
+            )
+            """
+        )
+        params.extend([like, like, like, like, like, like, like, like])
+    where = "WHERE " + " AND ".join(filters) if filters else ""
+    limit = max(1, min(limit, 50000))
+    offset = max(0, offset)
+
+    with connect() as conn:
+        total_row = conn.execute(f"SELECT COUNT(*) AS count FROM asset_cards {where}", params).fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT
+                id, asset_id, display_name, asset_type, fqdn, hostname, ip_address,
+                os_name, os_version, vulnerability_level, token_timestamp,
+                stats_json, first_seen, last_seen
+            FROM asset_cards
+            {where}
+            ORDER BY last_seen DESC, display_name NULLS LAST, asset_id
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+    return {
+        "total": int(total_row["count"] or 0),
+        "rows": [decode_asset_card_summary(dict(row)) for row in rows],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 def record_asset_removal(
     *,
     import_run_id: int | None,
@@ -875,6 +1025,76 @@ def clean_value(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def decode_asset_card_summary(row: dict[str, Any]) -> dict[str, Any]:
+    stats = json_loads(row.get("stats_json"), {})
+    return {
+        "id": row.get("id"),
+        "asset_id": row.get("asset_id"),
+        "display_name": row.get("display_name"),
+        "asset_type": row.get("asset_type"),
+        "fqdn": row.get("fqdn"),
+        "hostname": row.get("hostname"),
+        "ip_address": row.get("ip_address"),
+        "os_name": row.get("os_name"),
+        "os_version": row.get("os_version"),
+        "vulnerability_level": row.get("vulnerability_level"),
+        "token_timestamp": row.get("token_timestamp"),
+        "stats": stats if isinstance(stats, dict) else {},
+        "first_seen": row.get("first_seen"),
+        "last_seen": row.get("last_seen"),
+    }
+
+
+def decode_asset_card(row: dict[str, Any]) -> dict[str, Any]:
+    root = json_loads(row.get("root_json"), {})
+    metadata = json_loads(row.get("metadata_json"), {})
+    nodes = json_loads(row.get("nodes_json"), [])
+    collections = json_loads(row.get("collections_json"), [])
+    table_rows = json_loads(row.get("table_rows_json"), [])
+    stats = json_loads(row.get("stats_json"), {})
+    return {
+        "id": row.get("id"),
+        "asset_id": row.get("asset_id"),
+        "display_name": row.get("display_name"),
+        "asset_type": row.get("asset_type"),
+        "fqdn": row.get("fqdn"),
+        "hostname": row.get("hostname"),
+        "ip_address": row.get("ip_address"),
+        "os_name": row.get("os_name"),
+        "os_version": row.get("os_version"),
+        "vulnerability_level": row.get("vulnerability_level"),
+        "token_timestamp": row.get("token_timestamp"),
+        "root": root if isinstance(root, dict) else {},
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "nodes": strip_asset_card_raw(nodes) if isinstance(nodes, list) else [],
+        "collections": strip_asset_card_raw(collections) if isinstance(collections, list) else [],
+        "table_rows": strip_asset_card_raw(table_rows) if isinstance(table_rows, list) else [],
+        "stats": stats if isinstance(stats, dict) else {},
+        "first_seen": row.get("first_seen"),
+        "last_seen": row.get("last_seen"),
+    }
+
+
+def strip_asset_card_raw(value: Any) -> Any:
+    raw_keys = {"raw", "raw_card", "raw_record", "raw_detail", "raw_value"}
+    if isinstance(value, list):
+        return [strip_asset_card_raw(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: strip_asset_card_raw(item)
+            for key, item in value.items()
+            if key not in raw_keys
+        }
+    return value
 
 
 def decode_vulnerability_passport(row: dict[str, Any]) -> dict[str, Any]:

@@ -158,6 +158,11 @@ select {
   transform: translateX(2px);
 }
 
+.nav a.is-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .sidebar-card {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -837,6 +842,550 @@ td code {
   margin-top: 14px;
 }
 
+.asset-card-builder {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  background: #fbfdff;
+}
+
+.asset-candidates-shell {
+  max-height: 360px;
+  margin-top: 14px;
+}
+
+.asset-candidates-table {
+  min-width: 1080px;
+}
+
+.asset-local-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin: 16px 0 14px;
+}
+
+.asset-card-list-table {
+  min-width: 1180px;
+}
+
+.asset-modal {
+  width: min(1440px, calc(100vw - 42px));
+  max-height: calc(100vh - 42px);
+}
+
+.asset-console {
+  min-height: min(760px, calc(100vh - 110px));
+  background: #fff;
+}
+
+.asset-console__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #edf2f7;
+  padding: 12px 16px;
+  background: #fbfdff;
+}
+
+.asset-console__summary strong {
+  display: block;
+  color: #1f334b;
+  font-size: 15px;
+}
+
+.asset-console__summary span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.asset-console__chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.asset-console__chips span {
+  margin: 0;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #31506d;
+  background: #eef5fb;
+  font-weight: 800;
+}
+
+.asset-tabs {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 42px;
+  border-bottom: 1px solid #e5edf5;
+  padding: 0 14px;
+  background: #fff;
+}
+
+.asset-tabs button {
+  align-self: stretch;
+  border-bottom: 2px solid transparent;
+  padding: 0 2px;
+  color: #53677e;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.asset-tabs button.is-active {
+  color: #1d5f89;
+  border-color: #1d86b8;
+}
+
+.asset-config-layout {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  height: min(680px, calc(100vh - 206px));
+  min-height: 520px;
+}
+
+.asset-tree-pane {
+  min-width: 0;
+  border-right: 1px solid #e5edf5;
+  background: #fbfdff;
+}
+
+.asset-tree-pane__title {
+  border-bottom: 1px solid #eaf0f6;
+  padding: 10px 12px;
+  color: #53677e;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.asset-tree {
+  overflow: auto;
+  height: calc(100% - 40px);
+  padding: 6px 0 14px;
+}
+
+.asset-tree-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 25px;
+  padding-left: calc(8px + var(--depth, 0) * 15px);
+}
+
+.asset-tree-row:hover,
+.asset-tree-row.is-selected {
+  background: #d9edf9;
+}
+
+.asset-tree-toggle,
+.asset-tree-label {
+  min-height: 25px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.asset-tree-toggle {
+  color: #6d8196;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.asset-tree-toggle.is-empty {
+  cursor: default;
+}
+
+.asset-tree-label {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-width: 0;
+  padding: 3px 8px 3px 0;
+  color: #25759d;
+  cursor: pointer;
+  text-align: left;
+}
+
+.asset-tree-label span {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.asset-tree-label small {
+  overflow: hidden;
+  max-width: 100%;
+  color: #8a9aae;
+  font-size: 10px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-detail-pane {
+  min-width: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.asset-detail-heading {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid #edf2f7;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.asset-detail-heading strong {
+  display: block;
+  color: #21354d;
+  font-size: 14px;
+}
+
+.asset-detail-heading span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.asset-detail-heading code {
+  overflow: hidden;
+  max-width: 48%;
+  color: #5f7288;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-detail-table-shell {
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+
+.asset-detail-table {
+  min-width: 760px;
+  font-size: 12px;
+}
+
+.asset-detail-table th,
+.asset-detail-table td {
+  padding: 8px 12px;
+}
+
+.asset-detail-table th {
+  color: #62758a;
+  background: #fbfdff;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.asset-detail-table td {
+  overflow-wrap: anywhere;
+}
+
+.asset-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
+  gap: 0;
+  min-height: 560px;
+}
+
+.asset-summary-main {
+  border-right: 1px solid #edf2f7;
+  padding: 18px;
+}
+
+.asset-filtered-pane {
+  min-height: 560px;
+}
+
+.asset-vulnerability-pane {
+  min-height: 560px;
+  background: #fff;
+}
+
+.asset-vulnerability-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid #e5edf5;
+  padding: 8px 12px;
+  background: #fbfdff;
+}
+
+.asset-vuln-scope {
+  border: 1px solid #d8e4ef;
+  border-radius: 4px;
+  padding: 5px 9px;
+  color: #53677e;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.asset-vuln-scope.is-active {
+  color: #1d5f89;
+  border-color: #9ccce5;
+  background: #edf8ff;
+}
+
+.asset-vuln-scope span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  margin-left: 6px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #fff;
+  background: #334155;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.asset-vulnerability-table-shell {
+  max-height: min(650px, calc(100vh - 248px));
+  border: 0;
+  border-radius: 0;
+}
+
+.asset-vulnerability-table {
+  min-width: 920px;
+  font-size: 12px;
+}
+
+.asset-vulnerability-table th,
+.asset-vulnerability-table td {
+  padding: 7px 12px;
+}
+
+.asset-vulnerability-table th {
+  color: #5d6f82;
+  background: #fff;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.asset-vulnerability-table th:nth-child(1) { width: 52%; }
+.asset-vulnerability-table th:nth-child(2) { width: 23%; }
+.asset-vulnerability-table th:nth-child(3) { width: 25%; }
+
+.asset-vuln-group-row td {
+  color: #334155;
+  background: #fff;
+  font-weight: 820;
+}
+
+.asset-vuln-group-row--nested td:first-child {
+  padding-left: 34px;
+}
+
+.asset-vuln-toggle {
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  color: #718296;
+  background: transparent;
+  cursor: pointer;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.asset-vuln-group-row strong {
+  margin-right: 8px;
+}
+
+.asset-vuln-group-row span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 22px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: #fff;
+  background: #334155;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.asset-vuln-item-row td {
+  color: #2c3f56;
+  vertical-align: top;
+}
+
+.asset-vuln-marker {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 5px 8px 0 54px;
+  border-radius: 2px;
+  background: #e05243;
+  vertical-align: top;
+}
+
+.asset-vuln-link,
+.asset-vuln-cve {
+  padding: 0;
+  color: #1d78a8;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 740;
+  text-align: left;
+}
+
+.asset-vuln-link:hover,
+.asset-vuln-cve:hover {
+  text-decoration: underline;
+}
+
+.asset-vuln-item-row small {
+  display: block;
+  margin: 3px 0 0 69px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.asset-vuln-cves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.asset-vuln-cves span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.asset-passport-error {
+  margin: 12px 14px 0;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #7c2d12;
+  background: #fff7ed;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.asset-summary-side {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 12px;
+  padding: 18px;
+  background: #fbfdff;
+}
+
+.asset-summary-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+}
+
+.asset-summary-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.asset-summary-card strong {
+  display: block;
+  margin-top: 5px;
+  color: #1f334b;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+
+.wide-cell strong {
+  display: block;
+  color: #203147;
+}
+
+.wide-cell span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.asset-collection-row {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #edf2f7;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fbfdff;
+}
+
+.asset-collection-row strong {
+  color: #2b3d54;
+  font-size: 13px;
+}
+
+.asset-collection-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.asset-data-block {
+  border-top: 1px solid #edf2f7;
+  padding: 16px 18px 18px;
+}
+
+.asset-data-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: #334155;
+}
+
+.asset-data-block__header span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.asset-data-shell {
+  max-height: 520px;
+}
+
+.asset-data-table {
+  min-width: 960px;
+}
+
+.asset-data-table th:nth-child(1) { width: 260px; }
+.asset-data-table th:nth-child(2) { width: 260px; }
+.asset-data-table th:nth-child(3) { width: 180px; }
+
+.asset-data-table td {
+  overflow-wrap: anywhere;
+}
+
 .passport-pagination {
   display: flex;
   align-items: center;
@@ -1152,8 +1701,25 @@ td code {
 @media (max-width: 1220px) {
   .app-shell,
   .two-column,
-  .passport-card__body {
+  .passport-card__body,
+  .asset-config-layout,
+  .asset-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .asset-config-layout {
+    height: auto;
+  }
+
+  .asset-tree-pane {
+    max-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid #e5edf5;
+  }
+
+  .asset-summary-main {
+    border-right: 0;
+    border-bottom: 1px solid #edf2f7;
   }
 
   .passport-card__main {
@@ -1167,7 +1733,7 @@ td code {
   }
 
   .nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
 
   .sidebar-card {
@@ -1196,6 +1762,7 @@ td code {
   .metric-grid,
   .filters,
   .passport-controls,
+  .asset-local-header,
   .delete-box {
     grid-template-columns: 1fr;
   }
@@ -1231,6 +1798,24 @@ td code {
   .passport-modal__window {
     width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
+  }
+
+  .asset-modal {
+    width: calc(100vw - 24px);
+  }
+
+  .asset-console__summary,
+  .asset-detail-heading {
+    display: grid;
+  }
+
+  .asset-tabs {
+    overflow-x: auto;
+    gap: 14px;
+  }
+
+  .asset-detail-heading code {
+    max-width: 100%;
   }
 
   .passport-pagination {

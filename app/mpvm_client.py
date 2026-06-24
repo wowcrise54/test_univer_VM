@@ -21,6 +21,11 @@ ASSET_GRID_PATH = "/api/assets_temporal_readmodel/v1/assets_grid"
 ASSET_GRID_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/data"
 ASSET_GRID_EXPORT_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/export"
 VULNERABILITY_DETAIL_PATH = "/api/assets_temporal_readmodel/v1/vulnerabilities/{passport_id}"
+ASSET_TIMELINE_TOKEN_PATH = "/api/v1/asset/timeline/{asset_id}/token"
+ASSET_TREE_ROOT_PATH = "/api/assets/tree/root"
+ASSET_TREE_COLLECTION_PATH = "/api/assets/tree/collection/{asset_type}/{object_id}/{collection_name}"
+ASSET_TREE_NODE_PATH = "/api/assets/tree/node/{asset_type}/{object_id}"
+ASSET_METADATA_PATH = "/api/assets/metadata/{asset_type}"
 SCOPES_PATH = "/api/scopes/v2/scopes"
 CREDENTIALS_PATH = "/api/v3/credentials"
 ASSET_REMOVE_OPERATION_PATH = "/api/assets_processing/v1/asset_operations/removeAssets"
@@ -49,6 +54,8 @@ VulnerPassport.SeverityRating, VulnerPassport.Score,
 VulnerPassport.IssueTime, VulnerPassport.PackageId,
 VulnerPassport.PackageVersion, VulnerPassport.Metrics)
 | limit(0)"""
+
+ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTime) | sort(@Host ASC)"
 
 ASSET_ID_PDQL = "select(Host.@Id as AssetId, @Host as HostName, Host.IpAddress as IpAddress)"
 
@@ -259,6 +266,75 @@ class MpVmClient:
         data = self.get_json(access_token, VULNERABILITY_DETAIL_PATH.format(passport_id=safe_id))
         if not isinstance(data, dict):
             raise MpVmApiError(f"Unexpected vulnerability passport response: {compact_json_summary(data)}")
+        return data
+
+    def create_asset_timeline_token(self, access_token: str, asset_id: str, timestamp: int) -> str:
+        safe_id = quote(asset_id, safe="")
+        data = self.get_json(
+            access_token,
+            ASSET_TIMELINE_TOKEN_PATH.format(asset_id=safe_id),
+            params={"datetime": timestamp},
+        )
+        if not isinstance(data, dict) or not data.get("token"):
+            raise MpVmApiError(f"Asset timeline token response does not contain token: {compact_json_summary(data)}")
+        return str(data["token"])
+
+    def get_asset_tree_root(self, access_token: str, timeline_token: str) -> dict[str, Any]:
+        data = self.get_json(access_token, ASSET_TREE_ROOT_PATH, params={"token": timeline_token})
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected asset tree root response: {compact_json_summary(data)}")
+        return data
+
+    def get_asset_metadata(self, access_token: str, asset_type: str) -> dict[str, Any]:
+        safe_type = quote(asset_type, safe="")
+        data = self.get_json(access_token, ASSET_METADATA_PATH.format(asset_type=safe_type))
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected asset metadata response: {compact_json_summary(data)}")
+        return data
+
+    def get_asset_tree_node(self, access_token: str, asset_type: str, object_id: str, timeline_token: str) -> dict[str, Any]:
+        safe_type = quote(asset_type, safe="")
+        safe_id = quote(object_id, safe="")
+        data = self.get_json(
+            access_token,
+            ASSET_TREE_NODE_PATH.format(asset_type=safe_type, object_id=safe_id),
+            params={"token": timeline_token},
+        )
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected asset tree node response: {compact_json_summary(data)}")
+        return data
+
+    def get_asset_tree_collection(
+        self,
+        access_token: str,
+        asset_type: str,
+        object_id: str,
+        collection_name: str,
+        timeline_token: str,
+        *,
+        full: bool = True,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        safe_type = quote(asset_type, safe="")
+        safe_id = quote(object_id, safe="")
+        safe_collection_name = quote(collection_name, safe="")
+        data = self.get_json(
+            access_token,
+            ASSET_TREE_COLLECTION_PATH.format(
+                asset_type=safe_type,
+                object_id=safe_id,
+                collection_name=safe_collection_name,
+            ),
+            params={
+                "full": "true" if full else "false",
+                "limit": limit,
+                "offset": offset,
+                "token": timeline_token,
+            },
+        )
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected asset tree collection response: {compact_json_summary(data)}")
         return data
 
     def list_remote_scanner_tasks(

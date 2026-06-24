@@ -1,0 +1,2580 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "./api/client.js";
+import { formatCount, optionLabel, splitTokens } from "./shared/format.js";
+import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
+
+function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, busy, runBusy, showAlert }) {
+  const [form, setForm] = useState({
+    api_url: "",
+    token_url: "",
+    username: "",
+    password: "",
+    client_id: "mpx",
+    client_secret: "",
+    scope: "",
+    access_token: "",
+    verify_tls: true,
+  });
+
+  useEffect(() => {
+    if (!defaults) return;
+    setForm((value) => ({
+      ...value,
+      api_url: value.api_url || defaults.api_url || "",
+      client_id: value.client_id || defaults.client_id || "mpx",
+      scope: value.scope || defaults.scope || "",
+    }));
+  }, [defaults]);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+
+  const connect = () =>
+    runBusy("connect", async () => {
+      const payload = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value === "" ? null : value]));
+      const result = await api("/api/session/connect", { method: "POST", body: JSON.stringify(payload) });
+      setSession(result);
+      showAlert("Подключение к MP VM установлено.", "success");
+      await loadLookups();
+    });
+
+  const disconnect = () =>
+    runBusy("disconnect", async () => {
+      const result = await api("/api/session/disconnect", { method: "POST" });
+      setSession(result);
+      showAlert("Сессия MP VM отключена.", "info");
+    });
+
+  const loadLookups = () =>
+    runBusy("lookups", async () => {
+      const result = await api("/api/mpvm/lookups");
+      setLookups(result);
+      showAlert("Справочники загружены: credentials, scopes, scanner profiles.", "success");
+    });
+
+  return (
+    <Panel
+      id="connection"
+      eyebrow="01"
+      title="Подключение к MP VM"
+      description="Пароль и Bearer token используются только в памяти процесса приложения. После подключения загрузите справочники для выбора scope, профиля и учётной записи."
+      action={<Button variant="secondary" busy={busy.lookups} onClick={loadLookups}>Загрузить справочники</Button>}
+    >
+      <div className="form-grid form-grid--four">
+        <Field label="Корневой URL API">
+          <input value={form.api_url} onChange={(event) => update("api_url", event.target.value)} placeholder="https://srv-siem.local" />
+        </Field>
+        <Field label="Token URL">
+          <input value={form.token_url} onChange={(event) => update("token_url", event.target.value)} placeholder="https://srv-siem.local:3334/connect/token" />
+        </Field>
+        <Field label="Username">
+          <input value={form.username} onChange={(event) => update("username", event.target.value)} autoComplete="username" />
+        </Field>
+        <Field label="Password">
+          <input value={form.password} onChange={(event) => update("password", event.target.value)} type="password" autoComplete="current-password" />
+        </Field>
+        <Field label="Client ID">
+          <input value={form.client_id} onChange={(event) => update("client_id", event.target.value)} />
+        </Field>
+        <Field label="Client Secret">
+          <input value={form.client_secret} onChange={(event) => update("client_secret", event.target.value)} type="password" />
+        </Field>
+        <Field label="Scope" wide>
+          <input value={form.scope} onChange={(event) => update("scope", event.target.value)} />
+        </Field>
+        <Field label="Bearer token" wide>
+          <input value={form.access_token} onChange={(event) => update("access_token", event.target.value)} type="password" placeholder="Можно вместо username/password/client_secret" />
+        </Field>
+        <Toggle label="Проверять TLS-сертификат" checked={form.verify_tls} onChange={(value) => update("verify_tls", value)} />
+      </div>
+      <div className="action-row">
+        <Button busy={busy.connect} onClick={connect}>Подключиться</Button>
+        <Button variant="ghost" busy={busy.disconnect} onClick={disconnect}>Отключиться</Button>
+        <div className="inline-metric">
+          <span>{lookups.credentials.length}</span> credentials · <span>{lookups.scopes.length}</span> scopes · <span>{lookups.scanner_profiles.length}</span> profiles
+        </div>
+        <div className={session.connected ? "mini-state mini-state--ok" : "mini-state"}>{session.connected ? session.api_url : "Ожидает подключения"}</div>
+      </div>
+    </Panel>
+  );
+}
+
+function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, setSelectedTaskId, refreshTasks, busy, runBusy, showAlert }) {
+  const emptyForm = useMemo(
+    () => ({
+      name: "",
+      description: "Windows audit vulnerability collection",
+      scope_id: "",
+      profile_id: "",
+      credential_id: "",
+      host_discovery_profile_id: "",
+      include_targets: "",
+      exclude_targets: "",
+      agent_ids: "",
+      host_discovery_enabled: false,
+      is_fqdn_priority: true,
+      time_zone: defaults?.utc_offset || "+05:00",
+      precheck_enabled: false,
+      precheck_profile_id: "",
+      precheck_timeout_minutes: "10",
+      precheck_max_runtime_minutes: "5",
+      precheck_poll_seconds: "10",
+      wait_for_finish: true,
+      task_timeout_minutes: "120",
+      task_poll_seconds: "15",
+      require_clean_jobs: false,
+    }),
+    [defaults?.utc_offset],
+  );
+  const [form, setForm] = useState(emptyForm);
+
+  useEffect(() => {
+    setForm((value) => ({ ...value, time_zone: value.time_zone || defaults?.utc_offset || "+05:00" }));
+  }, [defaults?.utc_offset]);
+
+  useEffect(() => {
+    if (!selectedTask) return;
+    const payload = selectedTask.payload || {};
+    setForm((current) => ({
+      name: payload.name || selectedTask.name || "",
+      description: payload.description || "",
+      scope_id: payload.scope || "",
+      profile_id: payload.profile || "",
+      credential_id: selectedTask.credential_id || "",
+      host_discovery_profile_id: payload.hostDiscovery?.profile || "",
+      include_targets: (payload.include?.targets || []).join("\n"),
+      exclude_targets: (payload.exclude?.targets || []).join("\n"),
+      agent_ids: (payload.agents?.agentIds || []).join("\n"),
+      host_discovery_enabled: Boolean(payload.hostDiscovery?.enabled),
+      is_fqdn_priority: payload.isFqdnPriority !== false,
+      time_zone: payload.triggerParameters?.timeZone || defaults?.utc_offset || "+05:00",
+      precheck_enabled: current.precheck_enabled,
+      precheck_profile_id: current.precheck_profile_id,
+      precheck_timeout_minutes: current.precheck_timeout_minutes,
+      precheck_max_runtime_minutes: current.precheck_max_runtime_minutes,
+      precheck_poll_seconds: current.precheck_poll_seconds,
+      wait_for_finish: current.wait_for_finish,
+      task_timeout_minutes: current.task_timeout_minutes,
+      task_poll_seconds: current.task_poll_seconds,
+      require_clean_jobs: current.require_clean_jobs,
+    }));
+  }, [selectedTask, defaults?.utc_offset]);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const payload = () => ({
+    name: form.name.trim(),
+    description: form.description.trim(),
+    scope_id: form.scope_id,
+    profile_id: form.profile_id,
+    credential_id: form.credential_id || null,
+    host_discovery_profile_id: form.host_discovery_profile_id || null,
+    include_targets: splitTokens(form.include_targets),
+    exclude_targets: splitTokens(form.exclude_targets),
+    agent_ids: splitTokens(form.agent_ids),
+    host_discovery_enabled: form.host_discovery_enabled,
+    is_fqdn_priority: form.is_fqdn_priority,
+    time_zone: form.time_zone || "+05:00",
+  });
+  const startPayload = () => ({
+    precheck_enabled: form.precheck_enabled,
+    precheck_profile_id: form.precheck_profile_id || null,
+    precheck_timeout_minutes: Number(form.precheck_timeout_minutes || 10),
+    precheck_max_runtime_minutes: Number(form.precheck_max_runtime_minutes || 0),
+    precheck_poll_seconds: Number(form.precheck_poll_seconds || 10),
+    wait_for_finish: form.wait_for_finish,
+    task_timeout_minutes: Number(form.task_timeout_minutes || 120),
+    task_poll_seconds: Number(form.task_poll_seconds || 15),
+    require_clean_jobs: form.require_clean_jobs,
+  });
+
+  const createTask = () =>
+    runBusy("createTask", async () => {
+      const result = await api("/api/scanner-tasks", { method: "POST", body: JSON.stringify(payload()) });
+      setSelectedTaskId(result.mp_task_id);
+      showAlert(`Задача создана: ${result.mp_task_id}`, "success");
+      await refreshTasks();
+    });
+
+  const updateTask = () =>
+    runBusy("updateTask", async () => {
+      if (!selectedTaskId) throw new Error("Сначала выберите задачу.");
+      await api(`/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}`, { method: "PUT", body: JSON.stringify(payload()) });
+      showAlert(`Задача изменена: ${selectedTaskId}`, "success");
+      await refreshTasks();
+    });
+
+  const actionTask = (action, key, successText, body = null) =>
+    runBusy(key, async () => {
+      if (!selectedTaskId) throw new Error("Сначала выберите задачу.");
+      const options = body ? { method: "POST", body: JSON.stringify(body) } : { method: "POST" };
+      const result = await api(`/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}/${action}`, options);
+      showAlert(successText(result), "success");
+      await refreshTasks();
+    });
+
+  return (
+    <Panel
+      id="task-builder"
+      title="Конструктор задачи сканирования"
+      description="Создание и повторное изменение задач через REST API. Учётные записи выбираются из справочника credentials."
+    >
+      <div className="form-grid form-grid--two">
+        <Field label="Название задачи">
+          <input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="Windows audit 10.104.103.0/24" />
+        </Field>
+        <Field label="Time zone">
+          <input value={form.time_zone} onChange={(event) => update("time_zone", event.target.value)} />
+        </Field>
+        <Field label="Описание" wide>
+          <input value={form.description} onChange={(event) => update("description", event.target.value)} />
+        </Field>
+        <Field label="Инфраструктура / scope">
+          <select value={form.scope_id} onChange={(event) => update("scope_id", event.target.value)}>
+            <option value="">Выберите scope</option>
+            {lookups.scopes.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
+          </select>
+        </Field>
+        <Field label="Профиль сканирования">
+          <select value={form.profile_id} onChange={(event) => update("profile_id", event.target.value)}>
+            <option value="">Выберите профиль</option>
+            {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
+          </select>
+        </Field>
+        <Field label="Учётная запись Windows">
+          <select value={form.credential_id} onChange={(event) => update("credential_id", event.target.value)}>
+            <option value="">Без credential override</option>
+            {lookups.credentials.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
+          </select>
+        </Field>
+        <Field label="HostDiscovery profile">
+          <select value={form.host_discovery_profile_id} onChange={(event) => update("host_discovery_profile_id", event.target.value)}>
+            <option value="">Без HostDiscovery profile</option>
+            {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
+          </select>
+        </Field>
+        <Field label="Коллекторы / agents" wide>
+          <textarea rows={3} value={form.agent_ids} onChange={(event) => update("agent_ids", event.target.value)} placeholder="UUID коллекторов через запятую или с новой строки" />
+        </Field>
+        <Field label="Include targets">
+          <textarea rows={4} value={form.include_targets} onChange={(event) => update("include_targets", event.target.value)} placeholder="10.104.103.0/24" />
+        </Field>
+        <Field label="Exclude targets">
+          <textarea rows={4} value={form.exclude_targets} onChange={(event) => update("exclude_targets", event.target.value)} placeholder="Опционально" />
+        </Field>
+        <Toggle label="Включить hostDiscovery" checked={form.host_discovery_enabled} onChange={(value) => update("host_discovery_enabled", value)} />
+        <Toggle label="FQDN priority" checked={form.is_fqdn_priority} onChange={(value) => update("is_fqdn_priority", value)} />
+      </div>
+      <div className="options-card">
+        <div>
+          <h3>Precheck и таймер выполнения</h3>
+          <p>Precheck запускает connection check, оставляет для основной задачи только успешные targets и затем стартует сканирование.</p>
+        </div>
+        <div className="form-grid form-grid--two">
+          <Toggle label="Выполнить precheck перед запуском" checked={form.precheck_enabled} onChange={(value) => update("precheck_enabled", value)} />
+          <Toggle label="Ждать завершения задачи и остановить по таймеру" checked={form.wait_for_finish} onChange={(value) => update("wait_for_finish", value)} />
+          <Field label="Precheck profile">
+            <select value={form.precheck_profile_id} onChange={(event) => update("precheck_profile_id", event.target.value)}>
+              <option value="">Использовать профиль основной задачи</option>
+              {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
+            </select>
+          </Field>
+          <Field label="Таймаут задачи, минут">
+            <input type="number" min="1" value={form.task_timeout_minutes} onChange={(event) => update("task_timeout_minutes", event.target.value)} />
+          </Field>
+          <Field label="Precheck timeout, минут">
+            <input type="number" min="1" value={form.precheck_timeout_minutes} onChange={(event) => update("precheck_timeout_minutes", event.target.value)} />
+          </Field>
+          <Field label="Остановить precheck через, минут">
+            <input type="number" min="0" value={form.precheck_max_runtime_minutes} onChange={(event) => update("precheck_max_runtime_minutes", event.target.value)} />
+          </Field>
+          <Field label="Poll precheck, секунд">
+            <input type="number" min="1" value={form.precheck_poll_seconds} onChange={(event) => update("precheck_poll_seconds", event.target.value)} />
+          </Field>
+          <Field label="Poll задачи, секунд">
+            <input type="number" min="1" value={form.task_poll_seconds} onChange={(event) => update("task_poll_seconds", event.target.value)} />
+          </Field>
+          <Toggle label="Считать warning/job_errors ошибкой запуска" checked={form.require_clean_jobs} onChange={(value) => update("require_clean_jobs", value)} />
+        </div>
+      </div>
+      <div className="action-row">
+        <Button busy={busy.createTask} onClick={createTask}>Создать</Button>
+        <Button variant="secondary" busy={busy.updateTask} onClick={updateTask}>Изменить выбранную</Button>
+        <Button variant="ghost" busy={busy.validateTask} onClick={() => actionTask("validate", "validateTask", (result) => (result.valid ? "Validation пройдена." : `Validation failed: ${result.error}`))}>Проверить</Button>
+        <Button variant="success" busy={busy.startTask} onClick={() => actionTask("start", "startTask", startSuccessText, startPayload())}>Запустить</Button>
+        <Button variant="ghost" busy={busy.stopTask} onClick={() => actionTask("stop", "stopTask", () => `Остановка запрошена для ${selectedTaskId}`)}>Остановить</Button>
+      </div>
+    </Panel>
+  );
+}
+
+function startSuccessText(result) {
+  const precheck = result.precheck?.successful_target_count;
+  const precheckText = typeof precheck === "number" ? ` Precheck targets: ${precheck}.` : "";
+  if (result.status === "finished") return `Задача завершена успешно.${precheckText}`;
+  if (result.status === "timeout_stop_requested") return `Таймер истёк, отправлена остановка задачи.${precheckText}`;
+  if (result.status === "precheck_failed") return `Precheck не нашёл успешных targets.`;
+  if (result.status === "validation_failed") return `Validation failed: ${result.error || "unknown error"}`;
+  return `Старт запрошен для ${result.id}.${precheckText}`;
+}
+
+function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refreshTasks, busy, showAlert }) {
+  const [mode, setMode] = useState("delete_v3");
+  const [deletingId, setDeletingId] = useState(null);
+  const profilesById = useMemo(() => mapById(lookups.scanner_profiles), [lookups.scanner_profiles]);
+  const credentialsById = useMemo(() => mapById(lookups.credentials), [lookups.credentials]);
+
+  const deleteTask = async (taskId) => {
+    if (!taskId) return;
+    if (!window.confirm(`Удалить задачу ${taskId} в MP VM и убрать её из локального списка?`)) return;
+    setDeletingId(taskId);
+    try {
+      await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/delete`, { method: "POST", body: JSON.stringify({ mode }) });
+      if (selectedTaskId === taskId) setSelectedTaskId(null);
+      await refreshTasks();
+      showAlert(`Задача удалена: ${taskId}`, "success");
+    } catch (error) {
+      showAlert(error.message || String(error), "error");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <Panel
+      id="tasks"
+      eyebrow="02"
+      title="Все задачи"
+      description="Таблица локально сохранённых задач MP VM. Строка удаляется из списка только после успешного удаления задачи в MP VM."
+      action={<TaskToolbar mode={mode} setMode={setMode} refreshTasks={refreshTasks} busy={busy.refreshTasks} />}
+      className="task-list-panel"
+    >
+      <div className="mpvm-table-shell">
+        <table className="mpvm-task-table">
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Цели</th>
+              <th>Профиль</th>
+              <th>Создана</th>
+              <th>Коллектор</th>
+              <th>Учётные записи</th>
+              <th>Последний запуск</th>
+              <th>Следующий запуск</th>
+              <th>Статус</th>
+              <th>Собираемые данные</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.length ? tasks.map((task) => {
+              const taskId = task.mp_task_id;
+              const isSelected = taskId === selectedTaskId;
+              const profile = labelFromMap(profilesById, task.profile_id);
+              const credential = labelFromMap(credentialsById, task.credential_id);
+              return (
+                <tr className={isSelected ? "is-selected" : ""} key={taskId} onClick={() => setSelectedTaskId(taskId)}>
+                  <td className="task-name-cell" title={taskId}>
+                    <strong>{task.name || taskId}</strong>
+                    <span>{taskId}</span>
+                  </td>
+                  <td>{formatList(task.include_targets)}</td>
+                  <td>{profile || task.profile_id || "—"}</td>
+                  <td>{formatDateTime(task.created_at)}</td>
+                  <td>{formatList(task.agent_ids)}</td>
+                  <td>{credential || task.credential_id || "—"}</td>
+                  <td>{lastRunText(task)}</td>
+                  <td>—</td>
+                  <td><TaskStatus status={task.status} /></td>
+                  <td>Активы</td>
+                </tr>
+              );
+            }) : (
+              <tr><td colSpan={10} className="empty-cell">Локально сохранённых задач пока нет.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="task-table-footer">
+        <span>Выбранная задача: <strong>{selectedTaskId || "нет"}</strong></span>
+        <Button variant="danger" busy={Boolean(deletingId && deletingId === selectedTaskId)} disabled={!selectedTaskId} onClick={() => deleteTask(selectedTaskId)}>
+          Удалить выбранную
+        </Button>
+      </div>
+    </Panel>
+  );
+}
+
+function TaskToolbar({ mode, setMode, refreshTasks, busy }) {
+  return (
+    <div className="task-toolbar">
+      <select value={mode} onChange={(event) => setMode(event.target.value)} title="Метод удаления в MP VM">
+        <option value="delete_v3">DELETE v3</option>
+        <option value="put_v4">PUT v4</option>
+      </select>
+      <Button variant="icon" onClick={refreshTasks} busy={busy} title="Обновить">↻</Button>
+    </div>
+  );
+}
+
+function TaskStatus({ status }) {
+  const normalized = String(status || "").toLowerCase();
+  let kind = "neutral";
+  let icon = "•";
+  if (["started", "precheck_started"].some((item) => normalized.includes(item))) {
+    kind = "running";
+    icon = "◔";
+  } else if (["finished", "valid", "created", "updated"].some((item) => normalized.includes(item))) {
+    kind = "success";
+    icon = "✓";
+  } else if (["failed", "timeout", "stop", "deleted"].some((item) => normalized.includes(item))) {
+    kind = "danger";
+    icon = "⚠";
+  }
+  return <span className={`task-status task-status--${kind}`}><span>{icon}</span>{status || "unknown"}</span>;
+}
+
+function mapById(items) {
+  return new Map((items || []).filter((item) => item.id).map((item) => [item.id, item.name || item.id]));
+}
+
+function labelFromMap(map, id) {
+  return id ? map.get(id) : "";
+}
+
+function formatList(items) {
+  if (!items || !items.length) return "—";
+  const values = Array.isArray(items) ? items : [items];
+  const text = values.filter(Boolean).join(", ");
+  return text || "—";
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function lastRunText(task) {
+  const status = String(task.status || "");
+  if (["created", "updated", "valid"].includes(status)) return "—";
+  return formatDateTime(task.updated_at);
+}
+
+function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
+  const [form, setForm] = useState({
+    pdql: "",
+    utc_offset: "+05:00",
+    group_ids: "",
+    asset_ids: "",
+    include_nested_groups: true,
+    import_results: true,
+    delete_assets_after_export: true,
+  });
+  const [result, setResult] = useState("");
+
+  useEffect(() => {
+    if (!defaults) return;
+    setForm((value) => ({
+      ...value,
+      pdql: value.pdql || defaults.software_vuln_pdql || "",
+      utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
+    }));
+  }, [defaults]);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const runExport = () =>
+    runBusy("export", async () => {
+      const payload = {
+        pdql: form.pdql,
+        utc_offset: form.utc_offset || null,
+        group_ids: splitTokens(form.group_ids),
+        asset_ids: splitTokens(form.asset_ids),
+        include_nested_groups: form.include_nested_groups,
+        import_results: form.import_results,
+        delete_assets_after_export: form.delete_assets_after_export,
+      };
+      const response = await api("/api/exports/pdql", { method: "POST", body: JSON.stringify(payload) });
+      setResult(JSON.stringify(response, null, 2));
+      showAlert("PDQL экспорт завершён.", "success");
+      await refreshAssets();
+    });
+
+  const importSample = () =>
+    runBusy("sample", async () => {
+      const response = await api("/api/import/sample", { method: "POST" });
+      setResult(JSON.stringify(response, null, 2));
+      showAlert("Пример CSV импортирован в PostgreSQL.", "success");
+      await refreshAssets();
+    });
+
+  const importCsvFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const body = new FormData();
+    body.append("file", file);
+    const response = await api("/api/import/csv-file", { method: "POST", body });
+    setResult(JSON.stringify(response, null, 2));
+    showAlert(`CSV импортирован: ${file.name}`, "success");
+    await refreshAssets();
+    event.target.value = "";
+  };
+
+  return (
+    <Panel
+      id="export"
+      eyebrow="03"
+      title="PDQL экспорт и сохранение в PostgreSQL"
+      description="Запрос создаёт PDQL token, скачивает CSV, импортирует строки в PostgreSQL и при необходимости удаляет активы из MP VM."
+      action={<Button variant="secondary" busy={busy.sample} onClick={importSample}>Импортировать пример CSV</Button>}
+    >
+      <Field label="PDQL запрос">
+        <textarea className="code-input" rows={8} value={form.pdql} onChange={(event) => update("pdql", event.target.value)} />
+      </Field>
+      <div className="form-grid form-grid--four form-grid--spaced">
+        <Field label="UTC offset">
+          <input value={form.utc_offset} onChange={(event) => update("utc_offset", event.target.value)} />
+        </Field>
+        <Field label="Group IDs">
+          <input value={form.group_ids} onChange={(event) => update("group_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Field label="Asset IDs">
+          <input value={form.asset_ids} onChange={(event) => update("asset_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Toggle label="Include nested groups" checked={form.include_nested_groups} onChange={(value) => update("include_nested_groups", value)} />
+        <Toggle label="Сохранить в БД" checked={form.import_results} onChange={(value) => update("import_results", value)} />
+        <Toggle label="Удалить активы в MP VM после импорта" checked={form.delete_assets_after_export} onChange={(value) => update("delete_assets_after_export", value)} />
+      </div>
+      <div className="action-row">
+        <Button busy={busy.export} onClick={runExport}>Выполнить экспорт</Button>
+        <label className="upload-button">
+          Импорт CSV файла
+          <input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
+        </label>
+      </div>
+      {result ? <pre className="result-box">{result}</pre> : null}
+    </Panel>
+  );
+}
+
+function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
+  const [form, setForm] = useState({
+    pdql: "",
+    utc_offset: "+05:00",
+    group_ids: "",
+    asset_ids: "",
+    asset_limit: "1001",
+    batch_size: "5000",
+    include_nested_groups: true,
+    selected_asset_id: "",
+    timeline_timestamp: "",
+    limit_per_collection: "500",
+    max_items_per_collection: "500",
+    max_depth: "4",
+    save_to_db: true,
+  });
+  const [candidates, setCandidates] = useState([]);
+  const [cards, setCards] = useState([]);
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [candidateSearch, setCandidateSearch] = useState("");
+  const [cardSearch, setCardSearch] = useState("");
+  const [queryRaw, setQueryRaw] = useState(null);
+  const [assetWindowOpen, setAssetWindowOpen] = useState(false);
+
+  useEffect(() => {
+    if (!defaults) return;
+    setForm((value) => ({
+      ...value,
+      pdql: value.pdql || defaults.asset_card_pdql || "",
+      utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
+    }));
+  }, [defaults]);
+
+  useEffect(() => {
+    if (!assetWindowOpen) return;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setAssetWindowOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [assetWindowOpen]);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const filteredCandidates = useMemo(
+    () => filterAssetCandidates(candidates, candidateSearch),
+    [candidates, candidateSearch],
+  );
+
+  const queryAssets = () =>
+    runBusy("assetCandidateQuery", async () => {
+      const requestedLimit = clampNumber(form.asset_limit, 1001, 1, 50000);
+      const requestedBatchSize = clampNumber(form.batch_size, 5000, 1, 10000);
+      const result = await api("/api/asset-cards/query-assets", {
+        method: "POST",
+        body: JSON.stringify({
+          pdql: form.pdql,
+          utc_offset: form.utc_offset || null,
+          group_ids: splitTokens(form.group_ids),
+          asset_ids: splitTokens(form.asset_ids),
+          include_nested_groups: form.include_nested_groups,
+          limit: requestedLimit,
+          batch_size: requestedBatchSize,
+        }),
+      });
+      const records = result.records || [];
+      setCandidates(records);
+      setQueryRaw(result.raw || null);
+      if (!form.selected_asset_id && records[0]?.asset_id) {
+        update("selected_asset_id", records[0].asset_id);
+      }
+      showAlert(`Получено активов: ${formatCount(records.length)}.`, records.length ? "success" : "info");
+    });
+
+  const buildCard = () =>
+    runBusy("assetCardBuild", async () => {
+      const assetId = form.selected_asset_id.trim();
+      if (!assetId) throw new Error("Введите asset_id или выберите актив из списка.");
+      const result = await api("/api/asset-cards/build", {
+        method: "POST",
+        body: JSON.stringify({
+          asset_id: assetId,
+          timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
+          limit_per_collection: clampNumber(form.limit_per_collection, 500, 1, 1000),
+          max_items_per_collection: clampNumber(form.max_items_per_collection, 500, 1, 50000),
+          max_depth: clampNumber(form.max_depth, 4, 0, 8),
+          save_to_db: form.save_to_db,
+        }),
+      });
+      const nextCard = result.card;
+      setSelectedCard(nextCard);
+      setAssetWindowOpen(true);
+      if (result.saved) {
+        setCards((items) => [nextCard, ...items.filter((item) => item.asset_id !== nextCard.asset_id)]);
+      }
+      const stats = assetCardStats(nextCard);
+      showAlert(
+        `Карточка собрана: ${formatCount(stats.table_rows)} строк data, ${formatCount(stats.collections)} коллекций.`,
+        "success",
+      );
+    });
+
+  const loadLocalCards = () =>
+    runBusy("assetCardsLocal", async () => {
+      const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
+      if (cardSearch.trim()) params.set("q", cardSearch.trim());
+      const result = await api(`/api/asset-cards/local?${params.toString()}`);
+      setCards(result.rows || []);
+      showAlert(`Загружено карточек из БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`, "success");
+    });
+
+  const openLocalCard = (row) =>
+    runBusy("assetCardOpen", async () => {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`);
+      setSelectedCard(result);
+      setAssetWindowOpen(true);
+    });
+
+  return (
+    <Panel
+      id="asset-cards"
+      eyebrow="04"
+      title="Карточки активов"
+      description="Сборка карточки создаёт timeline token по asset_id, забирает root, metadata, вложенные узлы и коллекции asset tree, затем сохраняет полный снимок в PostgreSQL."
+      action={<Button variant="secondary" busy={busy.assetCardsLocal} onClick={loadLocalCards}>Из БД</Button>}
+    >
+      <Field label="PDQL для получения asset_id">
+        <textarea className="code-input" rows={4} value={form.pdql} onChange={(event) => update("pdql", event.target.value)} />
+      </Field>
+      <div className="form-grid form-grid--four form-grid--spaced">
+        <Field label="UTC offset">
+          <input value={form.utc_offset} onChange={(event) => update("utc_offset", event.target.value)} />
+        </Field>
+        <Field label="Group IDs">
+          <input value={form.group_ids} onChange={(event) => update("group_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Field label="Asset filter IDs">
+          <input value={form.asset_ids} onChange={(event) => update("asset_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Field label="Сколько загрузить">
+          <input value={form.asset_limit} onChange={(event) => update("asset_limit", event.target.value)} type="number" min="1" max="50000" />
+        </Field>
+        <Field label="Размер пачки">
+          <input value={form.batch_size} onChange={(event) => update("batch_size", event.target.value)} type="number" min="1" max="10000" />
+        </Field>
+        <Toggle label="Include nested groups" checked={form.include_nested_groups} onChange={(value) => update("include_nested_groups", value)} />
+      </div>
+      <div className="action-row">
+        <Button busy={busy.assetCandidateQuery} onClick={queryAssets}>Получить asset_id</Button>
+        <div className="inline-metric">Найдено: <span>{formatCount(filteredCandidates.length)}</span></div>
+      </div>
+
+      <div className="asset-card-builder">
+        <div className="form-grid form-grid--two">
+          <Field label="Выбранный asset_id">
+            <input value={form.selected_asset_id} onChange={(event) => update("selected_asset_id", event.target.value)} placeholder="1e41d857-9d80-0001-0000-000000000009" />
+          </Field>
+          <Field label="Timeline datetime, Unix timestamp">
+            <input value={form.timeline_timestamp} onChange={(event) => update("timeline_timestamp", event.target.value)} type="number" placeholder="пусто = сейчас" />
+          </Field>
+          <Field label="Лимит запроса коллекции">
+            <input value={form.limit_per_collection} onChange={(event) => update("limit_per_collection", event.target.value)} type="number" min="1" max="1000" />
+          </Field>
+          <Field label="Максимум элементов коллекции">
+            <input value={form.max_items_per_collection} onChange={(event) => update("max_items_per_collection", event.target.value)} type="number" min="1" max="50000" />
+          </Field>
+          <Field label="Глубина обхода">
+            <input value={form.max_depth} onChange={(event) => update("max_depth", event.target.value)} type="number" min="0" max="8" />
+          </Field>
+          <Toggle label="Сохранить карточку в БД" checked={form.save_to_db} onChange={(value) => update("save_to_db", value)} />
+        </div>
+        <div className="action-row">
+          <Button busy={busy.assetCardBuild} onClick={buildCard}>Собрать карточку</Button>
+        </div>
+      </div>
+
+      {candidates.length ? (
+        <>
+          <div className="passport-controls">
+            <input value={candidateSearch} onChange={(event) => setCandidateSearch(event.target.value)} placeholder="Поиск по asset_id, имени, ОС" />
+            <select value={form.selected_asset_id} onChange={(event) => update("selected_asset_id", event.target.value)}>
+              <option value="">Выберите актив</option>
+              {filteredCandidates.slice(0, 1000).map((row, index) => (
+                <option value={row.asset_id || ""} key={row.asset_id || `${row.display_name}-${index}`}>
+                  {[row.display_name, row.os_name, row.asset_id].filter(Boolean).join(" · ")}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="table-shell asset-candidates-shell">
+            <table className="asset-candidates-table">
+              <thead>
+                <tr>
+                  <th>Актив</th>
+                  <th>ОС</th>
+                  <th>Создан</th>
+                  <th>Обновлён</th>
+                  <th>asset_id</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCandidates.slice(0, 300).map((row, index) => (
+                  <tr key={row.asset_id || `${row.display_name}-${index}`}>
+                    <td>{row.display_name || "—"}</td>
+                    <td>{row.os_name || "—"}</td>
+                    <td>{formatDateTime(row.creation_time)}</td>
+                    <td>{formatDateTime(row.update_time)}</td>
+                    <td><code>{row.asset_id || "n/a"}</code></td>
+                    <td><Button variant="tiny" disabled={!row.asset_id} onClick={() => update("selected_asset_id", row.asset_id || "")}>Выбрать</Button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : queryRaw ? (
+        <details className="raw-details">
+          <summary>Raw-ответ PDQL запроса активов</summary>
+          <pre>{JSON.stringify(queryRaw, null, 2)}</pre>
+        </details>
+      ) : null}
+
+      <div className="asset-local-header">
+        <input value={cardSearch} onChange={(event) => setCardSearch(event.target.value)} onKeyDown={(event) => event.key === "Enter" && loadLocalCards()} placeholder="Поиск сохранённых карточек по IP, FQDN, hostname, ОС, asset_id" />
+        <Button variant="secondary" busy={busy.assetCardsLocal} onClick={loadLocalCards}>Показать сохранённые</Button>
+      </div>
+      <div className="table-shell">
+        <table className="asset-card-list-table">
+          <thead>
+            <tr>
+              <th>Актив</th>
+              <th>IP / FQDN</th>
+              <th>ОС</th>
+              <th>Type</th>
+              <th>Data</th>
+              <th>Обновлено</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {cards.length ? cards.map((row) => {
+              const stats = assetCardStats(row);
+              return (
+                <tr key={row.asset_id}>
+                  <td className="wide-cell">
+                    <strong>{row.display_name || row.hostname || row.asset_id}</strong>
+                    <span><code>{row.asset_id}</code></span>
+                  </td>
+                  <td>{[row.ip_address, row.fqdn].filter(Boolean).join(" / ") || "—"}</td>
+                  <td>{[row.os_name, row.os_version].filter(Boolean).join(" ") || "—"}</td>
+                  <td>{row.asset_type || "—"}</td>
+                  <td>{formatCount(stats.table_rows)} строк · {formatCount(stats.collections)} коллекций</td>
+                  <td>{formatDateTime(row.last_seen)}</td>
+                  <td><Button variant="tiny" busy={busy.assetCardOpen && selectedCard?.asset_id === row.asset_id} onClick={() => openLocalCard(row)}>Открыть</Button></td>
+                </tr>
+              );
+            }) : (
+              <tr><td colSpan={7} className="empty-cell">Соберите карточку или загрузите сохранённые из БД.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {assetWindowOpen ? (
+        <PassportModal title="Карточка актива" className="asset-modal" onClose={() => setAssetWindowOpen(false)}>
+          <AssetCard card={selectedCard} loading={busy.assetCardBuild || busy.assetCardOpen} />
+        </PassportModal>
+      ) : null}
+    </Panel>
+  );
+}
+
+function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
+  const [form, setForm] = useState({
+    pdql: "",
+    utc_offset: "+05:00",
+    group_ids: "",
+    asset_ids: "",
+    passport_limit: "1001",
+    batch_size: "5000",
+    include_nested_groups: true,
+  });
+  const [rows, setRows] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [queryRaw, setQueryRaw] = useState(null);
+  const [passportSearch, setPassportSearch] = useState("");
+  const [passportPage, setPassportPage] = useState(1);
+  const [passportWindowOpen, setPassportWindowOpen] = useState(false);
+  const passportPageSize = 50;
+
+  useEffect(() => {
+    if (!defaults) return;
+    setForm((value) => ({
+      ...value,
+      pdql: value.pdql || defaults.vulnerability_passport_pdql || "",
+      utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
+    }));
+  }, [defaults]);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const filteredRows = useMemo(
+    () => filterPassportRows(rows, passportSearch),
+    [rows, passportSearch],
+  );
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / passportPageSize));
+  const safePage = Math.min(passportPage, totalPages);
+  const pageRows = filteredRows.slice((safePage - 1) * passportPageSize, safePage * passportPageSize);
+
+  useEffect(() => {
+    if (!passportWindowOpen) return;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setPassportWindowOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [passportWindowOpen]);
+
+  const queryPassports = () =>
+    runBusy("passportQuery", async () => {
+      const requestedLimit = clampNumber(form.passport_limit, 1001, 1, 50000);
+      const requestedBatchSize = clampNumber(form.batch_size, 5000, 1, 10000);
+      const result = await api("/api/vulnerability-passports/query", {
+        method: "POST",
+        body: JSON.stringify({
+          pdql: form.pdql,
+          utc_offset: form.utc_offset || null,
+          group_ids: splitTokens(form.group_ids),
+          asset_ids: splitTokens(form.asset_ids),
+          include_nested_groups: form.include_nested_groups,
+          limit: requestedLimit,
+          batch_size: requestedBatchSize,
+          save_to_db: true,
+        }),
+      });
+      const records = result.records || [];
+      setRows(records);
+      setSelected(null);
+      setDetail(null);
+      setPassportPage(1);
+      setPassportWindowOpen(false);
+      setQueryRaw(result.raw || null);
+      if (records.length) {
+        const saved = result.db?.saved;
+        showAlert(`Получено паспортов: ${formatCount(records.length)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}.`, "success");
+      } else {
+        showAlert("Паспорта не найдены в ответе /assets_grid/data. Raw-ответ показан под таблицей.", "info");
+      }
+    });
+
+  const loadLocalPassports = () =>
+    runBusy("passportLocal", async () => {
+      const localLimit = clampNumber(form.passport_limit, 1000, 1, 50000);
+      const result = await api(`/api/vulnerability-passports/local?limit=${encodeURIComponent(localLimit)}`);
+      const records = result.rows || [];
+      setRows(records);
+      setSelected(null);
+      setDetail(null);
+      setPassportPage(1);
+      setPassportWindowOpen(false);
+      setQueryRaw(null);
+      showAlert(`Загружено из локальной БД: ${formatCount(records.length)} из ${formatCount(result.total)}.`, "success");
+    });
+
+  const openPassport = (row) =>
+    runBusy("passportDetail", async () => {
+      if (!row.internal_id) throw new Error("У записи нет @VulnerPassport.internalId.");
+      setSelected(row);
+      setPassportWindowOpen(true);
+      if (row.raw_detail) {
+        setDetail(row.raw_detail);
+        return;
+      }
+      setDetail(null);
+      const result = await api(`/api/vulnerability-passports/${encodeURIComponent(row.internal_id)}`);
+      setDetail(result.raw || {});
+    });
+
+  return (
+    <Panel
+      id="passports"
+      eyebrow="05"
+      title="Паспорта уязвимостей"
+      description="PDQL получает список паспортов, затем карточка открывается прямым REST API запросом по internalId."
+      action={<Button variant="secondary" busy={busy.passportQuery} onClick={queryPassports}>Получить паспорта</Button>}
+    >
+      <Field label="PDQL запрос">
+        <textarea className="code-input" rows={6} value={form.pdql} onChange={(event) => update("pdql", event.target.value)} />
+      </Field>
+      <div className="form-grid form-grid--four form-grid--spaced">
+        <Field label="UTC offset">
+          <input value={form.utc_offset} onChange={(event) => update("utc_offset", event.target.value)} />
+        </Field>
+        <Field label="Group IDs">
+          <input value={form.group_ids} onChange={(event) => update("group_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Field label="Asset IDs">
+          <input value={form.asset_ids} onChange={(event) => update("asset_ids", event.target.value)} placeholder="uuid, uuid" />
+        </Field>
+        <Field label="Сколько загрузить">
+          <input value={form.passport_limit} onChange={(event) => update("passport_limit", event.target.value)} type="number" min="1" max="50000" />
+        </Field>
+        <Field label="Размер пачки">
+          <input value={form.batch_size} onChange={(event) => update("batch_size", event.target.value)} type="number" min="1" max="10000" />
+        </Field>
+        <Toggle label="Include nested groups" checked={form.include_nested_groups} onChange={(value) => update("include_nested_groups", value)} />
+      </div>
+      <div className="action-row">
+        <Button busy={busy.passportQuery} onClick={queryPassports}>Выполнить PDQL</Button>
+        <Button variant="secondary" busy={busy.passportLocal} onClick={loadLocalPassports}>Из БД</Button>
+        <div className="inline-metric">Загружено: <span>{formatCount(rows.length)}</span> · найдено: <span>{formatCount(filteredRows.length)}</span></div>
+      </div>
+      <div className="passport-controls">
+        <input
+          value={passportSearch}
+          onChange={(event) => {
+            setPassportSearch(event.target.value);
+            setPassportPage(1);
+          }}
+          placeholder="Поиск по CVE, названию, internalId, package"
+        />
+        <select
+          value={safePage}
+          onChange={(event) => setPassportPage(Number(event.target.value))}
+          disabled={totalPages <= 1}
+        >
+          {Array.from({ length: totalPages }, (_, index) => (
+            <option value={index + 1} key={index + 1}>Страница {index + 1} / {totalPages}</option>
+          ))}
+        </select>
+      </div>
+      <div className="table-shell passport-table-shell">
+        <table className="passport-table">
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>Название</th>
+              <th>CVE</th>
+              <th>Severity</th>
+              <th>Package</th>
+              <th>internalId</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredRows.length ? pageRows.map((row, rowIndex) => (
+              <tr key={row.internal_id || row.external_id || `${row.name}-${rowIndex}`} className={selected?.internal_id === row.internal_id ? "is-selected" : ""}>
+                <td><span className="score-badge">{row.score || "n/a"}</span></td>
+                <td className="wide-cell">
+                  <strong>{row.name || row.external_id || "Без названия"}</strong>
+                  <span>{row.external_id}</span>
+                </td>
+                <td>{(row.cves || []).map((item) => item.display_name).filter(Boolean).join(", ") || "n/a"}</td>
+                <td><Severity value={row.severity} /></td>
+                <td>{[row.package_id, row.package_version].filter(Boolean).join(" / ") || "n/a"}</td>
+                <td><code>{row.internal_id || "n/a"}</code></td>
+                <td><Button variant="tiny" busy={busy.passportDetail && selected?.internal_id === row.internal_id} onClick={() => openPassport(row)}>Открыть</Button></td>
+              </tr>
+            )) : (
+              <tr><td colSpan={7} className="empty-cell">{rows.length ? "По текущему поиску ничего не найдено." : "Выполните PDQL, чтобы получить internalId паспортов."}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {rows.length ? (
+        <div className="passport-pagination">
+          <span>
+            Показано {formatCount(pageRows.length)} из {formatCount(filteredRows.length)}
+            {rows.length !== filteredRows.length ? ` · всего загружено ${formatCount(rows.length)}` : ""}
+          </span>
+          <div>
+            <Button variant="tiny" disabled={safePage <= 1} onClick={() => setPassportPage((value) => Math.max(1, value - 1))}>Назад</Button>
+            <Button variant="tiny" disabled={safePage >= totalPages} onClick={() => setPassportPage((value) => Math.min(totalPages, value + 1))}>Вперёд</Button>
+          </div>
+        </div>
+      ) : null}
+      {queryRaw && !rows.length ? (
+        <details className="raw-details">
+          <summary>Raw-ответ PDQL запроса</summary>
+          <pre>{JSON.stringify(queryRaw, null, 2)}</pre>
+        </details>
+      ) : null}
+      {passportWindowOpen ? (
+        <PassportModal onClose={() => setPassportWindowOpen(false)}>
+          <PassportCard row={selected} detail={detail} loading={busy.passportDetail && !detail} />
+        </PassportModal>
+      ) : null}
+    </Panel>
+  );
+}
+
+function AssetCard({ card, loading }) {
+  const raw = assetCardRaw(card);
+  const root = card?.root || raw.root || {};
+  const data = root.data || {};
+  const rows = assetCardRows(card);
+  const collections = assetCardCollections(card);
+  const nodes = assetCardNodes(card);
+  const stats = assetCardStats(card);
+  const treeEntries = useMemo(() => buildAssetConfigTree(card), [card]);
+  const [activeTab, setActiveTab] = useState("vulnerabilities");
+  const [expandedPaths, setExpandedPaths] = useState(["asset"]);
+  const [selectedPath, setSelectedPath] = useState("asset");
+  const [passportState, setPassportState] = useState({
+    open: false,
+    row: null,
+    detail: null,
+    loading: false,
+    error: "",
+  });
+  const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
+  const visibleTreeEntries = useMemo(
+    () => treeEntries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, treeEntries)),
+    [treeEntries, expandedSet],
+  );
+  const selectedEntry = useMemo(
+    () => treeEntries.find((entry) => entry.path === selectedPath) || treeEntries[0] || null,
+    [treeEntries, selectedPath],
+  );
+  const title = firstFilled(card?.display_name, raw.display_name, root.displayName, data.hostname, card?.asset_id, raw.asset_id);
+  const assetId = firstFilled(card?.asset_id, raw.asset_id, root.objectId);
+  const assetType = firstFilled(card?.asset_type, raw.asset_type, root.type);
+  const ipAddress = firstFilled(card?.ip_address, data.ipAddress);
+  const fqdn = firstFilled(card?.fqdn, data.fqdn);
+  const osLine = [firstFilled(card?.os_name, data.osName), firstFilled(card?.os_version, data.osVersion)].filter(Boolean).join(" ");
+
+  useEffect(() => {
+    if (!card || !treeEntries.length) return;
+    setExpandedPaths(defaultAssetTreeExpandedPaths(treeEntries));
+    setSelectedPath(treeEntries[0].path);
+    setActiveTab("vulnerabilities");
+    setPassportState({ open: false, row: null, detail: null, loading: false, error: "" });
+  }, [card, treeEntries]);
+
+  const toggleTreeEntry = useCallback((path) => {
+    setExpandedPaths((current) => (
+      current.includes(path)
+        ? current.filter((item) => item !== path)
+        : [...current, path]
+    ));
+  }, []);
+
+  const openAssetVulnerabilityPassport = useCallback(async (vulnerability) => {
+    const row = assetVulnerabilityToPassportRow(vulnerability);
+    const internalId = row?.internal_id;
+    setPassportState({
+      open: true,
+      row,
+      detail: null,
+      loading: Boolean(internalId),
+      error: internalId ? "" : "Для этой уязвимости не найден internalId паспорта. Показываю данные из карточки актива.",
+    });
+    if (!internalId) return;
+    try {
+      const detail = await api(`/api/vulnerability-passports/${encodeURIComponent(internalId)}`);
+      setPassportState((current) => (
+        current.row?.internal_id === internalId
+          ? { ...current, detail, loading: false, error: "" }
+          : current
+      ));
+    } catch (error) {
+      setPassportState((current) => (
+        current.row?.internal_id === internalId
+          ? { ...current, loading: false, error: error.message || "Не удалось открыть паспорт уязвимости." }
+          : current
+      ));
+    }
+  }, []);
+
+  if (!card) {
+    return <div className="passport-placeholder">Соберите карточку или откройте сохранённую запись из БД.</div>;
+  }
+
+  return (
+    <div className="asset-console">
+      <div className="asset-console__summary">
+        <div>
+          <strong>{title || "Карточка актива"}</strong>
+          <span>{[ipAddress, fqdn, osLine].filter(Boolean).join(" · ") || assetId}</span>
+        </div>
+        <div className="asset-console__chips">
+          <span>Уровень: {firstFilled(card?.vulnerability_level, raw.vulnerability_level, root.vulnerabilityLevel, "n/a")}</span>
+          <span>{formatCount(stats.collections || collections.length)} коллекций</span>
+          <span>{formatCount(rows.length)} строк data</span>
+        </div>
+      </div>
+      <div className="asset-tabs" role="tablist" aria-label="Разделы карточки актива">
+        {[
+          ["summary", "Сводка"],
+          ["vulnerabilities", "Уязвимости"],
+          ["configuration", "Конфигурация"],
+        ].map(([id, label]) => (
+          <button
+            type="button"
+            className={activeTab === id ? "is-active" : ""}
+            onClick={() => setActiveTab(id)}
+            key={id}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {activeTab === "summary" ? (
+        <AssetSummaryTab
+          assetId={assetId}
+          assetType={assetType}
+          fqdn={fqdn}
+          ipAddress={ipAddress}
+          osLine={osLine}
+          root={root}
+          stats={stats}
+          loading={loading}
+        />
+      ) : null}
+      {activeTab === "vulnerabilities" ? (
+        <AssetVulnerabilitiesTab card={card} onOpenPassport={openAssetVulnerabilityPassport} />
+      ) : null}
+      {activeTab === "configuration" ? (
+        <div className="asset-config-layout">
+          <AssetTree
+            entries={visibleTreeEntries}
+            selectedPath={selectedEntry?.path}
+            expandedSet={expandedSet}
+            onToggle={toggleTreeEntry}
+            onSelect={setSelectedPath}
+          />
+          <AssetConfigTable card={card} entry={selectedEntry} />
+        </div>
+      ) : null}
+      {passportState.open ? (
+        <PassportModal onClose={() => setPassportState({ open: false, row: null, detail: null, loading: false, error: "" })}>
+          {passportState.error ? <div className="asset-passport-error">{passportState.error}</div> : null}
+          <PassportCard row={passportState.row} detail={passportState.detail} loading={passportState.loading && !passportState.detail} />
+        </PassportModal>
+      ) : null}
+    </div>
+  );
+}
+
+function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, stats, loading }) {
+  const warnings = stats.warnings || [];
+  return (
+    <div className="asset-summary-grid">
+      <div className="asset-summary-main">
+        <PassportSection title="Основная информация">
+          <KeyValue label="asset_id" value={assetId} />
+          <KeyValue label="Type" value={assetType} />
+          <KeyValue label="Hostname" value={firstFilled(root?.data?.hostname, root?.displayName)} />
+          <KeyValue label="FQDN" value={fqdn} />
+          <KeyValue label="IP" value={ipAddress} />
+          <KeyValue label="ОС" value={osLine} />
+        </PassportSection>
+        <PassportSection title="Сборка">
+          <KeyValue label="Состояние" value={loading ? "собирается" : "готово"} />
+          <KeyValue label="Metadata" value={formatCount(stats.metadata_requests)} />
+          <KeyValue label="Node requests" value={formatCount(stats.node_requests)} />
+          <KeyValue label="Collection requests" value={formatCount(stats.collection_requests)} />
+        </PassportSection>
+        <PassportSection title="Предупреждения">
+          {warnings.length ? warnings.slice(0, 16).map((warning) => <code key={warning}>{warning}</code>) : <span className="muted-text">Предупреждений нет.</span>}
+        </PassportSection>
+      </div>
+      <div className="asset-summary-side">
+        <div className="asset-summary-card">
+          <span>Коллекции</span>
+          <strong>{formatCount(stats.collections)}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>Узлы</span>
+          <strong>{formatCount(stats.nodes)}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>Строки data</span>
+          <strong>{formatCount(stats.table_rows)}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>Уровень уязвимости</span>
+          <strong>{firstFilled(root?.vulnerabilityLevel, "n/a")}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
+  const vulnerabilities = useMemo(() => collectAssetVulnerabilities(card), [card]);
+  const counts = useMemo(() => countAssetVulnerabilityScopes(vulnerabilities), [vulnerabilities]);
+  const [activeScope, setActiveScope] = useState("software");
+  const [expandedGroups, setExpandedGroups] = useState([]);
+  const expandedGroupSet = useMemo(() => new Set(expandedGroups), [expandedGroups]);
+  const cardFingerprint = [
+    card?.asset_id,
+    card?.requested_asset_id,
+    card?.timeline_token,
+    vulnerabilities.length,
+  ].filter(Boolean).join("|");
+
+  useEffect(() => {
+    setActiveScope(counts.software || !counts.network ? "software" : "network");
+    setExpandedGroups([]);
+  }, [cardFingerprint, counts.software, counts.network]);
+
+  const toggleGroup = useCallback((key) => {
+    setExpandedGroups((current) => (
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key]
+    ));
+  }, []);
+
+  const grouped = useMemo(
+    () => groupAssetVulnerabilities(vulnerabilities, activeScope),
+    [vulnerabilities, activeScope],
+  );
+  const topKey = `scope:${activeScope}`;
+  const topOpen = expandedGroupSet.has(topKey);
+
+  return (
+    <section className="asset-vulnerability-pane">
+      <div className="asset-vulnerability-toolbar">
+        <button
+          type="button"
+          className={activeScope === "software" ? "asset-vuln-scope is-active" : "asset-vuln-scope"}
+          onClick={() => setActiveScope("software")}
+        >
+          Уязвимости ОС и ПО <span>{formatCount(counts.software)}</span>
+        </button>
+        <button
+          type="button"
+          className={activeScope === "network" ? "asset-vuln-scope is-active" : "asset-vuln-scope"}
+          onClick={() => setActiveScope("network")}
+        >
+          Уязвимости сетевых служб <span>{formatCount(counts.network)}</span>
+        </button>
+      </div>
+      <div className="table-shell asset-vulnerability-table-shell">
+        <table className="asset-vulnerability-table">
+          <thead>
+            <tr>
+              <th>Уязвимость</th>
+              <th>Интегральная уязвимость</th>
+              <th>CVE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {grouped.total ? (
+              <>
+                <tr className="asset-vuln-group-row">
+                  <td>
+                    <button type="button" className="asset-vuln-toggle" onClick={() => toggleGroup(topKey)}>
+                      {topOpen ? "v" : ">"}
+                    </button>
+                    <strong>{grouped.title}</strong>
+                    <span>{formatCount(grouped.total)}</span>
+                  </td>
+                  <td />
+                  <td />
+                </tr>
+                {topOpen ? grouped.groups.map((group) => {
+                  const groupOpen = expandedGroupSet.has(group.key);
+                  return (
+                    <React.Fragment key={group.key}>
+                      <tr className="asset-vuln-group-row asset-vuln-group-row--nested">
+                        <td>
+                          <button type="button" className="asset-vuln-toggle" onClick={() => toggleGroup(group.key)}>
+                            {groupOpen ? "v" : ">"}
+                          </button>
+                          <strong>{group.title}</strong>
+                          <span>{formatCount(group.items.length)}</span>
+                        </td>
+                        <td />
+                        <td />
+                      </tr>
+                      {groupOpen ? group.items.map((vulnerability) => (
+                        <tr className="asset-vuln-item-row" key={assetVulnerabilityKey(vulnerability)}>
+                          <td>
+                            <span className="asset-vuln-marker" aria-hidden="true" />
+                            <button
+                              type="button"
+                              className="asset-vuln-link"
+                              onClick={() => onOpenPassport(vulnerability)}
+                            >
+                              {vulnerability.name || vulnerability.external_id || "Паспорт уязвимости"}
+                            </button>
+                            {vulnerability.source ? <small>{vulnerability.source}</small> : null}
+                          </td>
+                          <td>{formatAssetVulnerabilityScore(vulnerability.score)}</td>
+                          <td>
+                            {vulnerability.cves.length ? (
+                              <div className="asset-vuln-cves">
+                                {vulnerability.cves.slice(0, 4).map((cve) => (
+                                  <button
+                                    type="button"
+                                    className="asset-vuln-cve"
+                                    onClick={() => onOpenPassport(vulnerability)}
+                                    key={cve.display_name || cve.url}
+                                  >
+                                    {cve.display_name || cve.url}
+                                  </button>
+                                ))}
+                                {vulnerability.cves.length > 4 ? <span>+{formatCount(vulnerability.cves.length - 4)}</span> : null}
+                              </div>
+                            ) : "—"}
+                          </td>
+                        </tr>
+                      )) : null}
+                    </React.Fragment>
+                  );
+                }) : null}
+              </>
+            ) : (
+              <tr>
+                <td colSpan={3} className="empty-cell">
+                  В карточке актива не найдены уязвимости этого типа.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function AssetFilteredRows({ title, rows }) {
+  const visibleRows = rows.slice(0, 1000);
+  return (
+    <div className="asset-filtered-pane">
+      <div className="asset-detail-heading">
+        <div>
+          <strong>{title}</strong>
+          <span>Показано {formatCount(visibleRows.length)} из {formatCount(rows.length)}</span>
+        </div>
+      </div>
+      <AssetRowsTable rows={visibleRows} />
+    </div>
+  );
+}
+
+function AssetTree({ entries, selectedPath, expandedSet, onToggle, onSelect }) {
+  return (
+    <aside className="asset-tree-pane">
+      <div className="asset-tree-pane__title">Разделы</div>
+      <div className="asset-tree">
+        {entries.map((entry) => (
+          <div
+            className={selectedPath === entry.path ? "asset-tree-row is-selected" : "asset-tree-row"}
+            style={{ "--depth": entry.depth }}
+            key={entry.path}
+          >
+            <button
+              type="button"
+              className={entry.hasChildren ? "asset-tree-toggle" : "asset-tree-toggle is-empty"}
+              onClick={() => entry.hasChildren && onToggle(entry.path)}
+              aria-label={expandedSet.has(entry.path) ? "Свернуть" : "Раскрыть"}
+            >
+              {entry.hasChildren ? (expandedSet.has(entry.path) ? "v" : ">") : ""}
+            </button>
+            <button type="button" className="asset-tree-label" onClick={() => onSelect(entry.path)}>
+              <span>{entry.label}</span>
+              {entry.subtitle ? <small>{entry.subtitle}</small> : null}
+            </button>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function AssetConfigTable({ card, entry }) {
+  if (!entry) {
+    return (
+      <section className="asset-detail-pane">
+        <div className="empty-cell">Выберите раздел слева.</div>
+      </section>
+    );
+  }
+
+  const table = buildAssetDetailTable(card, entry);
+  return (
+    <section className="asset-detail-pane">
+      <div className="asset-detail-heading">
+        <div>
+          <strong>{entry.label}</strong>
+          <span>{entry.subtitle || entry.kind || entry.path}</span>
+        </div>
+        <code>{entry.path}</code>
+      </div>
+      <div className="table-shell asset-detail-table-shell">
+        <table className="asset-detail-table">
+          <thead>
+            <tr>
+              {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
+              <tr key={row.key || rowIndex}>
+                {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
+              </tr>
+            )) : (
+              <tr><td colSpan={table.columns.length} className="empty-cell">В выбранном разделе нет данных.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {table.rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(table.rows.length)} строк.</div> : null}
+    </section>
+  );
+}
+
+function AssetRowsTable({ rows }) {
+  return (
+    <div className="table-shell asset-detail-table-shell">
+      <table className="asset-detail-table">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Название</th>
+            <th>Type</th>
+            <th>Значение</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length ? rows.map((row, index) => (
+            <tr key={`${row.path}-${index}`}>
+              <td><code>{row.path}</code></td>
+              <td>{row.title || row.name}</td>
+              <td>{[row.kind, row.type].filter(Boolean).join(" / ") || "—"}</td>
+              <td>{row.value || "—"}</td>
+            </tr>
+          )) : (
+            <tr><td colSpan={4} className="empty-cell">Данных для этого раздела нет.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PassportModal({ children, onClose, title = "Паспорт уязвимости", className = "" }) {
+  return (
+    <div className="passport-modal" role="dialog" aria-modal="true">
+      <div className="passport-modal__backdrop" onClick={onClose} />
+      <div className={`passport-modal__window ${className}`}>
+        <div className="passport-modal__bar">
+          <strong>{title}</strong>
+          <Button variant="ghost" onClick={onClose}>Закрыть</Button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PassportCard({ row, detail, loading }) {
+  const raw = detail || row?.raw_record || {};
+  const title = firstFilled(
+    readPath(raw, "name"),
+    readPath(raw, "displayName"),
+    readPath(raw, "title"),
+    readPath(raw, "vulnerability.name"),
+    row?.name,
+  );
+  const score = firstFilled(readPath(raw, "score"), readPath(raw, "cvss3Score"), readPath(raw, "cvss.score"), row?.score);
+  const severity = firstFilled(readPath(raw, "severityRating"), readPath(raw, "severity"), row?.severity);
+  const metrics = firstObject(row?.metrics, readPath(raw, "metrics"), readPath(raw, "Metrics"));
+  const cves = mergeCves(row?.cves || [], collectCves(raw));
+  const links = collectLinks(raw, cves);
+  const identifiers = collectIdentifiers(raw, cves, row);
+  const description = firstText(
+    readPath(raw, "description"),
+    readPath(raw, "vulnerabilityDescription"),
+    readPath(raw, "details.description"),
+    readPath(raw, "localizedDescription"),
+  );
+  const remediation = firstText(
+    readPath(raw, "howToFix"),
+    readPath(raw, "solution"),
+    readPath(raw, "recommendation"),
+    readPath(raw, "remediation"),
+    readPath(raw, "fixDescription"),
+  );
+  const issueTime = firstFilled(readPath(raw, "issueTime"), readPath(raw, "publishedAt"), row?.issue_time);
+  const packageLine = [firstFilled(readPath(raw, "packageId"), row?.package_id), firstFilled(readPath(raw, "packageVersion"), row?.package_version)]
+    .filter(Boolean)
+    .join(" / ");
+
+  if (!row && !detail) {
+    return (
+      <div className="passport-placeholder">
+        Выберите строку в таблице, чтобы открыть карточку паспорта уязвимости.
+      </div>
+    );
+  }
+
+  return (
+    <div className="passport-card">
+      <div className="passport-card__header">
+        <span className="score-badge score-badge--large">{score || "n/a"}</span>
+        <div>
+          <h3>{title || "Паспорт уязвимости"}</h3>
+          <div className="passport-card__meta">
+            {cves.slice(0, 3).map((item) => item.url ? (
+              <a href={item.url} target="_blank" rel="noreferrer" key={item.display_name || item.url}>{item.display_name || item.url}</a>
+            ) : <span key={item.display_name}>{item.display_name}</span>)}
+          </div>
+        </div>
+      </div>
+      <div className="passport-badges">
+        <span>Severity: {severity || "n/a"}</span>
+        {metrics.exploitable ? <span>Exploit: {String(metrics.exploitable)}</span> : null}
+        {metrics.hasFix ? <span>Fix: {String(metrics.hasFix)}</span> : null}
+        {metrics.hasNetworkAttackVector ? <span>Network vector: {String(metrics.hasNetworkAttackVector)}</span> : null}
+      </div>
+      <div className="passport-card__body">
+        <div className="passport-card__main">
+          <PassportSection title="Основная информация">
+            <KeyValue label="Опасность" value={severity} />
+            <KeyValue label="Score" value={score} />
+            <KeyValue label="Пакет" value={packageLine} />
+            <KeyValue label="Дата публикации" value={formatPassportDateTime(issueTime)} />
+          </PassportSection>
+          <PassportSection title="Описание">
+            <p>{description || "В ответе MP VM нет отдельного поля описания. Полный raw-ответ доступен справа."}</p>
+          </PassportSection>
+          <PassportSection title="Как исправить">
+            <p>{remediation || "Рекомендация не найдена в нормализованных полях. Проверьте raw-ответ справа."}</p>
+          </PassportSection>
+          <PassportSection title="Ссылки">
+            {links.length ? links.slice(0, 12).map((link) => (
+              <a href={link} target="_blank" rel="noreferrer" key={link}>{link}</a>
+            )) : <span className="muted-text">Ссылки не найдены.</span>}
+          </PassportSection>
+          <PassportSection title="Идентификаторы">
+            {identifiers.length ? identifiers.map((id) => <code key={id}>{id}</code>) : <span className="muted-text">Идентификаторы не найдены.</span>}
+          </PassportSection>
+        </div>
+        <aside className="passport-card__side">
+          <div className="green-note">{loading ? "Загружаю детальный ответ из MP VM..." : "Детальный ответ получен напрямую из MP VM по internalId паспорта."}</div>
+          <details className="raw-details" open>
+            <summary>Полный JSON ответа</summary>
+            <pre>{JSON.stringify(detail || row?.raw_record || {}, null, 2)}</pre>
+          </details>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function PassportSection({ title, children }) {
+  return (
+    <section className="passport-section">
+      <h4>{title}</h4>
+      {children}
+    </section>
+  );
+}
+
+function KeyValue({ label, value }) {
+  if (!value) return null;
+  return (
+    <div className="kv-row">
+      <span>{label}</span>
+      <strong>{String(value)}</strong>
+    </div>
+  );
+}
+
+function filterPassportRows(rows, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return rows;
+  return rows.filter((row) => buildPassportSearchText(row).includes(normalizedQuery));
+}
+
+function filterAssetCandidates(rows, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return rows;
+  return rows.filter((row) => buildAssetCandidateSearchText(row).includes(normalizedQuery));
+}
+
+function buildAssetCandidateSearchText(row) {
+  return normalizeSearchText([
+    row.asset_id,
+    row.display_name,
+    row.os_name,
+    row.creation_time,
+    row.update_time,
+    JSON.stringify(row.raw_record || {}),
+  ].filter(Boolean).join(" "));
+}
+
+function assetCardRaw(card) {
+  return card || {};
+}
+
+function assetCardStats(card) {
+  const raw = assetCardRaw(card);
+  return card?.stats || raw.stats || {};
+}
+
+function assetCardRows(card) {
+  const raw = assetCardRaw(card);
+  return card?.table_rows || raw.table_rows || [];
+}
+
+function assetCardCollections(card) {
+  const raw = assetCardRaw(card);
+  return card?.collections || raw.collections || [];
+}
+
+function assetCardNodes(card) {
+  const raw = assetCardRaw(card);
+  return card?.nodes || raw.nodes || [];
+}
+
+function collectAssetVulnerabilities(card) {
+  if (!card) return [];
+  const collected = [];
+  const addCandidate = (candidate) => {
+    const normalized = normalizeAssetVulnerabilityCandidate(candidate);
+    if (normalized) collected.push(normalized);
+  };
+
+  assetCardCollections(card).forEach((collection) => {
+    (collection.items || []).forEach((item, index) => {
+      const context = { collection, index, path: item?.path || `${collection.path}[${index}]` };
+      addCandidate({ object: item, context });
+      if (item?.node) addCandidate({ object: item.node, context: { ...context, sourceItem: item } });
+      collectEmbeddedAssetVulnerabilityObjects(item?.data, (object) => addCandidate({ object, context }), context);
+      collectEmbeddedAssetVulnerabilityObjects(item?.node?.data, (object) => addCandidate({ object, context }), context);
+    });
+  });
+
+  assetCardNodes(card).forEach((node) => {
+    const context = { path: node.path, node };
+    addCandidate({ object: node, context });
+    collectEmbeddedAssetVulnerabilityObjects(node.data, (object) => addCandidate({ object, context }), context);
+  });
+
+  assetCardRows(card).forEach((row) => addCandidate({ row }));
+
+  const seen = new Set();
+  return collected
+    .map((vulnerability, index) => ({
+      ...vulnerability,
+      key: assetVulnerabilityIdentity(vulnerability) || `${vulnerability.path || "vulnerability"}:${index}`,
+    }))
+    .filter((vulnerability) => {
+      const key = normalizeSearchText(vulnerability.key);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => (
+      String(left.source || "").localeCompare(String(right.source || ""), "ru")
+      || String(left.name || "").localeCompare(String(right.name || ""), "ru")
+    ));
+}
+
+function normalizeAssetVulnerabilityCandidate(candidate) {
+  const row = candidate.row;
+  if (row) return normalizeAssetVulnerabilityRow(row);
+
+  const object = candidate.object;
+  if (!object || typeof object !== "object") return null;
+  const context = candidate.context || {};
+  const data = object.data && typeof object.data === "object" ? object.data : {};
+  const node = object.node && typeof object.node === "object" ? object.node : null;
+  const nodeData = node?.data && typeof node.data === "object" ? node.data : {};
+  const collection = context.collection || {};
+  const sources = [object, data, node, nodeData].filter(Boolean);
+  const text = [
+    object.display_name,
+    object.displayName,
+    object.name,
+    object.title,
+    object.type,
+    object.object_id,
+    object.objectId,
+    collection.title,
+    collection.name,
+    collection.path,
+    assetShallowText(data),
+    assetShallowText(nodeData),
+  ].filter(Boolean).join(" ");
+  const cves = extractAssetCves(object, data, node, nodeData, text);
+  const looksLikeVulnerability = cves.length || isAssetVulnerabilityText(text);
+  if (!looksLikeVulnerability) return null;
+
+  const internalId = textValue(readAssetField(sources, [
+    "internalId",
+    "internal_id",
+    "VulnerPassport.InternalId",
+    "vulnerPassport.internalId",
+    "vulnerability.internalId",
+    "objectId",
+    "object_id",
+  ]));
+  const name = textValue(firstFilled(
+    readAssetField(sources, [
+      "displayName",
+      "display_name",
+      "name",
+      "title",
+      "VulnerPassport.Name",
+      "vulnerPassport.name",
+      "vulnerability.name",
+    ]),
+    cves[0]?.display_name,
+  ));
+  const externalId = textValue(firstFilled(
+    readAssetField(sources, ["id", "externalId", "external_id", "VulnerPassport.Id"]),
+    cves[0]?.display_name,
+  ));
+  const score = textValue(readAssetField(sources, [
+    "score",
+    "Score",
+    "cvss3Score",
+    "cvssScore",
+    "integralScore",
+    "integralVulnerability",
+    "VulnerPassport.Score",
+    "vulnerability.score",
+  ]));
+  const severity = textValue(readAssetField(sources, [
+    "severityRating",
+    "severity",
+    "SeverityRating",
+    "VulnerPassport.SeverityRating",
+  ]));
+  const packageId = textValue(readAssetField(sources, [
+    "packageId",
+    "package_id",
+    "PackageId",
+    "softwareName",
+    "softName",
+    "productName",
+  ]));
+  const packageVersion = textValue(readAssetField(sources, [
+    "packageVersion",
+    "package_version",
+    "version",
+    "softwareVersion",
+    "softVersion",
+  ]));
+  if (!name && !internalId && !externalId && !cves.length) return null;
+
+  const source = [packageId, packageVersion].filter(Boolean).join(" ") || firstFilled(
+    collection.title,
+    collection.name,
+    context.path ? assetPathLabel(context.path) : "",
+    "Без группы",
+  );
+  return {
+    internal_id: internalId,
+    external_id: externalId,
+    name: name || externalId || internalId,
+    score,
+    severity,
+    package_id: packageId,
+    package_version: packageVersion,
+    cves,
+    source,
+    scope: classifyAssetVulnerabilityScope([text, source].join(" ")),
+    path: context.path || object.path,
+  };
+}
+
+function normalizeAssetVulnerabilityRow(row) {
+  const text = [row.path, row.name, row.title, row.type, row.kind, row.value].filter(Boolean).join(" ");
+  if (!isAssetVulnerabilityText(text) || isAssetVulnerabilityLevelOnly(row)) return null;
+  const cves = extractCvesFromText(text).map((displayName) => ({ display_name: displayName, url: null }));
+  const normalizedValue = normalizeSearchText(row.value);
+  if (!cves.length && ["есть элементы", "нет элементов", "has items", "no items", "true", "false"].includes(normalizedValue)) {
+    return null;
+  }
+  const name = firstFilled(row.value, row.title, row.name, cves[0]?.display_name);
+  const score = extractAssetScoreFromText(text);
+  if (!name && !cves.length) return null;
+  return {
+    internal_id: "",
+    external_id: cves[0]?.display_name || "",
+    name,
+    score,
+    severity: "",
+    package_id: "",
+    package_version: "",
+    cves,
+    source: firstFilled(row.title, assetPathLabel(row.path), "Без группы"),
+    scope: classifyAssetVulnerabilityScope(text),
+    path: row.path,
+  };
+}
+
+function collectEmbeddedAssetVulnerabilityObjects(value, addCandidate, context, depth = 0) {
+  if (depth > 3 || value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    value.slice(0, 200).forEach((item) => collectEmbeddedAssetVulnerabilityObjects(item, addCandidate, context, depth + 1));
+    return;
+  }
+  if (typeof value !== "object") return;
+  if (isAssetVulnerabilityText(assetShallowText(value))) {
+    addCandidate(value, context);
+  }
+  Object.values(value).slice(0, 60).forEach((item) => collectEmbeddedAssetVulnerabilityObjects(item, addCandidate, context, depth + 1));
+}
+
+function countAssetVulnerabilityScopes(vulnerabilities) {
+  return vulnerabilities.reduce((counts, vulnerability) => {
+    if (vulnerability.scope === "network") counts.network += 1;
+    else counts.software += 1;
+    return counts;
+  }, { software: 0, network: 0 });
+}
+
+function groupAssetVulnerabilities(vulnerabilities, scope) {
+  const filtered = vulnerabilities.filter((vulnerability) => vulnerability.scope === scope);
+  const bySource = new Map();
+  filtered.forEach((vulnerability) => {
+    const source = vulnerability.source || "Без группы";
+    if (!bySource.has(source)) bySource.set(source, []);
+    bySource.get(source).push(vulnerability);
+  });
+  return {
+    title: scope === "network" ? "Уязвимости сетевых служб" : "Уязвимости ОС и ПО",
+    total: filtered.length,
+    groups: Array.from(bySource.entries())
+      .map(([source, items], index) => ({
+        key: `${scope}:${index}:${source}`,
+        title: source,
+        items,
+      }))
+      .sort((left, right) => left.title.localeCompare(right.title, "ru")),
+  };
+}
+
+function assetVulnerabilityToPassportRow(vulnerability) {
+  if (!vulnerability) return null;
+  return {
+    internal_id: vulnerability.internal_id,
+    external_id: vulnerability.external_id,
+    name: vulnerability.name,
+    severity: vulnerability.severity,
+    score: vulnerability.score,
+    package_id: vulnerability.package_id,
+    package_version: vulnerability.package_version,
+    cves: vulnerability.cves,
+    raw_record: {
+      internalId: vulnerability.internal_id,
+      id: vulnerability.external_id,
+      name: vulnerability.name,
+      severityRating: vulnerability.severity,
+      score: vulnerability.score,
+      packageId: vulnerability.package_id,
+      packageVersion: vulnerability.package_version,
+      cves: vulnerability.cves,
+    },
+  };
+}
+
+function assetVulnerabilityIdentity(vulnerability) {
+  return firstFilled(
+    vulnerability.internal_id,
+    vulnerability.external_id,
+    vulnerability.cves?.[0]?.display_name,
+    vulnerability.name,
+    vulnerability.path,
+  );
+}
+
+function assetVulnerabilityKey(vulnerability) {
+  return vulnerability.key || assetVulnerabilityIdentity(vulnerability);
+}
+
+function extractAssetCves(...values) {
+  const result = [];
+  values.forEach((value) => {
+    if (!value) return;
+    if (typeof value === "object") result.push(...collectCves(value));
+    result.push(...extractCvesFromText(assetShallowText(value)));
+  });
+  return mergeCves(result);
+}
+
+function extractCvesFromText(value) {
+  return Array.from(new Set(String(value || "").match(/CVE-\d{4}-\d{4,}/gi) || []))
+    .map((item) => item.toUpperCase());
+}
+
+function extractAssetScoreFromText(value) {
+  const match = String(value || "").match(/(?:score|cvss|интегральн\w*)\D{0,12}(\d+(?:[.,]\d+)?)/i);
+  return match ? match[1].replace(",", ".") : "";
+}
+
+function readAssetField(sources, keys) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        const value = source[key];
+        if (value !== undefined && value !== null && value !== "") return value;
+      }
+      const nestedValue = readPath(source, key);
+      if (nestedValue !== undefined && nestedValue !== null && nestedValue !== "") return nestedValue;
+    }
+  }
+  return "";
+}
+
+function isAssetVulnerabilityText(value) {
+  const text = String(value || "");
+  const normalized = normalizeSearchText(text);
+  return /CVE-\d{4}-\d{4,}/i.test(text)
+    || normalized.includes("vulnerpassport")
+    || normalized.includes("@vulners")
+    || normalized.includes("vulners")
+    || normalized.includes("vulnerability")
+    || normalized.includes("уязвим");
+}
+
+function isAssetVulnerabilityLevelOnly(row) {
+  const label = normalizeSearchText([row.path, row.name, row.title].filter(Boolean).join(" "));
+  return (label.includes("vulnerabilitylevel") || label.includes("уровень уязвимости"))
+    && !extractCvesFromText(row.value).length
+    && !normalizeSearchText(row.value).includes("cve");
+}
+
+function classifyAssetVulnerabilityScope(value) {
+  const text = normalizeSearchText(value);
+  return text.includes("network")
+    || text.includes("service")
+    || text.includes("port")
+    || text.includes("сетев")
+    || text.includes("служб")
+    ? "network"
+    : "software";
+}
+
+function formatAssetVulnerabilityScore(value) {
+  return firstFilled(textValue(value), "—");
+}
+
+function assetShallowText(value, depth = 0) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (depth > 2) return "";
+  if (Array.isArray(value)) {
+    return value.slice(0, 30).map((item) => assetShallowText(item, depth + 1)).filter(Boolean).join(" ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .slice(0, 50)
+      .map(([key, item]) => `${key} ${assetShallowText(item, depth + 1)}`)
+      .filter(Boolean)
+      .join(" ");
+  }
+  return String(value);
+}
+
+function buildAssetConfigTree(card) {
+  if (!card) return [];
+  const raw = assetCardRaw(card);
+  const root = card?.root || raw.root || {};
+  const collections = assetCardCollections(card);
+  const nodes = assetCardNodes(card);
+  const entries = [];
+  const byPath = new Map();
+
+  const addEntry = (entry) => {
+    const existing = byPath.get(entry.path);
+    if (existing) {
+      Object.assign(existing, entry, { source: entry.source || existing.source });
+      return existing;
+    }
+    byPath.set(entry.path, entry);
+    entries.push(entry);
+    return entry;
+  };
+
+  const ensureAncestors = (path) => {
+    const parentPath = assetTreeParentPath(path);
+    if (!parentPath || byPath.has(parentPath)) return;
+    ensureAncestors(parentPath);
+    addEntry({
+      path: parentPath,
+      parentPath: assetTreeParentPath(parentPath),
+      label: assetPathLabel(parentPath),
+      subtitle: "",
+      kind: "group",
+      source: null,
+    });
+  };
+
+  addEntry({
+    path: "asset",
+    parentPath: null,
+    label: firstFilled(root.displayName, card.display_name, raw.display_name, card.asset_id, raw.asset_id, "Актив"),
+    subtitle: firstFilled(root.type, card.asset_type, raw.asset_type),
+    kind: "root",
+    source: root,
+  });
+
+  [...nodes]
+    .sort((left, right) => String(left.path || "").localeCompare(String(right.path || "")))
+    .forEach((node) => {
+      if (!node.path) return;
+      ensureAncestors(node.path);
+      addEntry({
+        path: node.path,
+        parentPath: assetTreeParentPath(node.path) || "asset",
+        label: firstFilled(node.title, node.display_name, assetPathLabel(node.path)),
+        subtitle: node.type || "",
+        kind: "node",
+        source: node,
+      });
+    });
+
+  [...collections]
+    .sort((left, right) => String(left.path || "").localeCompare(String(right.path || "")))
+    .forEach((collection) => {
+      if (!collection.path) return;
+      ensureAncestors(collection.path);
+      addEntry({
+        path: collection.path,
+        parentPath: assetTreeParentPath(collection.path) || "asset",
+        label: firstFilled(collection.title, collection.name, assetPathLabel(collection.path)),
+        subtitle: `${formatCount(collection.fetched_count)} / ${formatCount(collection.count)}${collection.type ? ` · ${collection.type}` : ""}`,
+        kind: "collection",
+        source: collection,
+      });
+      (collection.items || []).slice(0, 250).forEach((item, index) => {
+        const itemPath = item.path || `${collection.path}[${index}]`;
+        addEntry({
+          path: itemPath,
+          parentPath: collection.path,
+          label: firstFilled(item.display_name, item.value, item.object_id, `Элемент ${index + 1}`),
+          subtitle: item.type || "",
+          kind: "item",
+          source: item,
+        });
+      });
+    });
+
+  const hasChildren = new Set(entries.map((entry) => entry.parentPath).filter(Boolean));
+  entries.forEach((entry) => {
+    entry.depth = assetTreeDepth(entry, byPath);
+    entry.hasChildren = hasChildren.has(entry.path);
+  });
+  return entries;
+}
+
+function defaultAssetTreeExpandedPaths(entries) {
+  return entries.some((entry) => entry.path === "asset") ? ["asset"] : [];
+}
+
+function isAssetTreeEntryVisible(entry, expandedSet, entries) {
+  if (!entry.parentPath) return true;
+  const byPath = new Map(entries.map((item) => [item.path, item]));
+  let parentPath = entry.parentPath;
+  while (parentPath) {
+    if (!expandedSet.has(parentPath)) return false;
+    parentPath = byPath.get(parentPath)?.parentPath;
+  }
+  return true;
+}
+
+function buildAssetDetailTable(card, entry) {
+  if (!entry) return { columns: [{ key: "value", title: "Значение" }], rows: [] };
+  if (entry.kind === "collection") return buildAssetCollectionTable(card, entry.source);
+  if (entry.kind === "root") return buildAssetObjectPropertyTable(card, entry.source, "asset");
+  if (entry.kind === "node") return buildAssetObjectPropertyTable(card, entry.source, entry.path);
+  if (entry.kind === "item") return buildAssetObjectPropertyTable(card, entry.source?.node || entry.source, entry.path);
+
+  const rows = assetCardRows(card).filter((row) => row.path === entry.path || row.path?.startsWith(`${entry.path}.`));
+  return buildAssetRowsDetailTable(rows);
+}
+
+function buildAssetCollectionTable(card, collection) {
+  const items = collection?.items || [];
+  if (!items.length) {
+    return { columns: [{ key: "value", title: "Значение" }], rows: [] };
+  }
+  if (items.every((item) => item && Object.prototype.hasOwnProperty.call(item, "value"))) {
+    return {
+      columns: [{ key: "value", title: collection?.title || "Значение" }],
+      rows: items.map((item, index) => ({ key: item.path || index, value: item.value })),
+    };
+  }
+
+  const dataKeys = collectAssetCollectionDataKeys(items);
+  const sampleType = firstFilled(...items.map((item) => item.type));
+  const props = metadataPropertiesForType(card, sampleType || collection?.type);
+  const columns = dataKeys.length
+    ? dataKeys.map((key) => ({ key, title: firstFilled(props[key]?.title, labelizeAssetKey(key)) }))
+    : [
+      { key: "display_name", title: "Название" },
+      { key: "type", title: "Тип" },
+      { key: "object_id", title: "Идентификатор" },
+    ];
+
+  const rows = items.map((item, index) => {
+    const row = { key: item.path || item.object_id || index };
+    const data = item.data || {};
+    columns.forEach((column) => {
+      row[column.key] = item[column.key] ?? data[column.key];
+    });
+    return row;
+  });
+  return { columns, rows };
+}
+
+function buildAssetObjectPropertyTable(card, object, basePath) {
+  const data = object?.data || {};
+  const props = metadataPropertiesForType(card, object?.type);
+  const baseRows = [
+    ["displayName", "Название", object?.displayName || object?.display_name],
+    ["objectId", "Идентификатор", object?.objectId || object?.object_id],
+    ["type", "Type", object?.type],
+    ["vulnerabilityLevel", "Уровень уязвимости", object?.vulnerabilityLevel || object?.vulnerability_level],
+  ]
+    .filter(([, , value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, title, value]) => ({
+      key,
+      title,
+      name: key,
+      type: "",
+      value,
+      path: basePath,
+    }));
+
+  const dataRows = Object.entries(data).map(([key, value]) => ({
+    key,
+    title: firstFilled(props[key]?.title, labelizeAssetKey(key)),
+    name: key,
+    type: props[key]?.type || "",
+    value,
+    path: `${basePath}.${key}`,
+  }));
+
+  return {
+    columns: [
+      { key: "title", title: "Название" },
+      { key: "value", title: "Значение" },
+      { key: "type", title: "Тип" },
+    ],
+    rows: [...baseRows, ...dataRows],
+  };
+}
+
+function buildAssetRowsDetailTable(rows) {
+  return {
+    columns: [
+      { key: "path", title: "Path" },
+      { key: "title", title: "Название" },
+      { key: "type", title: "Тип" },
+      { key: "value", title: "Значение" },
+    ],
+    rows: rows.map((row, index) => ({ ...row, key: `${row.path}-${index}` })),
+  };
+}
+
+function collectAssetCollectionDataKeys(items) {
+  const seen = new Set();
+  const preferred = ["ipAddress", "address", "hostname", "fqdn", "macAddress", "type", "name", "displayName", "version", "status"];
+  items.forEach((item) => {
+    const data = item.data || {};
+    Object.keys(data).forEach((key) => {
+      if (!isVerboseAssetValue(data[key])) seen.add(key);
+    });
+  });
+  const keys = Array.from(seen);
+  return keys.sort((left, right) => {
+    const leftIndex = preferred.indexOf(left);
+    const rightIndex = preferred.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+    }
+    return left.localeCompare(right);
+  }).slice(0, 12);
+}
+
+function metadataPropertiesForType(card, type) {
+  const raw = assetCardRaw(card);
+  const metadata = card?.metadata || raw.metadata || {};
+  const typeMetadata = type ? metadata[type] : null;
+  const properties = typeMetadata?.properties;
+  if (!Array.isArray(properties)) return {};
+  return Object.fromEntries(properties.filter((prop) => prop?.name).map((prop) => [prop.name, prop]));
+}
+
+function assetTreeParentPath(path) {
+  if (!path || path === "asset") return null;
+  const itemMatch = path.match(/^(.*)\[\d+\]$/);
+  if (itemMatch) return itemMatch[1];
+  const dotIndex = path.lastIndexOf(".");
+  if (dotIndex <= 0) return "asset";
+  return path.slice(0, dotIndex);
+}
+
+function assetTreeDepth(entry, byPath) {
+  let depth = 0;
+  let parentPath = entry.parentPath;
+  while (parentPath) {
+    depth += 1;
+    parentPath = byPath.get(parentPath)?.parentPath;
+  }
+  return depth;
+}
+
+function assetPathLabel(path) {
+  const itemMatch = path.match(/\[(\d+)\]$/);
+  if (itemMatch) return `Элемент ${Number(itemMatch[1]) + 1}`;
+  const value = String(path || "").split(".").pop() || path;
+  return labelizeAssetKey(value);
+}
+
+function labelizeAssetKey(key) {
+  const labels = {
+    ipAddress: "IP-адрес",
+    fqdn: "Полное имя узла",
+    hostname: "Имя узла",
+    hostType: "Тип узла",
+    macAddress: "MAC-адрес",
+    osName: "Название ОС",
+    osVersion: "Версия ОС",
+    isVirtual: "Виртуальное устройство",
+    displayName: "Название",
+    objectId: "Идентификатор",
+    type: "Тип",
+  };
+  return labels[key] || String(key || "").replace(/([a-zа-яё])([A-ZА-ЯЁ])/g, "$1 $2");
+}
+
+function filterAssetRowsByNeedle(rows, ...needles) {
+  const normalizedNeedles = needles.map(normalizeSearchText).filter(Boolean);
+  if (!normalizedNeedles.length) return rows;
+  return rows.filter((row) => {
+    const haystack = normalizeSearchText(JSON.stringify(row));
+    return normalizedNeedles.some((needle) => haystack.includes(needle));
+  });
+}
+
+function isVerboseAssetValue(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && value.objectId && value.type);
+}
+
+function formatAssetCell(value) {
+  if (value === undefined || value === null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Да" : "Нет";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(formatAssetCell).join(", ");
+  if (typeof value === "object") {
+    if ("hasItems" in value) return value.hasItems ? "Есть" : "Нет";
+    return firstFilled(value.displayName, value.name, value.title, value.value, value.objectId, JSON.stringify(value));
+  }
+  return String(value);
+}
+
+function formatEpoch(value) {
+  if (!value) return "";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  return new Date(numeric * 1000).toLocaleString("ru-RU");
+}
+
+function buildPassportSearchText(row) {
+  const cves = (row.cves || [])
+    .map((item) => [item.display_name, item.url, item.raw?.displayName, item.raw?.url].filter(Boolean).join(" "))
+    .join(" ");
+  return normalizeSearchText([
+    row.name,
+    row.external_id,
+    row.internal_id,
+    row.severity,
+    row.score,
+    row.issue_time,
+    row.package_id,
+    row.package_version,
+    cves,
+    row.metrics?.displayName,
+    JSON.stringify(row.raw_record || {}),
+  ].filter(Boolean).join(" "));
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").toLowerCase().replace(/ё/g, "е").trim();
+}
+
+function clampNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {
+  const [filters, setFilters] = useState({ q: "", severity: "" });
+  const applyFilters = () => runBusy("assets", () => refreshAssets(filters));
+  const cards = [
+    ["Активы", summary?.assets],
+    ["ПО", summary?.software],
+    ["Findings", summary?.findings],
+    ["CVE rows", summary?.cve_rows],
+  ];
+  return (
+    <Panel
+      id="assets"
+      eyebrow="06"
+      title="Актуальный снимок активов и уязвимостей"
+      description="Таблица строится из локальной PostgreSQL после CSV/PDQL импорта. Устранённые уязвимости пропадают при следующей перезаписи данных по активу."
+      action={<Button variant="secondary" busy={busy.assets} onClick={applyFilters}>Обновить</Button>}
+    >
+      <div className="metric-grid">
+        {cards.map(([label, value]) => (
+          <div className="metric-card" key={label}>
+            <span>{label}</span>
+            <strong>{formatCount(value)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="filters">
+        <input value={filters.q} onChange={(event) => setFilters((value) => ({ ...value, q: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && applyFilters()} placeholder="Поиск по IP, FQDN, ПО, CVE, уязвимости" />
+        <select value={filters.severity} onChange={(event) => setFilters((value) => ({ ...value, severity: event.target.value }))}>
+          <option value="">Все критичности</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+          <option value="none">none</option>
+        </select>
+        <Button variant="secondary" busy={busy.assets} onClick={applyFilters}>Применить</Button>
+      </div>
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>IP</th>
+              <th>FQDN</th>
+              <th>ПО</th>
+              <th>Версия</th>
+              <th>Уязвимость</th>
+              <th>CVE</th>
+              <th>Severity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.ip_address}</td>
+                <td>{row.fqdn}</td>
+                <td>{row.software_name}</td>
+                <td>{row.software_version}</td>
+                <td>{row.vulnerability_name}</td>
+                <td>{row.cve}</td>
+                <td><Severity value={row.severity} /></td>
+              </tr>
+            )) : (
+              <tr><td colSpan={7} className="empty-cell">Нет данных. Импортируйте CSV или выполните PDQL export.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="table-footer">Показано {formatCount(rows.length)} из {formatCount(total)} строк</div>
+    </Panel>
+  );
+}
+
+function readPath(source, path) {
+  if (!source || typeof source !== "object") return undefined;
+  return path.split(".").reduce((value, key) => {
+    if (!value || typeof value !== "object") return undefined;
+    return value[key];
+  }, source);
+}
+
+function firstFilled(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = textValue(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function textValue(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join("\n");
+  if (typeof value === "object") {
+    return firstFilled(value.displayName, value.name, value.title, value.value, value.text, value.description) || "";
+  }
+  return "";
+}
+
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
+}
+
+function formatPassportDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("ru-RU");
+}
+
+function normalizeCveItem(item) {
+  if (!item) return null;
+  if (typeof item === "string") return { display_name: item, url: null };
+  if (typeof item !== "object") return null;
+  const displayName = firstFilled(item.display_name, item.displayName, item.name, item.id, item.value);
+  return displayName || item.url ? { display_name: displayName, url: item.url || null } : null;
+}
+
+function mergeCves(...groups) {
+  const seen = new Set();
+  const result = [];
+  for (const group of groups) {
+    for (const item of group || []) {
+      const normalized = normalizeCveItem(item);
+      if (!normalized) continue;
+      const key = `${normalized.display_name || ""}|${normalized.url || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
+function collectCves(raw) {
+  const candidates = [
+    readPath(raw, "cves"),
+    readPath(raw, "CVEs"),
+    readPath(raw, "cve"),
+    readPath(raw, "cveIds"),
+    readPath(raw, "identifiers"),
+    readPath(raw, "databaseIdentifiers"),
+    readPath(raw, "vulnerability.cves"),
+  ];
+  const result = [];
+  for (const value of candidates) {
+    if (Array.isArray(value)) {
+      result.push(...value);
+    } else if (value) {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+function collectLinks(raw, cves) {
+  const urls = new Set();
+  for (const cve of cves || []) {
+    if (cve.url) urls.add(cve.url);
+  }
+  collectUrls(raw, urls);
+  return Array.from(urls);
+}
+
+function collectUrls(value, urls, depth = 0) {
+  if (depth > 8 || value === undefined || value === null) return;
+  if (typeof value === "string") {
+    if (/^https?:\/\//i.test(value)) urls.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectUrls(item, urls, depth + 1));
+    return;
+  }
+  if (typeof value === "object") {
+    Object.values(value).forEach((item) => collectUrls(item, urls, depth + 1));
+  }
+}
+
+function collectIdentifiers(raw, cves, row) {
+  const values = new Set();
+  [row?.external_id, row?.internal_id].filter(Boolean).forEach((value) => values.add(String(value)));
+  for (const cve of cves || []) {
+    if (cve.display_name) values.add(cve.display_name);
+  }
+  const rawIds = [
+    readPath(raw, "id"),
+    readPath(raw, "internalId"),
+    readPath(raw, "cwe"),
+    readPath(raw, "cwes"),
+    readPath(raw, "identifiers"),
+    readPath(raw, "databaseIdentifiers"),
+  ];
+  for (const value of rawIds) {
+    if (Array.isArray(value)) {
+      value.map(textValue).filter(Boolean).forEach((item) => values.add(item));
+    } else {
+      const text = textValue(value);
+      if (text) values.add(text);
+    }
+  }
+  return Array.from(values).slice(0, 40);
+}
+
+function Severity({ value }) {
+  const normalized = (value || "empty").toLowerCase();
+  return <span className={`severity severity--${normalized}`}>{value || "empty"}</span>;
+}
+
+export {
+  AssetsPanel,
+  AssetCardsPanel,
+  ConnectionPanel,
+  ExportPanel,
+  TaskBuilderPanel,
+  TaskListPanel,
+  VulnerabilityPassportsPanel,
+};
