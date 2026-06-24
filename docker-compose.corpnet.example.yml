@@ -1,0 +1,50 @@
+services:
+  mpvm-rest-client:
+    build: .
+    container_name: mpvm-rest-client
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MPVM_API_URL: "https://srv-siem.local"
+      # If omitted, token URL is derived as https://srv-siem.local:3334/connect/token
+      # MPVM_TOKEN_URL: "https://srv-siem.local:3334/connect/token"
+      MPVM_CLIENT_ID: "mpx"
+      MPVM_SCOPE: "authorization offline_access mpx.api ptkb.api"
+      # Prefer putting secrets into an .env file or entering them in the UI.
+      # MPVM_USERNAME: ""
+      # MPVM_PASSWORD: ""
+      # MPVM_CLIENT_SECRET: ""
+      # MPVM_ACCESS_TOKEN: ""
+      # true disables TLS verification for lab/self-signed certificates.
+      MPVM_INSECURE: "true"
+      MPVM_DATABASE_URL: "postgresql://mpvm:mpvm@postgres:5432/mpvm"
+      MPVM_EXPORTS_DIR: "/app/exports"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - mpvm_exports:/app/exports
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mpvm-postgres
+    environment:
+      POSTGRES_DB: "mpvm"
+      POSTGRES_USER: "mpvm"
+      POSTGRES_PASSWORD: "mpvm"
+    volumes:
+      - mpvm_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mpvm_postgres:
+  mpvm_exports:

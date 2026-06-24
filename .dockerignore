@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+data
+exports
+.git
+node_modules
+dist
+npm-debug.log

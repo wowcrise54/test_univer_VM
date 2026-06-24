@@ -1,0 +1,36 @@
+services:
+  mpvm-client:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MPVM_DATABASE_URL: "${MPVM_DATABASE_URL:-postgresql://mpvm:mpvm@postgres:5432/mpvm}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./exports:/app/exports
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-mpvm}"
+      POSTGRES_USER: "${POSTGRES_USER:-mpvm}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-mpvm}"
+    volumes:
+      - mpvm_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mpvm_postgres:
