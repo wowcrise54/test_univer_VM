@@ -1,11 +1,17 @@
 FROM node:20-alpine AS frontend
 
+ARG NPM_REGISTRY=http://nexus.utmn.ru/repository/npm-proxy/
+
 WORKDIR /app
 COPY package.json package-lock.json* vite.config.js index.html ./
 COPY src ./src
-RUN npm ci && npm run build
+RUN npm config set registry "${NPM_REGISTRY}" \
+    && npm ci \
+    && npm run build
 
 FROM python:3.12-slim
+
+ARG PIP_INDEX_URL=https://nexus.utmn.ru/repository/pypi-proxy/simple
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,7 +19,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
 
 COPY app ./app
 COPY --from=frontend /app/app/static ./app/static
