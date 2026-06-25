@@ -870,17 +870,21 @@ td code {
   min-width: 1180px;
 }
 
+.passport-modal.asset-modal-overlay {
+  padding: 0;
+}
+
 .asset-modal {
-  width: calc(100vw - 10px);
-  height: calc(100vh - 10px);
-  max-height: calc(100vh - 10px);
-  border-radius: 2px;
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
 }
 
 .asset-console {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 48px);
+  min-height: calc(100vh - 34px);
   background: #fff;
 }
 
@@ -974,7 +978,7 @@ td code {
   display: grid;
   grid-template-columns: clamp(420px, 42vw, 680px) minmax(0, 1fr);
   flex: 1 1 auto;
-  height: calc(100vh - 86px);
+  height: calc(100vh - 72px);
   min-height: 560px;
 }
 
@@ -1125,8 +1129,6 @@ td code {
   display: block;
 }
 
-.asset-detail-pane--cvss,
-.asset-vulnerability-pane,
 .asset-summary-grid {
   flex: 1 1 auto;
   min-height: 560px;
@@ -1202,12 +1204,6 @@ td code {
   color: #287aa3;
 }
 
-.asset-cvss-table th:nth-child(1) { width: 38%; }
-.asset-cvss-table th:nth-child(2) { width: 22%; }
-.asset-cvss-table th:nth-child(3) { width: 10%; }
-.asset-cvss-table th:nth-child(4) { width: 12%; }
-.asset-cvss-table th:nth-child(5) { width: 18%; }
-
 .asset-property-list {
   display: grid;
   gap: 10px;
@@ -1264,177 +1260,6 @@ td code {
 
 .asset-filtered-pane {
   min-height: 560px;
-}
-
-.asset-vulnerability-pane {
-  min-height: 560px;
-  background: #fff;
-}
-
-.asset-vulnerability-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-bottom: 1px solid #e5edf5;
-  padding: 8px 12px;
-  background: #fbfdff;
-}
-
-.asset-vuln-scope {
-  border: 1px solid #d8e4ef;
-  border-radius: 4px;
-  padding: 5px 9px;
-  color: #53677e;
-  background: #fff;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 760;
-}
-
-.asset-vuln-scope.is-active {
-  color: #1d5f89;
-  border-color: #9ccce5;
-  background: #edf8ff;
-}
-
-.asset-vuln-scope span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  margin-left: 6px;
-  border-radius: 999px;
-  padding: 2px 6px;
-  color: #fff;
-  background: #334155;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.asset-vulnerability-table-shell {
-  max-height: min(650px, calc(100vh - 248px));
-  border: 0;
-  border-radius: 0;
-}
-
-.asset-vulnerability-table {
-  min-width: 920px;
-  font-size: 12px;
-}
-
-.asset-vulnerability-table th,
-.asset-vulnerability-table td {
-  padding: 7px 12px;
-}
-
-.asset-vulnerability-table th {
-  color: #5d6f82;
-  background: #fff;
-  font-size: 11px;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.asset-vulnerability-table th:nth-child(1) { width: 52%; }
-.asset-vulnerability-table th:nth-child(2) { width: 23%; }
-.asset-vulnerability-table th:nth-child(3) { width: 25%; }
-
-.asset-vuln-group-row td {
-  color: #334155;
-  background: #fff;
-  font-weight: 820;
-}
-
-.asset-vuln-group-row--nested td:first-child {
-  padding-left: 34px;
-}
-
-.asset-vuln-toggle {
-  width: 22px;
-  height: 22px;
-  margin-right: 4px;
-  color: #718296;
-  background: transparent;
-  cursor: pointer;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
-}
-
-.asset-vuln-group-row strong {
-  margin-right: 8px;
-}
-
-.asset-vuln-group-row span {
-  display: inline-flex;
-  align-items: center;
-  min-width: 22px;
-  border-radius: 999px;
-  padding: 1px 6px;
-  color: #fff;
-  background: #334155;
-  font-size: 10px;
-  font-weight: 900;
-}
-
-.asset-vuln-item-row td {
-  color: #2c3f56;
-  vertical-align: top;
-}
-
-.asset-vuln-marker {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin: 5px 8px 0 54px;
-  border-radius: 2px;
-  background: #e05243;
-  vertical-align: top;
-}
-
-.asset-vuln-link,
-.asset-vuln-cve {
-  padding: 0;
-  color: #1d78a8;
-  background: transparent;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 740;
-  text-align: left;
-}
-
-.asset-vuln-link:hover,
-.asset-vuln-cve:hover {
-  text-decoration: underline;
-}
-
-.asset-vuln-item-row small {
-  display: block;
-  margin: 3px 0 0 69px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.asset-vuln-cves {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.asset-vuln-cves span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.asset-passport-error {
-  margin: 12px 14px 0;
-  border: 1px solid #fed7aa;
-  border-radius: 10px;
-  padding: 10px 12px;
-  color: #7c2d12;
-  background: #fff7ed;
-  font-size: 13px;
-  font-weight: 760;
 }
 
 .asset-summary-side {
@@ -1857,7 +1682,8 @@ td code {
   }
 
   .asset-config-layout {
-    height: auto;
+    height: calc(100vh - 72px);
+    min-height: 0;
   }
 
   .asset-tree-pane {
@@ -1950,7 +1776,9 @@ td code {
   }
 
   .asset-modal {
-    width: calc(100vw - 24px);
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
   }
 
   .asset-console__summary,

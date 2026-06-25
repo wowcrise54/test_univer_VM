@@ -825,7 +825,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
 
       {assetWindowOpen ? (
-        <PassportModal title="Карточка актива" className="asset-modal" onClose={() => setAssetWindowOpen(false)}>
+        <PassportModal
+          title="Карточка актива"
+          className="asset-modal"
+          overlayClassName="asset-modal-overlay"
+          closeLabel="Назад"
+          onClose={() => setAssetWindowOpen(false)}
+        >
           <AssetCard card={selectedCard} loading={busy.assetCardBuild || busy.assetCardOpen} />
         </PassportModal>
       ) : null}
@@ -1056,21 +1062,11 @@ function AssetCard({ card, loading }) {
   const raw = assetCardRaw(card);
   const root = card?.root || raw.root || {};
   const data = root.data || {};
-  const rows = assetCardRows(card);
-  const collections = assetCardCollections(card);
-  const nodes = assetCardNodes(card);
   const stats = assetCardStats(card);
   const treeEntries = useMemo(() => buildAssetConfigTree(card), [card]);
   const [activeTab, setActiveTab] = useState("configuration");
   const [expandedPaths, setExpandedPaths] = useState(["asset"]);
   const [selectedPath, setSelectedPath] = useState("asset");
-  const [passportState, setPassportState] = useState({
-    open: false,
-    row: null,
-    detail: null,
-    loading: false,
-    error: "",
-  });
   const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
   const visibleTreeEntries = useMemo(
     () => treeEntries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, treeEntries)),
@@ -1092,7 +1088,6 @@ function AssetCard({ card, loading }) {
     setExpandedPaths(defaultAssetTreeExpandedPaths(treeEntries));
     setSelectedPath(treeEntries[0].path);
     setActiveTab("configuration");
-    setPassportState({ open: false, row: null, detail: null, loading: false, error: "" });
   }, [card, treeEntries]);
 
   const toggleTreeEntry = useCallback((path) => {
@@ -1101,33 +1096,6 @@ function AssetCard({ card, loading }) {
         ? current.filter((item) => item !== path)
         : [...current, path]
     ));
-  }, []);
-
-  const openAssetVulnerabilityPassport = useCallback(async (vulnerability) => {
-    const row = assetVulnerabilityToPassportRow(vulnerability);
-    const internalId = row?.internal_id;
-    setPassportState({
-      open: true,
-      row,
-      detail: null,
-      loading: Boolean(internalId),
-      error: internalId ? "" : "Для этой уязвимости не найден internalId паспорта. Показываю данные из карточки актива.",
-    });
-    if (!internalId) return;
-    try {
-      const detail = await api(`/api/vulnerability-passports/${encodeURIComponent(internalId)}`);
-      setPassportState((current) => (
-        current.row?.internal_id === internalId
-          ? { ...current, detail, loading: false, error: "" }
-          : current
-      ));
-    } catch (error) {
-      setPassportState((current) => (
-        current.row?.internal_id === internalId
-          ? { ...current, loading: false, error: error.message || "Не удалось открыть паспорт уязвимости." }
-          : current
-      ));
-    }
   }, []);
 
   if (!card) {
@@ -1139,9 +1107,7 @@ function AssetCard({ card, loading }) {
       <div className="asset-tabs" role="tablist" aria-label="Разделы карточки актива">
         {[
           ["summary", "Сводка"],
-          ["vulnerabilities", "Уязвимости"],
           ["configuration", "Конфигурация"],
-          ["cvss", "Метрики CVSS"],
         ].map(([id, label]) => (
           <button
             type="button"
@@ -1165,9 +1131,6 @@ function AssetCard({ card, loading }) {
           loading={loading}
         />
       ) : null}
-      {activeTab === "vulnerabilities" ? (
-        <AssetVulnerabilitiesTab card={card} onOpenPassport={openAssetVulnerabilityPassport} />
-      ) : null}
       {activeTab === "configuration" ? (
         <div className="asset-config-layout">
           <AssetTree
@@ -1179,15 +1142,6 @@ function AssetCard({ card, loading }) {
           />
           <AssetConfigTable card={card} entry={selectedEntry} />
         </div>
-      ) : null}
-      {activeTab === "cvss" ? (
-        <AssetCvssTab card={card} />
-      ) : null}
-      {passportState.open ? (
-        <PassportModal onClose={() => setPassportState({ open: false, row: null, detail: null, loading: false, error: "" })}>
-          {passportState.error ? <div className="asset-passport-error">{passportState.error}</div> : null}
-          <PassportCard row={passportState.row} detail={passportState.detail} loading={passportState.loading && !passportState.detail} />
-        </PassportModal>
       ) : null}
     </div>
   );
@@ -1235,184 +1189,6 @@ function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, st
         </div>
       </div>
     </div>
-  );
-}
-
-function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
-  const vulnerabilities = useMemo(() => collectAssetVulnerabilities(card), [card]);
-  const counts = useMemo(() => countAssetVulnerabilityScopes(vulnerabilities), [vulnerabilities]);
-  const [activeScope, setActiveScope] = useState("software");
-  const [expandedGroups, setExpandedGroups] = useState([]);
-  const expandedGroupSet = useMemo(() => new Set(expandedGroups), [expandedGroups]);
-  const cardFingerprint = [
-    card?.asset_id,
-    card?.requested_asset_id,
-    card?.timeline_token,
-    vulnerabilities.length,
-  ].filter(Boolean).join("|");
-
-  useEffect(() => {
-    setActiveScope(counts.software || !counts.network ? "software" : "network");
-    setExpandedGroups([]);
-  }, [cardFingerprint, counts.software, counts.network]);
-
-  const toggleGroup = useCallback((key) => {
-    setExpandedGroups((current) => (
-      current.includes(key)
-        ? current.filter((item) => item !== key)
-        : [...current, key]
-    ));
-  }, []);
-
-  const grouped = useMemo(
-    () => groupAssetVulnerabilities(vulnerabilities, activeScope),
-    [vulnerabilities, activeScope],
-  );
-  const topKey = `scope:${activeScope}`;
-  const topOpen = expandedGroupSet.has(topKey);
-
-  return (
-    <section className="asset-vulnerability-pane">
-      <div className="asset-vulnerability-toolbar">
-        <button
-          type="button"
-          className={activeScope === "software" ? "asset-vuln-scope is-active" : "asset-vuln-scope"}
-          onClick={() => setActiveScope("software")}
-        >
-          Уязвимости ОС и ПО <span>{formatCount(counts.software)}</span>
-        </button>
-        <button
-          type="button"
-          className={activeScope === "network" ? "asset-vuln-scope is-active" : "asset-vuln-scope"}
-          onClick={() => setActiveScope("network")}
-        >
-          Уязвимости сетевых служб <span>{formatCount(counts.network)}</span>
-        </button>
-      </div>
-      <div className="table-shell asset-vulnerability-table-shell">
-        <table className="asset-vulnerability-table">
-          <thead>
-            <tr>
-              <th>Уязвимость</th>
-              <th>Интегральная уязвимость</th>
-              <th>CVE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {grouped.total ? (
-              <>
-                <tr className="asset-vuln-group-row">
-                  <td>
-                    <button type="button" className="asset-vuln-toggle" onClick={() => toggleGroup(topKey)}>
-                      {topOpen ? "v" : ">"}
-                    </button>
-                    <strong>{grouped.title}</strong>
-                    <span>{formatCount(grouped.total)}</span>
-                  </td>
-                  <td />
-                  <td />
-                </tr>
-                {topOpen ? grouped.groups.map((group) => {
-                  const groupOpen = expandedGroupSet.has(group.key);
-                  return (
-                    <React.Fragment key={group.key}>
-                      <tr className="asset-vuln-group-row asset-vuln-group-row--nested">
-                        <td>
-                          <button type="button" className="asset-vuln-toggle" onClick={() => toggleGroup(group.key)}>
-                            {groupOpen ? "v" : ">"}
-                          </button>
-                          <strong>{group.title}</strong>
-                          <span>{formatCount(group.items.length)}</span>
-                        </td>
-                        <td />
-                        <td />
-                      </tr>
-                      {groupOpen ? group.items.map((vulnerability) => (
-                        <tr className="asset-vuln-item-row" key={assetVulnerabilityKey(vulnerability)}>
-                          <td>
-                            <span className="asset-vuln-marker" aria-hidden="true" />
-                            <button
-                              type="button"
-                              className="asset-vuln-link"
-                              onClick={() => onOpenPassport(vulnerability)}
-                            >
-                              {vulnerability.name || vulnerability.external_id || "Паспорт уязвимости"}
-                            </button>
-                            {vulnerability.source ? <small>{vulnerability.source}</small> : null}
-                          </td>
-                          <td>{formatAssetVulnerabilityScore(vulnerability.score)}</td>
-                          <td>
-                            {vulnerability.cves.length ? (
-                              <div className="asset-vuln-cves">
-                                {vulnerability.cves.slice(0, 4).map((cve) => (
-                                  <button
-                                    type="button"
-                                    className="asset-vuln-cve"
-                                    onClick={() => onOpenPassport(vulnerability)}
-                                    key={cve.display_name || cve.url}
-                                  >
-                                    {cve.display_name || cve.url}
-                                  </button>
-                                ))}
-                                {vulnerability.cves.length > 4 ? <span>+{formatCount(vulnerability.cves.length - 4)}</span> : null}
-                              </div>
-                            ) : "—"}
-                          </td>
-                        </tr>
-                      )) : null}
-                    </React.Fragment>
-                  );
-                }) : null}
-              </>
-            ) : (
-              <tr>
-                <td colSpan={3} className="empty-cell">
-                  В карточке актива не найдены уязвимости этого типа.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function AssetCvssTab({ card }) {
-  const rows = useMemo(() => collectAssetVulnerabilities(card), [card]);
-
-  return (
-    <section className="asset-detail-pane asset-detail-pane--cvss">
-      <div className="table-shell asset-detail-table-shell">
-        <table className="asset-detail-table asset-cvss-table">
-          <thead>
-            <tr>
-              <th>Уязвимость</th>
-              <th>CVE</th>
-              <th>Score</th>
-              <th>Severity</th>
-              <th>Пакет / служба</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length ? rows.slice(0, 1000).map((row) => (
-              <tr key={assetVulnerabilityKey(row)}>
-                <td>{row.name || row.external_id || "—"}</td>
-                <td>{row.cves?.length ? row.cves.map((cve) => cve.display_name || cve.url).filter(Boolean).join(", ") : "—"}</td>
-                <td>{formatAssetVulnerabilityScore(row.score)}</td>
-                <td>{row.severity || "—"}</td>
-                <td>{[row.package_id, row.package_version, row.source].filter(Boolean).join(" / ") || "—"}</td>
-              </tr>
-            )) : (
-              <tr>
-                <td colSpan={5} className="empty-cell">CVSS-метрики не найдены в данных карточки актива.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      {rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(rows.length)} строк.</div> : null}
-    </section>
   );
 }
 
@@ -1550,14 +1326,21 @@ function AssetRowsTable({ rows }) {
   );
 }
 
-function PassportModal({ children, onClose, title = "Паспорт уязвимости", className = "" }) {
+function PassportModal({
+  children,
+  onClose,
+  title = "Паспорт уязвимости",
+  className = "",
+  overlayClassName = "",
+  closeLabel = "Закрыть",
+}) {
   const modal = (
-    <div className="passport-modal" role="dialog" aria-modal="true">
+    <div className={`passport-modal ${overlayClassName}`} role="dialog" aria-modal="true">
       <div className="passport-modal__backdrop" onClick={onClose} />
       <div className={`passport-modal__window ${className}`}>
         <div className="passport-modal__bar">
           <strong>{title}</strong>
-          <Button variant="ghost" onClick={onClose}>Закрыть</Button>
+          <Button variant="ghost" onClick={onClose}>{closeLabel}</Button>
         </div>
         {children}
       </div>
@@ -1725,350 +1508,6 @@ function assetCardCollections(card) {
 function assetCardNodes(card) {
   const raw = assetCardRaw(card);
   return card?.nodes || raw.nodes || [];
-}
-
-function collectAssetVulnerabilities(card) {
-  if (!card) return [];
-  const collected = [];
-  const addCandidate = (candidate) => {
-    const normalized = normalizeAssetVulnerabilityCandidate(candidate);
-    if (normalized) collected.push(normalized);
-  };
-
-  assetCardCollections(card).forEach((collection) => {
-    (collection.items || []).forEach((item, index) => {
-      const context = { collection, index, path: item?.path || `${collection.path}[${index}]` };
-      addCandidate({ object: item, context });
-      if (item?.node) addCandidate({ object: item.node, context: { ...context, sourceItem: item } });
-      collectEmbeddedAssetVulnerabilityObjects(item?.data, (object) => addCandidate({ object, context }), context);
-      collectEmbeddedAssetVulnerabilityObjects(item?.node?.data, (object) => addCandidate({ object, context }), context);
-    });
-  });
-
-  assetCardNodes(card).forEach((node) => {
-    const context = { path: node.path, node };
-    addCandidate({ object: node, context });
-    collectEmbeddedAssetVulnerabilityObjects(node.data, (object) => addCandidate({ object, context }), context);
-  });
-
-  assetCardRows(card).forEach((row) => addCandidate({ row }));
-
-  const seen = new Set();
-  return collected
-    .map((vulnerability, index) => ({
-      ...vulnerability,
-      key: assetVulnerabilityIdentity(vulnerability) || `${vulnerability.path || "vulnerability"}:${index}`,
-    }))
-    .filter((vulnerability) => {
-      const key = normalizeSearchText(vulnerability.key);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((left, right) => (
-      String(left.source || "").localeCompare(String(right.source || ""), "ru")
-      || String(left.name || "").localeCompare(String(right.name || ""), "ru")
-    ));
-}
-
-function normalizeAssetVulnerabilityCandidate(candidate) {
-  const row = candidate.row;
-  if (row) return normalizeAssetVulnerabilityRow(row);
-
-  const object = candidate.object;
-  if (!object || typeof object !== "object") return null;
-  const context = candidate.context || {};
-  const data = object.data && typeof object.data === "object" ? object.data : {};
-  const node = object.node && typeof object.node === "object" ? object.node : null;
-  const nodeData = node?.data && typeof node.data === "object" ? node.data : {};
-  const collection = context.collection || {};
-  const sources = [object, data, node, nodeData].filter(Boolean);
-  const text = [
-    object.display_name,
-    object.displayName,
-    object.name,
-    object.title,
-    object.type,
-    object.object_id,
-    object.objectId,
-    collection.title,
-    collection.name,
-    collection.path,
-    assetShallowText(data),
-    assetShallowText(nodeData),
-  ].filter(Boolean).join(" ");
-  const cves = extractAssetCves(object, data, node, nodeData, text);
-  const looksLikeVulnerability = cves.length || isAssetVulnerabilityText(text);
-  if (!looksLikeVulnerability) return null;
-
-  const internalId = textValue(readAssetField(sources, [
-    "internalId",
-    "internal_id",
-    "VulnerPassport.InternalId",
-    "vulnerPassport.internalId",
-    "vulnerability.internalId",
-    "objectId",
-    "object_id",
-  ]));
-  const name = textValue(firstFilled(
-    readAssetField(sources, [
-      "displayName",
-      "display_name",
-      "name",
-      "title",
-      "VulnerPassport.Name",
-      "vulnerPassport.name",
-      "vulnerability.name",
-    ]),
-    cves[0]?.display_name,
-  ));
-  const externalId = textValue(firstFilled(
-    readAssetField(sources, ["id", "externalId", "external_id", "VulnerPassport.Id"]),
-    cves[0]?.display_name,
-  ));
-  const score = textValue(readAssetField(sources, [
-    "score",
-    "Score",
-    "cvss3Score",
-    "cvssScore",
-    "integralScore",
-    "integralVulnerability",
-    "VulnerPassport.Score",
-    "vulnerability.score",
-  ]));
-  const severity = textValue(readAssetField(sources, [
-    "severityRating",
-    "severity",
-    "SeverityRating",
-    "VulnerPassport.SeverityRating",
-  ]));
-  const packageId = textValue(readAssetField(sources, [
-    "packageId",
-    "package_id",
-    "PackageId",
-    "softwareName",
-    "softName",
-    "productName",
-  ]));
-  const packageVersion = textValue(readAssetField(sources, [
-    "packageVersion",
-    "package_version",
-    "version",
-    "softwareVersion",
-    "softVersion",
-  ]));
-  if (!name && !internalId && !externalId && !cves.length) return null;
-
-  const source = [packageId, packageVersion].filter(Boolean).join(" ") || firstFilled(
-    collection.title,
-    collection.name,
-    context.path ? assetPathLabel(context.path) : "",
-    "Без группы",
-  );
-  return {
-    internal_id: internalId,
-    external_id: externalId,
-    name: name || externalId || internalId,
-    score,
-    severity,
-    package_id: packageId,
-    package_version: packageVersion,
-    cves,
-    source,
-    scope: classifyAssetVulnerabilityScope([text, source].join(" ")),
-    path: context.path || object.path,
-  };
-}
-
-function normalizeAssetVulnerabilityRow(row) {
-  const text = [row.path, row.name, row.title, row.type, row.kind, row.value].filter(Boolean).join(" ");
-  if (!isAssetVulnerabilityText(text) || isAssetVulnerabilityLevelOnly(row)) return null;
-  const cves = extractCvesFromText(text).map((displayName) => ({ display_name: displayName, url: null }));
-  const normalizedValue = normalizeSearchText(row.value);
-  if (!cves.length && ["есть элементы", "нет элементов", "has items", "no items", "true", "false"].includes(normalizedValue)) {
-    return null;
-  }
-  const name = firstFilled(row.value, row.title, row.name, cves[0]?.display_name);
-  const score = extractAssetScoreFromText(text);
-  if (!name && !cves.length) return null;
-  return {
-    internal_id: "",
-    external_id: cves[0]?.display_name || "",
-    name,
-    score,
-    severity: "",
-    package_id: "",
-    package_version: "",
-    cves,
-    source: firstFilled(row.title, assetPathLabel(row.path), "Без группы"),
-    scope: classifyAssetVulnerabilityScope(text),
-    path: row.path,
-  };
-}
-
-function collectEmbeddedAssetVulnerabilityObjects(value, addCandidate, context, depth = 0) {
-  if (depth > 3 || value === undefined || value === null) return;
-  if (Array.isArray(value)) {
-    value.slice(0, 200).forEach((item) => collectEmbeddedAssetVulnerabilityObjects(item, addCandidate, context, depth + 1));
-    return;
-  }
-  if (typeof value !== "object") return;
-  if (isAssetVulnerabilityText(assetShallowText(value))) {
-    addCandidate(value, context);
-  }
-  Object.values(value).slice(0, 60).forEach((item) => collectEmbeddedAssetVulnerabilityObjects(item, addCandidate, context, depth + 1));
-}
-
-function countAssetVulnerabilityScopes(vulnerabilities) {
-  return vulnerabilities.reduce((counts, vulnerability) => {
-    if (vulnerability.scope === "network") counts.network += 1;
-    else counts.software += 1;
-    return counts;
-  }, { software: 0, network: 0 });
-}
-
-function groupAssetVulnerabilities(vulnerabilities, scope) {
-  const filtered = vulnerabilities.filter((vulnerability) => vulnerability.scope === scope);
-  const bySource = new Map();
-  filtered.forEach((vulnerability) => {
-    const source = vulnerability.source || "Без группы";
-    if (!bySource.has(source)) bySource.set(source, []);
-    bySource.get(source).push(vulnerability);
-  });
-  return {
-    title: scope === "network" ? "Уязвимости сетевых служб" : "Уязвимости ОС и ПО",
-    total: filtered.length,
-    groups: Array.from(bySource.entries())
-      .map(([source, items], index) => ({
-        key: `${scope}:${index}:${source}`,
-        title: source,
-        items,
-      }))
-      .sort((left, right) => left.title.localeCompare(right.title, "ru")),
-  };
-}
-
-function assetVulnerabilityToPassportRow(vulnerability) {
-  if (!vulnerability) return null;
-  return {
-    internal_id: vulnerability.internal_id,
-    external_id: vulnerability.external_id,
-    name: vulnerability.name,
-    severity: vulnerability.severity,
-    score: vulnerability.score,
-    package_id: vulnerability.package_id,
-    package_version: vulnerability.package_version,
-    cves: vulnerability.cves,
-    raw_record: {
-      internalId: vulnerability.internal_id,
-      id: vulnerability.external_id,
-      name: vulnerability.name,
-      severityRating: vulnerability.severity,
-      score: vulnerability.score,
-      packageId: vulnerability.package_id,
-      packageVersion: vulnerability.package_version,
-      cves: vulnerability.cves,
-    },
-  };
-}
-
-function assetVulnerabilityIdentity(vulnerability) {
-  return firstFilled(
-    vulnerability.internal_id,
-    vulnerability.external_id,
-    vulnerability.cves?.[0]?.display_name,
-    vulnerability.name,
-    vulnerability.path,
-  );
-}
-
-function assetVulnerabilityKey(vulnerability) {
-  return vulnerability.key || assetVulnerabilityIdentity(vulnerability);
-}
-
-function extractAssetCves(...values) {
-  const result = [];
-  values.forEach((value) => {
-    if (!value) return;
-    if (typeof value === "object") result.push(...collectCves(value));
-    result.push(...extractCvesFromText(assetShallowText(value)));
-  });
-  return mergeCves(result);
-}
-
-function extractCvesFromText(value) {
-  return Array.from(new Set(String(value || "").match(/CVE-\d{4}-\d{4,}/gi) || []))
-    .map((item) => item.toUpperCase());
-}
-
-function extractAssetScoreFromText(value) {
-  const match = String(value || "").match(/(?:score|cvss|интегральн\w*)\D{0,12}(\d+(?:[.,]\d+)?)/i);
-  return match ? match[1].replace(",", ".") : "";
-}
-
-function readAssetField(sources, keys) {
-  for (const source of sources) {
-    if (!source || typeof source !== "object") continue;
-    for (const key of keys) {
-      if (Object.prototype.hasOwnProperty.call(source, key)) {
-        const value = source[key];
-        if (value !== undefined && value !== null && value !== "") return value;
-      }
-      const nestedValue = readPath(source, key);
-      if (nestedValue !== undefined && nestedValue !== null && nestedValue !== "") return nestedValue;
-    }
-  }
-  return "";
-}
-
-function isAssetVulnerabilityText(value) {
-  const text = String(value || "");
-  const normalized = normalizeSearchText(text);
-  return /CVE-\d{4}-\d{4,}/i.test(text)
-    || normalized.includes("vulnerpassport")
-    || normalized.includes("@vulners")
-    || normalized.includes("vulners")
-    || normalized.includes("vulnerability")
-    || normalized.includes("уязвим");
-}
-
-function isAssetVulnerabilityLevelOnly(row) {
-  const label = normalizeSearchText([row.path, row.name, row.title].filter(Boolean).join(" "));
-  return (label.includes("vulnerabilitylevel") || label.includes("уровень уязвимости"))
-    && !extractCvesFromText(row.value).length
-    && !normalizeSearchText(row.value).includes("cve");
-}
-
-function classifyAssetVulnerabilityScope(value) {
-  const text = normalizeSearchText(value);
-  return text.includes("network")
-    || text.includes("service")
-    || text.includes("port")
-    || text.includes("сетев")
-    || text.includes("служб")
-    ? "network"
-    : "software";
-}
-
-function formatAssetVulnerabilityScore(value) {
-  return firstFilled(textValue(value), "—");
-}
-
-function assetShallowText(value, depth = 0) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  if (depth > 2) return "";
-  if (Array.isArray(value)) {
-    return value.slice(0, 30).map((item) => assetShallowText(item, depth + 1)).filter(Boolean).join(" ");
-  }
-  if (typeof value === "object") {
-    return Object.entries(value)
-      .slice(0, 50)
-      .map(([key, item]) => `${key} ${assetShallowText(item, depth + 1)}`)
-      .filter(Boolean)
-      .join(" ");
-  }
-  return String(value);
 }
 
 function buildAssetConfigTree(card) {
