@@ -1285,7 +1285,7 @@ function AssetPropertyList({ rows }) {
   return (
     <div className="asset-property-list">
       {visibleRows.map((row, index) => (
-        <div className="asset-property-row" key={row.key || index}>
+        <div className="asset-property-row" style={{ "--depth": row.depth || 0 }} key={row.key || index}>
           <div className="asset-property-name">
             <span>{row.title || row.name}</span>
             {row.name && row.name !== row.title ? <small>{row.name}</small> : null}
@@ -1677,13 +1677,12 @@ function buildAssetObjectPropertyTable(card, object, basePath) {
 
   const dataRows = Object.entries(data)
     .filter(([key]) => !isHiddenAssetTechnicalField(key))
-    .map(([key, value]) => ({
-      key,
-      title: firstFilled(props[key]?.title, labelizeAssetKey(key)),
+    .flatMap(([key, value]) => buildAssetPropertyRows({
       name: key,
-      type: props[key]?.type || "",
+      title: firstFilled(props[key]?.title, labelizeAssetKey(key)),
       value,
       path: `${basePath}.${key}`,
+      type: props[key]?.type || "",
     }));
 
   return {
@@ -1761,6 +1760,44 @@ function metadataPropertiesForType(card, type) {
 function isHiddenAssetTechnicalField(key) {
   const normalized = String(key || "").replace(/[_-]/g, "").toLowerCase();
   return normalized === "type" || normalized === "objectid";
+}
+
+function buildAssetPropertyRows({ name, title, value, path, type = "", depth = 0 }) {
+  const row = {
+    key: path,
+    title,
+    name,
+    type,
+    value,
+    path,
+    depth,
+  };
+  return [row, ...buildNestedAssetPropertyRows({ value, path, name, title, depth: depth + 1 })];
+}
+
+function buildNestedAssetPropertyRows({ value, path, name, title, depth }) {
+  if (depth > 4 || value === undefined || value === null) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => buildAssetPropertyRows({
+      name: `${name}[${index}]`,
+      title: `${title} ${index + 1}`,
+      value: item,
+      path: `${path}[${index}]`,
+      depth,
+    }));
+  }
+  if (typeof value !== "object" || "hasItems" in value) return [];
+
+  const nested = value.data && typeof value.data === "object" ? value.data : value;
+  return Object.entries(nested)
+    .filter(([key]) => !isHiddenAssetTechnicalField(key))
+    .flatMap(([key, item]) => buildAssetPropertyRows({
+      name: `${name}.${key}`,
+      title: labelizeAssetKey(key),
+      value: item,
+      path: `${path}.${key}`,
+      depth,
+    }));
 }
 
 function assetTreeParentPath(path) {

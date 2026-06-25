@@ -1232,6 +1232,7 @@ td code {
   grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1fr);
   gap: 12px;
   align-items: start;
+  padding-left: calc(var(--depth, 0) * 14px);
 }
 
 .asset-property-name {

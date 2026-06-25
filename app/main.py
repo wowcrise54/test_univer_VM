@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import copy
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1131,6 +1132,100 @@ def build_asset_card(
             }
         )
 
+    def add_value_rows(
+        *,
+        path: str,
+        name: str,
+        title: str | None,
+        value: Any,
+        value_type: str | None = None,
+        kind: str | None = None,
+        parent_type: str | None = None,
+        parent_object_id: str | None = None,
+    ) -> None:
+        add_table_row(
+            path=path,
+            name=name,
+            title=title,
+            value=value,
+            value_type=value_type,
+            kind=kind,
+            parent_type=parent_type,
+            parent_object_id=parent_object_id,
+        )
+        add_embedded_value_rows(
+            value=value,
+            path=path,
+            name=name,
+            title=title or name,
+            parent_type=parent_type,
+            parent_object_id=parent_object_id,
+        )
+
+    def add_embedded_value_rows(
+        *,
+        value: Any,
+        path: str,
+        name: str,
+        title: str,
+        parent_type: str | None,
+        parent_object_id: str | None,
+        depth: int = 1,
+    ) -> None:
+        if depth > 4 or value is None:
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                child_path = f"{path}[{index}]"
+                child_name = f"{name}[{index}]"
+                child_title = f"{title} {index + 1}"
+                add_table_row(
+                    path=child_path,
+                    name=child_name,
+                    title=child_title,
+                    value=item,
+                    kind="item",
+                    parent_type=parent_type,
+                    parent_object_id=parent_object_id,
+                )
+                add_embedded_value_rows(
+                    value=item,
+                    path=child_path,
+                    name=child_name,
+                    title=child_title,
+                    parent_type=parent_type,
+                    parent_object_id=parent_object_id,
+                    depth=depth + 1,
+                )
+            return
+        if not isinstance(value, dict) or "hasItems" in value:
+            return
+
+        nested = value.get("data") if isinstance(value.get("data"), dict) else value
+        for key, item in nested.items():
+            if is_hidden_asset_technical_field(key):
+                continue
+            child_path = f"{path}.{key}"
+            child_name = f"{name}.{key}"
+            child_title = labelize_asset_key(key)
+            add_table_row(
+                path=child_path,
+                name=child_name,
+                title=child_title,
+                value=item,
+                parent_type=parent_type,
+                parent_object_id=parent_object_id,
+            )
+            add_embedded_value_rows(
+                value=item,
+                path=child_path,
+                name=child_name,
+                title=child_title,
+                parent_type=parent_type,
+                parent_object_id=parent_object_id,
+                depth=depth + 1,
+            )
+
     def fetch_node(asset_type: str, object_id: str, path: str) -> dict[str, Any] | None:
         try:
             node = client.get_asset_tree_node(token, asset_type, object_id, timeline_token)
@@ -1264,7 +1359,7 @@ def build_asset_card(
                         traverse_node(child, current_path, depth + 1, title)
                 continue
 
-            add_table_row(
+            add_value_rows(
                 path=current_path,
                 name=name,
                 title=title,
@@ -1334,11 +1429,15 @@ def build_asset_card(
                 if depth <= max_depth and is_object_ref(item):
                     child_type = clean_text(item.get("type"))
                     child_id = clean_text(item.get("objectId"))
+                    child_loaded = False
                     if child_type and child_id:
                         child = fetch_node(child_type, child_id, item_path)
                         if child:
+                            child_loaded = True
                             item_doc["node"] = child
                             traverse_node(child, item_path, depth, item_doc.get("display_name"))
+                    if not child_loaded:
+                        add_embedded_data_rows(item, item_path, parent_type, object_id)
                 elif depth > max_depth:
                     warn(f"max depth reached inside collection {item_path}")
                 else:
@@ -1359,10 +1458,12 @@ def build_asset_card(
     def add_embedded_data_rows(item: dict[str, Any], path: str, parent_type: str, parent_object_id: str) -> None:
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         for key, embedded_value in data.items():
-            add_table_row(
+            if is_hidden_asset_technical_field(key):
+                continue
+            add_value_rows(
                 path=f"{path}.{key}",
                 name=key,
-                title=key,
+                title=labelize_asset_key(key),
                 value=embedded_value,
                 value_type=None,
                 kind=None,
@@ -1517,6 +1618,28 @@ def clean_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def is_hidden_asset_technical_field(key: Any) -> bool:
+    normalized = str(key or "").replace("_", "").replace("-", "").lower()
+    return normalized in {"type", "objectid"}
+
+
+def labelize_asset_key(key: Any) -> str:
+    labels = {
+        "ipAddress": "IP-адрес",
+        "fqdn": "Полное имя узла",
+        "hostname": "Имя узла",
+        "hostType": "Тип узла",
+        "macAddress": "MAC-адрес",
+        "osName": "Название ОС",
+        "osVersion": "Версия ОС",
+        "isVirtual": "Виртуальное устройство",
+        "displayName": "Название",
+        "vulnerabilityLevel": "Уровень уязвимости",
+    }
+    text = str(key or "")
+    return labels.get(text) or re.sub(r"([a-zа-яё])([A-ZА-ЯЁ])", r"\1 \2", text)
 
 
 def sanitize_asset_card_for_response(card: dict[str, Any]) -> dict[str, Any]:

@@ -168,6 +168,75 @@ def init_db() -> None:
             last_seen TEXT NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_nodes (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            title TEXT,
+            display_name TEXT,
+            object_id TEXT,
+            object_type TEXT,
+            vulnerability_level TEXT,
+            data_json TEXT NOT NULL DEFAULT '{}',
+            node_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, path)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_collections (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            name TEXT,
+            title TEXT,
+            value_type TEXT,
+            kind TEXT,
+            parent_type TEXT,
+            parent_object_id TEXT,
+            reported_count INTEGER,
+            fetched_count INTEGER,
+            truncated BOOLEAN NOT NULL DEFAULT FALSE,
+            collection_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, path)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_collection_items (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            collection_path TEXT NOT NULL,
+            item_index INTEGER NOT NULL,
+            item_path TEXT NOT NULL,
+            display_name TEXT,
+            object_id TEXT,
+            object_type TEXT,
+            vulnerability_level TEXT,
+            data_json TEXT NOT NULL DEFAULT '{}',
+            item_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, item_path)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_table_rows (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            row_order INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            name TEXT,
+            title TEXT,
+            value_text TEXT,
+            value_type TEXT,
+            kind TEXT,
+            parent_type TEXT,
+            parent_object_id TEXT,
+            row_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets(ip_address)",
         "CREATE INDEX IF NOT EXISTS idx_assets_fqdn_lower ON assets((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_assets_mp_asset_id ON assets(mp_asset_id)",
@@ -184,6 +253,14 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_fqdn_lower ON asset_cards((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_type ON asset_cards(asset_type)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_nodes_asset_path ON asset_card_nodes(asset_id, path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_nodes_type ON asset_card_nodes(object_type)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collections_asset_path ON asset_card_collections(asset_id, path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collections_name ON asset_card_collections(name)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_asset_collection ON asset_card_collection_items(asset_id, collection_path, item_index)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_type ON asset_card_collection_items(object_type)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_asset_path ON asset_card_table_rows(asset_id, path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_kind ON asset_card_table_rows(kind)",
     ]
     with connect() as conn:
         for statement in statements:
@@ -855,14 +932,221 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 current,
             ),
         ).fetchone()
-    return decode_asset_card(dict(row)) if row else None
+        replace_asset_card_cache(conn, asset_id, card, current)
+        cache = load_asset_card_cache(conn, asset_id)
+    return decode_asset_card(dict(row), cache=cache) if row else None
+
+
+def replace_asset_card_cache(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+    card: dict[str, Any],
+    updated_at: str,
+) -> None:
+    conn.execute("DELETE FROM asset_card_table_rows WHERE asset_id = %s", (asset_id,))
+    conn.execute("DELETE FROM asset_card_collection_items WHERE asset_id = %s", (asset_id,))
+    conn.execute("DELETE FROM asset_card_collections WHERE asset_id = %s", (asset_id,))
+    conn.execute("DELETE FROM asset_card_nodes WHERE asset_id = %s", (asset_id,))
+
+    nodes = [item for item in card.get("nodes") or [] if isinstance(item, dict)]
+    collections = [item for item in card.get("collections") or [] if isinstance(item, dict)]
+    table_rows = [item for item in card.get("table_rows") or [] if isinstance(item, dict)]
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO asset_card_nodes (
+                asset_id, path, title, display_name, object_id, object_type,
+                vulnerability_level, data_json, node_json, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    asset_id,
+                    clean_value(node.get("path")) or "",
+                    clean_value(node.get("title")),
+                    clean_value(node.get("display_name")),
+                    clean_value(node.get("object_id")),
+                    clean_value(node.get("type")),
+                    clean_value(node.get("vulnerability_level")),
+                    json.dumps(strip_asset_card_raw(node.get("data") or {}), ensure_ascii=False),
+                    json.dumps(strip_asset_card_raw(node), ensure_ascii=False),
+                    updated_at,
+                )
+                for node in nodes
+                if clean_value(node.get("path"))
+            ],
+        )
+
+        cur.executemany(
+            """
+            INSERT INTO asset_card_collections (
+                asset_id, path, name, title, value_type, kind, parent_type,
+                parent_object_id, reported_count, fetched_count, truncated,
+                collection_json, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    asset_id,
+                    clean_value(collection.get("path")) or "",
+                    clean_value(collection.get("name")),
+                    clean_value(collection.get("title")),
+                    clean_value(collection.get("type")),
+                    clean_value(collection.get("kind")),
+                    clean_value(collection.get("parent_type")),
+                    clean_value(collection.get("parent_object_id")),
+                    safe_int(collection.get("count")),
+                    safe_int(collection.get("fetched_count")),
+                    bool(collection.get("truncated")),
+                    json.dumps(strip_asset_card_raw({k: v for k, v in collection.items() if k != "items"}), ensure_ascii=False),
+                    updated_at,
+                )
+                for collection in collections
+                if clean_value(collection.get("path"))
+            ],
+        )
+
+        item_rows: list[tuple[Any, ...]] = []
+        for collection in collections:
+            collection_path = clean_value(collection.get("path"))
+            if not collection_path:
+                continue
+            items = collection.get("items") if isinstance(collection.get("items"), list) else []
+            for index, item in enumerate(items):
+                item_doc = item if isinstance(item, dict) else {"path": f"{collection_path}[{index}]", "value": item}
+                data = item_doc.get("data") if isinstance(item_doc.get("data"), dict) else {}
+                item_rows.append(
+                    (
+                        asset_id,
+                        collection_path,
+                        index,
+                        clean_value(item_doc.get("path")) or f"{collection_path}[{index}]",
+                        clean_value(item_doc.get("display_name")),
+                        clean_value(item_doc.get("object_id")),
+                        clean_value(item_doc.get("type")),
+                        clean_value(item_doc.get("vulnerability_level")),
+                        json.dumps(strip_asset_card_raw(data), ensure_ascii=False),
+                        json.dumps(strip_asset_card_raw(item_doc), ensure_ascii=False),
+                        updated_at,
+                    )
+                )
+        cur.executemany(
+            """
+            INSERT INTO asset_card_collection_items (
+                asset_id, collection_path, item_index, item_path, display_name,
+                object_id, object_type, vulnerability_level, data_json, item_json,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            item_rows,
+        )
+
+        cur.executemany(
+            """
+            INSERT INTO asset_card_table_rows (
+                asset_id, row_order, path, name, title, value_text, value_type,
+                kind, parent_type, parent_object_id, row_json, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    asset_id,
+                    index,
+                    clean_value(row.get("path")) or "",
+                    clean_value(row.get("name")),
+                    clean_value(row.get("title")),
+                    clean_value(row.get("value")),
+                    clean_value(row.get("type")),
+                    clean_value(row.get("kind")),
+                    clean_value(row.get("parent_type")),
+                    clean_value(row.get("parent_object_id")),
+                    json.dumps(strip_asset_card_raw(row), ensure_ascii=False),
+                    updated_at,
+                )
+                for index, row in enumerate(table_rows)
+                if clean_value(row.get("path"))
+            ],
+        )
+
+
+def load_asset_card_cache(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+) -> dict[str, Any]:
+    nodes = [
+        json_loads(row.get("node_json"), {})
+        for row in conn.execute(
+            "SELECT node_json FROM asset_card_nodes WHERE asset_id = %s ORDER BY path",
+            (asset_id,),
+        ).fetchall()
+    ]
+    table_rows = [
+        json_loads(row.get("row_json"), {})
+        for row in conn.execute(
+            "SELECT row_json FROM asset_card_table_rows WHERE asset_id = %s ORDER BY row_order, path",
+            (asset_id,),
+        ).fetchall()
+    ]
+
+    collection_docs: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(
+        """
+        SELECT path, collection_json
+        FROM asset_card_collections
+        WHERE asset_id = %s
+        ORDER BY path
+        """,
+        (asset_id,),
+    ).fetchall():
+        path = clean_value(row.get("path")) or ""
+        collection = json_loads(row.get("collection_json"), {})
+        if isinstance(collection, dict):
+            collection["items"] = []
+            collection_docs[path] = collection
+
+    for row in conn.execute(
+        """
+        SELECT collection_path, item_json
+        FROM asset_card_collection_items
+        WHERE asset_id = %s
+        ORDER BY collection_path, item_index
+        """,
+        (asset_id,),
+    ).fetchall():
+        collection_path = clean_value(row.get("collection_path")) or ""
+        collection = collection_docs.get(collection_path)
+        item = json_loads(row.get("item_json"), {})
+        if collection is not None and isinstance(item, dict):
+            collection.setdefault("items", []).append(item)
+
+    return {
+        "nodes": [node for node in nodes if isinstance(node, dict)],
+        "collections": list(collection_docs.values()),
+        "table_rows": [row for row in table_rows if isinstance(row, dict)],
+    }
 
 
 def get_asset_card(asset_id: str) -> dict[str, Any] | None:
     init_db()
     with connect() as conn:
         row = conn.execute("SELECT * FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone()
-    return decode_asset_card(dict(row)) if row else None
+        cache = load_asset_card_cache(conn, asset_id) if row else None
+        if row and is_asset_card_cache_empty(cache):
+            legacy_card = decode_asset_card(dict(row))
+            replace_asset_card_cache(conn, asset_id, legacy_card, now_utc())
+            cache = load_asset_card_cache(conn, asset_id)
+    return decode_asset_card(dict(row), cache=cache) if row else None
+
+
+def is_asset_card_cache_empty(cache: dict[str, Any] | None) -> bool:
+    if not isinstance(cache, dict):
+        return True
+    return not any(cache.get(key) for key in ("nodes", "collections", "table_rows"))
 
 
 def list_asset_cards(
@@ -1027,6 +1311,15 @@ def clean_value(value: Any) -> str | None:
     return text if text else None
 
 
+def safe_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def first_non_empty(*values: Any) -> Any:
     for value in values:
         if value is not None and value != "":
@@ -1054,12 +1347,15 @@ def decode_asset_card_summary(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def decode_asset_card(row: dict[str, Any]) -> dict[str, Any]:
+def decode_asset_card(row: dict[str, Any], cache: dict[str, Any] | None = None) -> dict[str, Any]:
     root = json_loads(row.get("root_json"), {})
     metadata = json_loads(row.get("metadata_json"), {})
-    nodes = json_loads(row.get("nodes_json"), [])
-    collections = json_loads(row.get("collections_json"), [])
-    table_rows = json_loads(row.get("table_rows_json"), [])
+    cached_nodes = cache.get("nodes") if isinstance(cache, dict) else None
+    cached_collections = cache.get("collections") if isinstance(cache, dict) else None
+    cached_table_rows = cache.get("table_rows") if isinstance(cache, dict) else None
+    nodes = cached_nodes if cached_nodes else json_loads(row.get("nodes_json"), [])
+    collections = cached_collections if cached_collections else json_loads(row.get("collections_json"), [])
+    table_rows = cached_table_rows if cached_table_rows else json_loads(row.get("table_rows_json"), [])
     stats = json_loads(row.get("stats_json"), {})
     return {
         "id": row.get("id"),
