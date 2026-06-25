@@ -153,9 +153,9 @@ class AssetCardAssetQueryRequest(BaseModel):
 class AssetCardBuildRequest(BaseModel):
     asset_id: str
     timeline_timestamp: int | None = None
-    limit_per_collection: int = Field(default=500, ge=1, le=1000)
-    max_items_per_collection: int = Field(default=500, ge=1, le=50000)
-    max_depth: int = Field(default=4, ge=0, le=8)
+    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
+    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
+    max_depth: int = Field(default=8, ge=0, le=8)
     save_to_db: bool = True
 
 
@@ -1305,13 +1305,14 @@ def build_asset_card(
         properties = metadata_properties_by_name(metadata)
         data = node.get("data") if isinstance(node.get("data"), dict) else {}
         for name, value in data.items():
-            prop = properties.get(name, {})
+            prop = metadata_property_for_name(properties, name)
             title = clean_text(first_present(prop.get("title"), name))
             value_type = clean_text(first_present(prop.get("type"), value.get("type") if isinstance(value, dict) else None))
             kind = clean_text(prop.get("kind"))
             current_path = f"{path}.{name}"
 
             if should_fetch_collection(prop, value):
+                collection_name = metadata_collection_name(prop, name)
                 add_table_row(
                     path=current_path,
                     name=name,
@@ -1322,15 +1323,13 @@ def build_asset_card(
                     parent_type=node_type,
                     parent_object_id=object_id,
                 )
-                if not collection_has_items(value):
-                    continue
                 if depth >= max_depth:
                     warn(f"max depth reached before collection {current_path}")
                     continue
                 collect_collection(
                     parent_type=node_type,
                     object_id=object_id or root_asset_id,
-                    name=name,
+                    name=collection_name,
                     prop=prop,
                     path=current_path,
                     depth=depth + 1,
@@ -1368,6 +1367,25 @@ def build_asset_card(
                 kind=kind,
                 parent_type=node_type,
                 parent_object_id=object_id,
+            )
+
+        for prop in metadata_collection_properties(metadata):
+            name = metadata_collection_name(prop)
+            if not name:
+                continue
+            if metadata_data_has_property(data, name):
+                continue
+            current_path = f"{path}.{name}"
+            if depth >= max_depth:
+                warn(f"max depth reached before collection {current_path}")
+                continue
+            collect_collection(
+                parent_type=node_type,
+                object_id=object_id or root_asset_id,
+                name=name,
+                prop=prop,
+                path=current_path,
+                depth=depth + 1,
             )
 
     def collect_collection(
@@ -1527,16 +1545,121 @@ def metadata_properties_by_name(metadata: dict[str, Any]) -> dict[str, dict[str,
     return result
 
 
+def metadata_property_for_name(properties: dict[str, dict[str, Any]], name: Any) -> dict[str, Any]:
+    if name in properties:
+        return properties[name]
+    normalized_name = normalize_asset_metadata_key(name)
+    for prop_name, prop in properties.items():
+        if normalize_asset_metadata_key(prop_name) == normalized_name:
+            return prop
+    return {}
+
+
+def metadata_collection_properties(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(prop: Any, *, known_collection: bool = False) -> None:
+        if isinstance(prop, str):
+            prop = {"name": prop}
+        if not isinstance(prop, dict):
+            return
+        if not known_collection and not metadata_property_is_collection(prop):
+            return
+        name = metadata_collection_name(prop)
+        if not name:
+            return
+        key = normalize_asset_metadata_key(name)
+        if key in seen:
+            return
+        seen.add(key)
+        result.append(prop)
+
+    properties = metadata.get("properties")
+    if isinstance(properties, list):
+        for prop in properties:
+            add(prop)
+
+    for key in ("collections", "collectionProperties", "collection_properties"):
+        collection_props = metadata.get(key)
+        if isinstance(collection_props, list):
+            for prop in collection_props:
+                add(prop, known_collection=True)
+        elif isinstance(collection_props, dict):
+            for name, prop in collection_props.items():
+                if isinstance(prop, dict):
+                    add({"name": name, **prop}, known_collection=True)
+                else:
+                    add({"name": name, "title": prop}, known_collection=True)
+
+    return result
+
+
+def metadata_property_is_collection(prop: dict[str, Any]) -> bool:
+    for key in (
+        "isCollection",
+        "is_collection",
+        "collection",
+        "hasItems",
+        "has_items",
+        "isArray",
+        "is_array",
+        "isList",
+        "is_list",
+        "multiple",
+    ):
+        value = prop.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+            return True
+
+    for key in ("kind", "valueKind", "propertyKind", "relationKind", "cardinality", "multiplicity"):
+        value = prop.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().lower()
+        if "collection" in normalized or normalized in {"array", "list", "many", "multiple"}:
+            return True
+
+    for key in ("type", "valueType", "dataType", "propertyType"):
+        value = prop.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().lower()
+        if normalized in {"collection", "array", "list"}:
+            return True
+        if normalized.endswith("[]") or normalized.startswith(("collection<", "list<", "array<")):
+            return True
+
+    return False
+
+
+def metadata_collection_name(prop: dict[str, Any], fallback: Any = None) -> str:
+    return clean_text(
+        first_present(
+            prop.get("collectionName"),
+            prop.get("collection_name"),
+            prop.get("name"),
+            prop.get("propertyName"),
+            fallback,
+        )
+    )
+
+
+def metadata_data_has_property(data: dict[str, Any], name: Any) -> bool:
+    normalized_name = normalize_asset_metadata_key(name)
+    return any(normalize_asset_metadata_key(key) == normalized_name for key in data)
+
+
+def normalize_asset_metadata_key(value: Any) -> str:
+    return str(value or "").replace("_", "").replace("-", "").lower()
+
+
 def should_fetch_collection(prop: dict[str, Any], value: Any) -> bool:
     if isinstance(value, dict) and "hasItems" in value:
         return True
-    return bool(prop.get("isCollection"))
-
-
-def collection_has_items(value: Any) -> bool:
-    if isinstance(value, dict) and value.get("hasItems") is False:
-        return False
-    return True
+    return metadata_property_is_collection(prop)
 
 
 def is_object_ref(value: Any) -> bool:

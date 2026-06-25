@@ -572,9 +572,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     include_nested_groups: true,
     selected_asset_id: "",
     timeline_timestamp: "",
-    limit_per_collection: "500",
-    max_items_per_collection: "500",
-    max_depth: "4",
+    limit_per_collection: "5000",
+    max_items_per_collection: "5000",
+    max_depth: "8",
     save_to_db: true,
   });
   const [candidates, setCandidates] = useState([]);
@@ -643,9 +643,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         body: JSON.stringify({
           asset_id: assetId,
           timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
-          limit_per_collection: clampNumber(form.limit_per_collection, 500, 1, 1000),
-          max_items_per_collection: clampNumber(form.max_items_per_collection, 500, 1, 50000),
-          max_depth: clampNumber(form.max_depth, 4, 0, 8),
+          limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
+          max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
+          max_depth: clampNumber(form.max_depth, 8, 0, 8),
           save_to_db: form.save_to_db,
         }),
       });
@@ -721,7 +721,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             <input value={form.timeline_timestamp} onChange={(event) => update("timeline_timestamp", event.target.value)} type="number" placeholder="пусто = сейчас" />
           </Field>
           <Field label="Лимит запроса коллекции">
-            <input value={form.limit_per_collection} onChange={(event) => update("limit_per_collection", event.target.value)} type="number" min="1" max="1000" />
+            <input value={form.limit_per_collection} onChange={(event) => update("limit_per_collection", event.target.value)} type="number" min="1" max="5000" />
           </Field>
           <Field label="Максимум элементов коллекции">
             <input value={form.max_items_per_collection} onChange={(event) => update("max_items_per_collection", event.target.value)} type="number" min="1" max="50000" />
