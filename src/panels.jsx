@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "./api/client.js";
 import { formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
@@ -1060,7 +1061,7 @@ function AssetCard({ card, loading }) {
   const nodes = assetCardNodes(card);
   const stats = assetCardStats(card);
   const treeEntries = useMemo(() => buildAssetConfigTree(card), [card]);
-  const [activeTab, setActiveTab] = useState("vulnerabilities");
+  const [activeTab, setActiveTab] = useState("configuration");
   const [expandedPaths, setExpandedPaths] = useState(["asset"]);
   const [selectedPath, setSelectedPath] = useState("asset");
   const [passportState, setPassportState] = useState({
@@ -1090,7 +1091,7 @@ function AssetCard({ card, loading }) {
     if (!card || !treeEntries.length) return;
     setExpandedPaths(defaultAssetTreeExpandedPaths(treeEntries));
     setSelectedPath(treeEntries[0].path);
-    setActiveTab("vulnerabilities");
+    setActiveTab("configuration");
     setPassportState({ open: false, row: null, detail: null, loading: false, error: "" });
   }, [card, treeEntries]);
 
@@ -1135,22 +1136,12 @@ function AssetCard({ card, loading }) {
 
   return (
     <div className="asset-console">
-      <div className="asset-console__summary">
-        <div>
-          <strong>{title || "Карточка актива"}</strong>
-          <span>{[ipAddress, fqdn, osLine].filter(Boolean).join(" · ") || assetId}</span>
-        </div>
-        <div className="asset-console__chips">
-          <span>Уровень: {firstFilled(card?.vulnerability_level, raw.vulnerability_level, root.vulnerabilityLevel, "n/a")}</span>
-          <span>{formatCount(stats.collections || collections.length)} коллекций</span>
-          <span>{formatCount(rows.length)} строк data</span>
-        </div>
-      </div>
       <div className="asset-tabs" role="tablist" aria-label="Разделы карточки актива">
         {[
           ["summary", "Сводка"],
           ["vulnerabilities", "Уязвимости"],
           ["configuration", "Конфигурация"],
+          ["cvss", "Метрики CVSS"],
         ].map(([id, label]) => (
           <button
             type="button"
@@ -1188,6 +1179,9 @@ function AssetCard({ card, loading }) {
           />
           <AssetConfigTable card={card} entry={selectedEntry} />
         </div>
+      ) : null}
+      {activeTab === "cvss" ? (
+        <AssetCvssTab card={card} />
       ) : null}
       {passportState.open ? (
         <PassportModal onClose={() => setPassportState({ open: false, row: null, detail: null, loading: false, error: "" })}>
@@ -1384,6 +1378,44 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
   );
 }
 
+function AssetCvssTab({ card }) {
+  const rows = useMemo(() => collectAssetVulnerabilities(card), [card]);
+
+  return (
+    <section className="asset-detail-pane asset-detail-pane--cvss">
+      <div className="table-shell asset-detail-table-shell">
+        <table className="asset-detail-table asset-cvss-table">
+          <thead>
+            <tr>
+              <th>Уязвимость</th>
+              <th>CVE</th>
+              <th>Score</th>
+              <th>Severity</th>
+              <th>Пакет / служба</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.slice(0, 1000).map((row) => (
+              <tr key={assetVulnerabilityKey(row)}>
+                <td>{row.name || row.external_id || "—"}</td>
+                <td>{row.cves?.length ? row.cves.map((cve) => cve.display_name || cve.url).filter(Boolean).join(", ") : "—"}</td>
+                <td>{formatAssetVulnerabilityScore(row.score)}</td>
+                <td>{row.severity || "—"}</td>
+                <td>{[row.package_id, row.package_version, row.source].filter(Boolean).join(" / ") || "—"}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan={5} className="empty-cell">CVSS-метрики не найдены в данных карточки актива.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(rows.length)} строк.</div> : null}
+    </section>
+  );
+}
+
 function AssetFilteredRows({ title, rows }) {
   const visibleRows = rows.slice(0, 1000);
   return (
@@ -1402,7 +1434,6 @@ function AssetFilteredRows({ title, rows }) {
 function AssetTree({ entries, selectedPath, expandedSet, onToggle, onSelect }) {
   return (
     <aside className="asset-tree-pane">
-      <div className="asset-tree-pane__title">Разделы</div>
       <div className="asset-tree">
         {entries.map((entry) => (
           <div
@@ -1416,12 +1447,13 @@ function AssetTree({ entries, selectedPath, expandedSet, onToggle, onSelect }) {
               onClick={() => entry.hasChildren && onToggle(entry.path)}
               aria-label={expandedSet.has(entry.path) ? "Свернуть" : "Раскрыть"}
             >
-              {entry.hasChildren ? (expandedSet.has(entry.path) ? "v" : ">") : ""}
+              {entry.hasChildren ? (expandedSet.has(entry.path) ? "▾" : "›") : ""}
             </button>
             <button type="button" className="asset-tree-label" onClick={() => onSelect(entry.path)}>
               <span>{entry.label}</span>
               {entry.subtitle ? <small>{entry.subtitle}</small> : null}
             </button>
+            {entry.meta ? <span className="asset-tree-meta">{entry.meta}</span> : <span className="asset-tree-search" aria-hidden="true" />}
           </div>
         ))}
       </div>
@@ -1440,34 +1472,52 @@ function AssetConfigTable({ card, entry }) {
 
   const table = buildAssetDetailTable(card, entry);
   return (
-    <section className="asset-detail-pane">
-      <div className="asset-detail-heading">
-        <div>
-          <strong>{entry.label}</strong>
-          <span>{entry.subtitle || entry.kind || entry.path}</span>
-        </div>
-        <code>{entry.path}</code>
-      </div>
-      <div className="table-shell asset-detail-table-shell">
-        <table className="asset-detail-table">
-          <thead>
-            <tr>
-              {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
-              <tr key={row.key || rowIndex}>
-                {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
+    <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry.label}>
+      {table.layout === "properties" ? (
+        <AssetPropertyList rows={table.rows} />
+      ) : (
+        <div className="table-shell asset-detail-table-shell">
+          <table className="asset-detail-table">
+            <thead>
+              <tr>
+                {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
               </tr>
-            )) : (
-              <tr><td colSpan={table.columns.length} className="empty-cell">В выбранном разделе нет данных.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
+                <tr key={row.key || rowIndex}>
+                  {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
+                </tr>
+              )) : (
+                <tr><td colSpan={table.columns.length} className="empty-cell">В выбранном разделе нет данных.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
       {table.rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(table.rows.length)} строк.</div> : null}
     </section>
+  );
+}
+
+function AssetPropertyList({ rows }) {
+  const visibleRows = rows.slice(0, 1000);
+  if (!visibleRows.length) {
+    return <div className="empty-cell">В выбранном разделе нет данных.</div>;
+  }
+
+  return (
+    <div className="asset-property-list">
+      {visibleRows.map((row, index) => (
+        <div className="asset-property-row" key={row.key || index}>
+          <div className="asset-property-name">
+            <span>{row.title || row.name}</span>
+            {row.name && row.name !== row.title ? <small>{row.name}</small> : null}
+          </div>
+          <strong>{formatAssetCell(row.value)}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1501,7 +1551,7 @@ function AssetRowsTable({ rows }) {
 }
 
 function PassportModal({ children, onClose, title = "Паспорт уязвимости", className = "" }) {
-  return (
+  const modal = (
     <div className="passport-modal" role="dialog" aria-modal="true">
       <div className="passport-modal__backdrop" onClick={onClose} />
       <div className={`passport-modal__window ${className}`}>
@@ -1513,6 +1563,7 @@ function PassportModal({ children, onClose, title = "Паспорт уязвим
       </div>
     </div>
   );
+  return typeof document === "undefined" ? modal : createPortal(modal, document.body);
 }
 
 function PassportCard({ row, detail, loading }) {
@@ -2048,7 +2099,7 @@ function buildAssetConfigTree(card) {
       path: parentPath,
       parentPath: assetTreeParentPath(parentPath),
       label: assetPathLabel(parentPath),
-      subtitle: "",
+      subtitle: assetPathKey(parentPath),
       kind: "group",
       source: null,
     });
@@ -2058,7 +2109,7 @@ function buildAssetConfigTree(card) {
     path: "asset",
     parentPath: null,
     label: firstFilled(root.displayName, card.display_name, raw.display_name, card.asset_id, raw.asset_id, "Актив"),
-    subtitle: firstFilled(root.type, card.asset_type, raw.asset_type),
+    subtitle: firstFilled(root.type, card.asset_type, raw.asset_type, "asset"),
     kind: "root",
     source: root,
   });
@@ -2072,7 +2123,7 @@ function buildAssetConfigTree(card) {
         path: node.path,
         parentPath: assetTreeParentPath(node.path) || "asset",
         label: firstFilled(node.title, node.display_name, assetPathLabel(node.path)),
-        subtitle: node.type || "",
+        subtitle: assetPathKey(node.path) || node.type || "",
         kind: "node",
         source: node,
       });
@@ -2087,7 +2138,8 @@ function buildAssetConfigTree(card) {
         path: collection.path,
         parentPath: assetTreeParentPath(collection.path) || "asset",
         label: firstFilled(collection.title, collection.name, assetPathLabel(collection.path)),
-        subtitle: `${formatCount(collection.fetched_count)} / ${formatCount(collection.count)}${collection.type ? ` · ${collection.type}` : ""}`,
+        subtitle: firstFilled(collection.name, assetPathKey(collection.path), collection.type),
+        meta: formatAssetCollectionMeta(collection),
         kind: "collection",
         source: collection,
       });
@@ -2097,7 +2149,7 @@ function buildAssetConfigTree(card) {
           path: itemPath,
           parentPath: collection.path,
           label: firstFilled(item.display_name, item.value, item.object_id, `Элемент ${index + 1}`),
-          subtitle: item.type || "",
+          subtitle: firstFilled(item.type, item.object_id, assetPathKey(itemPath)),
           kind: "item",
           source: item,
         });
@@ -2153,19 +2205,16 @@ function buildAssetCollectionTable(card, collection) {
   const dataKeys = collectAssetCollectionDataKeys(items);
   const sampleType = firstFilled(...items.map((item) => item.type));
   const props = metadataPropertiesForType(card, sampleType || collection?.type);
-  const columns = dataKeys.length
-    ? dataKeys.map((key) => ({ key, title: firstFilled(props[key]?.title, labelizeAssetKey(key)) }))
-    : [
-      { key: "display_name", title: "Название" },
-      { key: "type", title: "Тип" },
-      { key: "object_id", title: "Идентификатор" },
-    ];
+  const columns = assetCollectionColumns(items, dataKeys, props);
 
   const rows = items.map((item, index) => {
     const row = { key: item.path || item.object_id || index };
     const data = item.data || {};
+    row.display_name = firstFilled(item.display_name, item.displayName);
+    row.object_id = firstFilled(item.object_id, item.objectId);
+    row.type = item.type;
     columns.forEach((column) => {
-      row[column.key] = item[column.key] ?? data[column.key];
+      row[column.key] = firstFilled(row[column.key], item[column.key], data[column.key]);
     });
     return row;
   });
@@ -2207,6 +2256,7 @@ function buildAssetObjectPropertyTable(card, object, basePath) {
       { key: "type", title: "Тип" },
     ],
     rows: [...baseRows, ...dataRows],
+    layout: "properties",
   };
 }
 
@@ -2242,6 +2292,31 @@ function collectAssetCollectionDataKeys(items) {
   }).slice(0, 12);
 }
 
+function assetCollectionColumns(items, dataKeys, props) {
+  const columns = [];
+  const addColumn = (key, title) => {
+    if (!key || columns.some((column) => column.key === key)) return;
+    columns.push({ key, title: title || firstFilled(props[key]?.title, labelizeAssetKey(key)) });
+  };
+
+  if (dataKeys.length) {
+    dataKeys.forEach((key) => addColumn(key));
+    return columns.slice(0, 14);
+  }
+
+  if (items.some((item) => item?.display_name || item?.displayName)) addColumn("display_name", "Имя");
+  if (items.some((item) => item?.object_id || item?.objectId)) addColumn("object_id", "Идентификатор");
+  if (items.some((item) => item?.type)) addColumn("type", "Тип");
+
+  if (!columns.length) {
+    addColumn("display_name", "Название");
+    addColumn("type", "Тип");
+    addColumn("object_id", "Идентификатор");
+  }
+
+  return columns.slice(0, 14);
+}
+
 function metadataPropertiesForType(card, type) {
   const raw = assetCardRaw(card);
   const metadata = card?.metadata || raw.metadata || {};
@@ -2275,6 +2350,22 @@ function assetPathLabel(path) {
   if (itemMatch) return `Элемент ${Number(itemMatch[1]) + 1}`;
   const value = String(path || "").split(".").pop() || path;
   return labelizeAssetKey(value);
+}
+
+function assetPathKey(path) {
+  const value = String(path || "");
+  const itemMatch = value.match(/^(.*)\[\d+\]$/);
+  const normalized = itemMatch ? itemMatch[1] : value;
+  return normalized.split(".").pop() || normalized;
+}
+
+function formatAssetCollectionMeta(collection) {
+  const fetched = collection?.fetched_count;
+  const total = collection?.count;
+  if (fetched == null && total == null) return "";
+  return total != null && total !== fetched
+    ? `${formatCount(fetched)} / ${formatCount(total)}`
+    : formatCount(firstFilled(fetched, total));
 }
 
 function labelizeAssetKey(key) {

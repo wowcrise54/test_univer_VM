@@ -871,13 +871,37 @@ td code {
 }
 
 .asset-modal {
-  width: min(1440px, calc(100vw - 42px));
-  max-height: calc(100vh - 42px);
+  width: calc(100vw - 10px);
+  height: calc(100vh - 10px);
+  max-height: calc(100vh - 10px);
+  border-radius: 2px;
 }
 
 .asset-console {
-  min-height: min(760px, calc(100vh - 110px));
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 48px);
   background: #fff;
+}
+
+.asset-modal .passport-modal__bar {
+  min-height: 34px;
+  padding: 4px 8px 4px 12px;
+  background: #fff;
+  backdrop-filter: none;
+}
+
+.asset-modal .passport-modal__bar strong {
+  color: #3d4b5f;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.asset-modal .button.ghost {
+  min-height: 26px;
+  border-radius: 3px;
+  padding: 4px 9px;
+  font-size: 11px;
 }
 
 .asset-console__summary {
@@ -922,40 +946,42 @@ td code {
 .asset-tabs {
   display: flex;
   align-items: center;
-  gap: 18px;
-  min-height: 42px;
-  border-bottom: 1px solid #e5edf5;
-  padding: 0 14px;
+  gap: 26px;
+  flex: 0 0 auto;
+  min-height: 38px;
+  border-bottom: 1px solid #e9edf2;
+  padding: 0 18px;
   background: #fff;
 }
 
 .asset-tabs button {
   align-self: stretch;
   border-bottom: 2px solid transparent;
-  padding: 0 2px;
-  color: #53677e;
+  padding: 1px 0 0;
+  color: #4f5f6e;
   background: transparent;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 780;
+  font-weight: 640;
 }
 
 .asset-tabs button.is-active {
-  color: #1d5f89;
-  border-color: #1d86b8;
+  color: #2a5f78;
+  border-color: #0f8db7;
 }
 
 .asset-config-layout {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  height: min(680px, calc(100vh - 206px));
-  min-height: 520px;
+  grid-template-columns: clamp(420px, 42vw, 680px) minmax(0, 1fr);
+  flex: 1 1 auto;
+  height: calc(100vh - 86px);
+  min-height: 560px;
 }
 
 .asset-tree-pane {
   min-width: 0;
-  border-right: 1px solid #e5edf5;
-  background: #fbfdff;
+  border-right: 1px solid #e9edf2;
+  background: #fff;
 }
 
 .asset-tree-pane__title {
@@ -968,21 +994,27 @@ td code {
 
 .asset-tree {
   overflow: auto;
-  height: calc(100% - 40px);
-  padding: 6px 0 14px;
+  height: 100%;
+  padding: 2px 0 14px;
 }
 
 .asset-tree-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr) 28px;
   align-items: stretch;
   min-height: 25px;
-  padding-left: calc(8px + var(--depth, 0) * 15px);
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  padding-left: calc(8px + var(--depth, 0) * 16px);
 }
 
-.asset-tree-row:hover,
+.asset-tree-row:hover {
+  background: #f1f1f1;
+}
+
 .asset-tree-row.is-selected {
-  background: #d9edf9;
+  border-color: #a9d5e8;
+  background: #d8ecf8;
 }
 
 .asset-tree-toggle,
@@ -994,9 +1026,10 @@ td code {
 }
 
 .asset-tree-toggle {
-  color: #6d8196;
+  color: #73818d;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .asset-tree-toggle.is-empty {
@@ -1008,8 +1041,8 @@ td code {
   align-content: center;
   justify-items: start;
   min-width: 0;
-  padding: 3px 8px 3px 0;
-  color: #25759d;
+  padding: 2px 8px 2px 0;
+  color: #297da6;
   cursor: pointer;
   text-align: left;
 }
@@ -1019,24 +1052,84 @@ td code {
   max-width: 100%;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 740;
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.1;
 }
 
 .asset-tree-label small {
   overflow: hidden;
   max-width: 100%;
-  color: #8a9aae;
+  color: #7d8d99;
   font-size: 10px;
-  font-weight: 620;
+  font-weight: 560;
+  line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.asset-tree-meta {
+  align-self: center;
+  justify-self: end;
+  padding-right: 7px;
+  color: #9ba8b3;
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.asset-tree-search {
+  position: relative;
+  align-self: center;
+  justify-self: center;
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+}
+
+.asset-tree-row:hover .asset-tree-search,
+.asset-tree-row.is-selected .asset-tree-search {
+  opacity: 0.62;
+}
+
+.asset-tree-search::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid #8b98a4;
+  border-radius: 999px;
+  content: "";
+}
+
+.asset-tree-search::after {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 5px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: #8b98a4;
+  content: "";
+  transform: rotate(45deg);
+  transform-origin: center;
 }
 
 .asset-detail-pane {
   min-width: 0;
   overflow: auto;
   background: #fff;
+}
+
+.asset-detail-pane--properties {
+  display: block;
+}
+
+.asset-detail-pane--cvss,
+.asset-vulnerability-pane,
+.asset-summary-grid {
+  flex: 1 1 auto;
+  min-height: 560px;
 }
 
 .asset-detail-heading {
@@ -1080,24 +1173,80 @@ td code {
 }
 
 .asset-detail-table {
-  min-width: 760px;
-  font-size: 12px;
+  min-width: 100%;
+  font-size: 11px;
 }
 
 .asset-detail-table th,
 .asset-detail-table td {
-  padding: 8px 12px;
+  padding: 7px 12px;
 }
 
 .asset-detail-table th {
-  color: #62758a;
-  background: #fbfdff;
-  font-size: 11px;
+  color: #6b7280;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 640;
   letter-spacing: 0;
   text-transform: none;
 }
 
 .asset-detail-table td {
+  color: #4b5563;
+  overflow-wrap: anywhere;
+}
+
+.asset-detail-table td a,
+.asset-detail-table td code,
+.asset-detail-table td:first-child {
+  color: #287aa3;
+}
+
+.asset-cvss-table th:nth-child(1) { width: 38%; }
+.asset-cvss-table th:nth-child(2) { width: 22%; }
+.asset-cvss-table th:nth-child(3) { width: 10%; }
+.asset-cvss-table th:nth-child(4) { width: 12%; }
+.asset-cvss-table th:nth-child(5) { width: 18%; }
+
+.asset-property-list {
+  display: grid;
+  gap: 10px;
+  width: min(560px, 100%);
+  margin: 0 auto;
+  padding: 14px 24px 38px;
+}
+
+.asset-property-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.asset-property-name {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+}
+
+.asset-property-name span {
+  color: #4b5563;
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.asset-property-name small {
+  color: #9ca3af;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.asset-property-row strong {
+  min-width: 0;
+  color: #287aa3;
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
