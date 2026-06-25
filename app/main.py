@@ -135,9 +135,10 @@ class VulnerabilityPassportQueryRequest(BaseModel):
     group_ids: list[str] = Field(default_factory=list)
     asset_ids: list[str] = Field(default_factory=list)
     include_nested_groups: bool = True
-    limit: int = Field(default=1001, ge=1, le=50000)
+    limit: int = Field(default=50000, ge=1, le=50000)
     batch_size: int = Field(default=5000, ge=1, le=10000)
     save_to_db: bool = True
+    load_details: bool = True
 
 
 class AssetCardAssetQueryRequest(BaseModel):
@@ -582,14 +583,29 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
         if payload.save_to_db
         else None
     )
+    detail_result = None
+    if payload.save_to_db and payload.load_details:
+        detail_result = sync_vulnerability_passport_details(
+            client=client,
+            token=token,
+            passports=normalized,
+        )
+        if db_result is not None:
+            db_result["details"] = detail_result
+    records_response = (
+        db.list_vulnerability_passports_by_ids([item.get("internal_id") for item in normalized])
+        if payload.save_to_db
+        else normalized
+    )
     return {
         "pdql": payload.pdql,
         "pdql_token": pdql_token,
         "limit": payload.limit,
         "batch_size": payload.batch_size,
         "total": len(normalized),
-        "records": normalized,
+        "records": records_response,
         "db": db_result,
+        "details": detail_result,
         "raw": raw_response,
     }
 
@@ -604,15 +620,49 @@ def local_vulnerability_passports(
     return db.list_vulnerability_passports(q=q, severity=severity, limit=limit, offset=offset)
 
 
+def sync_vulnerability_passport_details(
+    *,
+    client: MpVmClient,
+    token: str,
+    passports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "requested": 0,
+        "loaded": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+    for passport in passports:
+        internal_id = clean_text(passport.get("internal_id")).strip()
+        if not internal_id:
+            result["skipped"] += 1
+            continue
+        result["requested"] += 1
+        try:
+            raw_detail = client.get_vulnerability_passport(token, internal_id)
+            db.upsert_vulnerability_passport_detail(internal_id, raw_detail)
+            result["loaded"] += 1
+        except (MpVmApiError, requests.RequestException) as exc:
+            result["failed"] += 1
+            if len(result["errors"]) < 25:
+                result["errors"].append({"internal_id": internal_id, "error": str(exc)})
+    return result
+
+
 @app.get("/api/vulnerability-passports/{passport_id}")
 def vulnerability_passport(passport_id: str) -> dict[str, Any]:
+    local = db.get_vulnerability_passport(passport_id)
+    if local and local.get("raw_detail"):
+        return {"id": passport_id, "raw": local["raw_detail"], "source": "db", "passport": local}
+
     client, token = require_mpvm()
     try:
         raw_response = client.get_vulnerability_passport(token, passport_id)
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
-    db.upsert_vulnerability_passport_detail(passport_id, raw_response)
-    return {"id": passport_id, "raw": raw_response}
+    saved = db.upsert_vulnerability_passport_detail(passport_id, raw_response)
+    return {"id": passport_id, "raw": raw_response, "source": "mpvm", "passport": saved}
 
 
 @app.get("/api/exports/{filename}")

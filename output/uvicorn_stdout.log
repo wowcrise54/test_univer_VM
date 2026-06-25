@@ -1,0 +1,2 @@
+INFO:     127.0.0.1:4933 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:4934 - "GET /passports HTTP/1.1" 200 OK

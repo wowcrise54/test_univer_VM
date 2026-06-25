@@ -869,6 +869,35 @@ def list_vulnerability_passports(
     }
 
 
+def list_vulnerability_passports_by_ids(internal_ids: list[Any]) -> list[dict[str, Any]]:
+    ids = [clean_value(value) for value in internal_ids if clean_value(value)]
+    if not ids:
+        return []
+    seen: set[str] = set()
+    ordered_ids: list[str] = []
+    for internal_id in ids:
+        if internal_id in seen:
+            continue
+        seen.add(internal_id)
+        ordered_ids.append(internal_id)
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM vulnerability_passports
+            WHERE internal_id = ANY(%s)
+            """,
+            (ordered_ids,),
+        ).fetchall()
+
+    by_id = {
+        clean_value(row.get("internal_id")): decode_vulnerability_passport(dict(row))
+        for row in rows
+    }
+    return [by_id[internal_id] for internal_id in ordered_ids if internal_id in by_id]
+
+
 def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
     init_db()
     root = card.get("root") if isinstance(card.get("root"), dict) else {}
@@ -1412,6 +1441,7 @@ def decode_vulnerability_passport(row: dict[str, Any]) -> dict[str, Any]:
         "metrics": metrics if isinstance(metrics, dict) else {},
         "raw_record": raw_record if isinstance(raw_record, dict) else {},
         "raw_detail": raw_detail if isinstance(raw_detail, dict) else None,
+        "has_detail": isinstance(raw_detail, dict),
         "source_pdql": row.get("source_pdql"),
         "pdql_token": row.get("pdql_token"),
         "first_seen": row.get("first_seen"),

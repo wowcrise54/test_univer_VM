@@ -1309,6 +1309,19 @@ td code {
   letter-spacing: -0.03em;
 }
 
+.asset-summary-side .passport-section {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+}
+
+.asset-summary-side .passport-section h4 {
+  font-size: 13px;
+}
+
 .wide-cell strong {
   display: block;
   color: #203147;

@@ -845,9 +845,10 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     utc_offset: "+05:00",
     group_ids: "",
     asset_ids: "",
-    passport_limit: "1001",
+    passport_limit: "50000",
     batch_size: "5000",
     include_nested_groups: true,
+    load_details: true,
   });
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -887,7 +888,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const queryPassports = () =>
     runBusy("passportQuery", async () => {
-      const requestedLimit = clampNumber(form.passport_limit, 1001, 1, 50000);
+      const requestedLimit = clampNumber(form.passport_limit, 50000, 1, 50000);
       const requestedBatchSize = clampNumber(form.batch_size, 5000, 1, 10000);
       const result = await api("/api/vulnerability-passports/query", {
         method: "POST",
@@ -900,6 +901,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           limit: requestedLimit,
           batch_size: requestedBatchSize,
           save_to_db: true,
+          load_details: form.load_details,
         }),
       });
       const records = result.records || [];
@@ -911,7 +913,11 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       setQueryRaw(result.raw || null);
       if (records.length) {
         const saved = result.db?.saved;
-        showAlert(`Получено паспортов: ${formatCount(records.length)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}.`, "success");
+        const details = result.db?.details || result.details;
+        const detailsLine = details
+          ? `, деталей в БД: ${formatCount(details.loaded)}${details.failed ? `, ошибок: ${formatCount(details.failed)}` : ""}`
+          : "";
+        showAlert(`Получено паспортов: ${formatCount(records.length)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}${detailsLine}.`, "success");
       } else {
         showAlert("Паспорта не найдены в ответе /assets_grid/data. Raw-ответ показан под таблицей.", "info");
       }
@@ -919,7 +925,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const loadLocalPassports = () =>
     runBusy("passportLocal", async () => {
-      const localLimit = clampNumber(form.passport_limit, 1000, 1, 50000);
+      const localLimit = clampNumber(form.passport_limit, 50000, 1, 50000);
       const result = await api(`/api/vulnerability-passports/local?limit=${encodeURIComponent(localLimit)}`);
       const records = result.rows || [];
       setRows(records);
@@ -942,7 +948,10 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       }
       setDetail(null);
       const result = await api(`/api/vulnerability-passports/${encodeURIComponent(row.internal_id)}`);
-      setDetail(result.raw || {});
+      const nextRow = result.passport || { ...row, raw_detail: result.raw || null, has_detail: Boolean(result.raw) };
+      setRows((items) => items.map((item) => (item.internal_id === row.internal_id ? nextRow : item)));
+      setSelected(nextRow);
+      setDetail(result.raw || nextRow.raw_detail || {});
     });
 
   return (
@@ -973,6 +982,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           <input value={form.batch_size} onChange={(event) => update("batch_size", event.target.value)} type="number" min="1" max="10000" />
         </Field>
         <Toggle label="Include nested groups" checked={form.include_nested_groups} onChange={(value) => update("include_nested_groups", value)} />
+        <Toggle label="Сразу загрузить детали в БД" checked={form.load_details} onChange={(value) => update("load_details", value)} />
       </div>
       <div className="action-row">
         <Button busy={busy.passportQuery} onClick={queryPassports}>Выполнить PDQL</Button>
@@ -1007,6 +1017,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
               <th>CVE</th>
               <th>Severity</th>
               <th>Package</th>
+              <th>Детали</th>
               <th>internalId</th>
               <th></th>
             </tr>
@@ -1022,11 +1033,12 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                 <td>{(row.cves || []).map((item) => item.display_name).filter(Boolean).join(", ") || "n/a"}</td>
                 <td><Severity value={row.severity} /></td>
                 <td>{[row.package_id, row.package_version].filter(Boolean).join(" / ") || "n/a"}</td>
+                <td>{row.has_detail || row.raw_detail ? "в БД" : "нет"}</td>
                 <td><code>{row.internal_id || "n/a"}</code></td>
                 <td><Button variant="tiny" busy={busy.passportDetail && selected?.internal_id === row.internal_id} onClick={() => openPassport(row)}>Открыть</Button></td>
               </tr>
             )) : (
-              <tr><td colSpan={7} className="empty-cell">{rows.length ? "По текущему поиску ничего не найдено." : "Выполните PDQL, чтобы получить internalId паспортов."}</td></tr>
+              <tr><td colSpan={8} className="empty-cell">{rows.length ? "По текущему поиску ничего не найдено." : "Выполните PDQL, чтобы получить internalId паспортов."}</td></tr>
             )}
           </tbody>
         </table>
@@ -1050,7 +1062,13 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
         </details>
       ) : null}
       {passportWindowOpen ? (
-        <PassportModal onClose={() => setPassportWindowOpen(false)}>
+        <PassportModal
+          title="Карточка паспорта уязвимости"
+          className="asset-modal"
+          overlayClassName="asset-modal-overlay"
+          closeLabel="Назад"
+          onClose={() => setPassportWindowOpen(false)}
+        >
           <PassportCard row={selected} detail={detail} loading={busy.passportDetail && !detail} />
         </PassportModal>
       ) : null}
@@ -1348,7 +1366,165 @@ function PassportModal({
 }
 
 function PassportCard({ row, detail, loading }) {
-  const raw = detail || row?.raw_record || {};
+  const raw = detail || row?.raw_detail || row?.raw_record || {};
+  const model = useMemo(() => buildPassportModel(row, raw), [row, raw]);
+  const treeEntries = useMemo(() => buildPassportConfigTree(row, raw, model), [row, raw, model]);
+  const [activeTab, setActiveTab] = useState("configuration");
+  const [expandedPaths, setExpandedPaths] = useState(["passport"]);
+  const [selectedPath, setSelectedPath] = useState("passport");
+  const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
+  const visibleTreeEntries = useMemo(
+    () => treeEntries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, treeEntries)),
+    [treeEntries, expandedSet],
+  );
+  const selectedEntry = useMemo(
+    () => treeEntries.find((entry) => entry.path === selectedPath) || treeEntries[0] || null,
+    [treeEntries, selectedPath],
+  );
+
+  useEffect(() => {
+    if (!row && !detail) return;
+    setExpandedPaths(defaultPassportTreeExpandedPaths(treeEntries));
+    setSelectedPath(treeEntries[0]?.path || "passport");
+    setActiveTab("configuration");
+  }, [row, detail, treeEntries]);
+
+  const toggleTreeEntry = useCallback((path) => {
+    setExpandedPaths((current) => (
+      current.includes(path)
+        ? current.filter((item) => item !== path)
+        : [...current, path]
+    ));
+  }, []);
+
+  if (!row && !detail) {
+    return <div className="passport-placeholder">Выберите строку в таблице, чтобы открыть карточку паспорта уязвимости.</div>;
+  }
+
+  return (
+    <div className="asset-console">
+      <div className="asset-tabs" role="tablist" aria-label="Разделы карточки паспорта">
+        {[
+          ["summary", "Сводка"],
+          ["configuration", "Данные"],
+        ].map(([id, label]) => (
+          <button
+            type="button"
+            className={activeTab === id ? "is-active" : ""}
+            onClick={() => setActiveTab(id)}
+            key={id}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {activeTab === "summary" ? (
+        <PassportSummaryTab model={model} row={row} loading={loading} />
+      ) : null}
+      {activeTab === "configuration" ? (
+        <div className="asset-config-layout">
+          <AssetTree
+            entries={visibleTreeEntries}
+            selectedPath={selectedEntry?.path}
+            expandedSet={expandedSet}
+            onToggle={toggleTreeEntry}
+            onSelect={setSelectedPath}
+          />
+          <PassportConfigTable entry={selectedEntry} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PassportSummaryTab({ model, row, loading }) {
+  return (
+    <div className="asset-summary-grid">
+      <div className="asset-summary-main">
+        <PassportSection title="Основная информация">
+          <KeyValue label="internalId" value={row?.internal_id} />
+          <KeyValue label="Внешний ID" value={row?.external_id} />
+          <KeyValue label="Опасность" value={model.severity} />
+          <KeyValue label="Score" value={model.score} />
+          <KeyValue label="Пакет" value={model.packageLine} />
+          <KeyValue label="Дата публикации" value={formatPassportDateTime(model.issueTime)} />
+        </PassportSection>
+        <PassportSection title="Описание">
+          <p>{model.description || "В сохранённой детали паспорта нет отдельного поля описания."}</p>
+        </PassportSection>
+        <PassportSection title="Как исправить">
+          <p>{model.remediation || "Рекомендация не найдена в нормализованных полях паспорта."}</p>
+        </PassportSection>
+      </div>
+      <div className="asset-summary-side">
+        <div className="asset-summary-card">
+          <span>Score</span>
+          <strong>{model.score || "n/a"}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>Severity</span>
+          <strong>{model.severity || "n/a"}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>CVE</span>
+          <strong>{formatCount(model.cves.length)}</strong>
+        </div>
+        <div className="asset-summary-card">
+          <span>Деталь</span>
+          <strong>{loading ? "загрузка" : row?.has_detail || row?.raw_detail ? "в БД" : "нет"}</strong>
+        </div>
+        <PassportSection title="CVE">
+          {model.cves.length ? model.cves.slice(0, 16).map((item) => (
+            item.url
+              ? <a href={item.url} target="_blank" rel="noreferrer" key={item.display_name || item.url}>{item.display_name || item.url}</a>
+              : <code key={item.display_name}>{item.display_name}</code>
+          )) : <span className="muted-text">CVE не найдены.</span>}
+        </PassportSection>
+        <PassportSection title="Ссылки">
+          {model.links.length ? model.links.slice(0, 12).map((link) => (
+            <a href={link} target="_blank" rel="noreferrer" key={link}>{link}</a>
+          )) : <span className="muted-text">Ссылки не найдены.</span>}
+        </PassportSection>
+        <PassportSection title="Идентификаторы">
+          {model.identifiers.length ? model.identifiers.map((id) => <code key={id}>{id}</code>) : <span className="muted-text">Идентификаторы не найдены.</span>}
+        </PassportSection>
+      </div>
+    </div>
+  );
+}
+
+function PassportConfigTable({ entry }) {
+  const table = buildPassportDetailTable(entry);
+  return (
+    <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry?.label || "Данные паспорта"}>
+      {table.layout === "properties" ? (
+        <AssetPropertyList rows={table.rows} />
+      ) : (
+        <div className="table-shell asset-detail-table-shell">
+          <table className="asset-detail-table">
+            <thead>
+              <tr>
+                {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
+                <tr key={row.key || rowIndex}>
+                  {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
+                </tr>
+              )) : (
+                <tr><td colSpan={table.columns.length} className="empty-cell">В выбранном разделе нет данных.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {table.rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(table.rows.length)} строк.</div> : null}
+    </section>
+  );
+}
+
+function buildPassportModel(row, raw) {
   const title = firstFilled(
     readPath(raw, "name"),
     readPath(raw, "displayName"),
@@ -1358,7 +1534,6 @@ function PassportCard({ row, detail, loading }) {
   );
   const score = firstFilled(readPath(raw, "score"), readPath(raw, "cvss3Score"), readPath(raw, "cvss.score"), row?.score);
   const severity = firstFilled(readPath(raw, "severityRating"), readPath(raw, "severity"), row?.severity);
-  const metrics = firstObject(row?.metrics, readPath(raw, "metrics"), readPath(raw, "Metrics"));
   const cves = mergeCves(row?.cves || [], collectCves(raw));
   const links = collectLinks(raw, cves);
   const identifiers = collectIdentifiers(raw, cves, row);
@@ -1380,66 +1555,171 @@ function PassportCard({ row, detail, loading }) {
     .filter(Boolean)
     .join(" / ");
 
-  if (!row && !detail) {
-    return (
-      <div className="passport-placeholder">
-        Выберите строку в таблице, чтобы открыть карточку паспорта уязвимости.
-      </div>
-    );
+  return {
+    title,
+    score,
+    severity,
+    cves,
+    links,
+    identifiers,
+    description,
+    remediation,
+    issueTime,
+    packageLine,
+  };
+}
+
+function buildPassportConfigTree(row, raw, model) {
+  const source = {
+    summary: {
+      name: model.title,
+      severity: model.severity,
+      score: model.score,
+      package: model.packageLine,
+      issueTime: model.issueTime,
+      cves: model.cves.map((item) => item.display_name || item.url).filter(Boolean),
+      links: model.links,
+      identifiers: model.identifiers,
+    },
+    detail: raw || {},
+  };
+  if (row?.raw_record) source.gridRecord = row.raw_record;
+  if (row?.metrics && Object.keys(row.metrics).length) source.metrics = row.metrics;
+
+  const entries = [];
+  const byPath = new Map();
+  const addEntry = (entry) => {
+    if (byPath.has(entry.path)) return byPath.get(entry.path);
+    byPath.set(entry.path, entry);
+    entries.push(entry);
+    return entry;
+  };
+  const addContainer = (path, parentPath, label, sourceValue, depth) => {
+    addEntry({
+      path,
+      parentPath,
+      label,
+      subtitle: passportValueMeta(sourceValue),
+      kind: "json",
+      source: sourceValue,
+      depth,
+    });
+  };
+  const walk = (value, path, depth) => {
+    if (depth > 7 || !isPassportTreeContainer(value)) return;
+    const children = Array.isArray(value)
+      ? value.slice(0, 250).map((item, index) => [`[${index}]`, item])
+      : Object.entries(value).slice(0, 500);
+    children.forEach(([key, child]) => {
+      if (!isPassportTreeContainer(child)) return;
+      const childPath = Array.isArray(value) ? `${path}${key}` : `${path}.${key}`;
+      addContainer(childPath, path, passportNodeLabel(key), child, depth + 1);
+      walk(child, childPath, depth + 1);
+    });
+  };
+
+  addContainer("passport", null, model.title || row?.internal_id || "Паспорт", source, 0);
+  walk(source, "passport", 0);
+  const hasChildren = new Set(entries.map((entry) => entry.parentPath).filter(Boolean));
+  entries.forEach((entry) => {
+    entry.hasChildren = hasChildren.has(entry.path);
+  });
+  return entries;
+}
+
+function defaultPassportTreeExpandedPaths(entries) {
+  const defaults = ["passport", "passport.summary", "passport.detail"];
+  const existing = new Set(entries.map((entry) => entry.path));
+  return defaults.filter((path) => existing.has(path));
+}
+
+function buildPassportDetailTable(entry) {
+  const value = entry?.source;
+  if (Array.isArray(value)) return buildPassportArrayTable(value);
+  if (value && typeof value === "object") {
+    const rows = Object.entries(value)
+      .flatMap(([key, item]) => buildAssetPropertyRows({
+        name: key,
+        title: passportNodeLabel(key),
+        value: item,
+        path: `${entry?.path || "passport"}.${key}`,
+      }));
+    return {
+      columns: [
+        { key: "title", title: "Название" },
+        { key: "value", title: "Значение" },
+      ],
+      rows,
+      layout: "properties",
+    };
+  }
+  return {
+    columns: [{ key: "value", title: "Значение" }],
+    rows: value === undefined ? [] : [{ key: entry?.path || "value", value }],
+  };
+}
+
+function buildPassportArrayTable(items) {
+  if (!items.length) {
+    return { columns: [{ key: "value", title: "Значение" }], rows: [] };
+  }
+  if (!items.some((item) => item && typeof item === "object" && !Array.isArray(item))) {
+    return {
+      columns: [
+        { key: "index", title: "#" },
+        { key: "value", title: "Значение" },
+      ],
+      rows: items.map((item, index) => ({ key: index, index: index + 1, value: item })),
+    };
   }
 
-  return (
-    <div className="passport-card">
-      <div className="passport-card__header">
-        <span className="score-badge score-badge--large">{score || "n/a"}</span>
-        <div>
-          <h3>{title || "Паспорт уязвимости"}</h3>
-          <div className="passport-card__meta">
-            {cves.slice(0, 3).map((item) => item.url ? (
-              <a href={item.url} target="_blank" rel="noreferrer" key={item.display_name || item.url}>{item.display_name || item.url}</a>
-            ) : <span key={item.display_name}>{item.display_name}</span>)}
-          </div>
-        </div>
-      </div>
-      <div className="passport-badges">
-        <span>Severity: {severity || "n/a"}</span>
-        {metrics.exploitable ? <span>Exploit: {String(metrics.exploitable)}</span> : null}
-        {metrics.hasFix ? <span>Fix: {String(metrics.hasFix)}</span> : null}
-        {metrics.hasNetworkAttackVector ? <span>Network vector: {String(metrics.hasNetworkAttackVector)}</span> : null}
-      </div>
-      <div className="passport-card__body">
-        <div className="passport-card__main">
-          <PassportSection title="Основная информация">
-            <KeyValue label="Опасность" value={severity} />
-            <KeyValue label="Score" value={score} />
-            <KeyValue label="Пакет" value={packageLine} />
-            <KeyValue label="Дата публикации" value={formatPassportDateTime(issueTime)} />
-          </PassportSection>
-          <PassportSection title="Описание">
-            <p>{description || "В ответе MP VM нет отдельного поля описания. Полный raw-ответ доступен справа."}</p>
-          </PassportSection>
-          <PassportSection title="Как исправить">
-            <p>{remediation || "Рекомендация не найдена в нормализованных полях. Проверьте raw-ответ справа."}</p>
-          </PassportSection>
-          <PassportSection title="Ссылки">
-            {links.length ? links.slice(0, 12).map((link) => (
-              <a href={link} target="_blank" rel="noreferrer" key={link}>{link}</a>
-            )) : <span className="muted-text">Ссылки не найдены.</span>}
-          </PassportSection>
-          <PassportSection title="Идентификаторы">
-            {identifiers.length ? identifiers.map((id) => <code key={id}>{id}</code>) : <span className="muted-text">Идентификаторы не найдены.</span>}
-          </PassportSection>
-        </div>
-        <aside className="passport-card__side">
-          <div className="green-note">{loading ? "Загружаю детальный ответ из MP VM..." : "Детальный ответ получен напрямую из MP VM по internalId паспорта."}</div>
-          <details className="raw-details" open>
-            <summary>Полный JSON ответа</summary>
-            <pre>{JSON.stringify(detail || row?.raw_record || {}, null, 2)}</pre>
-          </details>
-        </aside>
-      </div>
-    </div>
-  );
+  const keys = collectPassportArrayKeys(items);
+  const columns = [{ key: "index", title: "#" }, ...keys.map((key) => ({ key, title: passportNodeLabel(key) }))];
+  const rows = items.map((item, index) => {
+    const row = { key: index, index: index + 1 };
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : { value: item };
+    keys.forEach((key) => {
+      row[key] = source[key];
+    });
+    return row;
+  });
+  return { columns, rows };
+}
+
+function collectPassportArrayKeys(items) {
+  const seen = new Set();
+  const preferred = ["name", "displayName", "id", "internalId", "severity", "score", "packageId", "packageVersion", "url"];
+  items.forEach((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    Object.keys(item).forEach((key) => {
+      if (!isPassportTreeContainer(item[key])) seen.add(key);
+    });
+  });
+  return Array.from(seen).sort((left, right) => {
+    const leftIndex = preferred.indexOf(left);
+    const rightIndex = preferred.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+    }
+    return left.localeCompare(right);
+  }).slice(0, 14);
+}
+
+function isPassportTreeContainer(value) {
+  return Boolean(value && typeof value === "object");
+}
+
+function passportValueMeta(value) {
+  if (Array.isArray(value)) return `${formatCount(value.length)} элементов`;
+  if (value && typeof value === "object") return `${formatCount(Object.keys(value).length)} полей`;
+  return "";
+}
+
+function passportNodeLabel(key) {
+  const value = String(key || "");
+  const arrayMatch = value.match(/^\[(\d+)\]$/);
+  if (arrayMatch) return `Элемент ${Number(arrayMatch[1]) + 1}`;
+  return labelizeAssetKey(value);
 }
 
 function PassportSection({ title, children }) {
@@ -1908,6 +2188,7 @@ function buildPassportSearchText(row) {
     cves,
     row.metrics?.displayName,
     JSON.stringify(row.raw_record || {}),
+    JSON.stringify(row.raw_detail || {}),
   ].filter(Boolean).join(" "));
 }
 
@@ -2022,10 +2303,6 @@ function textValue(value) {
     return firstFilled(value.displayName, value.name, value.title, value.value, value.text, value.description) || "";
   }
   return "";
-}
-
-function firstObject(...values) {
-  return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
 }
 
 function formatPassportDateTime(value) {
