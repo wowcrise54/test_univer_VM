@@ -870,10 +870,6 @@ td code {
   min-width: 1180px;
 }
 
-.passport-modal.asset-modal-overlay {
-  padding: 0;
-}
-
 .asset-modal {
   width: 100vw;
   height: 100vh;
@@ -884,7 +880,10 @@ td code {
 .asset-console {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 34px);
+  height: calc(100vh - 34px);
+  height: calc(100dvh - 34px);
+  min-height: 0;
+  overflow: hidden;
   background: #fff;
 }
 
@@ -978,12 +977,14 @@ td code {
   display: grid;
   grid-template-columns: clamp(420px, 42vw, 680px) minmax(0, 1fr);
   flex: 1 1 auto;
-  height: calc(100vh - 72px);
-  min-height: 560px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .asset-tree-pane {
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid #e9edf2;
   background: #fff;
 }
@@ -1121,6 +1122,7 @@ td code {
 
 .asset-detail-pane {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   background: #fff;
 }
@@ -1129,9 +1131,22 @@ td code {
   display: block;
 }
 
+.asset-detail-pane--table {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.asset-detail-pane--table .asset-detail-table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .asset-summary-grid {
   flex: 1 1 auto;
-  min-height: 560px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .asset-detail-heading {
@@ -1250,7 +1265,7 @@ td code {
   display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
   gap: 0;
-  min-height: 560px;
+  min-height: 0;
 }
 
 .asset-summary-main {
@@ -1471,6 +1486,29 @@ td code {
   border-radius: 0;
 }
 
+.passport-modal.asset-modal-overlay {
+  place-items: stretch;
+  padding: 0;
+  background: #fff;
+}
+
+.passport-modal.asset-modal-overlay .passport-modal__backdrop {
+  display: none;
+}
+
+.passport-modal__window.asset-modal {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .passport-card {
   margin-top: 18px;
   border: 1px solid var(--line);
@@ -1682,8 +1720,9 @@ td code {
   }
 
   .asset-config-layout {
-    height: calc(100vh - 72px);
+    height: auto;
     min-height: 0;
+    overflow: auto;
   }
 
   .asset-tree-pane {

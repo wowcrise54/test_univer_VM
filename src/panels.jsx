@@ -1305,7 +1305,6 @@ function AssetRowsTable({ rows }) {
           <tr>
             <th>Path</th>
             <th>Название</th>
-            <th>Type</th>
             <th>Значение</th>
           </tr>
         </thead>
@@ -1314,11 +1313,10 @@ function AssetRowsTable({ rows }) {
             <tr key={`${row.path}-${index}`}>
               <td><code>{row.path}</code></td>
               <td>{row.title || row.name}</td>
-              <td>{[row.kind, row.type].filter(Boolean).join(" / ") || "—"}</td>
               <td>{row.value || "—"}</td>
             </tr>
           )) : (
-            <tr><td colSpan={4} className="empty-cell">Данных для этого раздела нет.</td></tr>
+            <tr><td colSpan={3} className="empty-cell">Данных для этого раздела нет.</td></tr>
           )}
         </tbody>
       </table>
@@ -1665,8 +1663,6 @@ function buildAssetObjectPropertyTable(card, object, basePath) {
   const props = metadataPropertiesForType(card, object?.type);
   const baseRows = [
     ["displayName", "Название", object?.displayName || object?.display_name],
-    ["objectId", "Идентификатор", object?.objectId || object?.object_id],
-    ["type", "Type", object?.type],
     ["vulnerabilityLevel", "Уровень уязвимости", object?.vulnerabilityLevel || object?.vulnerability_level],
   ]
     .filter(([, , value]) => value !== undefined && value !== null && value !== "")
@@ -1679,20 +1675,21 @@ function buildAssetObjectPropertyTable(card, object, basePath) {
       path: basePath,
     }));
 
-  const dataRows = Object.entries(data).map(([key, value]) => ({
-    key,
-    title: firstFilled(props[key]?.title, labelizeAssetKey(key)),
-    name: key,
-    type: props[key]?.type || "",
-    value,
-    path: `${basePath}.${key}`,
-  }));
+  const dataRows = Object.entries(data)
+    .filter(([key]) => !isHiddenAssetTechnicalField(key))
+    .map(([key, value]) => ({
+      key,
+      title: firstFilled(props[key]?.title, labelizeAssetKey(key)),
+      name: key,
+      type: props[key]?.type || "",
+      value,
+      path: `${basePath}.${key}`,
+    }));
 
   return {
     columns: [
       { key: "title", title: "Название" },
       { key: "value", title: "Значение" },
-      { key: "type", title: "Тип" },
     ],
     rows: [...baseRows, ...dataRows],
     layout: "properties",
@@ -1704,7 +1701,6 @@ function buildAssetRowsDetailTable(rows) {
     columns: [
       { key: "path", title: "Path" },
       { key: "title", title: "Название" },
-      { key: "type", title: "Тип" },
       { key: "value", title: "Значение" },
     ],
     rows: rows.map((row, index) => ({ ...row, key: `${row.path}-${index}` })),
@@ -1713,11 +1709,11 @@ function buildAssetRowsDetailTable(rows) {
 
 function collectAssetCollectionDataKeys(items) {
   const seen = new Set();
-  const preferred = ["ipAddress", "address", "hostname", "fqdn", "macAddress", "type", "name", "displayName", "version", "status"];
+  const preferred = ["ipAddress", "address", "hostname", "fqdn", "macAddress", "name", "displayName", "version", "status"];
   items.forEach((item) => {
     const data = item.data || {};
     Object.keys(data).forEach((key) => {
-      if (!isVerboseAssetValue(data[key])) seen.add(key);
+      if (!isHiddenAssetTechnicalField(key) && !isVerboseAssetValue(data[key])) seen.add(key);
     });
   });
   const keys = Array.from(seen);
@@ -1734,23 +1730,20 @@ function collectAssetCollectionDataKeys(items) {
 function assetCollectionColumns(items, dataKeys, props) {
   const columns = [];
   const addColumn = (key, title) => {
-    if (!key || columns.some((column) => column.key === key)) return;
+    if (!key || isHiddenAssetTechnicalField(key) || columns.some((column) => column.key === key)) return;
     columns.push({ key, title: title || firstFilled(props[key]?.title, labelizeAssetKey(key)) });
   };
 
   if (dataKeys.length) {
     dataKeys.forEach((key) => addColumn(key));
-    return columns.slice(0, 14);
+    if (columns.length) return columns.slice(0, 14);
   }
 
   if (items.some((item) => item?.display_name || item?.displayName)) addColumn("display_name", "Имя");
-  if (items.some((item) => item?.object_id || item?.objectId)) addColumn("object_id", "Идентификатор");
-  if (items.some((item) => item?.type)) addColumn("type", "Тип");
+  if (items.some((item) => item?.name || item?.data?.name)) addColumn("name", "Имя");
 
   if (!columns.length) {
     addColumn("display_name", "Название");
-    addColumn("type", "Тип");
-    addColumn("object_id", "Идентификатор");
   }
 
   return columns.slice(0, 14);
@@ -1763,6 +1756,11 @@ function metadataPropertiesForType(card, type) {
   const properties = typeMetadata?.properties;
   if (!Array.isArray(properties)) return {};
   return Object.fromEntries(properties.filter((prop) => prop?.name).map((prop) => [prop.name, prop]));
+}
+
+function isHiddenAssetTechnicalField(key) {
+  const normalized = String(key || "").replace(/[_-]/g, "").toLowerCase();
+  return normalized === "type" || normalized === "objectid";
 }
 
 function assetTreeParentPath(path) {
