@@ -26,6 +26,10 @@ ASSET_TREE_ROOT_PATH = "/api/assets/tree/root"
 ASSET_TREE_COLLECTION_PATH = "/api/assets/tree/collection/{asset_type}/{object_id}/{collection_name}"
 ASSET_TREE_NODE_PATH = "/api/assets/tree/node/{asset_type}/{object_id}"
 ASSET_METADATA_PATH = "/api/assets/metadata/{asset_type}"
+ASSET_VULNERABILITIES_HEADER_PATH = "/api/widgets/assets/HostVulnerabilitiesHeader/{timeline_token}"
+ASSET_OS_VULNERABILITIES_PATH = "/api/widgets/assets/HostOSVulnerabilities/{timeline_token}"
+ASSET_SOFTWARE_VULNERABILITIES_PATH = "/api/widgets/assets/HostSoftVulnerabilities/{timeline_token}"
+ASSET_VULNERABILITY_COLLECTION_PATH = "/api/widgets/assets/{collection_type}/{timeline_token}/collections/{collection_id}"
 SCOPES_PATH = "/api/scopes/v2/scopes"
 CREDENTIALS_PATH = "/api/v3/credentials"
 ASSET_REMOVE_OPERATION_PATH = "/api/assets_processing/v1/asset_operations/removeAssets"
@@ -336,6 +340,67 @@ class MpVmClient:
         if not isinstance(data, dict):
             raise MpVmApiError(f"Unexpected asset tree collection response: {compact_json_summary(data)}")
         return data
+
+    def get_asset_vulnerabilities_header(self, access_token: str, timeline_token: str) -> dict[str, Any]:
+        safe_token = quote(timeline_token, safe="")
+        data = self.get_json(
+            access_token,
+            ASSET_VULNERABILITIES_HEADER_PATH.format(timeline_token=safe_token),
+        )
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected asset vulnerabilities header response: {compact_json_summary(data)}")
+        return data
+
+    def get_asset_vulnerability_groups(
+        self,
+        access_token: str,
+        collection_type: str,
+        timeline_token: str,
+    ) -> dict[str, Any]:
+        paths = {
+            "HostOSVulnerabilities": ASSET_OS_VULNERABILITIES_PATH,
+            "HostSoftVulnerabilities": ASSET_SOFTWARE_VULNERABILITIES_PATH,
+        }
+        path = paths.get(collection_type)
+        if not path:
+            raise ValueError(f"Unsupported asset vulnerability collection type: {collection_type}")
+        safe_token = quote(timeline_token, safe="")
+        data = self.get_json(access_token, path.format(timeline_token=safe_token))
+        if not isinstance(data, dict):
+            raise MpVmApiError(f"Unexpected {collection_type} response: {compact_json_summary(data)}")
+        return data
+
+    def get_asset_vulnerability_collection(
+        self,
+        access_token: str,
+        collection_type: str,
+        timeline_token: str,
+        collection_id: str,
+        *,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if collection_type not in {"HostOSVulnerabilities", "HostSoftVulnerabilities"}:
+            raise ValueError(f"Unsupported asset vulnerability collection type: {collection_type}")
+        safe_collection_type = quote(collection_type, safe="")
+        safe_token = quote(timeline_token, safe="")
+        safe_collection_id = quote(collection_id, safe="")
+        data = self.get_json(
+            access_token,
+            ASSET_VULNERABILITY_COLLECTION_PATH.format(
+                collection_type=safe_collection_type,
+                timeline_token=safe_token,
+                collection_id=safe_collection_id,
+            ),
+            params={"offset": offset, "limit": limit},
+        )
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            items = data.get("items") or data.get("data")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        raise MpVmApiError(f"Unexpected {collection_type} collection response: {compact_json_summary(data)}")
 
     def list_remote_scanner_tasks(
         self,

@@ -650,6 +650,14 @@ def sync_vulnerability_passport_details(
     return result
 
 
+@app.get("/api/vulnerability-passports/{passport_id}/asset-links")
+def vulnerability_passport_asset_links(passport_id: str) -> dict[str, Any]:
+    return {
+        "passport_id": passport_id,
+        "rows": db.list_asset_card_links_for_vulnerability_passport(passport_id),
+    }
+
+
 @app.get("/api/vulnerability-passports/{passport_id}")
 def vulnerability_passport(passport_id: str) -> dict[str, Any]:
     local = db.get_vulnerability_passport(passport_id)
@@ -1135,6 +1143,9 @@ def build_asset_card(
         "metadata_requests": 0,
         "node_requests": 0,
         "collection_requests": 0,
+        "vulnerability_header_requests": 0,
+        "vulnerability_group_requests": 0,
+        "vulnerability_collection_requests": 0,
         "nodes": 0,
         "collections": 0,
         "table_rows": 0,
@@ -1540,6 +1551,14 @@ def build_asset_card(
             )
 
     traverse_node(root, "asset", 0)
+    vulnerabilities = build_asset_vulnerability_snapshot(
+        client=client,
+        token=token,
+        timeline_token=timeline_token,
+        limit_per_collection=min(limit_per_collection, 1000),
+        max_items_per_collection=max_items_per_collection,
+        stats=stats,
+    )
     stats["table_rows"] = len(table_rows)
 
     return {
@@ -1555,6 +1574,7 @@ def build_asset_card(
         "nodes": nodes,
         "collections": collections,
         "table_rows": table_rows,
+        "vulnerabilities": vulnerabilities,
         "stats": stats,
     }
 
@@ -1582,6 +1602,176 @@ def extract_collection_count(response: Any) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def build_asset_vulnerability_snapshot(
+    *,
+    client: MpVmClient,
+    token: str,
+    timeline_token: str,
+    limit_per_collection: int,
+    max_items_per_collection: int,
+    stats: dict[str, Any],
+) -> dict[str, Any]:
+    """Load the two widget trees and expand every software/OS vulnerability collection.
+
+    The widgets are intentionally handled apart from the generic asset-tree API: their
+    collection identifiers and payloads are a different contract and are what lets the
+    UI show the compact hierarchy from the MP VM asset card.
+    """
+
+    snapshot: dict[str, Any] = {
+        "header": {},
+        "sources": [],
+        "stats": {"groups": 0, "findings": 0, "truncated_groups": 0, "warnings": []},
+    }
+
+    def warn(message: str) -> None:
+        snapshot["stats"]["warnings"].append(message)
+        stats["warnings"].append(message)
+
+    try:
+        header = client.get_asset_vulnerabilities_header(token, timeline_token)
+        stats["vulnerability_header_requests"] += 1
+        snapshot["header"] = normalize_asset_vulnerabilities_header(header)
+    except (MpVmApiError, requests.RequestException) as exc:
+        warn(f"vulnerabilities header: {exc}")
+
+    widget_sources = (
+        ("os", "HostOSVulnerabilities", "Уязвимости ОС"),
+        ("software", "HostSoftVulnerabilities", "Уязвимости программного обеспечения"),
+    )
+    page_size = max(1, min(limit_per_collection, 1000))
+    max_items = max(1, max_items_per_collection)
+
+    for source, collection_type, title in widget_sources:
+        source_doc: dict[str, Any] = {
+            "source": source,
+            "collection_type": collection_type,
+            "title": title,
+            "level": None,
+            "vulnerabilities_count": 0,
+            "cvss_score": None,
+            "groups": [],
+        }
+        try:
+            response = client.get_asset_vulnerability_groups(token, collection_type, timeline_token)
+            stats["vulnerability_group_requests"] += 1
+        except (MpVmApiError, requests.RequestException) as exc:
+            warn(f"{collection_type}: {exc}")
+            snapshot["sources"].append(source_doc)
+            continue
+
+        source_doc["level"] = response.get("level")
+        source_doc["vulnerabilities_count"] = number_or_zero(response.get("vulnerabilitiesCount"))
+        source_doc["cvss_score"] = number_or_none(response.get("cvssScore"))
+        for group_index, item in enumerate(extract_collection_items(response)):
+            if not isinstance(item, dict):
+                continue
+            collection_id = vulnerability_collection_id(item)
+            group: dict[str, Any] = {
+                "source": source,
+                "collection_type": collection_type,
+                "collection_id": collection_id,
+                "name": clean_text(item.get("name")),
+                "level": item.get("level"),
+                "vulnerabilities_count": number_or_zero(item.get("vulnerabilitiesCount")),
+                "cvss_score": number_or_none(item.get("cvssScore")),
+                "order": group_index,
+                "items": [],
+                "truncated": False,
+            }
+            if not collection_id:
+                warn(f"{collection_type} group '{group['name'] or group_index}' does not contain collection id")
+                source_doc["groups"].append(group)
+                continue
+
+            offset = 0
+            while len(group["items"]) < max_items:
+                current_limit = min(page_size, max_items - len(group["items"]))
+                try:
+                    batch = client.get_asset_vulnerability_collection(
+                        token,
+                        collection_type,
+                        timeline_token,
+                        collection_id,
+                        limit=current_limit,
+                        offset=offset,
+                    )
+                    stats["vulnerability_collection_requests"] += 1
+                except (MpVmApiError, requests.RequestException) as exc:
+                    warn(f"{collection_type} collection {collection_id}: {exc}")
+                    break
+
+                normalized_batch = [normalize_asset_vulnerability_item(entry) for entry in batch]
+                group["items"].extend(normalized_batch)
+                if not batch or len(batch) < current_limit:
+                    break
+                offset += len(batch)
+
+            reported_count = group["vulnerabilities_count"]
+            group["truncated"] = (
+                len(group["items"]) < reported_count
+                if reported_count
+                else len(group["items"]) >= max_items
+            )
+            if group["truncated"]:
+                snapshot["stats"]["truncated_groups"] += 1
+                warn(
+                    f"{collection_type} collection {collection_id}: loaded {len(group['items'])} of "
+                    f"{reported_count or 'unknown'} vulnerability item(s)"
+                )
+            source_doc["groups"].append(group)
+
+        snapshot["sources"].append(source_doc)
+
+    snapshot["stats"]["groups"] = sum(len(source["groups"]) for source in snapshot["sources"])
+    snapshot["stats"]["findings"] = sum(
+        len(group["items"])
+        for source in snapshot["sources"]
+        for group in source["groups"]
+    )
+    return snapshot
+
+
+def normalize_asset_vulnerabilities_header(header: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "os_soft_vulnerabilities_count": number_or_zero(header.get("osSoftVulnerabilitiesCount")),
+        "network_services_vulnerabilities_count": number_or_zero(header.get("networkServicesVulnerabilitiesCount")),
+    }
+
+
+def vulnerability_collection_id(item: dict[str, Any]) -> str:
+    vulnerabilities = item.get("vulnerabilities") if isinstance(item.get("vulnerabilities"), dict) else {}
+    return clean_text(first_present(vulnerabilities.get("key"), item.get("id"), item.get("key"))).strip()
+
+
+def normalize_asset_vulnerability_item(item: dict[str, Any]) -> dict[str, Any]:
+    description = item.get("description") if isinstance(item.get("description"), dict) else {}
+    return {
+        "level": item.get("level"),
+        "name": clean_text(item.get("name")),
+        "cve_name": clean_text(first_present(item.get("cveName"), item.get("cve"))),
+        "description_key": clean_text(first_present(description.get("key"), item.get("descriptionKey"))),
+        "cvss_score": number_or_none(item.get("cvssScore")),
+        "object_id": clean_text(item.get("objectId")),
+        "vulnerability_id": clean_text(first_present(item.get("vulnerId"), item.get("vulnerabilityId"))),
+        "vulnerability_instance_id": clean_text(first_present(item.get("vulnerabilityInstanceId"), item.get("id"))),
+    }
+
+
+def number_or_none(value: Any) -> int | float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def number_or_zero(value: Any) -> int | float:
+    return number_or_none(value) or 0
 
 
 def metadata_properties_by_name(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -1278,6 +1278,162 @@ td code {
   min-height: 560px;
 }
 
+.asset-vulnerability-pane {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+}
+
+.asset-vulnerability-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 7px;
+  border-bottom: 1px solid #edf2f7;
+  padding: 9px 14px;
+  background: #fbfdff;
+}
+
+.asset-vulnerability-toolbar span {
+  border: 1px solid #dbe8ef;
+  border-radius: 4px;
+  padding: 4px 7px;
+  color: #52637a;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 670;
+}
+
+.asset-vulnerability-toolbar strong {
+  color: #203147;
+}
+
+.asset-vulnerability-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 45px;
+  border-bottom: 1px solid #edf2f7;
+  padding: 7px 15px;
+}
+
+.asset-vulnerability-heading strong {
+  display: block;
+  color: #27384f;
+  font-size: 13px;
+}
+
+.asset-vulnerability-heading span {
+  display: block;
+  margin-top: 2px;
+  color: #8996a5;
+  font-size: 11px;
+}
+
+.asset-vulnerability-table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.asset-vulnerability-table {
+  min-width: 760px;
+  font-size: 11px;
+}
+
+.asset-vulnerability-table th,
+.asset-vulnerability-table td {
+  padding: 6px 14px;
+  border-bottom: 1px solid #edf2f7;
+  vertical-align: middle;
+}
+
+.asset-vulnerability-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #7d8a99;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.asset-vulnerability-table th:nth-child(1) {
+  width: 64%;
+}
+
+.asset-vulnerability-table th:nth-child(2) {
+  width: 22%;
+}
+
+.asset-vulnerability-table th:nth-child(3) {
+  width: 14%;
+}
+
+.asset-vulnerability-source td {
+  color: #52637a;
+  background: #fbfdff;
+  font-weight: 760;
+}
+
+.asset-vulnerability-group td:first-child {
+  padding-left: 29px;
+  color: #41546b;
+}
+
+.asset-vulnerability-group strong {
+  color: #34475c;
+  font-weight: 700;
+}
+
+.asset-vulnerability-group small {
+  margin-left: 8px;
+  color: #b06c00;
+  font-size: 10px;
+}
+
+.asset-vulnerability-finding td:first-child {
+  padding-left: 48px;
+  color: #287aa3;
+}
+
+.asset-vulnerability-finding:hover td {
+  background: #f6fbff;
+}
+
+.asset-vulnerability-caret {
+  display: inline-block;
+  width: 15px;
+  color: #9aa8b5;
+  text-align: center;
+}
+
+.asset-vulnerability-leaf {
+  display: inline-block;
+  width: 15px;
+  color: #f0b429;
+  text-align: center;
+}
+
+.asset-vulnerability-passport-link {
+  border: 0;
+  padding: 0;
+  color: #287aa3;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.asset-vulnerability-passport-link:hover {
+  color: #0f5f86;
+  text-decoration: underline;
+}
+
 .asset-summary-side {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -584,6 +584,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [cardSearch, setCardSearch] = useState("");
   const [queryRaw, setQueryRaw] = useState(null);
   const [assetWindowOpen, setAssetWindowOpen] = useState(false);
+  const [selectedPassport, setSelectedPassport] = useState(null);
+  const [assetPassportDetail, setAssetPassportDetail] = useState(null);
+  const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
 
   useEffect(() => {
     if (!defaults) return;
@@ -676,6 +679,18 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`);
       setSelectedCard(result);
       setAssetWindowOpen(true);
+    });
+
+  const openAssetPassport = (passportId) =>
+    runBusy("assetCardPassportDetail", async () => {
+      if (!passportId) throw new Error("Для этой уязвимости ещё не найден локальный паспорт.");
+      setSelectedPassport({ internal_id: passportId });
+      setAssetPassportDetail(null);
+      setAssetPassportWindowOpen(true);
+      const result = await api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`);
+      const nextPassport = result.passport || { internal_id: passportId, raw_detail: result.raw || null, has_detail: Boolean(result.raw) };
+      setSelectedPassport(nextPassport);
+      setAssetPassportDetail(result.raw || nextPassport.raw_detail || {});
     });
 
   return (
@@ -832,7 +847,26 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           closeLabel="Назад"
           onClose={() => setAssetWindowOpen(false)}
         >
-          <AssetCard card={selectedCard} loading={busy.assetCardBuild || busy.assetCardOpen} />
+          <AssetCard
+            card={selectedCard}
+            loading={busy.assetCardBuild || busy.assetCardOpen}
+            onOpenPassport={openAssetPassport}
+          />
+      </PassportModal>
+      ) : null}
+      {assetPassportWindowOpen ? (
+        <PassportModal
+          title="Паспорт уязвимости"
+          className="asset-modal"
+          overlayClassName="asset-modal-overlay"
+          closeLabel="Назад к активу"
+          onClose={() => setAssetPassportWindowOpen(false)}
+        >
+          <PassportCard
+            row={selectedPassport}
+            detail={assetPassportDetail}
+            loading={busy.assetCardPassportDetail && !assetPassportDetail}
+          />
         </PassportModal>
       ) : null}
     </Panel>
@@ -1076,7 +1110,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   );
 }
 
-function AssetCard({ card, loading }) {
+function AssetCard({ card, loading, onOpenPassport }) {
   const raw = assetCardRaw(card);
   const root = card?.root || raw.root || {};
   const data = root.data || {};
@@ -1125,6 +1159,7 @@ function AssetCard({ card, loading }) {
       <div className="asset-tabs" role="tablist" aria-label="Разделы карточки актива">
         {[
           ["summary", "Сводка"],
+          ["vulnerabilities", "Уязвимости"],
           ["configuration", "Конфигурация"],
         ].map(([id, label]) => (
           <button
@@ -1148,6 +1183,9 @@ function AssetCard({ card, loading }) {
           stats={stats}
           loading={loading}
         />
+      ) : null}
+      {activeTab === "vulnerabilities" ? (
+        <AssetVulnerabilitiesTab card={card} onOpenPassport={onOpenPassport} />
       ) : null}
       {activeTab === "configuration" ? (
         <div className="asset-config-layout">
@@ -1207,6 +1245,104 @@ function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, st
         </div>
       </div>
     </div>
+  );
+}
+
+function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
+  const snapshot = assetCardVulnerabilities(card);
+  const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+  const header = snapshot.header || {};
+  const findingCount = sources.reduce(
+    (total, source) => total + (source.groups || []).reduce((sum, group) => sum + (group.items || []).length, 0),
+    0,
+  );
+  const sourceCount = (source) => (source.groups || []).reduce(
+    (total, group) => total + (Number(group.vulnerabilities_count) || (group.items || []).length),
+    0,
+  );
+
+  return (
+    <section className="asset-vulnerability-pane" aria-label="Уязвимости актива">
+      <div className="asset-vulnerability-toolbar">
+        {sources.map((source) => (
+          <span key={source.source || source.collection_type}>
+            {source.source === "os" ? "Уязвимости ОС" : "Уязвимости ПО"}: <strong>{formatCount(sourceCount(source))}</strong>
+          </span>
+        ))}
+        <span>Сетевые сервисы: <strong>{formatCount(header.network_services_vulnerabilities_count || 0)}</strong></span>
+      </div>
+      <div className="asset-vulnerability-heading">
+        <div>
+          <strong>Уязвимости</strong>
+          <span>Загружено {formatCount(findingCount)} из {formatCount(header.os_soft_vulnerabilities_count || findingCount)} уязвимостей.</span>
+        </div>
+      </div>
+      <div className="asset-vulnerability-table-shell">
+        <table className="asset-vulnerability-table">
+          <thead>
+            <tr>
+              <th>Уязвимости</th>
+              <th>Интегральная уязвимость</th>
+              <th>CVE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sources.flatMap((source) => {
+              const groups = source.groups || [];
+              const sourceKey = source.source || source.collection_type || source.title;
+              return [
+                <tr className="asset-vulnerability-source" key={`${sourceKey}-source`}>
+                  <td colSpan={3}>
+                    <span className="asset-vulnerability-caret">⌄</span>
+                    {source.title || (source.source === "os" ? "Уязвимости ОС" : "Уязвимости программного обеспечения")} ({formatCount(sourceCount(source))})
+                  </td>
+                </tr>,
+                ...groups.flatMap((group, groupIndex) => [
+                  <tr className="asset-vulnerability-group" key={`${sourceKey}-${group.collection_id || groupIndex}`}>
+                    <td>
+                      <span className="asset-vulnerability-caret">⌄</span>
+                      <strong>{group.name || "Без названия"}</strong> ({formatCount(group.vulnerabilities_count || (group.items || []).length)})
+                      {group.truncated ? <small>Показана неполная коллекция</small> : null}
+                    </td>
+                    <td>{formatVulnerabilityScore(group.cvss_score)}</td>
+                    <td />
+                  </tr>,
+                  ...(group.items || []).map((finding, findingIndex) => {
+                    const passportId = finding.passport_ids?.[0];
+                    return (
+                      <tr className="asset-vulnerability-finding" key={finding.vulnerability_instance_id || `${group.collection_id}-${findingIndex}`}>
+                        <td>
+                          <span className="asset-vulnerability-leaf">•</span>
+                          <span>{finding.name || finding.cve_name || "Уязвимость без названия"}</span>
+                        </td>
+                        <td>{formatVulnerabilityScore(finding.cvss_score)}</td>
+                        <td>
+                          {passportId ? (
+                            <button
+                              type="button"
+                              className="asset-vulnerability-passport-link"
+                              onClick={() => onOpenPassport?.(passportId)}
+                              title={`Открыть паспорт ${passportId}`}
+                            >
+                              {finding.cve_name || "Открыть паспорт"}
+                            </button>
+                          ) : (
+                            finding.cve_name || "—"
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  }),
+                ]),
+              ];
+            })}
+            {!sources.some((source) => (source.groups || []).length) ? (
+              <tr><td colSpan={3} className="empty-cell">Уязвимостей в сохранённом снимке нет.</td></tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -1781,6 +1917,17 @@ function assetCardRows(card) {
 function assetCardCollections(card) {
   const raw = assetCardRaw(card);
   return card?.collections || raw.collections || [];
+}
+
+function assetCardVulnerabilities(card) {
+  const raw = assetCardRaw(card);
+  return card?.vulnerabilities || raw.vulnerabilities || {};
+}
+
+function formatVulnerabilityScore(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) : String(value);
 }
 
 function assetCardNodes(card) {
