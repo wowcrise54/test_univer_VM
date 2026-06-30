@@ -904,7 +904,7 @@ def list_vulnerability_passports(
     *,
     q: str | None = None,
     severity: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
     init_db()
@@ -926,7 +926,7 @@ def list_vulnerability_passports(
         filters.append("LOWER(COALESCE(severity, '')) = LOWER(%s)")
         params.append(severity)
     where = "WHERE " + " AND ".join(filters) if filters else ""
-    limit = max(1, min(limit, 50000))
+    limit = max(1, limit) if limit is not None else None
     offset = max(0, offset)
 
     with connect() as conn:

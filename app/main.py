@@ -135,7 +135,7 @@ class VulnerabilityPassportQueryRequest(BaseModel):
     group_ids: list[str] = Field(default_factory=list)
     asset_ids: list[str] = Field(default_factory=list)
     include_nested_groups: bool = True
-    limit: int = Field(default=50000, ge=1, le=50000)
+    limit: int | None = Field(default=None, ge=1)
     batch_size: int = Field(default=5000, ge=1, le=10000)
     save_to_db: bool = True
     load_details: bool = True
@@ -653,7 +653,7 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
 def local_vulnerability_passports(
     q: str | None = None,
     severity: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
     offset: int = 0,
 ) -> dict[str, Any]:
     return db.list_vulnerability_passports(q=q, severity=severity, limit=limit, offset=offset)
@@ -1100,7 +1100,7 @@ def fetch_asset_grid_records(
     client: MpVmClient,
     token: str,
     pdql_token: str,
-    limit: int,
+    limit: int | None,
     batch_size: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
@@ -1109,8 +1109,8 @@ def fetch_asset_grid_records(
     expected_total: int | None = None
     offset = 0
 
-    while offset < limit:
-        current_limit = min(batch_size, limit - offset)
+    while limit is None or offset < limit:
+        current_limit = batch_size if limit is None else min(batch_size, limit - offset)
         raw_response = client.fetch_asset_grid_data(
             token,
             pdql_token,
@@ -1135,6 +1135,8 @@ def fetch_asset_grid_records(
         if len(batch_records) < current_limit:
             break
         offset += current_limit
+        if expected_total is not None and len(records) >= expected_total:
+            break
 
     summary: dict[str, Any] = {
         "pdqlToken": pdql_token,

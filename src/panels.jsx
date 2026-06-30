@@ -916,7 +916,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     utc_offset: "+05:00",
     group_ids: "",
     asset_ids: "",
-    passport_limit: "50000",
+    passport_limit: "",
     batch_size: "5000",
     include_nested_groups: true,
     load_details: true,
@@ -959,7 +959,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const queryPassports = () =>
     runBusy("passportQuery", async () => {
-      const requestedLimit = clampNumber(form.passport_limit, 50000, 1, 50000);
+      const requestedLimit = optionalPositiveInteger(form.passport_limit, "Лимит паспортов");
       const requestedBatchSize = clampNumber(form.batch_size, 5000, 1, 10000);
       const result = await api("/api/vulnerability-passports/query", {
         method: "POST",
@@ -996,8 +996,11 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const loadLocalPassports = () =>
     runBusy("passportLocal", async () => {
-      const localLimit = clampNumber(form.passport_limit, 50000, 1, 50000);
-      const result = await api(`/api/vulnerability-passports/local?limit=${encodeURIComponent(localLimit)}`);
+      const localLimit = optionalPositiveInteger(form.passport_limit, "Лимит паспортов");
+      const params = new URLSearchParams();
+      if (localLimit !== null) params.set("limit", String(localLimit));
+      const query = params.size ? `?${params.toString()}` : "";
+      const result = await api(`/api/vulnerability-passports/local${query}`);
       const records = result.rows || [];
       setRows(records);
       setSelected(null);
@@ -1077,8 +1080,8 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
         <Field label="Asset IDs">
           <input value={form.asset_ids} onChange={(event) => update("asset_ids", event.target.value)} placeholder="uuid, uuid" />
         </Field>
-        <Field label="Сколько загрузить">
-          <input value={form.passport_limit} onChange={(event) => update("passport_limit", event.target.value)} type="number" min="1" max="50000" />
+        <Field label="Сколько загрузить (пусто = все)">
+          <input value={form.passport_limit} onChange={(event) => update("passport_limit", event.target.value)} type="number" min="1" placeholder="Без лимита" />
         </Field>
         <Field label="Размер пачки">
           <input value={form.batch_size} onChange={(event) => update("batch_size", event.target.value)} type="number" min="1" max="10000" />
@@ -1326,6 +1329,21 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
   const snapshot = assetCardVulnerabilities(card);
   const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
   const header = snapshot.header || {};
+  const [collapsedSources, setCollapsedSources] = useState([]);
+  const [collapsedGroups, setCollapsedGroups] = useState([]);
+  const collapsedSourceSet = useMemo(() => new Set(collapsedSources), [collapsedSources]);
+  const collapsedGroupSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
+  const sourceKeys = useMemo(
+    () => sources.map((source, index) => source.source || source.collection_type || source.title || `source-${index}`),
+    [sources],
+  );
+  const groupKeys = useMemo(
+    () => sources.flatMap((source, sourceIndex) => {
+      const sourceKey = source.source || source.collection_type || source.title || `source-${sourceIndex}`;
+      return (source.groups || []).map((group, groupIndex) => `${sourceKey}:${group.collection_id || groupIndex}`);
+    }),
+    [sources],
+  );
   const findingCount = sources.reduce(
     (total, source) => total + (source.groups || []).reduce((sum, group) => sum + (group.items || []).length, 0),
     0,
@@ -1334,6 +1352,33 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
     (total, group) => total + (Number(group.vulnerabilities_count) || (group.items || []).length),
     0,
   );
+
+  useEffect(() => {
+    setCollapsedSources([]);
+    setCollapsedGroups([]);
+  }, [card?.asset_id]);
+
+  const toggleSource = useCallback((key) => {
+    setCollapsedSources((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
+  }, []);
+
+  const toggleGroup = useCallback((key) => {
+    setCollapsedGroups((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
+  }, []);
+
+  const expandAll = () => {
+    setCollapsedSources([]);
+    setCollapsedGroups([]);
+  };
+
+  const collapseAll = () => {
+    setCollapsedSources(sourceKeys);
+    setCollapsedGroups(groupKeys);
+  };
 
   return (
     <section className="asset-vulnerability-pane" aria-label="Уязвимости актива">
@@ -1350,8 +1395,14 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
           <strong>Уязвимости</strong>
           <span>Загружено {formatCount(findingCount)} из {formatCount(header.os_soft_vulnerabilities_count || findingCount)} уязвимостей.</span>
         </div>
+        {sourceKeys.length ? (
+          <div className="asset-vulnerability-controls">
+            <button type="button" onClick={expandAll}>Развернуть все</button>
+            <button type="button" onClick={collapseAll}>Свернуть все</button>
+          </div>
+        ) : null}
       </div>
-      <div className="asset-vulnerability-table-shell">
+      <div className="asset-vulnerability-table-shell" tabIndex="0" aria-label="Прокручиваемый список уязвимостей">
         <table className="asset-vulnerability-table">
           <thead>
             <tr>
@@ -1361,27 +1412,51 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
             </tr>
           </thead>
           <tbody>
-            {sources.flatMap((source) => {
+            {sources.flatMap((source, sourceIndex) => {
               const groups = source.groups || [];
-              const sourceKey = source.source || source.collection_type || source.title;
-              return [
+              const sourceKey = source.source || source.collection_type || source.title || `source-${sourceIndex}`;
+              const sourceCollapsed = collapsedSourceSet.has(sourceKey);
+              const sourceRow = (
                 <tr className="asset-vulnerability-source" key={`${sourceKey}-source`}>
                   <td colSpan={3}>
-                    <span className="asset-vulnerability-caret">⌄</span>
-                    {source.title || (source.source === "os" ? "Уязвимости ОС" : "Уязвимости программного обеспечения")} ({formatCount(sourceCount(source))})
+                    <button
+                      type="button"
+                      className="asset-vulnerability-toggle"
+                      aria-expanded={!sourceCollapsed}
+                      onClick={() => toggleSource(sourceKey)}
+                    >
+                      <span className="asset-vulnerability-caret" aria-hidden="true">{sourceCollapsed ? "›" : "⌄"}</span>
+                      <span>{source.title || (source.source === "os" ? "Уязвимости ОС" : "Уязвимости программного обеспечения")} ({formatCount(sourceCount(source))})</span>
+                    </button>
                   </td>
-                </tr>,
-                ...groups.flatMap((group, groupIndex) => [
-                  <tr className="asset-vulnerability-group" key={`${sourceKey}-${group.collection_id || groupIndex}`}>
+                </tr>
+              );
+              if (sourceCollapsed) return [sourceRow];
+              return [
+                sourceRow,
+                ...groups.flatMap((group, groupIndex) => {
+                  const groupKey = `${sourceKey}:${group.collection_id || groupIndex}`;
+                  const groupCollapsed = collapsedGroupSet.has(groupKey);
+                  const groupRow = (
+                    <tr className="asset-vulnerability-group" key={groupKey}>
                     <td>
-                      <span className="asset-vulnerability-caret">⌄</span>
-                      <strong>{group.name || "Без названия"}</strong> ({formatCount(group.vulnerabilities_count || (group.items || []).length)})
-                      {group.truncated ? <small>Показана неполная коллекция</small> : null}
+                      <button
+                        type="button"
+                        className="asset-vulnerability-toggle"
+                        aria-expanded={!groupCollapsed}
+                        onClick={() => toggleGroup(groupKey)}
+                      >
+                        <span className="asset-vulnerability-caret" aria-hidden="true">{groupCollapsed ? "›" : "⌄"}</span>
+                        <span><strong>{group.name || "Без названия"}</strong> ({formatCount(group.vulnerabilities_count || (group.items || []).length)})</span>
+                        {group.truncated ? <small>Показана неполная коллекция</small> : null}
+                      </button>
                     </td>
                     <td>{formatVulnerabilityScore(group.cvss_score)}</td>
                     <td />
-                  </tr>,
-                  ...(group.items || []).map((finding, findingIndex) => {
+                    </tr>
+                  );
+                  if (groupCollapsed) return [groupRow];
+                  return [groupRow, ...(group.items || []).map((finding, findingIndex) => {
                     const passportId = finding.passport_ids?.[0];
                     return (
                       <tr className="asset-vulnerability-finding" key={finding.vulnerability_instance_id || `${group.collection_id}-${findingIndex}`}>
@@ -1406,8 +1481,8 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                         </td>
                       </tr>
                     );
-                  }),
-                ]),
+                  })];
+                }),
               ];
             })}
             {!sources.some((source) => (source.groups || []).length) ? (
@@ -1578,34 +1653,6 @@ function PassportModal({
 function PassportCard({ row, detail, loading }) {
   const raw = detail || row?.raw_detail || row?.raw_record || {};
   const model = useMemo(() => buildPassportModel(row, raw), [row, raw]);
-  const treeEntries = useMemo(() => buildPassportConfigTree(row, raw, model), [row, raw, model]);
-  const [activeTab, setActiveTab] = useState("configuration");
-  const [expandedPaths, setExpandedPaths] = useState(["passport"]);
-  const [selectedPath, setSelectedPath] = useState("passport");
-  const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
-  const visibleTreeEntries = useMemo(
-    () => treeEntries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, treeEntries)),
-    [treeEntries, expandedSet],
-  );
-  const selectedEntry = useMemo(
-    () => treeEntries.find((entry) => entry.path === selectedPath) || treeEntries[0] || null,
-    [treeEntries, selectedPath],
-  );
-
-  useEffect(() => {
-    if (!row && !detail) return;
-    setExpandedPaths(defaultPassportTreeExpandedPaths(treeEntries));
-    setSelectedPath(treeEntries[0]?.path || "passport");
-    setActiveTab("configuration");
-  }, [row, detail, treeEntries]);
-
-  const toggleTreeEntry = useCallback((path) => {
-    setExpandedPaths((current) => (
-      current.includes(path)
-        ? current.filter((item) => item !== path)
-        : [...current, path]
-    ));
-  }, []);
 
   if (!row && !detail) {
     return <div className="passport-placeholder">Выберите строку в таблице, чтобы открыть карточку паспорта уязвимости.</div>;
@@ -1614,35 +1661,11 @@ function PassportCard({ row, detail, loading }) {
   return (
     <div className="asset-console">
       <div className="asset-tabs" role="tablist" aria-label="Разделы карточки паспорта">
-        {[
-          ["summary", "Сводка"],
-          ["configuration", "Данные"],
-        ].map(([id, label]) => (
-          <button
-            type="button"
-            className={activeTab === id ? "is-active" : ""}
-            onClick={() => setActiveTab(id)}
-            key={id}
-          >
-            {label}
-          </button>
-        ))}
+        <button type="button" className="is-active" aria-selected="true">Сводка</button>
       </div>
-      {activeTab === "summary" ? (
+      <div className="passport-summary-scroll">
         <PassportSummaryTab model={model} row={row} loading={loading} />
-      ) : null}
-      {activeTab === "configuration" ? (
-        <div className="asset-config-layout">
-          <AssetTree
-            entries={visibleTreeEntries}
-            selectedPath={selectedEntry?.path}
-            expandedSet={expandedSet}
-            onToggle={toggleTreeEntry}
-            onSelect={setSelectedPath}
-          />
-          <PassportConfigTable entry={selectedEntry} />
-        </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -1703,37 +1726,6 @@ function PassportSummaryTab({ model, row, loading }) {
   );
 }
 
-function PassportConfigTable({ entry }) {
-  const table = buildPassportDetailTable(entry);
-  return (
-    <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry?.label || "Данные паспорта"}>
-      {table.layout === "properties" ? (
-        <AssetPropertyList rows={table.rows} />
-      ) : (
-        <div className="table-shell asset-detail-table-shell">
-          <table className="asset-detail-table">
-            <thead>
-              <tr>
-                {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
-                <tr key={row.key || rowIndex}>
-                  {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
-                </tr>
-              )) : (
-                <tr><td colSpan={table.columns.length} className="empty-cell">В выбранном разделе нет данных.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {table.rows.length > 1000 ? <div className="table-footer">Показано 1000 из {formatCount(table.rows.length)} строк.</div> : null}
-    </section>
-  );
-}
-
 function buildPassportModel(row, raw) {
   const title = firstFilled(
     readPath(raw, "name"),
@@ -1777,159 +1769,6 @@ function buildPassportModel(row, raw) {
     issueTime,
     packageLine,
   };
-}
-
-function buildPassportConfigTree(row, raw, model) {
-  const source = {
-    summary: {
-      name: model.title,
-      severity: model.severity,
-      score: model.score,
-      package: model.packageLine,
-      issueTime: model.issueTime,
-      cves: model.cves.map((item) => item.display_name || item.url).filter(Boolean),
-      links: model.links,
-      identifiers: model.identifiers,
-    },
-    detail: raw || {},
-  };
-  if (row?.raw_record) source.gridRecord = row.raw_record;
-  if (row?.metrics && Object.keys(row.metrics).length) source.metrics = row.metrics;
-
-  const entries = [];
-  const byPath = new Map();
-  const addEntry = (entry) => {
-    if (byPath.has(entry.path)) return byPath.get(entry.path);
-    byPath.set(entry.path, entry);
-    entries.push(entry);
-    return entry;
-  };
-  const addContainer = (path, parentPath, label, sourceValue, depth) => {
-    addEntry({
-      path,
-      parentPath,
-      label,
-      subtitle: passportValueMeta(sourceValue),
-      kind: "json",
-      source: sourceValue,
-      depth,
-    });
-  };
-  const walk = (value, path, depth) => {
-    if (depth > 7 || !isPassportTreeContainer(value)) return;
-    const children = Array.isArray(value)
-      ? value.slice(0, 250).map((item, index) => [`[${index}]`, item])
-      : Object.entries(value).slice(0, 500);
-    children.forEach(([key, child]) => {
-      if (!isPassportTreeContainer(child)) return;
-      const childPath = Array.isArray(value) ? `${path}${key}` : `${path}.${key}`;
-      addContainer(childPath, path, passportNodeLabel(key), child, depth + 1);
-      walk(child, childPath, depth + 1);
-    });
-  };
-
-  addContainer("passport", null, model.title || row?.internal_id || "Паспорт", source, 0);
-  walk(source, "passport", 0);
-  const hasChildren = new Set(entries.map((entry) => entry.parentPath).filter(Boolean));
-  entries.forEach((entry) => {
-    entry.hasChildren = hasChildren.has(entry.path);
-  });
-  return entries;
-}
-
-function defaultPassportTreeExpandedPaths(entries) {
-  const defaults = ["passport", "passport.summary", "passport.detail"];
-  const existing = new Set(entries.map((entry) => entry.path));
-  return defaults.filter((path) => existing.has(path));
-}
-
-function buildPassportDetailTable(entry) {
-  const value = entry?.source;
-  if (Array.isArray(value)) return buildPassportArrayTable(value);
-  if (value && typeof value === "object") {
-    const rows = Object.entries(value)
-      .flatMap(([key, item]) => buildAssetPropertyRows({
-        name: key,
-        title: passportNodeLabel(key),
-        value: item,
-        path: `${entry?.path || "passport"}.${key}`,
-      }));
-    return {
-      columns: [
-        { key: "title", title: "Название" },
-        { key: "value", title: "Значение" },
-      ],
-      rows,
-      layout: "properties",
-    };
-  }
-  return {
-    columns: [{ key: "value", title: "Значение" }],
-    rows: value === undefined ? [] : [{ key: entry?.path || "value", value }],
-  };
-}
-
-function buildPassportArrayTable(items) {
-  if (!items.length) {
-    return { columns: [{ key: "value", title: "Значение" }], rows: [] };
-  }
-  if (!items.some((item) => item && typeof item === "object" && !Array.isArray(item))) {
-    return {
-      columns: [
-        { key: "index", title: "#" },
-        { key: "value", title: "Значение" },
-      ],
-      rows: items.map((item, index) => ({ key: index, index: index + 1, value: item })),
-    };
-  }
-
-  const keys = collectPassportArrayKeys(items);
-  const columns = [{ key: "index", title: "#" }, ...keys.map((key) => ({ key, title: passportNodeLabel(key) }))];
-  const rows = items.map((item, index) => {
-    const row = { key: index, index: index + 1 };
-    const source = item && typeof item === "object" && !Array.isArray(item) ? item : { value: item };
-    keys.forEach((key) => {
-      row[key] = source[key];
-    });
-    return row;
-  });
-  return { columns, rows };
-}
-
-function collectPassportArrayKeys(items) {
-  const seen = new Set();
-  const preferred = ["name", "displayName", "id", "internalId", "severity", "score", "packageId", "packageVersion", "url"];
-  items.forEach((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return;
-    Object.keys(item).forEach((key) => {
-      if (!isPassportTreeContainer(item[key])) seen.add(key);
-    });
-  });
-  return Array.from(seen).sort((left, right) => {
-    const leftIndex = preferred.indexOf(left);
-    const rightIndex = preferred.indexOf(right);
-    if (leftIndex !== -1 || rightIndex !== -1) {
-      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
-    }
-    return left.localeCompare(right);
-  }).slice(0, 14);
-}
-
-function isPassportTreeContainer(value) {
-  return Boolean(value && typeof value === "object");
-}
-
-function passportValueMeta(value) {
-  if (Array.isArray(value)) return `${formatCount(value.length)} элементов`;
-  if (value && typeof value === "object") return `${formatCount(Object.keys(value).length)} полей`;
-  return "";
-}
-
-function passportNodeLabel(key) {
-  const value = String(key || "");
-  const arrayMatch = value.match(/^\[(\d+)\]$/);
-  if (arrayMatch) return `Элемент ${Number(arrayMatch[1]) + 1}`;
-  return labelizeAssetKey(value);
 }
 
 function PassportSection({ title, children }) {
@@ -2421,6 +2260,16 @@ function clampNumber(value, fallback, min, max) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function optionalPositiveInteger(value, label) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error(`${label} должен быть целым числом больше нуля.`);
+  }
+  return Math.floor(parsed);
 }
 
 function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {

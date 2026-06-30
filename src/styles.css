@@ -1322,6 +1322,8 @@ td code {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   min-height: 45px;
   border-bottom: 1px solid #edf2f7;
   padding: 7px 15px;
@@ -1340,14 +1342,49 @@ td code {
   font-size: 11px;
 }
 
+.asset-vulnerability-controls {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.asset-vulnerability-controls button {
+  min-height: 28px;
+  border: 1px solid #d7e3eb;
+  border-radius: 5px;
+  padding: 4px 9px;
+  color: #315a72;
+  background: #f5f9fc;
+  box-shadow: none;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.asset-vulnerability-controls button:hover {
+  border-color: #a9cddd;
+  background: #eaf5fa;
+}
+
 .asset-vulnerability-table-shell {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #9fb1bf #edf3f7;
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: auto;
+  touch-action: pan-x pan-y;
+}
+
+.asset-vulnerability-table-shell:focus-visible {
+  outline: 2px solid #5aa9c8;
+  outline-offset: -2px;
 }
 
 .asset-vulnerability-table {
-  min-width: 760px;
+  width: 100%;
+  min-width: 960px;
   font-size: 11px;
 }
 
@@ -1388,6 +1425,30 @@ td code {
   font-weight: 760;
 }
 
+.asset-vulnerability-toggle {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.asset-vulnerability-toggle:hover > span:not(.asset-vulnerability-caret) {
+  text-decoration: underline;
+}
+
+.asset-vulnerability-toggle:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid #5aa9c8;
+  outline-offset: 2px;
+}
+
 .asset-vulnerability-group td:first-child {
   padding-left: 29px;
   color: #41546b;
@@ -1418,6 +1479,14 @@ td code {
   width: 15px;
   color: #9aa8b5;
   text-align: center;
+}
+
+.passport-summary-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .asset-vulnerability-leaf {
