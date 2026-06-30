@@ -832,7 +832,7 @@ td code {
 }
 
 .passport-table {
-  min-width: 1120px;
+  min-width: 1360px;
 }
 
 .passport-controls {
@@ -867,7 +867,14 @@ td code {
 }
 
 .asset-card-list-table {
-  min-width: 1180px;
+  min-width: 1380px;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 250px;
 }
 
 .asset-modal {

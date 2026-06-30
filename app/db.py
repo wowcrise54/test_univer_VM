@@ -825,14 +825,38 @@ def upsert_vulnerability_passports(
 def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str, Any]) -> dict[str, Any] | None:
     init_db()
     current = now_utc()
+    vulnerability = raw_detail.get("vulnerability") if isinstance(raw_detail.get("vulnerability"), dict) else {}
+    cvss = raw_detail.get("cvss") if isinstance(raw_detail.get("cvss"), dict) else {}
+    name = clean_value(
+        first_non_empty(
+            raw_detail.get("name"),
+            raw_detail.get("displayName"),
+            raw_detail.get("title"),
+            vulnerability.get("name"),
+        )
+    )
+    severity = clean_value(first_non_empty(raw_detail.get("severityRating"), raw_detail.get("severity")))
+    score = clean_value(
+        first_non_empty(raw_detail.get("score"), raw_detail.get("cvss3Score"), cvss.get("score"))
+    )
+    issue_time = clean_value(first_non_empty(raw_detail.get("issueTime"), raw_detail.get("publishedAt")))
+    package_id = clean_value(raw_detail.get("packageId"))
+    package_version = clean_value(raw_detail.get("packageVersion"))
     with connect() as conn:
         row = conn.execute(
             """
             INSERT INTO vulnerability_passports (
-                internal_id, raw_detail_json, first_seen, last_seen, detail_updated_at
+                internal_id, name, severity, score, issue_time, package_id, package_version,
+                raw_detail_json, first_seen, last_seen, detail_updated_at
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(internal_id) DO UPDATE SET
+                name = COALESCE(EXCLUDED.name, vulnerability_passports.name),
+                severity = COALESCE(EXCLUDED.severity, vulnerability_passports.severity),
+                score = COALESCE(EXCLUDED.score, vulnerability_passports.score),
+                issue_time = COALESCE(EXCLUDED.issue_time, vulnerability_passports.issue_time),
+                package_id = COALESCE(EXCLUDED.package_id, vulnerability_passports.package_id),
+                package_version = COALESCE(EXCLUDED.package_version, vulnerability_passports.package_version),
                 raw_detail_json = EXCLUDED.raw_detail_json,
                 last_seen = EXCLUDED.last_seen,
                 detail_updated_at = EXCLUDED.detail_updated_at
@@ -840,6 +864,12 @@ def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str,
             """,
             (
                 internal_id,
+                name,
+                severity,
+                score,
+                issue_time,
+                package_id,
+                package_version,
                 json.dumps(raw_detail or {}, ensure_ascii=False),
                 current,
                 current,
@@ -858,6 +888,16 @@ def get_vulnerability_passport(internal_id: str) -> dict[str, Any] | None:
             (internal_id,),
         ).fetchone()
     return decode_vulnerability_passport(dict(row)) if row else None
+
+
+def delete_vulnerability_passport(internal_id: str) -> bool:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "DELETE FROM vulnerability_passports WHERE internal_id = %s RETURNING internal_id",
+            (internal_id,),
+        ).fetchone()
+    return row is not None
 
 
 def list_vulnerability_passports(
@@ -1517,6 +1557,16 @@ def get_asset_card(asset_id: str) -> dict[str, Any] | None:
             replace_asset_card_cache(conn, asset_id, legacy_card, now_utc())
             cache = load_asset_card_cache(conn, asset_id)
     return decode_asset_card(dict(row), cache=cache) if row else None
+
+
+def delete_asset_card(asset_id: str) -> bool:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "DELETE FROM asset_cards WHERE asset_id = %s RETURNING asset_id",
+            (asset_id,),
+        ).fetchone()
+    return row is not None
 
 
 def is_asset_card_cache_empty(cache: dict[str, Any] | None) -> bool:

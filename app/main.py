@@ -160,6 +160,13 @@ class AssetCardBuildRequest(BaseModel):
     save_to_db: bool = True
 
 
+class AssetCardUpdateRequest(BaseModel):
+    timeline_timestamp: int | None = None
+    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
+    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
+    max_depth: int = Field(default=8, ge=0, le=8)
+
+
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -553,6 +560,38 @@ def local_asset_card(asset_id: str) -> dict[str, Any]:
     return card
 
 
+@app.put("/api/asset-cards/{asset_id}")
+def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> dict[str, Any]:
+    if not db.get_asset_card(asset_id):
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+
+    client, token = require_mpvm()
+    try:
+        card = build_asset_card(
+            client=client,
+            token=token,
+            asset_id=asset_id,
+            timeline_timestamp=payload.timeline_timestamp,
+            limit_per_collection=payload.limit_per_collection,
+            max_items_per_collection=payload.max_items_per_collection,
+            max_depth=payload.max_depth,
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+    saved_card = db.upsert_asset_card(card)
+    if not saved_card:
+        raise HTTPException(status_code=500, detail="Updated asset card could not be saved.")
+    return {"asset_id": asset_id, "card": saved_card, "updated": True}
+
+
+@app.delete("/api/asset-cards/{asset_id}")
+def delete_local_asset_card(asset_id: str) -> dict[str, Any]:
+    if not db.delete_asset_card(asset_id):
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return {"asset_id": asset_id, "deleted": True}
+
+
 @app.post("/api/vulnerability-passports/query")
 def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) -> dict[str, Any]:
     client, token = require_mpvm()
@@ -671,6 +710,34 @@ def vulnerability_passport(passport_id: str) -> dict[str, Any]:
         raise http_error(exc) from exc
     saved = db.upsert_vulnerability_passport_detail(passport_id, raw_response)
     return {"id": passport_id, "raw": raw_response, "source": "mpvm", "passport": saved}
+
+
+@app.put("/api/vulnerability-passports/{passport_id}")
+def update_vulnerability_passport(passport_id: str) -> dict[str, Any]:
+    if not db.get_vulnerability_passport(passport_id):
+        raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
+
+    client, token = require_mpvm()
+    try:
+        raw_response = client.get_vulnerability_passport(token, passport_id)
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+    saved = db.upsert_vulnerability_passport_detail(passport_id, raw_response)
+    return {
+        "id": passport_id,
+        "raw": raw_response,
+        "source": "mpvm",
+        "passport": saved,
+        "updated": True,
+    }
+
+
+@app.delete("/api/vulnerability-passports/{passport_id}")
+def delete_vulnerability_passport(passport_id: str) -> dict[str, Any]:
+    if not db.delete_vulnerability_passport(passport_id):
+        raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
+    return {"id": passport_id, "deleted": True}
 
 
 @app.get("/api/exports/{filename}")

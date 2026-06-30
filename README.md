@@ -12,6 +12,7 @@ React/Vite web UI и FastAPI backend-клиент для MP VM / MP10.
 - удалять активы из MP VM после успешного сохранения результата в локальную БД;
 - показывать локальную таблицу сохранённых активов, ПО и уязвимостей;
 - получать список паспортов уязвимостей через PDQL и открывать карточку паспорта по `internalId`.
+- принудительно обновлять карточки активов и детали паспортов из MP VM, а также удалять их из локальной PostgreSQL.
 
 Прямой функционал синхронизации внутренней PostgreSQL БД MP VM удалён. Приложение больше не использует отдельное подключение к source DB и старые endpoints синхронизации.
 
@@ -101,6 +102,12 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `POST /api/vulnerability-passports/query` - получить список паспортов уязвимостей по PDQL.
 - `GET /api/vulnerability-passports/local` - получить сохранённые паспорта из локальной PostgreSQL.
 - `GET /api/vulnerability-passports/{internalId}` - получить детальную карточку паспорта.
+- `PUT /api/vulnerability-passports/{internalId}` - принудительно обновить основные поля и детали сохранённого паспорта из MP VM.
+- `DELETE /api/vulnerability-passports/{internalId}` - удалить паспорт из локальной PostgreSQL.
+- `GET /api/asset-cards/local` - получить сохранённые карточки активов.
+- `GET /api/asset-cards/{assetId}` - получить сохранённую карточку актива.
+- `PUT /api/asset-cards/{assetId}` - заново собрать и обновить сохранённую карточку из MP VM.
+- `DELETE /api/asset-cards/{assetId}` - удалить карточку актива из локальной PostgreSQL.
 
 ## Payload создания задачи
 

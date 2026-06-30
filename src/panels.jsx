@@ -681,6 +681,37 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       setAssetWindowOpen(true);
     });
 
+  const updateLocalCard = (row) =>
+    runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
+          limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
+          max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
+          max_depth: clampNumber(form.max_depth, 8, 0, 8),
+        }),
+      });
+      const nextCard = result.card;
+      setCards((items) => [nextCard, ...items.filter((item) => item.asset_id !== row.asset_id)]);
+      setSelectedCard((current) => (current?.asset_id === row.asset_id ? nextCard : current));
+      showAlert(`Карточка актива ${row.display_name || row.asset_id} обновлена.`, "success");
+    });
+
+  const deleteLocalCard = (row) => {
+    const label = row.display_name || row.hostname || row.asset_id;
+    if (!window.confirm(`Удалить карточку актива «${label}» из локальной БД?`)) return;
+    runBusy(`assetCardDelete:${row.asset_id}`, async () => {
+      await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`, { method: "DELETE" });
+      setCards((items) => items.filter((item) => item.asset_id !== row.asset_id));
+      if (selectedCard?.asset_id === row.asset_id) {
+        setSelectedCard(null);
+        setAssetWindowOpen(false);
+      }
+      showAlert(`Карточка актива ${label} удалена.`, "success");
+    });
+  };
+
   const openAssetPassport = (passportId) =>
     runBusy("assetCardPassportDetail", async () => {
       if (!passportId) throw new Error("Для этой уязвимости ещё не найден локальный паспорт.");
@@ -812,7 +843,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               <th>Type</th>
               <th>Data</th>
               <th>Обновлено</th>
-              <th></th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -829,7 +860,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                   <td>{row.asset_type || "—"}</td>
                   <td>{formatCount(stats.table_rows)} строк · {formatCount(stats.collections)} коллекций</td>
                   <td>{formatDateTime(row.last_seen)}</td>
-                  <td><Button variant="tiny" busy={busy.assetCardOpen && selectedCard?.asset_id === row.asset_id} onClick={() => openLocalCard(row)}>Открыть</Button></td>
+                  <td>
+                    <div className="row-actions">
+                      <Button variant="tiny" busy={busy.assetCardOpen && selectedCard?.asset_id === row.asset_id} onClick={() => openLocalCard(row)}>Открыть</Button>
+                      <Button variant="tiny" busy={busy[`assetCardUpdate:${row.asset_id}`]} onClick={() => updateLocalCard(row)}>Обновить</Button>
+                      <Button variant="tiny-danger" busy={busy[`assetCardDelete:${row.asset_id}`]} onClick={() => deleteLocalCard(row)}>Удалить</Button>
+                    </div>
+                  </td>
                 </tr>
               );
             }) : (
@@ -988,6 +1025,37 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       setDetail(result.raw || nextRow.raw_detail || {});
     });
 
+  const updatePassport = (row) =>
+    runBusy(`passportUpdate:${row.internal_id}`, async () => {
+      if (!row.internal_id) throw new Error("У записи нет @VulnerPassport.internalId.");
+      const result = await api(`/api/vulnerability-passports/${encodeURIComponent(row.internal_id)}`, {
+        method: "PUT",
+      });
+      const nextRow = result.passport || { ...row, raw_detail: result.raw || null, has_detail: Boolean(result.raw) };
+      setRows((items) => items.map((item) => (item.internal_id === row.internal_id ? nextRow : item)));
+      if (selected?.internal_id === row.internal_id) {
+        setSelected(nextRow);
+        setDetail(result.raw || nextRow.raw_detail || {});
+      }
+      showAlert(`Паспорт ${row.external_id || row.internal_id} обновлён.`, "success");
+    });
+
+  const deletePassport = (row) => {
+    const label = row.external_id || row.name || row.internal_id;
+    if (!window.confirm(`Удалить паспорт уязвимости «${label}» из локальной БД?`)) return;
+    runBusy(`passportDelete:${row.internal_id}`, async () => {
+      if (!row.internal_id) throw new Error("У записи нет @VulnerPassport.internalId.");
+      await api(`/api/vulnerability-passports/${encodeURIComponent(row.internal_id)}`, { method: "DELETE" });
+      setRows((items) => items.filter((item) => item.internal_id !== row.internal_id));
+      if (selected?.internal_id === row.internal_id) {
+        setSelected(null);
+        setDetail(null);
+        setPassportWindowOpen(false);
+      }
+      showAlert(`Паспорт ${label} удалён.`, "success");
+    });
+  };
+
   return (
     <Panel
       id="passports"
@@ -1053,7 +1121,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
               <th>Package</th>
               <th>Детали</th>
               <th>internalId</th>
-              <th></th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -1069,7 +1137,13 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                 <td>{[row.package_id, row.package_version].filter(Boolean).join(" / ") || "n/a"}</td>
                 <td>{row.has_detail || row.raw_detail ? "в БД" : "нет"}</td>
                 <td><code>{row.internal_id || "n/a"}</code></td>
-                <td><Button variant="tiny" busy={busy.passportDetail && selected?.internal_id === row.internal_id} onClick={() => openPassport(row)}>Открыть</Button></td>
+                <td>
+                  <div className="row-actions">
+                    <Button variant="tiny" busy={busy.passportDetail && selected?.internal_id === row.internal_id} onClick={() => openPassport(row)}>Открыть</Button>
+                    <Button variant="tiny" busy={busy[`passportUpdate:${row.internal_id}`]} onClick={() => updatePassport(row)}>Обновить</Button>
+                    <Button variant="tiny-danger" busy={busy[`passportDelete:${row.internal_id}`]} onClick={() => deletePassport(row)}>Удалить</Button>
+                  </div>
+                </td>
               </tr>
             )) : (
               <tr><td colSpan={8} className="empty-cell">{rows.length ? "По текущему поиску ничего не найдено." : "Выполните PDQL, чтобы получить internalId паспортов."}</td></tr>
