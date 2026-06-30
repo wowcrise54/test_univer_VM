@@ -78,8 +78,8 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 ```
 
 В UI показывается сводка паспорта с названием, CVE, score, severity, описанием, исправлением, ссылками и идентификаторами. Отдельная вкладка с raw JSON не отображается.
-Список паспортов можно фильтровать по CVE, названию, `internalId` и package; таблица разбита на страницы по 50 строк, а карточка открывается в отдельном модальном окне.
-Список паспортов сохраняется в таблицу `vulnerability_passports` сразу после загрузки из `/assets_grid/data`. Детальный raw JSON паспорта дописывается в эту же таблицу при открытии карточки. Кнопка `Из БД` загружает уже сохранённые паспорта из локальной PostgreSQL.
+Список паспортов можно фильтровать по CVE, названию, `internalId` и package. Поиск и пагинация по 50 строк выполняются на backend; тяжёлые `raw_record_json` и `raw_detail_json` не передаются в ответе списка. Полный JSON возвращается только при открытии конкретной карточки.
+Список сохраняется в таблицу `vulnerability_passports` сразу после загрузки из `/assets_grid/data`, после чего HTTP-ответ возвращается пользователю. Детали догружаются фоновой задачей с прогрессом и отменой: одновременно выполняется до `MPVM_PASSPORT_DETAIL_WORKERS` запросов, записи сохраняются пачками по 100, а детали моложе `MPVM_PASSPORT_DETAIL_TTL_HOURS` часов повторно не запрашиваются.
 Для больших выгрузок используйте поля `Сколько загрузить` и `Размер пачки`: пустой лимит загружает все доступные паспорта, а backend ходит в MP VM батчами до 10 000 записей через `offset + limit`.
 
 ## Основные endpoints приложения
@@ -100,7 +100,10 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `GET /api/assets` - таблица сохранённых строк уязвимостей.
 - `GET /api/assets/summary` - сводка локальной БД.
 - `POST /api/vulnerability-passports/query` - получить список паспортов уязвимостей по PDQL.
-- `GET /api/vulnerability-passports/local` - получить сохранённые паспорта из локальной PostgreSQL.
+- `GET /api/vulnerability-passports/local` - получить компактную страницу сохранённых паспортов (`q`, `severity`, `pdql_token`, `limit`, `offset`).
+- `GET /api/vulnerability-passports/detail-jobs/active` - получить активную фоновую загрузку деталей.
+- `GET /api/vulnerability-passports/detail-jobs/{jobId}` - получить прогресс фоновой загрузки.
+- `POST /api/vulnerability-passports/detail-jobs/{jobId}/cancel` - остановить фоновую загрузку.
 - `GET /api/vulnerability-passports/{internalId}` - получить детальную карточку паспорта.
 - `PUT /api/vulnerability-passports/{internalId}` - принудительно обновить основные поля и детали сохранённого паспорта из MP VM.
 - `DELETE /api/vulnerability-passports/{internalId}` - удалить паспорт из локальной PostgreSQL.

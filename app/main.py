@@ -4,6 +4,10 @@ import os
 import copy
 import json
 import re
+import threading
+import time
+import uuid
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +16,7 @@ from typing import Any, Literal
 import requests
 import psycopg
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
@@ -46,6 +50,19 @@ EXPORTS_DIR = Path(os.getenv("MPVM_EXPORTS_DIR", "exports"))
 SAMPLE_CSV = Path("host_software_vulnerabilities_10.104.103.0_24.csv")
 
 
+def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+PASSPORT_DETAIL_WORKERS = env_int("MPVM_PASSPORT_DETAIL_WORKERS", 10, minimum=1, maximum=32)
+PASSPORT_DETAIL_TTL_HOURS = env_int("MPVM_PASSPORT_DETAIL_TTL_HOURS", 24, minimum=0, maximum=8760)
+PASSPORT_DETAIL_DB_BATCH_SIZE = 100
+
+
 @dataclass
 class RuntimeSession:
     client: MpVmClient | None = None
@@ -58,6 +75,8 @@ class RuntimeSession:
 
 SESSION = RuntimeSession()
 DATABASE_STARTUP_ERROR: str | None = None
+PASSPORT_DETAIL_CANCEL_EVENTS: dict[str, threading.Event] = {}
+PASSPORT_DETAIL_CANCEL_EVENTS_LOCK = threading.Lock()
 
 
 class ConnectionRequest(BaseModel):
@@ -183,6 +202,7 @@ def startup() -> None:
     global DATABASE_STARTUP_ERROR
     try:
         db.init_db()
+        db.interrupt_active_vulnerability_passport_detail_jobs()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
@@ -593,8 +613,23 @@ def delete_local_asset_card(asset_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/vulnerability-passports/query")
-def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) -> dict[str, Any]:
+def query_vulnerability_passports(
+    payload: VulnerabilityPassportQueryRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    if payload.save_to_db and payload.load_details:
+        active_job = db.get_active_vulnerability_passport_detail_job()
+        if active_job:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "A vulnerability passport detail sync is already running.",
+                    "job": active_job,
+                },
+            )
+
     client, token = require_mpvm()
+    query_started = time.perf_counter()
     try:
         pdql_token = client.create_pdql_token(
             token,
@@ -613,6 +648,7 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
+    grid_finished = time.perf_counter()
 
     normalized = dedupe_vulnerability_passports(
         [normalize_vulnerability_passport_record(record) for record in records]
@@ -622,20 +658,53 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
         if payload.save_to_db
         else None
     )
-    detail_result = None
+    saved_finished = time.perf_counter()
+    detail_job = None
     if payload.save_to_db and payload.load_details:
-        detail_result = sync_vulnerability_passport_details(
-            client=client,
-            token=token,
-            passports=normalized,
+        internal_ids = [item.get("internal_id") for item in normalized]
+        candidates = db.vulnerability_passport_detail_refresh_candidates(
+            internal_ids,
+            ttl_hours=PASSPORT_DETAIL_TTL_HOURS,
         )
+        job_id = str(uuid.uuid4())
+        try:
+            detail_job = db.create_vulnerability_passport_detail_job(
+                job_id,
+                requested_count=len(candidates["requested"]),
+                eligible_count=len(candidates["eligible"]),
+                skipped_fresh_count=len(candidates["skipped_fresh"]),
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            active_job = db.get_active_vulnerability_passport_detail_job()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "A vulnerability passport detail sync is already running.",
+                    "job": active_job,
+                },
+            ) from exc
+        if candidates["eligible"]:
+            cancel_event = register_vulnerability_passport_detail_job(job_id)
+            background_tasks.add_task(
+                run_vulnerability_passport_detail_job,
+                job_id=job_id,
+                auth=client.auth,
+                token=token,
+                internal_ids=candidates["eligible"],
+                cancel_event=cancel_event,
+                workers=PASSPORT_DETAIL_WORKERS,
+                batch_size=PASSPORT_DETAIL_DB_BATCH_SIZE,
+            )
         if db_result is not None:
-            db_result["details"] = detail_result
-    records_response = (
-        db.list_vulnerability_passports_by_ids([item.get("internal_id") for item in normalized])
-        if payload.save_to_db
-        else normalized
-    )
+            db_result["detail_job"] = detail_job
+    if payload.save_to_db:
+        records_response = db.list_vulnerability_passports(
+            pdql_token=pdql_token,
+            limit=50,
+            offset=0,
+        )["rows"]
+    else:
+        records_response = [vulnerability_passport_summary(item) for item in normalized[:50]]
     return {
         "pdql": payload.pdql,
         "pdql_token": pdql_token,
@@ -644,8 +713,14 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
         "total": len(normalized),
         "records": records_response,
         "db": db_result,
-        "details": detail_result,
+        "detail_job": detail_job,
+        "details": detail_job,
         "raw": raw_response,
+        "timings_ms": {
+            "grid_fetch": round((grid_finished - query_started) * 1000),
+            "list_save": round((saved_finished - grid_finished) * 1000),
+            "response_prepare": round((time.perf_counter() - saved_finished) * 1000),
+        },
     }
 
 
@@ -653,40 +728,159 @@ def query_vulnerability_passports(payload: VulnerabilityPassportQueryRequest) ->
 def local_vulnerability_passports(
     q: str | None = None,
     severity: str | None = None,
-    limit: int | None = None,
+    pdql_token: str | None = None,
+    limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    return db.list_vulnerability_passports(q=q, severity=severity, limit=limit, offset=offset)
+    return db.list_vulnerability_passports(
+        q=q,
+        severity=severity,
+        pdql_token=pdql_token,
+        limit=limit,
+        offset=offset,
+    )
 
 
-def sync_vulnerability_passport_details(
+@app.get("/api/vulnerability-passports/detail-jobs/active")
+def active_vulnerability_passport_detail_job() -> dict[str, Any]:
+    return {"job": db.get_active_vulnerability_passport_detail_job()}
+
+
+@app.get("/api/vulnerability-passports/detail-jobs/{job_id}")
+def vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
+    job = db.get_vulnerability_passport_detail_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Vulnerability passport detail job not found.")
+    return job
+
+
+@app.post("/api/vulnerability-passports/detail-jobs/{job_id}/cancel")
+def cancel_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
+    current = db.get_vulnerability_passport_detail_job(job_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Vulnerability passport detail job not found.")
+    if current["status"] not in {"queued", "running", "cancelling"}:
+        return current
+    job = db.request_vulnerability_passport_detail_job_cancel(job_id) or current
+    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
+        cancel_event = PASSPORT_DETAIL_CANCEL_EVENTS.get(job_id)
+    if cancel_event:
+        cancel_event.set()
+    return job
+
+
+def register_vulnerability_passport_detail_job(job_id: str) -> threading.Event:
+    cancel_event = threading.Event()
+    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
+        PASSPORT_DETAIL_CANCEL_EVENTS[job_id] = cancel_event
+    return cancel_event
+
+
+def unregister_vulnerability_passport_detail_job(job_id: str) -> None:
+    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
+        PASSPORT_DETAIL_CANCEL_EVENTS.pop(job_id, None)
+
+
+def run_vulnerability_passport_detail_job(
     *,
-    client: MpVmClient,
+    job_id: str,
+    auth: AuthConfig,
     token: str,
-    passports: list[dict[str, Any]],
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "requested": 0,
-        "loaded": 0,
-        "failed": 0,
-        "skipped": 0,
-        "errors": [],
-    }
-    for passport in passports:
-        internal_id = clean_text(passport.get("internal_id")).strip()
-        if not internal_id:
-            result["skipped"] += 1
-            continue
-        result["requested"] += 1
+    internal_ids: list[str],
+    cancel_event: threading.Event,
+    workers: int = PASSPORT_DETAIL_WORKERS,
+    batch_size: int = PASSPORT_DETAIL_DB_BATCH_SIZE,
+) -> None:
+    worker_state = threading.local()
+    worker_clients: list[MpVmClient] = []
+    worker_clients_lock = threading.Lock()
+
+    def fetch_detail(internal_id: str) -> tuple[str, dict[str, Any]]:
+        client = getattr(worker_state, "client", None)
+        if client is None:
+            client = MpVmClient(auth)
+            worker_state.client = client
+            with worker_clients_lock:
+                worker_clients.append(client)
+        return internal_id, client.get_vulnerability_passport(token, internal_id)
+
+    def flush_batch(
+        details: list[tuple[str, dict[str, Any]]],
+        errors: list[dict[str, str]],
+    ) -> None:
+        if not details and not errors:
+            return
+        db.save_vulnerability_passport_detail_job_batch(job_id, details=details, errors=errors)
+        details.clear()
+        errors.clear()
+
+    details_batch: list[tuple[str, dict[str, Any]]] = []
+    errors_batch: list[dict[str, str]] = []
+    futures: dict[Future[tuple[str, dict[str, Any]]], str] = {}
+    internal_id_iterator = iter(internal_ids)
+
+    def submit_next(executor: ThreadPoolExecutor) -> bool:
+        if cancel_event.is_set():
+            return False
         try:
-            raw_detail = client.get_vulnerability_passport(token, internal_id)
-            db.upsert_vulnerability_passport_detail(internal_id, raw_detail)
-            result["loaded"] += 1
-        except (MpVmApiError, requests.RequestException) as exc:
-            result["failed"] += 1
-            if len(result["errors"]) < 25:
-                result["errors"].append({"internal_id": internal_id, "error": str(exc)})
-    return result
+            internal_id = next(internal_id_iterator)
+        except StopIteration:
+            return False
+        futures[executor.submit(fetch_detail, internal_id)] = internal_id
+        return True
+
+    try:
+        started = db.start_vulnerability_passport_detail_job(job_id)
+        if not started:
+            current = db.get_vulnerability_passport_detail_job(job_id)
+            if current and current.get("cancel_requested"):
+                cancel_event.set()
+            else:
+                return
+        if cancel_event.is_set():
+            db.finish_vulnerability_passport_detail_job(job_id, status="cancelled", message="Cancelled before start.")
+            return
+
+        with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="passport-detail") as executor:
+            for _ in range(max(1, workers)):
+                if not submit_next(executor):
+                    break
+            while futures:
+                completed, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                for future in completed:
+                    internal_id = futures.pop(future)
+                    try:
+                        details_batch.append(future.result())
+                    except Exception as exc:  # Keep one broken passport from stopping the job.
+                        errors_batch.append({"internal_id": internal_id, "error": str(exc)[:1000]})
+                    if len(details_batch) + len(errors_batch) >= max(1, batch_size):
+                        flush_batch(details_batch, errors_batch)
+                    submit_next(executor)
+
+        flush_batch(details_batch, errors_batch)
+        job = db.get_vulnerability_passport_detail_job(job_id) or {}
+        if cancel_event.is_set():
+            final_status = "cancelled"
+            message = "Cancelled by operator."
+        elif job.get("failed_count"):
+            final_status = "completed_with_errors"
+            message = "Detail sync finished with individual passport errors."
+        else:
+            final_status = "completed"
+            message = "Detail sync completed."
+        db.finish_vulnerability_passport_detail_job(job_id, status=final_status, message=message)
+    except Exception as exc:
+        db.finish_vulnerability_passport_detail_job(
+            job_id,
+            status="failed",
+            message=f"Detail sync failed: {exc}"[:2000],
+        )
+    finally:
+        for worker_client in worker_clients:
+            session = getattr(worker_client, "session", None)
+            if session is not None:
+                session.close()
+        unregister_vulnerability_passport_detail_job(job_id)
 
 
 @app.get("/api/vulnerability-passports/{passport_id}/asset-links")
@@ -2119,6 +2313,22 @@ def normalize_vulnerability_passport_record(record: dict[str, Any]) -> dict[str,
         "metrics": metrics if isinstance(metrics, dict) else {},
         "cves": cves,
         "raw_record": record,
+    }
+
+
+def vulnerability_passport_summary(passport: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "internal_id": passport.get("internal_id"),
+        "external_id": passport.get("external_id"),
+        "name": passport.get("name"),
+        "severity": passport.get("severity"),
+        "score": passport.get("score"),
+        "issue_time": passport.get("issue_time"),
+        "package_id": passport.get("package_id"),
+        "package_version": passport.get("package_version"),
+        "cves": passport.get("cves") if isinstance(passport.get("cves"), list) else [],
+        "metrics": passport.get("metrics") if isinstance(passport.get("metrics"), dict) else {},
+        "has_detail": False,
     }
 
 

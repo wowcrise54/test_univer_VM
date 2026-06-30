@@ -4,7 +4,12 @@ export function api(path, options = {}) {
     const contentType = response.headers.get("content-type") || "";
     const body = contentType.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
-      const message = typeof body === "string" ? body : body.detail || JSON.stringify(body);
+      const detail = typeof body === "object" && body ? body.detail : null;
+      const message = typeof body === "string"
+        ? body
+        : typeof detail === "string"
+          ? detail
+          : detail?.message || JSON.stringify(body);
       throw new Error(message);
     }
     return body;

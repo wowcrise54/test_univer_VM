@@ -4,6 +4,8 @@ import { api } from "./api/client.js";
 import { formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
 
+const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
+
 function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, busy, runBusy, showAlert }) {
   const [form, setForm] = useState({
     api_url: "",
@@ -927,6 +929,9 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   const [queryRaw, setQueryRaw] = useState(null);
   const [passportSearch, setPassportSearch] = useState("");
   const [passportPage, setPassportPage] = useState(1);
+  const [passportTotal, setPassportTotal] = useState(0);
+  const [passportSourceToken, setPassportSourceToken] = useState(null);
+  const [passportJob, setPassportJob] = useState(null);
   const [passportWindowOpen, setPassportWindowOpen] = useState(false);
   const passportPageSize = 50;
 
@@ -940,13 +945,28 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   }, [defaults]);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
-  const filteredRows = useMemo(
-    () => filterPassportRows(rows, passportSearch),
-    [rows, passportSearch],
-  );
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / passportPageSize));
+  const totalPages = Math.max(1, Math.ceil(passportTotal / passportPageSize));
   const safePage = Math.min(passportPage, totalPages);
-  const pageRows = filteredRows.slice((safePage - 1) * passportPageSize, safePage * passportPageSize);
+  const pageRows = rows;
+
+  const fetchPassportPage = useCallback(async (
+    page,
+    search = passportSearch,
+    pdqlToken = passportSourceToken,
+  ) => {
+    const safeRequestedPage = Math.max(1, page);
+    const params = new URLSearchParams({
+      limit: String(passportPageSize),
+      offset: String((safeRequestedPage - 1) * passportPageSize),
+    });
+    if (search.trim()) params.set("q", search.trim());
+    if (pdqlToken) params.set("pdql_token", pdqlToken);
+    const result = await api(`/api/vulnerability-passports/local?${params.toString()}`);
+    setRows(result.rows || []);
+    setPassportTotal(result.total || 0);
+    setPassportPage(safeRequestedPage);
+    return result;
+  }, [passportSearch, passportSourceToken]);
 
   useEffect(() => {
     if (!passportWindowOpen) return;
@@ -956,6 +976,49 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [passportWindowOpen]);
+
+  useEffect(() => {
+    let alive = true;
+    api("/api/vulnerability-passports/detail-jobs/active")
+      .then((result) => {
+        if (alive && result.job) setPassportJob(result.job);
+      })
+      .catch((error) => {
+        if (alive) showAlert(error.message || String(error), "error");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [showAlert]);
+
+  useEffect(() => {
+    if (!passportJob?.job_id || !ACTIVE_PASSPORT_JOB_STATUSES.has(passportJob.status)) return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      try {
+        const nextJob = await api(`/api/vulnerability-passports/detail-jobs/${encodeURIComponent(passportJob.job_id)}`);
+        if (!alive) return;
+        setPassportJob(nextJob);
+        if (ACTIVE_PASSPORT_JOB_STATUSES.has(nextJob.status)) {
+          timerId = window.setTimeout(poll, 1000);
+          return;
+        }
+        await fetchPassportPage(passportPage, passportSearch);
+        const message = nextJob.status === "completed"
+          ? `Детали паспортов загружены: ${formatCount(nextJob.loaded_count)}.`
+          : `Синхронизация завершена со статусом «${passportJobStatusLabel(nextJob.status)}». Загружено: ${formatCount(nextJob.loaded_count)}, ошибок: ${formatCount(nextJob.failed_count)}.`;
+        showAlert(message, nextJob.status === "completed" ? "success" : "info");
+      } catch (error) {
+        if (alive) timerId = window.setTimeout(poll, 3000);
+      }
+    };
+    timerId = window.setTimeout(poll, 500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [fetchPassportPage, passportJob?.job_id, passportJob?.status, passportPage, passportSearch, showAlert]);
 
   const queryPassports = () =>
     runBusy("passportQuery", async () => {
@@ -977,6 +1040,10 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       });
       const records = result.records || [];
       setRows(records);
+      setPassportTotal(result.total || 0);
+      setPassportSourceToken(result.pdql_token || null);
+      setPassportJob(result.detail_job || null);
+      setPassportSearch("");
       setSelected(null);
       setDetail(null);
       setPassportPage(1);
@@ -984,32 +1051,43 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       setQueryRaw(result.raw || null);
       if (records.length) {
         const saved = result.db?.saved;
-        const details = result.db?.details || result.details;
-        const detailsLine = details
-          ? `, деталей в БД: ${formatCount(details.loaded)}${details.failed ? `, ошибок: ${formatCount(details.failed)}` : ""}`
+        const detailJob = result.detail_job;
+        const detailsLine = detailJob
+          ? `, деталей в очереди: ${formatCount(detailJob.eligible_count)}, свежих в кэше: ${formatCount(detailJob.skipped_fresh_count)}`
           : "";
-        showAlert(`Получено паспортов: ${formatCount(records.length)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}${detailsLine}.`, "success");
+        showAlert(`Получено паспортов: ${formatCount(result.total)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}${detailsLine}.`, "success");
       } else {
         showAlert("Паспорта не найдены в ответе /assets_grid/data. Raw-ответ показан под таблицей.", "info");
       }
     });
 
-  const loadLocalPassports = () =>
+  const loadLocalPassports = (page = 1, announce = true, pdqlToken = passportSourceToken) =>
     runBusy("passportLocal", async () => {
-      const localLimit = optionalPositiveInteger(form.passport_limit, "Лимит паспортов");
-      const params = new URLSearchParams();
-      if (localLimit !== null) params.set("limit", String(localLimit));
-      const query = params.size ? `?${params.toString()}` : "";
-      const result = await api(`/api/vulnerability-passports/local${query}`);
-      const records = result.rows || [];
-      setRows(records);
+      const result = await fetchPassportPage(page, passportSearch, pdqlToken);
       setSelected(null);
       setDetail(null);
-      setPassportPage(1);
       setPassportWindowOpen(false);
       setQueryRaw(null);
-      showAlert(`Загружено из локальной БД: ${formatCount(records.length)} из ${formatCount(result.total)}.`, "success");
+      if (announce) {
+        showAlert(`Загружено из локальной БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`, "success");
+      }
     });
+
+  const loadAllLocalPassports = () => {
+    setPassportSourceToken(null);
+    loadLocalPassports(1, true, null);
+  };
+
+  const cancelPassportJob = () => {
+    if (!passportJob?.job_id) return;
+    runBusy("passportJobCancel", async () => {
+      const result = await api(`/api/vulnerability-passports/detail-jobs/${encodeURIComponent(passportJob.job_id)}/cancel`, {
+        method: "POST",
+      });
+      setPassportJob(result);
+      showAlert("Остановка фоновой загрузки запрошена.", "info");
+    });
+  };
 
   const openPassport = (row) =>
     runBusy("passportDetail", async () => {
@@ -1050,6 +1128,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       if (!row.internal_id) throw new Error("У записи нет @VulnerPassport.internalId.");
       await api(`/api/vulnerability-passports/${encodeURIComponent(row.internal_id)}`, { method: "DELETE" });
       setRows((items) => items.filter((item) => item.internal_id !== row.internal_id));
+      setPassportTotal((value) => Math.max(0, value - 1));
       if (selected?.internal_id === row.internal_id) {
         setSelected(null);
         setDetail(null);
@@ -1058,6 +1137,10 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       showAlert(`Паспорт ${label} удалён.`, "success");
     });
   };
+
+  const passportJobProgress = passportJob?.eligible_count
+    ? Math.min(100, Math.round((passportJob.processed_count / passportJob.eligible_count) * 100))
+    : 100;
 
   return (
     <Panel
@@ -1091,21 +1174,41 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
       <div className="action-row">
         <Button busy={busy.passportQuery} onClick={queryPassports}>Выполнить PDQL</Button>
-        <Button variant="secondary" busy={busy.passportLocal} onClick={loadLocalPassports}>Из БД</Button>
-        <div className="inline-metric">Загружено: <span>{formatCount(rows.length)}</span> · найдено: <span>{formatCount(filteredRows.length)}</span></div>
+        <Button variant="secondary" busy={busy.passportLocal} onClick={loadAllLocalPassports}>Из БД</Button>
+        <div className="inline-metric">На странице: <span>{formatCount(rows.length)}</span> · всего: <span>{formatCount(passportTotal)}</span></div>
       </div>
+      {passportJob ? (
+        <section className={`passport-job passport-job--${passportJob.status}`} aria-live="polite">
+          <div className="passport-job__header">
+            <div>
+              <strong>Фоновая загрузка деталей: {passportJobStatusLabel(passportJob.status)}</strong>
+              <span>
+                Обработано {formatCount(passportJob.processed_count)} из {formatCount(passportJob.eligible_count)} ·
+                загружено {formatCount(passportJob.loaded_count)} · ошибок {formatCount(passportJob.failed_count)} ·
+                свежих в кэше {formatCount(passportJob.skipped_fresh_count)}
+              </span>
+            </div>
+            {ACTIVE_PASSPORT_JOB_STATUSES.has(passportJob.status) ? (
+              <Button variant="tiny-danger" busy={busy.passportJobCancel} onClick={cancelPassportJob}>Остановить</Button>
+            ) : null}
+          </div>
+          <div className="passport-job__track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={passportJobProgress}>
+            <span style={{ width: `${passportJobProgress}%` }} />
+          </div>
+          {passportJob.message ? <small>{passportJob.message}</small> : null}
+        </section>
+      ) : null}
       <div className="passport-controls">
         <input
           value={passportSearch}
-          onChange={(event) => {
-            setPassportSearch(event.target.value);
-            setPassportPage(1);
-          }}
+          onChange={(event) => setPassportSearch(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && loadLocalPassports(1, false)}
           placeholder="Поиск по CVE, названию, internalId, package"
         />
+        <Button variant="secondary" busy={busy.passportLocal} onClick={() => loadLocalPassports(1, false)}>Найти</Button>
         <select
           value={safePage}
-          onChange={(event) => setPassportPage(Number(event.target.value))}
+          onChange={(event) => loadLocalPassports(Number(event.target.value), false)}
           disabled={totalPages <= 1}
         >
           {Array.from({ length: totalPages }, (_, index) => (
@@ -1128,7 +1231,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
             </tr>
           </thead>
           <tbody>
-            {filteredRows.length ? pageRows.map((row, rowIndex) => (
+            {pageRows.length ? pageRows.map((row, rowIndex) => (
               <tr key={row.internal_id || row.external_id || `${row.name}-${rowIndex}`} className={selected?.internal_id === row.internal_id ? "is-selected" : ""}>
                 <td><span className="score-badge">{row.score || "n/a"}</span></td>
                 <td className="wide-cell">
@@ -1149,20 +1252,19 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                 </td>
               </tr>
             )) : (
-              <tr><td colSpan={8} className="empty-cell">{rows.length ? "По текущему поиску ничего не найдено." : "Выполните PDQL, чтобы получить internalId паспортов."}</td></tr>
+              <tr><td colSpan={8} className="empty-cell">{passportTotal ? "На этой странице нет записей." : "Выполните PDQL или загрузите паспорта из БД."}</td></tr>
             )}
           </tbody>
         </table>
       </div>
-      {rows.length ? (
+      {passportTotal ? (
         <div className="passport-pagination">
           <span>
-            Показано {formatCount(pageRows.length)} из {formatCount(filteredRows.length)}
-            {rows.length !== filteredRows.length ? ` · всего загружено ${formatCount(rows.length)}` : ""}
+            Страница {formatCount(safePage)} из {formatCount(totalPages)} · показано {formatCount(pageRows.length)} из {formatCount(passportTotal)}
           </span>
           <div>
-            <Button variant="tiny" disabled={safePage <= 1} onClick={() => setPassportPage((value) => Math.max(1, value - 1))}>Назад</Button>
-            <Button variant="tiny" disabled={safePage >= totalPages} onClick={() => setPassportPage((value) => Math.min(totalPages, value + 1))}>Вперёд</Button>
+            <Button variant="tiny" disabled={safePage <= 1 || busy.passportLocal} onClick={() => loadLocalPassports(safePage - 1, false)}>Назад</Button>
+            <Button variant="tiny" disabled={safePage >= totalPages || busy.passportLocal} onClick={() => loadLocalPassports(safePage + 1, false)}>Вперёд</Button>
           </div>
         </div>
       ) : null}
@@ -2270,6 +2372,19 @@ function optionalPositiveInteger(value, label) {
     throw new Error(`${label} должен быть целым числом больше нуля.`);
   }
   return Math.floor(parsed);
+}
+
+function passportJobStatusLabel(status) {
+  return {
+    queued: "в очереди",
+    running: "выполняется",
+    cancelling: "останавливается",
+    cancelled: "остановлена",
+    completed: "завершена",
+    completed_with_errors: "завершена с ошибками",
+    failed: "ошибка",
+    interrupted: "прервана перезапуском",
+  }[status] || status || "неизвестно";
 }
 
 function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {

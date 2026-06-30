@@ -4,7 +4,8 @@ import csv
 import io
 import json
 import os
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -16,6 +17,8 @@ DATABASE_URL = (
     or os.getenv("DATABASE_URL")
     or "postgresql://mpvm:mpvm@localhost:5432/mpvm"
 )
+_DB_INITIALIZED = False
+_DB_INIT_LOCK = threading.Lock()
 
 
 def database_label() -> str:
@@ -35,6 +38,17 @@ def connect() -> psycopg.Connection[dict[str, Any]]:
 
 
 def init_db() -> None:
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+        _initialize_schema()
+        _DB_INITIALIZED = True
+
+
+def _initialize_schema() -> None:
     statements = [
         """
         CREATE TABLE IF NOT EXISTS scan_tasks (
@@ -141,6 +155,25 @@ def init_db() -> None:
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
             detail_updated_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS vulnerability_passport_detail_jobs (
+            job_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            requested_count INTEGER NOT NULL DEFAULT 0,
+            eligible_count INTEGER NOT NULL DEFAULT 0,
+            processed_count INTEGER NOT NULL DEFAULT 0,
+            loaded_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            skipped_fresh_count INTEGER NOT NULL DEFAULT 0,
+            cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+            errors_json TEXT NOT NULL DEFAULT '[]',
+            message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
         )
         """,
         """
@@ -296,6 +329,9 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_external_id ON vulnerability_passports(external_id)",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_severity_lower ON vulnerability_passports((LOWER(severity)))",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_package ON vulnerability_passports(package_id, package_version)",
+        "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_pdql_token ON vulnerability_passports(pdql_token)",
+        "CREATE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_created ON vulnerability_passport_detail_jobs(created_at DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_single_active ON vulnerability_passport_detail_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_display_name_lower ON asset_cards((LOWER(display_name)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_fqdn_lower ON asset_cards((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
@@ -766,17 +802,39 @@ def upsert_vulnerability_passports(
 ) -> dict[str, Any]:
     init_db()
     current = now_utc()
-    saved = 0
     skipped = 0
     saved_ids: list[str] = []
+    values: list[tuple[Any, ...]] = []
+    for passport in passports:
+        internal_id = clean_value(passport.get("internal_id"))
+        if not internal_id:
+            skipped += 1
+            continue
+        values.append(
+            (
+                internal_id,
+                clean_value(passport.get("external_id")),
+                clean_value(passport.get("name")),
+                clean_value(passport.get("severity")),
+                clean_value(passport.get("score")),
+                clean_value(passport.get("issue_time")),
+                clean_value(passport.get("package_id")),
+                clean_value(passport.get("package_version")),
+                json.dumps(passport.get("cves") or [], ensure_ascii=False),
+                json.dumps(passport.get("metrics") or {}, ensure_ascii=False),
+                json.dumps(passport.get("raw_record") or {}, ensure_ascii=False),
+                source_pdql,
+                pdql_token,
+                current,
+                current,
+            )
+        )
+        saved_ids.append(internal_id)
     with connect() as conn:
-        for passport in passports:
-            internal_id = clean_value(passport.get("internal_id"))
-            if not internal_id:
-                skipped += 1
-                continue
-            conn.execute(
-                """
+        if values:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
                 INSERT INTO vulnerability_passports (
                     internal_id, external_id, name, severity, score, issue_time,
                     package_id, package_version, cves_json, metrics_json,
@@ -797,34 +855,37 @@ def upsert_vulnerability_passports(
                     source_pdql = EXCLUDED.source_pdql,
                     pdql_token = EXCLUDED.pdql_token,
                     last_seen = EXCLUDED.last_seen
-                """,
-                (
-                    internal_id,
-                    clean_value(passport.get("external_id")),
-                    clean_value(passport.get("name")),
-                    clean_value(passport.get("severity")),
-                    clean_value(passport.get("score")),
-                    clean_value(passport.get("issue_time")),
-                    clean_value(passport.get("package_id")),
-                    clean_value(passport.get("package_version")),
-                    json.dumps(passport.get("cves") or [], ensure_ascii=False),
-                    json.dumps(passport.get("metrics") or {}, ensure_ascii=False),
-                    json.dumps(passport.get("raw_record") or {}, ensure_ascii=False),
-                    source_pdql,
-                    pdql_token,
-                    current,
-                    current,
-                ),
-            )
-            saved += 1
-            saved_ids.append(internal_id)
+                    """,
+                    values,
+                )
         links_created = reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
-    return {"saved": saved, "skipped": skipped, "passport_links": links_created}
+    return {"saved": len(values), "skipped": skipped, "passport_links": links_created}
 
 
-def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str, Any]) -> dict[str, Any] | None:
-    init_db()
-    current = now_utc()
+VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL = """
+    INSERT INTO vulnerability_passports (
+        internal_id, name, severity, score, issue_time, package_id, package_version,
+        raw_detail_json, first_seen, last_seen, detail_updated_at
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT(internal_id) DO UPDATE SET
+        name = COALESCE(EXCLUDED.name, vulnerability_passports.name),
+        severity = COALESCE(EXCLUDED.severity, vulnerability_passports.severity),
+        score = COALESCE(EXCLUDED.score, vulnerability_passports.score),
+        issue_time = COALESCE(EXCLUDED.issue_time, vulnerability_passports.issue_time),
+        package_id = COALESCE(EXCLUDED.package_id, vulnerability_passports.package_id),
+        package_version = COALESCE(EXCLUDED.package_version, vulnerability_passports.package_version),
+        raw_detail_json = EXCLUDED.raw_detail_json,
+        last_seen = EXCLUDED.last_seen,
+        detail_updated_at = EXCLUDED.detail_updated_at
+"""
+
+
+def vulnerability_passport_detail_values(
+    internal_id: str,
+    raw_detail: dict[str, Any],
+    current: str,
+) -> tuple[Any, ...]:
     vulnerability = raw_detail.get("vulnerability") if isinstance(raw_detail.get("vulnerability"), dict) else {}
     cvss = raw_detail.get("cvss") if isinstance(raw_detail.get("cvss"), dict) else {}
     name = clean_value(
@@ -839,45 +900,52 @@ def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str,
     score = clean_value(
         first_non_empty(raw_detail.get("score"), raw_detail.get("cvss3Score"), cvss.get("score"))
     )
-    issue_time = clean_value(first_non_empty(raw_detail.get("issueTime"), raw_detail.get("publishedAt")))
-    package_id = clean_value(raw_detail.get("packageId"))
-    package_version = clean_value(raw_detail.get("packageVersion"))
+    return (
+        internal_id,
+        name,
+        severity,
+        score,
+        clean_value(first_non_empty(raw_detail.get("issueTime"), raw_detail.get("publishedAt"))),
+        clean_value(raw_detail.get("packageId")),
+        clean_value(raw_detail.get("packageVersion")),
+        json.dumps(raw_detail or {}, ensure_ascii=False),
+        current,
+        current,
+        current,
+    )
+
+
+def _upsert_vulnerability_passport_details(
+    conn: psycopg.Connection[dict[str, Any]],
+    details: list[tuple[str, dict[str, Any]]],
+    current: str,
+) -> int:
+    values = [vulnerability_passport_detail_values(internal_id, raw_detail, current) for internal_id, raw_detail in details]
+    if not values:
+        return 0
+    with conn.cursor() as cursor:
+        cursor.executemany(VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL, values)
+    reconcile_asset_card_vulnerability_passport_links(conn, [value[0] for value in values], current)
+    return len(values)
+
+
+def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str, Any]) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
     with connect() as conn:
         row = conn.execute(
-            """
-            INSERT INTO vulnerability_passports (
-                internal_id, name, severity, score, issue_time, package_id, package_version,
-                raw_detail_json, first_seen, last_seen, detail_updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT(internal_id) DO UPDATE SET
-                name = COALESCE(EXCLUDED.name, vulnerability_passports.name),
-                severity = COALESCE(EXCLUDED.severity, vulnerability_passports.severity),
-                score = COALESCE(EXCLUDED.score, vulnerability_passports.score),
-                issue_time = COALESCE(EXCLUDED.issue_time, vulnerability_passports.issue_time),
-                package_id = COALESCE(EXCLUDED.package_id, vulnerability_passports.package_id),
-                package_version = COALESCE(EXCLUDED.package_version, vulnerability_passports.package_version),
-                raw_detail_json = EXCLUDED.raw_detail_json,
-                last_seen = EXCLUDED.last_seen,
-                detail_updated_at = EXCLUDED.detail_updated_at
-            RETURNING *
-            """,
-            (
-                internal_id,
-                name,
-                severity,
-                score,
-                issue_time,
-                package_id,
-                package_version,
-                json.dumps(raw_detail or {}, ensure_ascii=False),
-                current,
-                current,
-                current,
-            ),
+            VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL + " RETURNING *",
+            vulnerability_passport_detail_values(internal_id, raw_detail, current),
         ).fetchone()
         reconcile_asset_card_vulnerability_passport_links(conn, [internal_id], current)
     return decode_vulnerability_passport(dict(row)) if row else None
+
+
+def upsert_vulnerability_passport_details(details: list[tuple[str, dict[str, Any]]]) -> int:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        return _upsert_vulnerability_passport_details(conn, details, current)
 
 
 def get_vulnerability_passport(internal_id: str) -> dict[str, Any] | None:
@@ -904,7 +972,8 @@ def list_vulnerability_passports(
     *,
     q: str | None = None,
     severity: str | None = None,
-    limit: int | None = 100,
+    pdql_token: str | None = None,
+    limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     init_db()
@@ -916,24 +985,30 @@ def list_vulnerability_passports(
             """
             (
                 internal_id ILIKE %s OR external_id ILIKE %s OR name ILIKE %s OR
-                package_id ILIKE %s OR package_version ILIKE %s OR cves_json ILIKE %s OR
-                raw_record_json ILIKE %s OR COALESCE(raw_detail_json, '') ILIKE %s
+                package_id ILIKE %s OR package_version ILIKE %s OR cves_json ILIKE %s
             )
             """
         )
-        params.extend([like, like, like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like])
     if severity:
         filters.append("LOWER(COALESCE(severity, '')) = LOWER(%s)")
         params.append(severity)
+    if pdql_token:
+        filters.append("pdql_token = %s")
+        params.append(pdql_token)
     where = "WHERE " + " AND ".join(filters) if filters else ""
-    limit = max(1, limit) if limit is not None else None
+    limit = min(200, max(1, limit))
     offset = max(0, offset)
 
     with connect() as conn:
         total_row = conn.execute(f"SELECT COUNT(*) AS count FROM vulnerability_passports {where}", params).fetchone()
         rows = conn.execute(
             f"""
-            SELECT *
+            SELECT
+                id, internal_id, external_id, name, severity, score, issue_time,
+                package_id, package_version, cves_json, metrics_json,
+                first_seen, last_seen, detail_updated_at,
+                (raw_detail_json IS NOT NULL) AS has_detail
             FROM vulnerability_passports
             {where}
             ORDER BY
@@ -958,39 +1033,223 @@ def list_vulnerability_passports(
         ).fetchall()
     return {
         "total": int(total_row["count"] or 0),
-        "rows": [decode_vulnerability_passport(dict(row)) for row in rows],
+        "rows": [decode_vulnerability_passport_summary(dict(row)) for row in rows],
         "limit": limit,
         "offset": offset,
     }
 
 
-def list_vulnerability_passports_by_ids(internal_ids: list[Any]) -> list[dict[str, Any]]:
-    ids = [clean_value(value) for value in internal_ids if clean_value(value)]
-    if not ids:
-        return []
-    seen: set[str] = set()
-    ordered_ids: list[str] = []
-    for internal_id in ids:
-        if internal_id in seen:
-            continue
-        seen.add(internal_id)
-        ordered_ids.append(internal_id)
-
+def vulnerability_passport_detail_refresh_candidates(
+    internal_ids: list[Any],
+    *,
+    ttl_hours: int,
+) -> dict[str, Any]:
+    init_db()
+    ordered_ids = list(dict.fromkeys(clean_value(value) for value in internal_ids if clean_value(value)))
+    if not ordered_ids:
+        return {"requested": [], "eligible": [], "skipped_fresh": []}
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT *
+            SELECT internal_id, detail_updated_at, (raw_detail_json IS NOT NULL) AS has_detail
             FROM vulnerability_passports
             WHERE internal_id = ANY(%s)
             """,
             (ordered_ids,),
         ).fetchall()
+    by_id = {clean_value(row.get("internal_id")): dict(row) for row in rows}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0, ttl_hours))
+    eligible: list[str] = []
+    skipped_fresh: list[str] = []
+    for internal_id in ordered_ids:
+        row = by_id.get(internal_id)
+        updated_at = _parse_timestamp(row.get("detail_updated_at")) if row else None
+        if row and row.get("has_detail") and updated_at is not None and updated_at >= cutoff:
+            skipped_fresh.append(internal_id)
+        else:
+            eligible.append(internal_id)
+    return {"requested": ordered_ids, "eligible": eligible, "skipped_fresh": skipped_fresh}
 
-    by_id = {
-        clean_value(row.get("internal_id")): decode_vulnerability_passport(dict(row))
-        for row in rows
-    }
-    return [by_id[internal_id] for internal_id in ordered_ids if internal_id in by_id]
+
+def create_vulnerability_passport_detail_job(
+    job_id: str,
+    *,
+    requested_count: int,
+    eligible_count: int,
+    skipped_fresh_count: int,
+) -> dict[str, Any]:
+    init_db()
+    current = now_utc()
+    status = "queued" if eligible_count else "completed"
+    finished_at = None if eligible_count else current
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO vulnerability_passport_detail_jobs (
+                job_id, status, requested_count, eligible_count, skipped_fresh_count,
+                created_at, finished_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                job_id,
+                status,
+                requested_count,
+                eligible_count,
+                skipped_fresh_count,
+                current,
+                finished_at,
+                current,
+            ),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row))
+
+
+def get_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM vulnerability_passport_detail_jobs WHERE job_id = %s",
+            (job_id,),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row)) if row else None
+
+
+def get_active_vulnerability_passport_detail_job() -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM vulnerability_passport_detail_jobs
+            WHERE status IN ('queued', 'running', 'cancelling')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row)) if row else None
+
+
+def interrupt_active_vulnerability_passport_detail_jobs() -> int:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        result = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET status = 'interrupted',
+                message = 'Application restarted before the detail sync finished.',
+                finished_at = %s,
+                updated_at = %s
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """,
+            (current, current),
+        )
+    return int(result.rowcount or 0)
+
+
+def start_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET status = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'running' END,
+                started_at = COALESCE(started_at, %s),
+                updated_at = %s
+            WHERE job_id = %s AND status = 'queued'
+            RETURNING *
+            """,
+            (current, current, job_id),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row)) if row else None
+
+
+def request_vulnerability_passport_detail_job_cancel(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET cancel_requested = TRUE,
+                status = 'cancelling',
+                updated_at = %s
+            WHERE job_id = %s AND status IN ('queued', 'running', 'cancelling')
+            RETURNING *
+            """,
+            (current, job_id),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row)) if row else None
+
+
+def save_vulnerability_passport_detail_job_batch(
+    job_id: str,
+    *,
+    details: list[tuple[str, dict[str, Any]]],
+    errors: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT errors_json FROM vulnerability_passport_detail_jobs WHERE job_id = %s FOR UPDATE",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return None
+        loaded_count = _upsert_vulnerability_passport_details(conn, details, current)
+        saved_errors = json_loads(row.get("errors_json"), [])
+        if not isinstance(saved_errors, list):
+            saved_errors = []
+        saved_errors = [*saved_errors, *errors][:100]
+        updated = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET processed_count = processed_count + %s,
+                loaded_count = loaded_count + %s,
+                failed_count = failed_count + %s,
+                errors_json = %s,
+                updated_at = %s
+            WHERE job_id = %s
+            RETURNING *
+            """,
+            (
+                loaded_count + len(errors),
+                loaded_count,
+                len(errors),
+                json.dumps(saved_errors, ensure_ascii=False),
+                current,
+                job_id,
+            ),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(updated)) if updated else None
+
+
+def finish_vulnerability_passport_detail_job(
+    job_id: str,
+    *,
+    status: str,
+    message: str | None = None,
+) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET status = %s,
+                message = %s,
+                finished_at = %s,
+                updated_at = %s
+            WHERE job_id = %s
+            RETURNING *
+            """,
+            (status, message, current, current, job_id),
+        ).fetchone()
+    return decode_vulnerability_passport_detail_job(dict(row)) if row else None
 
 
 def list_asset_card_links_for_vulnerability_passport(passport_id: str) -> list[dict[str, Any]]:
@@ -1864,6 +2123,61 @@ def decode_vulnerability_passport(row: dict[str, Any]) -> dict[str, Any]:
         "last_seen": row.get("last_seen"),
         "detail_updated_at": row.get("detail_updated_at"),
     }
+
+
+def decode_vulnerability_passport_summary(row: dict[str, Any]) -> dict[str, Any]:
+    cves = json_loads(row.get("cves_json"), [])
+    metrics = json_loads(row.get("metrics_json"), {})
+    return {
+        "id": row.get("id"),
+        "internal_id": row.get("internal_id"),
+        "external_id": row.get("external_id"),
+        "name": row.get("name"),
+        "severity": row.get("severity"),
+        "score": row.get("score"),
+        "issue_time": row.get("issue_time"),
+        "package_id": row.get("package_id"),
+        "package_version": row.get("package_version"),
+        "cves": cves if isinstance(cves, list) else [],
+        "metrics": metrics if isinstance(metrics, dict) else {},
+        "has_detail": bool(row.get("has_detail")),
+        "first_seen": row.get("first_seen"),
+        "last_seen": row.get("last_seen"),
+        "detail_updated_at": row.get("detail_updated_at"),
+    }
+
+
+def decode_vulnerability_passport_detail_job(row: dict[str, Any]) -> dict[str, Any]:
+    errors = json_loads(row.get("errors_json"), [])
+    return {
+        "job_id": row.get("job_id"),
+        "status": row.get("status"),
+        "requested_count": int(row.get("requested_count") or 0),
+        "eligible_count": int(row.get("eligible_count") or 0),
+        "processed_count": int(row.get("processed_count") or 0),
+        "loaded_count": int(row.get("loaded_count") or 0),
+        "failed_count": int(row.get("failed_count") or 0),
+        "skipped_fresh_count": int(row.get("skipped_fresh_count") or 0),
+        "cancel_requested": bool(row.get("cancel_requested")),
+        "errors": errors if isinstance(errors, list) else [],
+        "message": row.get("message"),
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def json_loads(value: Any, fallback: Any) -> Any:
