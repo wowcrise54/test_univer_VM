@@ -5,6 +5,7 @@ import { formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
+const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 
 function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, busy, runBusy, showAlert }) {
   const [form, setForm] = useState({
@@ -589,6 +590,15 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [selectedPassport, setSelectedPassport] = useState(null);
   const [assetPassportDetail, setAssetPassportDetail] = useState(null);
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
+  const [assetCardJob, setAssetCardJob] = useState(null);
+
+  const refreshLocalCards = useCallback(async () => {
+    const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
+    if (cardSearch.trim()) params.set("q", cardSearch.trim());
+    const result = await api(`/api/asset-cards/local?${params.toString()}`);
+    setCards(result.rows || []);
+    return result;
+  }, [cardSearch, form.asset_limit]);
 
   useEffect(() => {
     if (!defaults) return;
@@ -607,6 +617,59 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [assetWindowOpen]);
+
+  useEffect(() => {
+    let alive = true;
+    api("/api/asset-cards/build-jobs/active")
+      .then((result) => {
+        if (alive && result.job) setAssetCardJob(result.job);
+      })
+      .catch((error) => {
+        if (alive) showAlert(error.message || String(error), "error");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [showAlert]);
+
+  useEffect(() => {
+    if (!assetCardJob?.job_id || !ACTIVE_ASSET_CARD_JOB_STATUSES.has(assetCardJob.status)) return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      try {
+        const nextJob = await api(`/api/asset-cards/build-jobs/${encodeURIComponent(assetCardJob.job_id)}`);
+        if (!alive) return;
+        setAssetCardJob(nextJob);
+        if (ACTIVE_ASSET_CARD_JOB_STATUSES.has(nextJob.status)) {
+          timerId = window.setTimeout(poll, 1000);
+          return;
+        }
+        if (nextJob.status === "completed") {
+          const [card] = await Promise.all([
+            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}`),
+            refreshLocalCards(),
+          ]);
+          if (!alive) return;
+          setSelectedCard(card);
+          setAssetWindowOpen(true);
+          showAlert(`Карточка актива ${card.display_name || card.asset_id} собрана.`, "success");
+        } else {
+          showAlert(
+            `Сборка карточки завершена со статусом «${assetCardJobStatusLabel(nextJob.status)}».`,
+            nextJob.status === "failed" ? "error" : "info",
+          );
+        }
+      } catch (_error) {
+        if (alive) timerId = window.setTimeout(poll, 3000);
+      }
+    };
+    timerId = window.setTimeout(poll, 500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [assetCardJob?.job_id, assetCardJob?.status, refreshLocalCards, showAlert]);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const filteredCandidates = useMemo(
@@ -643,16 +706,25 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     runBusy("assetCardBuild", async () => {
       const assetId = form.selected_asset_id.trim();
       if (!assetId) throw new Error("Введите asset_id или выберите актив из списка.");
+      const payload = {
+        asset_id: assetId,
+        timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
+        limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
+        max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
+        max_depth: clampNumber(form.max_depth, 8, 0, 8),
+      };
+      if (form.save_to_db) {
+        const result = await api("/api/asset-cards/build-jobs", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setAssetCardJob(result.job);
+        showAlert(`Сборка карточки ${assetId} запущена в фоне.`, "info");
+        return;
+      }
       const result = await api("/api/asset-cards/build", {
         method: "POST",
-        body: JSON.stringify({
-          asset_id: assetId,
-          timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
-          limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
-          max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
-          max_depth: clampNumber(form.max_depth, 8, 0, 8),
-          save_to_db: form.save_to_db,
-        }),
+        body: JSON.stringify({ ...payload, save_to_db: false }),
       });
       const nextCard = result.card;
       setSelectedCard(nextCard);
@@ -669,10 +741,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const loadLocalCards = () =>
     runBusy("assetCardsLocal", async () => {
-      const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
-      if (cardSearch.trim()) params.set("q", cardSearch.trim());
-      const result = await api(`/api/asset-cards/local?${params.toString()}`);
-      setCards(result.rows || []);
+      const result = await refreshLocalCards();
       showAlert(`Загружено карточек из БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`, "success");
     });
 
@@ -685,20 +754,30 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const updateLocalCard = (row) =>
     runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
-      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`, {
-        method: "PUT",
+      const result = await api("/api/asset-cards/build-jobs", {
+        method: "POST",
         body: JSON.stringify({
+          asset_id: row.asset_id,
           timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
           limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
           max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
           max_depth: clampNumber(form.max_depth, 8, 0, 8),
         }),
       });
-      const nextCard = result.card;
-      setCards((items) => [nextCard, ...items.filter((item) => item.asset_id !== row.asset_id)]);
-      setSelectedCard((current) => (current?.asset_id === row.asset_id ? nextCard : current));
-      showAlert(`Карточка актива ${row.display_name || row.asset_id} обновлена.`, "success");
+      setAssetCardJob(result.job);
+      showAlert(`Обновление карточки ${row.display_name || row.asset_id} запущено в фоне.`, "info");
     });
+
+  const cancelAssetCardJob = () => {
+    if (!assetCardJob?.job_id) return;
+    runBusy("assetCardJobCancel", async () => {
+      const result = await api(`/api/asset-cards/build-jobs/${encodeURIComponent(assetCardJob.job_id)}/cancel`, {
+        method: "POST",
+      });
+      setAssetCardJob(result);
+      showAlert("Остановка сборки карточки запрошена.", "info");
+    });
+  };
 
   const deleteLocalCard = (row) => {
     const label = row.display_name || row.hostname || row.asset_id;
@@ -725,6 +804,11 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       setSelectedPassport(nextPassport);
       setAssetPassportDetail(result.raw || nextPassport.raw_detail || {});
     });
+
+  const assetCardJobProgress = assetCardJob?.discovered_requests
+    ? Math.min(100, Math.round((assetCardJob.completed_requests / assetCardJob.discovered_requests) * 100))
+    : 0;
+  const assetCardJobActive = ACTIVE_ASSET_CARD_JOB_STATUSES.has(assetCardJob?.status);
 
   return (
     <Panel
@@ -780,9 +864,33 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           <Toggle label="Сохранить карточку в БД" checked={form.save_to_db} onChange={(value) => update("save_to_db", value)} />
         </div>
         <div className="action-row">
-          <Button busy={busy.assetCardBuild} onClick={buildCard}>Собрать карточку</Button>
+          <Button busy={busy.assetCardBuild} disabled={assetCardJobActive} onClick={buildCard}>Собрать карточку</Button>
         </div>
       </div>
+
+      {assetCardJob ? (
+        <section className={`passport-job asset-card-job passport-job--${assetCardJob.status}`} aria-live="polite">
+          <div className="passport-job__header">
+            <div>
+              <strong>
+                Сборка карточки {assetCardJob.asset_id}: {assetCardJobStatusLabel(assetCardJob.status)}
+              </strong>
+              <span>
+                Этап: {assetCardJobStageLabel(assetCardJob.stage)} · запросов {formatCount(assetCardJob.completed_requests)} / {formatCount(assetCardJob.discovered_requests)} ·
+                узлов {formatCount(assetCardJob.node_count)} · коллекций {formatCount(assetCardJob.collection_count)} ·
+                уязвимостей {formatCount(assetCardJob.finding_count)} · предупреждений {formatCount(assetCardJob.warning_count)}
+              </span>
+            </div>
+            {assetCardJobActive ? (
+              <Button variant="tiny-danger" busy={busy.assetCardJobCancel} onClick={cancelAssetCardJob}>Остановить</Button>
+            ) : null}
+          </div>
+          <div className="passport-job__track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={assetCardJobProgress}>
+            <span style={{ width: `${assetCardJobProgress}%` }} />
+          </div>
+          {assetCardJob.message ? <small>{assetCardJob.message}</small> : null}
+        </section>
+      ) : null}
 
       {candidates.length ? (
         <>
@@ -865,7 +973,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                   <td>
                     <div className="row-actions">
                       <Button variant="tiny" busy={busy.assetCardOpen && selectedCard?.asset_id === row.asset_id} onClick={() => openLocalCard(row)}>Открыть</Button>
-                      <Button variant="tiny" busy={busy[`assetCardUpdate:${row.asset_id}`]} onClick={() => updateLocalCard(row)}>Обновить</Button>
+                      <Button variant="tiny" disabled={assetCardJobActive} busy={busy[`assetCardUpdate:${row.asset_id}`]} onClick={() => updateLocalCard(row)}>Обновить</Button>
                       <Button variant="tiny-danger" busy={busy[`assetCardDelete:${row.asset_id}`]} onClick={() => deleteLocalCard(row)}>Удалить</Button>
                     </div>
                   </td>
@@ -2385,6 +2493,35 @@ function passportJobStatusLabel(status) {
     failed: "ошибка",
     interrupted: "прервана перезапуском",
   }[status] || status || "неизвестно";
+}
+
+function assetCardJobStatusLabel(status) {
+  return {
+    queued: "в очереди",
+    running: "выполняется",
+    cancelling: "останавливается",
+    cancelled: "остановлена",
+    completed: "завершена",
+    failed: "ошибка",
+    interrupted: "прервана перезапуском",
+  }[status] || status || "неизвестно";
+}
+
+function assetCardJobStageLabel(stage) {
+  return {
+    queued: "ожидание",
+    starting: "подготовка",
+    root: "timeline и root",
+    collecting: "сбор данных",
+    tree_and_vulnerabilities: "дерево и уязвимости",
+    assembling: "сборка результата",
+    saving: "сохранение",
+    cancelling: "остановка",
+    cancelled: "остановлено",
+    completed: "готово",
+    failed: "ошибка",
+    interrupted: "прервано",
+  }[stage] || stage || "неизвестно";
 }
 
 function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {

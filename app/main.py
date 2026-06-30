@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import requests
 import psycopg
@@ -58,9 +58,14 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-PASSPORT_DETAIL_WORKERS = env_int("MPVM_PASSPORT_DETAIL_WORKERS", 10, minimum=1, maximum=32)
+BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 10, minimum=1, maximum=32)
+PASSPORT_DETAIL_WORKERS = min(
+    BACKGROUND_REQUEST_LIMIT,
+    env_int("MPVM_PASSPORT_DETAIL_WORKERS", 10, minimum=1, maximum=32),
+)
 PASSPORT_DETAIL_TTL_HOURS = env_int("MPVM_PASSPORT_DETAIL_TTL_HOURS", 24, minimum=0, maximum=8760)
 PASSPORT_DETAIL_DB_BATCH_SIZE = 100
+ASSET_METADATA_TTL_SECONDS = env_int("MPVM_ASSET_METADATA_TTL_SECONDS", 3600, minimum=0, maximum=86400)
 
 
 @dataclass
@@ -77,6 +82,126 @@ SESSION = RuntimeSession()
 DATABASE_STARTUP_ERROR: str | None = None
 PASSPORT_DETAIL_CANCEL_EVENTS: dict[str, threading.Event] = {}
 PASSPORT_DETAIL_CANCEL_EVENTS_LOCK = threading.Lock()
+ASSET_CARD_CANCEL_EVENTS: dict[str, threading.Event] = {}
+ASSET_CARD_CANCEL_EVENTS_LOCK = threading.Lock()
+BACKGROUND_REQUEST_SEMAPHORE = threading.BoundedSemaphore(BACKGROUND_REQUEST_LIMIT)
+ASSET_METADATA_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+ASSET_METADATA_CACHE_LOCK = threading.Lock()
+
+
+class AssetCardBuildCancelled(Exception):
+    pass
+
+
+class AssetCardRequestExecutor:
+    def __init__(
+        self,
+        *,
+        auth: AuthConfig,
+        token: str,
+        workers: int,
+        cancel_event: threading.Event | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> None:
+        self.auth = auth
+        self.token = token
+        self.cancel_event = cancel_event or threading.Event()
+        self.on_progress = on_progress
+        self.worker_count = max(1, workers)
+        self._executor = ThreadPoolExecutor(max_workers=self.worker_count, thread_name_prefix="asset-card-request")
+        self._worker_state = threading.local()
+        self._clients: list[MpVmClient] = []
+        self._clients_lock = threading.Lock()
+        self._progress_lock = threading.Lock()
+        self.discovered = 0
+        self.completed = 0
+
+    def _client(self) -> MpVmClient:
+        client = getattr(self._worker_state, "client", None)
+        if client is None:
+            client = MpVmClient(self.auth)
+            self._worker_state.client = client
+            with self._clients_lock:
+                self._clients.append(client)
+        return client
+
+    def _run(self, operation: Callable[[MpVmClient], Any]) -> Any:
+        if self.cancel_event.is_set():
+            raise AssetCardBuildCancelled("Asset card build was cancelled.")
+        with BACKGROUND_REQUEST_SEMAPHORE:
+            if self.cancel_event.is_set():
+                raise AssetCardBuildCancelled("Asset card build was cancelled.")
+            return operation(self._client())
+
+    def record_request_started(self) -> None:
+        with self._progress_lock:
+            self.discovered += 1
+            discovered = self.discovered
+            completed = self.completed
+        if self.on_progress:
+            self.on_progress(discovered, completed)
+
+    def record_request_completed(self) -> None:
+        with self._progress_lock:
+            self.completed += 1
+            discovered = self.discovered
+            completed = self.completed
+        if self.on_progress:
+            self.on_progress(discovered, completed)
+
+    def submit(self, operation: Callable[[MpVmClient], Any], *, count_progress: bool = True) -> Future[Any]:
+        if count_progress:
+            self.record_request_started()
+        future = self._executor.submit(self._run, operation)
+
+        def mark_completed(_future: Future[Any]) -> None:
+            if count_progress:
+                self.record_request_completed()
+
+        future.add_done_callback(mark_completed)
+        return future
+
+    def call(self, operation: Callable[[MpVmClient], Any]) -> Any:
+        return self.submit(operation).result()
+
+    def map(self, operations: list[Callable[[MpVmClient], Any]]) -> list[Any]:
+        settled = self.map_settled(operations)
+        values: list[Any] = []
+        for value, error in settled:
+            if error is not None:
+                raise error
+            values.append(value)
+        return values
+
+    def map_settled(
+        self,
+        operations: list[Callable[[MpVmClient], Any]],
+        *,
+        count_progress: bool = True,
+    ) -> list[tuple[Any | None, Exception | None]]:
+        results: list[tuple[Any | None, Exception | None]] = []
+        for start in range(0, len(operations), self.worker_count):
+            if self.cancel_event.is_set():
+                raise AssetCardBuildCancelled("Asset card build was cancelled.")
+            # Keep the executor queue bounded. This also means cancellation stops
+            # the coordinator before it schedules another batch of requests.
+            futures = [
+                self.submit(operation, count_progress=count_progress)
+                for operation in operations[start : start + self.worker_count]
+            ]
+            for future in futures:
+                try:
+                    results.append((future.result(), None))
+                except AssetCardBuildCancelled:
+                    raise
+                except Exception as exc:
+                    results.append((None, exc))
+        return results
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True, cancel_futures=False)
+        for client in self._clients:
+            client.session.close()
 
 
 class ConnectionRequest(BaseModel):
@@ -179,6 +304,14 @@ class AssetCardBuildRequest(BaseModel):
     save_to_db: bool = True
 
 
+class AssetCardBuildJobRequest(BaseModel):
+    asset_id: str
+    timeline_timestamp: int | None = None
+    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
+    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
+    max_depth: int = Field(default=8, ge=0, le=8)
+
+
 class AssetCardUpdateRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
@@ -203,6 +336,7 @@ def startup() -> None:
     try:
         db.init_db()
         db.interrupt_active_vulnerability_passport_detail_jobs()
+        db.interrupt_active_asset_card_build_jobs()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
@@ -562,9 +696,210 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
     saved_card = db.upsert_asset_card(card) if payload.save_to_db else None
     return {
         "asset_id": asset_id,
-        "card": saved_card or sanitize_asset_card_for_response(card),
+        "card": sanitize_asset_card_for_response(card),
+        "saved_card": saved_card,
         "saved": saved_card is not None,
     }
+
+
+@app.post("/api/asset-cards/build-jobs", status_code=202)
+def create_asset_card_build_job(
+    payload: AssetCardBuildJobRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    asset_id = payload.asset_id.strip()
+    if not asset_id:
+        raise HTTPException(status_code=422, detail="asset_id is required")
+    active_job = db.get_active_asset_card_build_job()
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "An asset card build is already running.", "job": active_job},
+        )
+    client, token = require_mpvm()
+    request = payload.model_dump()
+    request["asset_id"] = asset_id
+    job_id = str(uuid.uuid4())
+    try:
+        job = db.create_asset_card_build_job(
+            job_id,
+            asset_id=asset_id,
+            operation="refresh" if db.asset_card_exists(asset_id) else "create",
+            request=request,
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "An asset card build is already running.",
+                "job": db.get_active_asset_card_build_job(),
+            },
+        ) from exc
+    cancel_event = register_asset_card_build_job(job_id)
+    background_tasks.add_task(
+        run_asset_card_build_job,
+        job_id=job_id,
+        auth=client.auth,
+        token=token,
+        request=request,
+        cancel_event=cancel_event,
+    )
+    return {"job": job}
+
+
+@app.get("/api/asset-cards/build-jobs/active")
+def active_asset_card_build_job() -> dict[str, Any]:
+    return {"job": db.get_active_asset_card_build_job()}
+
+
+@app.get("/api/asset-cards/build-jobs/{job_id}")
+def asset_card_build_job(job_id: str) -> dict[str, Any]:
+    job = db.get_asset_card_build_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Asset card build job not found.")
+    return job
+
+
+@app.post("/api/asset-cards/build-jobs/{job_id}/cancel")
+def cancel_asset_card_build_job(job_id: str) -> dict[str, Any]:
+    current = db.get_asset_card_build_job(job_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Asset card build job not found.")
+    if current["status"] not in {"queued", "running", "cancelling"}:
+        return current
+    job = db.request_asset_card_build_job_cancel(job_id) or current
+    with ASSET_CARD_CANCEL_EVENTS_LOCK:
+        cancel_event = ASSET_CARD_CANCEL_EVENTS.get(job_id)
+    if cancel_event:
+        cancel_event.set()
+    return job
+
+
+def register_asset_card_build_job(job_id: str) -> threading.Event:
+    cancel_event = threading.Event()
+    with ASSET_CARD_CANCEL_EVENTS_LOCK:
+        ASSET_CARD_CANCEL_EVENTS[job_id] = cancel_event
+    return cancel_event
+
+
+def unregister_asset_card_build_job(job_id: str) -> None:
+    with ASSET_CARD_CANCEL_EVENTS_LOCK:
+        ASSET_CARD_CANCEL_EVENTS.pop(job_id, None)
+
+
+def run_asset_card_build_job(
+    *,
+    job_id: str,
+    auth: AuthConfig,
+    token: str,
+    request: dict[str, Any],
+    cancel_event: threading.Event,
+) -> None:
+    executor: AssetCardRequestExecutor | None = None
+    stage = "starting"
+    progress_lock = threading.Lock()
+    last_progress_write = 0.0
+
+    def write_progress(discovered: int, completed: int, *, force: bool = False, card: dict[str, Any] | None = None) -> None:
+        nonlocal last_progress_write
+        with progress_lock:
+            now = time.monotonic()
+            if not force and completed < discovered and now - last_progress_write < 1.0:
+                return
+            last_progress_write = now
+            card_stats = card.get("stats") if isinstance(card, dict) else {}
+            vulnerability_stats = (
+                card.get("vulnerabilities", {}).get("stats", {})
+                if isinstance(card, dict) and isinstance(card.get("vulnerabilities"), dict)
+                else {}
+            )
+            db.update_asset_card_build_job(
+                job_id,
+                stage=stage,
+                discovered_requests=discovered,
+                completed_requests=completed,
+                node_count=int(card_stats.get("nodes") or 0),
+                collection_count=int(card_stats.get("collections") or 0),
+                finding_count=int(vulnerability_stats.get("findings") or 0),
+                warning_count=len(card_stats.get("warnings") or []),
+                stats=card_stats if isinstance(card_stats, dict) else {},
+            )
+
+    def set_stage(value: str, *, card: dict[str, Any] | None = None) -> None:
+        nonlocal stage
+        stage = value
+        discovered = executor.discovered if executor else 0
+        completed = executor.completed if executor else 0
+        write_progress(discovered, completed, force=True, card=card)
+
+    try:
+        started = db.start_asset_card_build_job(job_id)
+        if not started:
+            current = db.get_asset_card_build_job(job_id)
+            if current and current.get("cancel_requested"):
+                cancel_event.set()
+            else:
+                return
+        if cancel_event.is_set():
+            db.finish_asset_card_build_job(
+                job_id,
+                status="cancelled",
+                stage="cancelled",
+                message="Cancelled before start.",
+            )
+            return
+
+        executor = AssetCardRequestExecutor(
+            auth=auth,
+            token=token,
+            workers=BACKGROUND_REQUEST_LIMIT,
+            cancel_event=cancel_event,
+            on_progress=lambda discovered, completed: write_progress(discovered, completed),
+        )
+        set_stage("collecting")
+        card = build_asset_card(
+            client=None,
+            token=token,
+            asset_id=str(request["asset_id"]),
+            timeline_timestamp=request.get("timeline_timestamp"),
+            limit_per_collection=int(request.get("limit_per_collection") or 5000),
+            max_items_per_collection=int(request.get("max_items_per_collection") or 5000),
+            max_depth=int(request.get("max_depth") or 8),
+            request_executor=executor,
+            stage_callback=set_stage,
+        )
+        if cancel_event.is_set():
+            raise AssetCardBuildCancelled("Cancelled before saving.")
+        set_stage("saving", card=card)
+        saved = db.upsert_asset_card(card)
+        if not saved:
+            raise RuntimeError("Asset card could not be saved.")
+        set_stage("completed", card=card)
+        db.finish_asset_card_build_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            message="Asset card build completed.",
+            stats=card.get("stats") if isinstance(card.get("stats"), dict) else {},
+        )
+    except AssetCardBuildCancelled as exc:
+        db.finish_asset_card_build_job(
+            job_id,
+            status="cancelled",
+            stage="cancelled",
+            message=str(exc),
+        )
+    except Exception as exc:
+        db.finish_asset_card_build_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message=f"Asset card build failed: {exc}"[:2000],
+        )
+    finally:
+        if executor:
+            executor.close()
+        unregister_asset_card_build_job(job_id)
 
 
 @app.get("/api/asset-cards/local")
@@ -582,7 +917,7 @@ def local_asset_card(asset_id: str) -> dict[str, Any]:
 
 @app.put("/api/asset-cards/{asset_id}")
 def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> dict[str, Any]:
-    if not db.get_asset_card(asset_id):
+    if not db.asset_card_exists(asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
 
     client, token = require_mpvm()
@@ -602,7 +937,12 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
     saved_card = db.upsert_asset_card(card)
     if not saved_card:
         raise HTTPException(status_code=500, detail="Updated asset card could not be saved.")
-    return {"asset_id": asset_id, "card": saved_card, "updated": True}
+    return {
+        "asset_id": asset_id,
+        "card": sanitize_asset_card_for_response(card),
+        "saved_card": saved_card,
+        "updated": True,
+    }
 
 
 @app.delete("/api/asset-cards/{asset_id}")
@@ -802,7 +1142,8 @@ def run_vulnerability_passport_detail_job(
             worker_state.client = client
             with worker_clients_lock:
                 worker_clients.append(client)
-        return internal_id, client.get_vulnerability_passport(token, internal_id)
+        with BACKGROUND_REQUEST_SEMAPHORE:
+            return internal_id, client.get_vulnerability_passport(token, internal_id)
 
     def flush_batch(
         details: list[tuple[str, dict[str, Any]]],
@@ -1383,17 +1724,32 @@ def extract_asset_grid_total(raw_response: Any) -> int | None:
 
 def build_asset_card(
     *,
-    client: MpVmClient,
+    client: MpVmClient | None,
     token: str,
     asset_id: str,
     timeline_timestamp: int | None,
     limit_per_collection: int,
     max_items_per_collection: int,
     max_depth: int,
+    request_executor: AssetCardRequestExecutor | None = None,
+    stage_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    build_started = time.perf_counter()
     timestamp = timeline_timestamp or int(datetime.now(timezone.utc).timestamp())
-    timeline_token = client.create_asset_timeline_token(token, asset_id, timestamp)
-    root = client.get_asset_tree_root(token, timeline_token)
+
+    def remote_call(operation: Callable[[MpVmClient], Any]) -> Any:
+        if request_executor:
+            return request_executor.call(operation)
+        if client is None:
+            raise RuntimeError("A direct MP VM client is required for synchronous asset card builds.")
+        return operation(client)
+
+    api_url = request_executor.auth.api_url if request_executor else client.auth.api_url if client else ""
+
+    if stage_callback:
+        stage_callback("root")
+    timeline_token = remote_call(lambda remote: remote.create_asset_timeline_token(token, asset_id, timestamp))
+    root = remote_call(lambda remote: remote.get_asset_tree_root(token, timeline_token))
     root_asset_id = str(first_present(root.get("objectId"), asset_id))
 
     metadata_cache: dict[str, dict[str, Any]] = {}
@@ -1402,6 +1758,7 @@ def build_asset_card(
     table_rows: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
     seen_collections: set[str] = set()
+    node_cache: dict[str, dict[str, Any]] = {}
     stats: dict[str, Any] = {
         "metadata_requests": 0,
         "node_requests": 0,
@@ -1423,13 +1780,27 @@ def build_asset_card(
             return {}
         if asset_type in metadata_cache:
             return metadata_cache[asset_type]
+        cache_key = (api_url, asset_type)
+        now = time.monotonic()
+        if ASSET_METADATA_TTL_SECONDS:
+            with ASSET_METADATA_CACHE_LOCK:
+                cached = ASSET_METADATA_CACHE.get(cache_key)
+            if cached and now - cached[0] <= ASSET_METADATA_TTL_SECONDS:
+                metadata_cache[asset_type] = cached[1]
+                return cached[1]
         try:
-            metadata = client.get_asset_metadata(token, asset_type)
+            metadata = remote_call(lambda remote: remote.get_asset_metadata(token, asset_type))
             stats["metadata_requests"] += 1
         except (MpVmApiError, requests.RequestException) as exc:
             warn(f"metadata {asset_type}: {exc}")
             metadata = {}
         metadata_cache[asset_type] = metadata
+        if metadata and ASSET_METADATA_TTL_SECONDS:
+            with ASSET_METADATA_CACHE_LOCK:
+                ASSET_METADATA_CACHE[cache_key] = (now, metadata)
+                if len(ASSET_METADATA_CACHE) > 128:
+                    oldest_key = min(ASSET_METADATA_CACHE, key=lambda key: ASSET_METADATA_CACHE[key][0])
+                    ASSET_METADATA_CACHE.pop(oldest_key, None)
         return metadata
 
     def add_table_row(
@@ -1551,9 +1922,15 @@ def build_asset_card(
             )
 
     def fetch_node(asset_type: str, object_id: str, path: str) -> dict[str, Any] | None:
+        node_key = f"{asset_type}|{object_id}"
+        if node_key in node_cache:
+            return node_cache[node_key]
         try:
-            node = client.get_asset_tree_node(token, asset_type, object_id, timeline_token)
+            node = remote_call(
+                lambda remote: remote.get_asset_tree_node(token, asset_type, object_id, timeline_token)
+            )
             stats["node_requests"] += 1
+            node_cache[node_key] = node
             return node
         except (MpVmApiError, requests.RequestException) as exc:
             warn(f"node {path} ({asset_type}/{object_id}): {exc}")
@@ -1568,15 +1945,17 @@ def build_asset_card(
             if current_limit <= 0:
                 break
             try:
-                response = client.get_asset_tree_collection(
-                    token,
-                    parent_type,
-                    object_id,
-                    name,
-                    timeline_token,
-                    full=True,
-                    limit=current_limit,
-                    offset=offset,
+                response = remote_call(
+                    lambda remote: remote.get_asset_tree_collection(
+                        token,
+                        parent_type,
+                        object_id,
+                        name,
+                        timeline_token,
+                        full=True,
+                        limit=current_limit,
+                        offset=offset,
+                    )
                 )
                 stats["collection_requests"] += 1
             except (MpVmApiError, requests.RequestException) as exc:
@@ -1746,6 +2125,7 @@ def build_asset_card(
         collections.append(collection_doc)
         stats["collections"] += 1
 
+        child_references: dict[str, dict[str, Any]] = {}
         for index, item in enumerate(items):
             item_path = f"{path}[{index}]"
             if isinstance(item, dict):
@@ -1771,14 +2151,14 @@ def build_asset_card(
                 if depth <= max_depth and is_object_ref(item):
                     child_type = clean_text(item.get("type"))
                     child_id = clean_text(item.get("objectId"))
-                    child_loaded = False
                     if child_type and child_id:
-                        child = fetch_node(child_type, child_id, item_path)
-                        if child:
-                            child_loaded = True
-                            item_doc["node"] = child
-                            traverse_node(child, item_path, depth, item_doc.get("display_name"))
-                    if not child_loaded:
+                        child_key = f"{child_type}|{child_id}"
+                        reference = child_references.setdefault(
+                            child_key,
+                            {"type": child_type, "id": child_id, "waiters": []},
+                        )
+                        reference["waiters"].append((item, item_doc, item_path))
+                    else:
                         add_embedded_data_rows(item, item_path, parent_type, object_id)
                 elif depth > max_depth:
                     warn(f"max depth reached inside collection {item_path}")
@@ -1797,6 +2177,42 @@ def build_asset_card(
                     parent_object_id=object_id,
                 )
 
+        references_to_fetch = [
+            reference
+            for key, reference in child_references.items()
+            if key not in node_cache
+        ]
+        if request_executor and references_to_fetch:
+            settled = request_executor.map_settled(
+                [
+                    (
+                        lambda remote, child_type=reference["type"], child_id=reference["id"]:
+                            remote.get_asset_tree_node(token, child_type, child_id, timeline_token)
+                    )
+                    for reference in references_to_fetch
+                ]
+            )
+            for reference, (child, error) in zip(references_to_fetch, settled):
+                child_key = f"{reference['type']}|{reference['id']}"
+                if error is not None:
+                    warn(f"node {child_key}: {error}")
+                    continue
+                if isinstance(child, dict):
+                    node_cache[child_key] = child
+                    stats["node_requests"] += 1
+        elif references_to_fetch:
+            for reference in references_to_fetch:
+                fetch_node(reference["type"], reference["id"], path)
+
+        for child_key, reference in child_references.items():
+            child = node_cache.get(child_key)
+            for item, item_doc, item_path in reference["waiters"]:
+                if child:
+                    item_doc["node"] = child
+                    traverse_node(child, item_path, depth, item_doc.get("display_name"))
+                else:
+                    add_embedded_data_rows(item, item_path, parent_type, object_id)
+
     def add_embedded_data_rows(item: dict[str, Any], path: str, parent_type: str, parent_object_id: str) -> None:
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         for key, embedded_value in data.items():
@@ -1813,16 +2229,42 @@ def build_asset_card(
                 parent_object_id=parent_object_id,
             )
 
-    traverse_node(root, "asset", 0)
-    vulnerabilities = build_asset_vulnerability_snapshot(
-        client=client,
-        token=token,
-        timeline_token=timeline_token,
-        limit_per_collection=min(limit_per_collection, 1000),
-        max_items_per_collection=max_items_per_collection,
-        stats=stats,
-    )
+    vulnerability_args = {
+        "client": client,
+        "token": token,
+        "timeline_token": timeline_token,
+        "limit_per_collection": min(limit_per_collection, 1000),
+        "max_items_per_collection": max_items_per_collection,
+        "stats": stats,
+        "request_executor": request_executor,
+    }
+    if stage_callback:
+        stage_callback("tree_and_vulnerabilities")
+    if request_executor:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-card-coordinator") as coordinators:
+            tree_future = coordinators.submit(traverse_node, root, "asset", 0)
+            vulnerability_future = coordinators.submit(build_asset_vulnerability_snapshot, **vulnerability_args)
+            tree_future.result()
+            vulnerabilities = vulnerability_future.result()
+    else:
+        traverse_node(root, "asset", 0)
+        vulnerabilities = build_asset_vulnerability_snapshot(**vulnerability_args)
     stats["table_rows"] = len(table_rows)
+    stats["elapsed_ms"] = round((time.perf_counter() - build_started) * 1000)
+    stats["network_requests"] = sum(
+        int(stats.get(key) or 0)
+        for key in (
+            "metadata_requests",
+            "node_requests",
+            "collection_requests",
+            "vulnerability_header_requests",
+            "vulnerability_group_requests",
+            "vulnerability_collection_requests",
+        )
+    ) + 2
+    stats["warnings"].sort()
+    if stage_callback:
+        stage_callback("assembling")
 
     return {
         "asset_id": root_asset_id,
@@ -1875,6 +2317,7 @@ def build_asset_vulnerability_snapshot(
     limit_per_collection: int,
     max_items_per_collection: int,
     stats: dict[str, Any],
+    request_executor: AssetCardRequestExecutor | None = None,
 ) -> dict[str, Any]:
     """Load the two widget trees and expand every software/OS vulnerability collection.
 
@@ -1893,13 +2336,6 @@ def build_asset_vulnerability_snapshot(
         snapshot["stats"]["warnings"].append(message)
         stats["warnings"].append(message)
 
-    try:
-        header = client.get_asset_vulnerabilities_header(token, timeline_token)
-        stats["vulnerability_header_requests"] += 1
-        snapshot["header"] = normalize_asset_vulnerabilities_header(header)
-    except (MpVmApiError, requests.RequestException) as exc:
-        warn(f"vulnerabilities header: {exc}")
-
     widget_sources = (
         ("os", "HostOSVulnerabilities", "Уязвимости ОС"),
         ("software", "HostSoftVulnerabilities", "Уязвимости программного обеспечения"),
@@ -1907,7 +2343,35 @@ def build_asset_vulnerability_snapshot(
     page_size = max(1, min(limit_per_collection, 1000))
     max_items = max(1, max_items_per_collection)
 
-    for source, collection_type, title in widget_sources:
+    initial_operations: list[Callable[[MpVmClient], Any]] = [
+        lambda remote: remote.get_asset_vulnerabilities_header(token, timeline_token),
+        *[
+            (
+                lambda remote, collection_type=collection_type:
+                    remote.get_asset_vulnerability_groups(token, collection_type, timeline_token)
+            )
+            for _source, collection_type, _title in widget_sources
+        ],
+    ]
+    if request_executor:
+        initial_results = request_executor.map_settled(initial_operations)
+    else:
+        initial_results = []
+        for operation in initial_operations:
+            try:
+                initial_results.append((operation(client), None))
+            except Exception as exc:
+                initial_results.append((None, exc))
+
+    header, header_error = initial_results[0]
+    if header_error is not None:
+        warn(f"vulnerabilities header: {header_error}")
+    elif isinstance(header, dict):
+        stats["vulnerability_header_requests"] += 1
+        snapshot["header"] = normalize_asset_vulnerabilities_header(header)
+
+    group_loads: list[dict[str, Any]] = []
+    for source_index, (source, collection_type, title) in enumerate(widget_sources):
         source_doc: dict[str, Any] = {
             "source": source,
             "collection_type": collection_type,
@@ -1917,14 +2381,15 @@ def build_asset_vulnerability_snapshot(
             "cvss_score": None,
             "groups": [],
         }
-        try:
-            response = client.get_asset_vulnerability_groups(token, collection_type, timeline_token)
-            stats["vulnerability_group_requests"] += 1
-        except (MpVmApiError, requests.RequestException) as exc:
-            warn(f"{collection_type}: {exc}")
-            snapshot["sources"].append(source_doc)
+        snapshot["sources"].append(source_doc)
+        response, response_error = initial_results[source_index + 1]
+        if response_error is not None:
+            warn(f"{collection_type}: {response_error}")
             continue
-
+        if not isinstance(response, dict):
+            warn(f"{collection_type}: unexpected group response")
+            continue
+        stats["vulnerability_group_requests"] += 1
         source_doc["level"] = response.get("level")
         source_doc["vulnerabilities_count"] = number_or_zero(response.get("vulnerabilitiesCount"))
         source_doc["cvss_score"] = number_or_none(response.get("cvssScore"))
@@ -1944,49 +2409,82 @@ def build_asset_vulnerability_snapshot(
                 "items": [],
                 "truncated": False,
             }
+            source_doc["groups"].append(group)
             if not collection_id:
                 warn(f"{collection_type} group '{group['name'] or group_index}' does not contain collection id")
-                source_doc["groups"].append(group)
                 continue
+            group_loads.append({"group": group, "collection_type": collection_type, "collection_id": collection_id})
 
-            offset = 0
-            while len(group["items"]) < max_items:
-                current_limit = min(page_size, max_items - len(group["items"]))
-                try:
-                    batch = client.get_asset_vulnerability_collection(
-                        token,
-                        collection_type,
-                        timeline_token,
-                        collection_id,
-                        limit=current_limit,
-                        offset=offset,
-                    )
-                    stats["vulnerability_collection_requests"] += 1
-                except (MpVmApiError, requests.RequestException) as exc:
-                    warn(f"{collection_type} collection {collection_id}: {exc}")
-                    break
-
-                normalized_batch = [normalize_asset_vulnerability_item(entry) for entry in batch]
-                group["items"].extend(normalized_batch)
-                if not batch or len(batch) < current_limit:
-                    break
-                offset += len(batch)
-
-            reported_count = group["vulnerabilities_count"]
-            group["truncated"] = (
-                len(group["items"]) < reported_count
-                if reported_count
-                else len(group["items"]) >= max_items
-            )
-            if group["truncated"]:
-                snapshot["stats"]["truncated_groups"] += 1
-                warn(
-                    f"{collection_type} collection {collection_id}: loaded {len(group['items'])} of "
-                    f"{reported_count or 'unknown'} vulnerability item(s)"
+    def load_group(remote: MpVmClient, spec: dict[str, Any]) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        offset = 0
+        request_count = 0
+        error: Exception | None = None
+        while len(items) < max_items:
+            if request_executor and request_executor.cancel_event.is_set():
+                raise AssetCardBuildCancelled("Asset card build was cancelled.")
+            current_limit = min(page_size, max_items - len(items))
+            if request_executor:
+                request_executor.record_request_started()
+            try:
+                batch = remote.get_asset_vulnerability_collection(
+                    token,
+                    spec["collection_type"],
+                    timeline_token,
+                    spec["collection_id"],
+                    limit=current_limit,
+                    offset=offset,
                 )
-            source_doc["groups"].append(group)
+                request_count += 1
+            except (MpVmApiError, requests.RequestException) as exc:
+                error = exc
+                break
+            finally:
+                if request_executor:
+                    request_executor.record_request_completed()
+            items.extend(normalize_asset_vulnerability_item(entry) for entry in batch)
+            if not batch or len(batch) < current_limit:
+                break
+            offset += len(batch)
+        return {"items": items, "request_count": request_count, "error": error}
 
-        snapshot["sources"].append(source_doc)
+    group_operations = [
+        (lambda remote, spec=spec: load_group(remote, spec))
+        for spec in group_loads
+    ]
+    if request_executor:
+        group_results = request_executor.map_settled(group_operations, count_progress=False)
+    else:
+        group_results = []
+        for operation in group_operations:
+            try:
+                group_results.append((operation(client), None))
+            except Exception as exc:
+                group_results.append((None, exc))
+
+    for spec, (result, operation_error) in zip(group_loads, group_results):
+        group = spec["group"]
+        if operation_error is not None:
+            warn(f"{spec['collection_type']} collection {spec['collection_id']}: {operation_error}")
+            continue
+        if not isinstance(result, dict):
+            continue
+        group["items"] = result.get("items") or []
+        stats["vulnerability_collection_requests"] += int(result.get("request_count") or 0)
+        if result.get("error") is not None:
+            warn(f"{spec['collection_type']} collection {spec['collection_id']}: {result['error']}")
+        reported_count = group["vulnerabilities_count"]
+        group["truncated"] = (
+            len(group["items"]) < reported_count
+            if reported_count
+            else len(group["items"]) >= max_items
+        )
+        if group["truncated"]:
+            snapshot["stats"]["truncated_groups"] += 1
+            warn(
+                f"{spec['collection_type']} collection {spec['collection_id']}: loaded {len(group['items'])} of "
+                f"{reported_count or 'unknown'} vulnerability item(s)"
+            )
 
     snapshot["stats"]["groups"] = sum(len(source["groups"]) for source in snapshot["sources"])
     snapshot["stats"]["findings"] = sum(

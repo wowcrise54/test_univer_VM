@@ -17,6 +17,7 @@ DATABASE_URL = (
     or os.getenv("DATABASE_URL")
     or "postgresql://mpvm:mpvm@localhost:5432/mpvm"
 )
+ASSET_CARD_WRITE_BATCH_SIZE = 500
 _DB_INITIALIZED = False
 _DB_INIT_LOCK = threading.Lock()
 
@@ -169,6 +170,29 @@ def _initialize_schema() -> None:
             skipped_fresh_count INTEGER NOT NULL DEFAULT 0,
             cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
             errors_json TEXT NOT NULL DEFAULT '[]',
+            message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_build_jobs (
+            job_id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'queued',
+            request_json TEXT NOT NULL DEFAULT '{}',
+            stats_json TEXT NOT NULL DEFAULT '{}',
+            discovered_requests INTEGER NOT NULL DEFAULT 0,
+            completed_requests INTEGER NOT NULL DEFAULT 0,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            collection_count INTEGER NOT NULL DEFAULT 0,
+            finding_count INTEGER NOT NULL DEFAULT 0,
+            warning_count INTEGER NOT NULL DEFAULT 0,
+            cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
             message TEXT,
             created_at TEXT NOT NULL,
             started_at TEXT,
@@ -332,6 +356,8 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_pdql_token ON vulnerability_passports(pdql_token)",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_created ON vulnerability_passport_detail_jobs(created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_single_active ON vulnerability_passport_detail_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_build_jobs_created ON asset_card_build_jobs(created_at DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_card_build_jobs_single_active ON asset_card_build_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_display_name_lower ON asset_cards((LOWER(display_name)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_fqdn_lower ON asset_cards((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
@@ -347,6 +373,7 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_asset_source ON asset_card_vulnerability_groups(asset_id, source_type, group_order)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_cve ON asset_card_vulnerabilities(asset_id, cve_name)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_vulnerability_id ON asset_card_vulnerabilities(vulnerability_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_vulnerability_id ON asset_card_vulnerabilities(asset_id, vulnerability_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
     ]
     with connect() as conn:
@@ -1279,6 +1306,182 @@ def list_asset_card_links_for_vulnerability_passport(passport_id: str) -> list[d
     return [dict(row) for row in rows]
 
 
+def asset_card_exists(asset_id: str) -> bool:
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone()
+    return row is not None
+
+
+def create_asset_card_build_job(
+    job_id: str,
+    *,
+    asset_id: str,
+    operation: str,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO asset_card_build_jobs (
+                job_id, asset_id, operation, status, stage, request_json, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, 'queued', 'queued', %s, %s, %s)
+            RETURNING *
+            """,
+            (job_id, asset_id, operation, json.dumps(request, ensure_ascii=False), current, current),
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row))
+
+
+def get_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM asset_card_build_jobs WHERE job_id = %s", (job_id,)).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def get_active_asset_card_build_job() -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM asset_card_build_jobs
+            WHERE status IN ('queued', 'running', 'cancelling')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def interrupt_active_asset_card_build_jobs() -> int:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        result = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET status = 'interrupted', stage = 'interrupted',
+                message = 'Application restarted before the asset card build finished.',
+                finished_at = %s, updated_at = %s
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """,
+            (current, current),
+        )
+    return int(result.rowcount or 0)
+
+
+def start_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET status = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'running' END,
+                stage = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'starting' END,
+                started_at = COALESCE(started_at, %s), updated_at = %s
+            WHERE job_id = %s AND status = 'queued'
+            RETURNING *
+            """,
+            (current, current, job_id),
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def update_asset_card_build_job(
+    job_id: str,
+    *,
+    stage: str,
+    discovered_requests: int,
+    completed_requests: int,
+    node_count: int = 0,
+    collection_count: int = 0,
+    finding_count: int = 0,
+    warning_count: int = 0,
+    stats: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET stage = %s, discovered_requests = %s, completed_requests = %s,
+                node_count = %s, collection_count = %s, finding_count = %s,
+                warning_count = %s, stats_json = %s, updated_at = %s
+            WHERE job_id = %s
+            RETURNING *
+            """,
+            (
+                stage,
+                discovered_requests,
+                completed_requests,
+                node_count,
+                collection_count,
+                finding_count,
+                warning_count,
+                json.dumps(stats or {}, ensure_ascii=False),
+                current,
+                job_id,
+            ),
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def request_asset_card_build_job_cancel(job_id: str) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET cancel_requested = TRUE, status = 'cancelling', stage = 'cancelling', updated_at = %s
+            WHERE job_id = %s AND status IN ('queued', 'running', 'cancelling')
+            RETURNING *
+            """,
+            (current, job_id),
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def finish_asset_card_build_job(
+    job_id: str,
+    *,
+    status: str,
+    stage: str,
+    message: str | None,
+    stats: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET status = %s, stage = %s, message = %s,
+                stats_json = CASE WHEN %s::text IS NULL THEN stats_json ELSE %s END,
+                finished_at = %s, updated_at = %s
+            WHERE job_id = %s
+            RETURNING *
+            """,
+            (
+                status,
+                stage,
+                message,
+                None if stats is None else "present",
+                json.dumps(stats or {}, ensure_ascii=False),
+                current,
+                current,
+                job_id,
+            ),
+        ).fetchone()
+    return decode_asset_card_build_job(dict(row)) if row else None
+
+
 def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
     init_db()
     root = card.get("root") if isinstance(card.get("root"), dict) else {}
@@ -1318,7 +1521,10 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 stats_json = EXCLUDED.stats_json,
                 raw_card_json = EXCLUDED.raw_card_json,
                 last_seen = EXCLUDED.last_seen
-            RETURNING *
+            RETURNING
+                id, asset_id, display_name, asset_type, fqdn, hostname, ip_address,
+                os_name, os_version, vulnerability_level, token_timestamp,
+                stats_json, first_seen, last_seen
             """,
             (
                 asset_id,
@@ -1345,8 +1551,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
-        cache = load_asset_card_cache(conn, asset_id)
-    return decode_asset_card(dict(row), cache=cache) if row else None
+    return decode_asset_card_summary(dict(row)) if row else None
 
 
 def replace_asset_card_cache(
@@ -1487,46 +1692,57 @@ def replace_asset_card_cache(
         )
 
     vulnerability_groups = iter_asset_card_vulnerability_groups(card.get("vulnerabilities"))
-    for group in vulnerability_groups:
-        group_row = conn.execute(
-            """
-            INSERT INTO asset_card_vulnerability_groups (
-                asset_id, source_type, collection_type, collection_id, name, severity,
-                vulnerability_count, cvss_score, group_order, truncated, group_json, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (
-                asset_id,
-                group["source"],
-                group["collection_type"],
-                group["collection_id"],
-                clean_value(group.get("name")),
-                clean_value(group.get("level")),
-                safe_int(group.get("vulnerabilities_count")) or 0,
-                safe_decimal(group.get("cvss_score")),
-                safe_int(group.get("order")) or 0,
-                bool(group.get("truncated")),
-                json.dumps(strip_asset_card_raw({key: value for key, value in group.items() if key != "items"}), ensure_ascii=False),
-                updated_at,
-            ),
-        ).fetchone()
-        if not group_row:
-            continue
-        group_id = int(group_row["id"])
-        for finding in group.get("items") or []:
-            if not isinstance(finding, dict):
-                continue
-            conn.execute(
+    group_rows = [
+        (
+            asset_id,
+            group["source"],
+            group["collection_type"],
+            group["collection_id"],
+            clean_value(group.get("name")),
+            clean_value(group.get("level")),
+            safe_int(group.get("vulnerabilities_count")) or 0,
+            safe_decimal(group.get("cvss_score")),
+            safe_int(group.get("order")) or 0,
+            bool(group.get("truncated")),
+            json.dumps(strip_asset_card_raw({key: value for key, value in group.items() if key != "items"}), ensure_ascii=False),
+            updated_at,
+        )
+        for group in vulnerability_groups
+    ]
+    with conn.cursor() as cur:
+        for batch in chunked(group_rows, ASSET_CARD_WRITE_BATCH_SIZE):
+            cur.executemany(
                 """
-                INSERT INTO asset_card_vulnerabilities (
-                    asset_id, group_id, vulnerability_instance_id, vulnerability_id,
-                    object_id, cve_name, name, severity, cvss_score, description_key,
-                    vulnerability_json, updated_at
+                INSERT INTO asset_card_vulnerability_groups (
+                    asset_id, source_type, collection_type, collection_id, name, severity,
+                    vulnerability_count, cvss_score, group_order, truncated, group_json, updated_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
+                batch,
+            )
+
+    stored_groups = conn.execute(
+        """
+        SELECT id, source_type, collection_type, collection_id
+        FROM asset_card_vulnerability_groups
+        WHERE asset_id = %s
+        """,
+        (asset_id,),
+    ).fetchall()
+    group_ids = {
+        (row["source_type"], row["collection_type"], row["collection_id"]): int(row["id"])
+        for row in stored_groups
+    }
+    finding_rows: list[tuple[Any, ...]] = []
+    for group in vulnerability_groups:
+        group_id = group_ids.get((group["source"], group["collection_type"], group["collection_id"]))
+        if group_id is None:
+            continue
+        for finding in group.get("items") or []:
+            if not isinstance(finding, dict):
+                continue
+            finding_rows.append(
                 (
                     asset_id,
                     group_id,
@@ -1540,10 +1756,23 @@ def replace_asset_card_cache(
                     clean_value(finding.get("description_key")),
                     json.dumps(strip_asset_card_raw(finding), ensure_ascii=False),
                     updated_at,
-                ),
+                )
+            )
+    with conn.cursor() as cur:
+        for batch in chunked(finding_rows, ASSET_CARD_WRITE_BATCH_SIZE):
+            cur.executemany(
+            """
+            INSERT INTO asset_card_vulnerabilities (
+                asset_id, group_id, vulnerability_instance_id, vulnerability_id,
+                object_id, cve_name, name, severity, cvss_score, description_key,
+                vulnerability_json, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+                batch,
             )
 
-    reconcile_asset_card_vulnerability_passport_links(conn, None, updated_at)
+    reconcile_asset_card_vulnerability_passport_links(conn, None, updated_at, asset_id=asset_id)
 
 
 def iter_asset_card_vulnerability_groups(vulnerabilities: Any) -> list[dict[str, Any]]:
@@ -1580,75 +1809,57 @@ def reconcile_asset_card_vulnerability_passport_links(
     conn: psycopg.Connection[dict[str, Any]],
     passport_ids: list[str] | None,
     linked_at: str,
+    asset_id: str | None = None,
 ) -> int:
-    """Create links only when a real passport record is present locally.
+    """Link findings to passports with two set-based inserts."""
 
-    A widget's ``vulnerId`` is the primary relation.  CVE is kept as a fallback for
-    historical data whose widget identifier was not exported with the passport list.
-    """
-
-    params: tuple[Any, ...] = (passport_ids,) if passport_ids else ()
-    passport_where = "WHERE internal_id = ANY(%s)" if passport_ids else ""
-    passport_rows = conn.execute(
-        f"SELECT internal_id, cves_json FROM vulnerability_passports {passport_where}",
-        params,
-    ).fetchall()
-    if not passport_rows:
-        return 0
-
-    created = 0
-    for passport in passport_rows:
-        internal_id = clean_value(passport.get("internal_id"))
-        if not internal_id:
-            continue
-        direct = conn.execute(
-            """
-            INSERT INTO asset_card_vulnerability_passports (
-                asset_vulnerability_id, passport_internal_id, match_method, linked_at
-            )
-            SELECT id, %s, 'vulner_id', %s
-            FROM asset_card_vulnerabilities
-            WHERE vulnerability_id = %s
-            ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
-            """,
-            (internal_id, linked_at, internal_id),
+    direct = conn.execute(
+        """
+        INSERT INTO asset_card_vulnerability_passports (
+            asset_vulnerability_id, passport_internal_id, match_method, linked_at
         )
-        created += max(direct.rowcount or 0, 0)
-
-        for cve_name in passport_cve_names(json_loads(passport.get("cves_json"), [])):
-            fallback = conn.execute(
-                """
-                INSERT INTO asset_card_vulnerability_passports (
-                    asset_vulnerability_id, passport_internal_id, match_method, linked_at
-                )
-                SELECT id, %s, 'cve', %s
-                FROM asset_card_vulnerabilities
-                WHERE UPPER(COALESCE(cve_name, '')) = UPPER(%s)
-                ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
-                """,
-                (internal_id, linked_at, cve_name),
-            )
-            created += max(fallback.rowcount or 0, 0)
-    return created
-
-
-def passport_cve_names(cves: Any) -> set[str]:
-    if not isinstance(cves, list):
-        return set()
-    result: set[str] = set()
-    for item in cves:
-        if isinstance(item, dict):
-            values = (
-                item.get("display_name"), item.get("displayName"), item.get("cve"),
-                item.get("name"), item.get("value"),
-            )
-        else:
-            values = (item,)
-        for value in values:
-            text = clean_value(value)
-            if text:
-                result.add(text.upper())
-    return result
+        SELECT findings.id, passports.internal_id, 'vulner_id', %s
+        FROM asset_card_vulnerabilities AS findings
+        JOIN vulnerability_passports AS passports
+          ON passports.internal_id = findings.vulnerability_id
+        WHERE (%s::text IS NULL OR findings.asset_id = %s)
+          AND (%s::text[] IS NULL OR passports.internal_id = ANY(%s))
+        ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
+        """,
+        (linked_at, asset_id, asset_id, passport_ids, passport_ids),
+    )
+    fallback = conn.execute(
+        """
+        WITH passport_cves AS (
+            SELECT DISTINCT
+                passports.internal_id,
+                UPPER(COALESCE(
+                    cve ->> 'display_name',
+                    cve ->> 'displayName',
+                    cve ->> 'cve',
+                    cve ->> 'name',
+                    cve ->> 'value',
+                    CASE WHEN jsonb_typeof(cve) = 'string' THEN cve #>> '{}' END,
+                    ''
+                )) AS cve_name
+            FROM vulnerability_passports AS passports
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(passports.cves_json, ''), '[]')::jsonb) AS cve
+            WHERE (%s::text[] IS NULL OR passports.internal_id = ANY(%s))
+        )
+        INSERT INTO asset_card_vulnerability_passports (
+            asset_vulnerability_id, passport_internal_id, match_method, linked_at
+        )
+        SELECT findings.id, passport_cves.internal_id, 'cve', %s
+        FROM asset_card_vulnerabilities AS findings
+        JOIN passport_cves
+          ON passport_cves.cve_name = UPPER(COALESCE(findings.cve_name, ''))
+        WHERE passport_cves.cve_name <> ''
+          AND (%s::text IS NULL OR findings.asset_id = %s)
+        ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
+        """,
+        (passport_ids, passport_ids, linked_at, asset_id, asset_id),
+    )
+    return max(direct.rowcount or 0, 0) + max(fallback.rowcount or 0, 0)
 
 
 def load_asset_card_vulnerabilities(
@@ -2045,6 +2256,32 @@ def decode_asset_card_summary(row: dict[str, Any]) -> dict[str, Any]:
         "stats": stats if isinstance(stats, dict) else {},
         "first_seen": row.get("first_seen"),
         "last_seen": row.get("last_seen"),
+    }
+
+
+def decode_asset_card_build_job(row: dict[str, Any]) -> dict[str, Any]:
+    request = json_loads(row.get("request_json"), {})
+    stats = json_loads(row.get("stats_json"), {})
+    return {
+        "job_id": row.get("job_id"),
+        "asset_id": row.get("asset_id"),
+        "operation": row.get("operation"),
+        "status": row.get("status"),
+        "stage": row.get("stage"),
+        "request": request if isinstance(request, dict) else {},
+        "stats": stats if isinstance(stats, dict) else {},
+        "discovered_requests": int(row.get("discovered_requests") or 0),
+        "completed_requests": int(row.get("completed_requests") or 0),
+        "node_count": int(row.get("node_count") or 0),
+        "collection_count": int(row.get("collection_count") or 0),
+        "finding_count": int(row.get("finding_count") or 0),
+        "warning_count": int(row.get("warning_count") or 0),
+        "cancel_requested": bool(row.get("cancel_requested")),
+        "message": row.get("message"),
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "updated_at": row.get("updated_at"),
     }
 
 

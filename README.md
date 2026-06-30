@@ -111,6 +111,10 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `GET /api/asset-cards/{assetId}` - получить сохранённую карточку актива.
 - `PUT /api/asset-cards/{assetId}` - заново собрать и обновить сохранённую карточку из MP VM.
 - `DELETE /api/asset-cards/{assetId}` - удалить карточку актива из локальной PostgreSQL.
+- `POST /api/asset-cards/build-jobs` - запустить фоновую сборку полной карточки актива.
+- `GET /api/asset-cards/build-jobs/active` - получить активную сборку карточки.
+- `GET /api/asset-cards/build-jobs/{jobId}` - получить этап и прогресс сборки.
+- `POST /api/asset-cards/build-jobs/{jobId}/cancel` - остановить сборку без сохранения частичного результата.
 
 ## Payload создания задачи
 
