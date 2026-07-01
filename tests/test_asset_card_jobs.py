@@ -395,12 +395,14 @@ class AssetCardDatabaseTests(unittest.TestCase):
     def test_progress_decoder_clamps_database_values(self):
         base = {
             "job_id": "job-1",
+            "trace_id": "trace-1",
             "asset_id": "asset-1",
             "status": "running",
             "stage": "saving",
         }
         self.assertEqual(db.decode_asset_card_build_job({**base, "progress_percent": -5})["progress_percent"], 0)
         self.assertEqual(db.decode_asset_card_build_job({**base, "progress_percent": 120})["progress_percent"], 100)
+        self.assertEqual(db.decode_asset_card_build_job(base)["trace_id"], "trace-1")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
+from .diagnostics import DiagnosticSession
+
 
 ASSET_GRID_PATH = "/api/assets_temporal_readmodel/v1/assets_grid"
 ASSET_GRID_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/data"
@@ -90,7 +92,7 @@ class AuthConfig:
 class MpVmClient:
     def __init__(self, auth: AuthConfig) -> None:
         self.auth = auth
-        self.session = requests.Session()
+        self.session = DiagnosticSession()
         self.session.verify = auth.verify_tls
         self.session.headers.update({"User-Agent": "mp-vm-rest-client/1.0"})
         self.session.mount("https://", self._build_retry_adapter())

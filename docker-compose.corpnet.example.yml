@@ -22,11 +22,13 @@ services:
       MPVM_INSECURE: "true"
       MPVM_DATABASE_URL: "postgresql://mpvm:mpvm@postgres:5432/mpvm"
       MPVM_EXPORTS_DIR: "/app/exports"
+      MPVM_LOG_DIR: "/app/output/logs"
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - mpvm_exports:/app/exports
+      - mpvm_logs:/app/output
     restart: unless-stopped
 
   postgres:
@@ -48,3 +50,4 @@ services:
 volumes:
   mpvm_postgres:
   mpvm_exports:
+  mpvm_logs:

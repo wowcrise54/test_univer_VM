@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,8 +19,9 @@ from typing import Any, Callable, Literal
 import requests
 import psycopg
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +29,20 @@ from pydantic import BaseModel, Field
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
+
+from .diagnostics import (
+    configure_diagnostics,
+    current_trace_id,
+    diagnostic_context,
+    log_event,
+    log_exception,
+    new_trace_id,
+    normalize_correlation_id,
+    redact,
+    set_diagnostic_context,
+)
+
+configure_diagnostics()
 
 from . import db
 from .mpvm_client import (
@@ -58,8 +74,9 @@ SCAN_LOG = logging.getLogger("uvicorn.error")
 
 
 def scan_log(level: int, event: str, **fields: Any) -> None:
+    log_event("app", event, level=level, component="scan-postprocess", **fields)
     payload = {"event": event, **{key: value for key, value in fields.items() if value is not None}}
-    SCAN_LOG.log(level, "[scan-postprocess] %s", json.dumps(payload, ensure_ascii=False, default=str))
+    SCAN_LOG.log(level, "[scan-postprocess] %s", json.dumps(redact(payload), ensure_ascii=False, default=str))
 
 
 def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -155,6 +172,7 @@ class AssetCardRequestExecutor:
         self._progress_lock = threading.Lock()
         self.discovered = 0
         self.completed = 0
+        self.active = 0
 
     def _client(self) -> MpVmClient:
         client = getattr(self._worker_state, "client", None)
@@ -171,7 +189,31 @@ class AssetCardRequestExecutor:
         with BACKGROUND_REQUEST_SEMAPHORE:
             if self.cancel_event.is_set():
                 raise AssetCardBuildCancelled("Asset card build was cancelled.")
-            return operation(self._client())
+            with self._progress_lock:
+                self.active += 1
+                active = self.active
+            log_event(
+                "asset-card-build",
+                "request.worker.started",
+                level=logging.DEBUG,
+                worker=threading.current_thread().name,
+                active_workers=active,
+                worker_limit=self.worker_count,
+            )
+            try:
+                return operation(self._client())
+            finally:
+                with self._progress_lock:
+                    self.active = max(0, self.active - 1)
+                    active = self.active
+                log_event(
+                    "asset-card-build",
+                    "request.worker.completed",
+                    level=logging.DEBUG,
+                    worker=threading.current_thread().name,
+                    active_workers=active,
+                    worker_limit=self.worker_count,
+                )
 
     def record_request_started(self) -> None:
         with self._progress_lock:
@@ -192,7 +234,18 @@ class AssetCardRequestExecutor:
     def submit(self, operation: Callable[[MpVmClient], Any], *, count_progress: bool = True) -> Future[Any]:
         if count_progress:
             self.record_request_started()
-        future = self._executor.submit(self._run, operation)
+        context = copy_context()
+        log_event(
+            "asset-card-build",
+            "request.scheduled",
+            level=logging.DEBUG,
+            discovered_requests=self.discovered,
+            completed_requests=self.completed,
+            queued_requests=max(0, self.discovered - self.completed - self.active),
+            active_workers=self.active,
+            worker_limit=self.worker_count,
+        )
+        future = self._executor.submit(context.run, self._run, operation)
 
         def mark_completed(_future: Future[Any]) -> None:
             if count_progress:
@@ -359,6 +412,22 @@ class AssetCardUpdateRequest(BaseModel):
     max_depth: int = Field(default=8, ge=0, le=8)
 
 
+class FrontendDiagnosticEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=128)
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    timestamp: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=128)
+    request_id: str | None = Field(default=None, max_length=128)
+    url: str | None = Field(default=None, max_length=2048)
+    section: str | None = Field(default=None, max_length=128)
+    stack: str | None = Field(default=None, max_length=128000)
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class FrontendDiagnosticBatch(BaseModel):
+    events: list[FrontendDiagnosticEvent] = Field(min_length=1, max_length=100)
+
+
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -366,13 +435,64 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Trace-ID", "X-Request-ID", "Server-Timing", "ETag"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def diagnostic_http_middleware(request: Request, call_next):
+    trace_id = normalize_correlation_id(request.headers.get("x-trace-id")) or new_trace_id()
+    request_id = normalize_correlation_id(request.headers.get("x-request-id")) or new_trace_id()
+    started = time.perf_counter()
+    with diagnostic_context(trace_id=trace_id, request_id=request_id):
+        log_event(
+            "app",
+            "api.request.started",
+            level=logging.DEBUG,
+            method=request.method,
+            path=request.url.path,
+            query=redact(dict(request.query_params)),
+        )
+        try:
+            response = await call_next(request)
+        except Exception:
+            log_exception(
+                "app",
+                "api.request.failed",
+                method=request.method,
+                path=request.url.path,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            )
+            raise
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        response.headers["X-Trace-ID"] = trace_id
+        response.headers["X-Request-ID"] = request_id
+        response.headers["Server-Timing"] = f'app;dur={duration_ms:.2f}'
+        size_header = response.headers.get("content-length")
+        response_size = int(size_header) if size_header and size_header.isdigit() else None
+        log_event(
+            "app",
+            "api.response",
+            level=logging.INFO if response.status_code < 500 else logging.ERROR,
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=duration_ms,
+            handler_and_serialization_ms=duration_ms,
+            response_bytes=response_size,
+            content_encoding=response.headers.get("content-encoding"),
+            etag=response.headers.get("etag"),
+            server_timing=response.headers.get("server-timing"),
+        )
+        return response
 
 
 @app.on_event("startup")
 def startup() -> None:
     global DATABASE_STARTUP_ERROR
+    log_event("app", "app.startup.started", process_id=os.getpid())
     try:
         db.init_db()
         db.interrupt_active_vulnerability_passport_detail_jobs()
@@ -381,9 +501,16 @@ def startup() -> None:
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
+        log_exception("app", "app.startup.database_failed", database=db.database_label())
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
     resume_scan_postprocess_runs()
+    log_event(
+        "app",
+        "app.startup.completed",
+        database_ready=DATABASE_STARTUP_ERROR is None,
+        connected=SESSION.client is not None and SESSION.access_token is not None,
+    )
 
 
 @app.exception_handler(psycopg.Error)
@@ -410,6 +537,31 @@ def health() -> dict[str, Any]:
         "connected": SESSION.client is not None and SESSION.access_token is not None,
         "api_url": SESSION.api_url,
     }
+
+
+@app.post("/api/diagnostics/frontend", status_code=202)
+def record_frontend_diagnostics(payload: FrontendDiagnosticBatch) -> dict[str, Any]:
+    levels = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }
+    for item in payload.events:
+        item_trace_id = normalize_correlation_id(item.trace_id, fallback=False) or current_trace_id()
+        item_request_id = normalize_correlation_id(item.request_id, fallback=False)
+        with diagnostic_context(trace_id=item_trace_id, request_id=item_request_id):
+            log_event(
+                "frontend",
+                item.event,
+                level=levels[item.level],
+                client_timestamp=item.timestamp,
+                url=item.url,
+                section=item.section,
+                stack=item.stack,
+                frontend_fields=redact(item.fields),
+            )
+    return {"accepted": len(payload.events), "trace_id": current_trace_id()}
 
 
 @app.get("/api/defaults")
@@ -789,9 +941,11 @@ def create_asset_card_build_job(
     request = payload.model_dump()
     request["asset_id"] = asset_id
     job_id = str(uuid.uuid4())
+    trace_id = current_trace_id() or new_trace_id()
     try:
         job = db.create_asset_card_build_job(
             job_id,
+            trace_id=trace_id,
             asset_id=asset_id,
             operation="refresh" if db.asset_card_exists(asset_id) else "create",
             request=request,
@@ -812,6 +966,15 @@ def create_asset_card_build_job(
         token=token,
         request=request,
         cancel_event=cancel_event,
+        trace_id=trace_id,
+    )
+    log_event(
+        "asset-card-build",
+        "build.scheduled",
+        trace_id=trace_id,
+        job_id=job_id,
+        asset_id=asset_id,
+        operation=job.get("operation"),
     )
     return {"job": job}
 
@@ -841,6 +1004,14 @@ def cancel_asset_card_build_job(job_id: str) -> dict[str, Any]:
         cancel_event = ASSET_CARD_CANCEL_EVENTS.get(job_id)
     if cancel_event:
         cancel_event.set()
+    log_event(
+        "asset-card-build",
+        "build.cancel.requested",
+        trace_id=job.get("trace_id"),
+        job_id=job_id,
+        asset_id=job.get("asset_id"),
+        status=job.get("status"),
+    )
     return job
 
 
@@ -863,12 +1034,38 @@ def run_asset_card_build_job(
     token: str,
     request: dict[str, Any],
     cancel_event: threading.Event,
+    trace_id: str | None = None,
+) -> None:
+    with diagnostic_context(
+        trace_id=trace_id or new_trace_id(),
+        job_id=job_id,
+        asset_id=request.get("asset_id"),
+        stage="starting",
+    ):
+        _run_asset_card_build_job(
+            job_id=job_id,
+            auth=auth,
+            token=token,
+            request=request,
+            cancel_event=cancel_event,
+        )
+
+
+def _run_asset_card_build_job(
+    *,
+    job_id: str,
+    auth: AuthConfig,
+    token: str,
+    request: dict[str, Any],
+    cancel_event: threading.Event,
 ) -> None:
     executor: AssetCardRequestExecutor | None = None
     stage = "starting"
     progress_percent = ASSET_CARD_STAGE_PROGRESS[stage]
     progress_lock = threading.Lock()
     last_progress_write = 0.0
+    build_started_at = time.perf_counter()
+    stage_started_at = build_started_at
 
     def write_progress(discovered: int, completed: int, *, force: bool = False, card: dict[str, Any] | None = None) -> None:
         nonlocal last_progress_write
@@ -895,16 +1092,50 @@ def run_asset_card_build_job(
                 warning_count=len(card_stats.get("warnings") or []),
                 stats=card_stats if isinstance(card_stats, dict) else {},
             )
+            log_event(
+                "asset-card-build",
+                "build.progress",
+                level=logging.DEBUG,
+                stage=stage,
+                progress_percent=progress_percent,
+                discovered_requests=discovered,
+                completed_requests=completed,
+                node_count=int(card_stats.get("nodes") or 0),
+                collection_count=int(card_stats.get("collections") or 0),
+                finding_count=int(vulnerability_stats.get("findings") or 0),
+            )
 
     def set_stage(value: str, *, card: dict[str, Any] | None = None) -> None:
-        nonlocal stage, progress_percent
+        nonlocal stage, progress_percent, stage_started_at
+        now = time.perf_counter()
+        log_event(
+            "asset-card-build",
+            "build.stage.completed",
+            stage=stage,
+            next_stage=value,
+            duration_ms=round((now - stage_started_at) * 1000, 2),
+        )
         stage = value
+        stage_started_at = now
+        set_diagnostic_context(stage=value)
         progress_percent = max(progress_percent, ASSET_CARD_STAGE_PROGRESS.get(value, progress_percent))
         discovered = executor.discovered if executor else 0
         completed = executor.completed if executor else 0
         write_progress(discovered, completed, force=True, card=card)
+        log_event(
+            "asset-card-build",
+            "build.stage.started",
+            stage=value,
+            progress_percent=progress_percent,
+        )
 
     try:
+        log_event(
+            "asset-card-build",
+            "build.started",
+            request=redact(request),
+            worker_limit=BACKGROUND_REQUEST_LIMIT,
+        )
         started = db.start_asset_card_build_job(job_id)
         if not started:
             current = db.get_asset_card_build_job(job_id)
@@ -919,6 +1150,7 @@ def run_asset_card_build_job(
                 stage="cancelled",
                 message="Cancelled before start.",
             )
+            log_event("asset-card-build", "build.cancelled", reason="cancelled_before_start")
             return
 
         executor = AssetCardRequestExecutor(
@@ -954,6 +1186,12 @@ def run_asset_card_build_job(
             message="Asset card build completed.",
             stats=card.get("stats") if isinstance(card.get("stats"), dict) else {},
         )
+        log_event(
+            "asset-card-build",
+            "build.completed",
+            duration_ms=round((time.perf_counter() - build_started_at) * 1000, 2),
+            stats=card.get("stats"),
+        )
     except AssetCardBuildCancelled as exc:
         db.finish_asset_card_build_job(
             job_id,
@@ -961,12 +1199,24 @@ def run_asset_card_build_job(
             stage="cancelled",
             message=str(exc),
         )
+        log_event(
+            "asset-card-build",
+            "build.cancelled",
+            level=logging.WARNING,
+            reason=str(exc),
+            duration_ms=round((time.perf_counter() - build_started_at) * 1000, 2),
+        )
     except Exception as exc:
         db.finish_asset_card_build_job(
             job_id,
             status="failed",
             stage="failed",
             message=f"Asset card build failed: {exc}"[:2000],
+        )
+        log_exception(
+            "asset-card-build",
+            "build.failed",
+            duration_ms=round((time.perf_counter() - build_started_at) * 1000, 2),
         )
     finally:
         if executor:
@@ -2317,9 +2567,11 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
             time.sleep(2)
             continue
         build_job_id = str(uuid.uuid4())
+        build_trace_id = new_trace_id()
         try:
             db.create_asset_card_build_job(
                 build_job_id,
+                trace_id=build_trace_id,
                 asset_id=asset_id,
                 operation="refresh" if db.asset_card_exists(asset_id) else "create",
                 request=request,
@@ -2354,6 +2606,7 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
         token=token,
         request=request,
         cancel_event=cancel_event,
+        trace_id=build_trace_id,
     )
     job = db.get_asset_card_build_job(build_job_id)
     if not job or job.get("status") != "completed":
@@ -2620,6 +2873,15 @@ def build_asset_card(
 ) -> dict[str, Any]:
     build_started = time.perf_counter()
     timestamp = timeline_timestamp or int(datetime.now(timezone.utc).timestamp())
+    log_event(
+        "asset-card-build",
+        "build.snapshot.started",
+        asset_id=asset_id,
+        timeline_timestamp=timestamp,
+        limit_per_collection=limit_per_collection,
+        max_items_per_collection=max_items_per_collection,
+        max_depth=max_depth,
+    )
 
     def remote_call(operation: Callable[[MpVmClient], Any]) -> Any:
         if request_executor:
@@ -2660,11 +2922,19 @@ def build_asset_card(
 
     def warn(message: str) -> None:
         stats["warnings"].append(message)
+        log_event("asset-card-build", "build.warning", level=logging.WARNING, warning=message)
 
     def metadata_for(asset_type: str | None) -> dict[str, Any]:
         if not asset_type:
             return {}
         if asset_type in metadata_cache:
+            log_event(
+                "asset-card-build",
+                "metadata.cache.hit",
+                level=logging.DEBUG,
+                asset_type=asset_type,
+                cache_scope="build",
+            )
             return metadata_cache[asset_type]
         cache_key = (api_url, asset_type)
         now = time.monotonic()
@@ -2673,10 +2943,31 @@ def build_asset_card(
                 cached = ASSET_METADATA_CACHE.get(cache_key)
             if cached and now - cached[0] <= ASSET_METADATA_TTL_SECONDS:
                 metadata_cache[asset_type] = cached[1]
+                log_event(
+                    "asset-card-build",
+                    "metadata.cache.hit",
+                    level=logging.DEBUG,
+                    asset_type=asset_type,
+                    cache_scope="process",
+                    age_seconds=round(now - cached[0], 2),
+                )
                 return cached[1]
+        log_event(
+            "asset-card-build",
+            "metadata.cache.miss",
+            level=logging.DEBUG,
+            asset_type=asset_type,
+        )
         try:
             metadata = remote_call(lambda remote: remote.get_asset_metadata(token, asset_type))
             stats["metadata_requests"] += 1
+            log_event(
+                "asset-card-build",
+                "metadata.discovered",
+                level=logging.DEBUG,
+                asset_type=asset_type,
+                property_count=len(metadata.get("properties") or []) if isinstance(metadata, dict) else 0,
+            )
         except (MpVmApiError, requests.RequestException) as exc:
             warn(f"metadata {asset_type}: {exc}")
             metadata = {}
@@ -2810,13 +3101,31 @@ def build_asset_card(
     def fetch_node(asset_type: str, object_id: str, path: str) -> dict[str, Any] | None:
         node_key = f"{asset_type}|{object_id}"
         if node_key in node_cache:
+            log_event(
+                "asset-card-build",
+                "node.deduplicated",
+                level=logging.DEBUG,
+                asset_type=asset_type,
+                object_id=object_id,
+                path=path,
+            )
             return node_cache[node_key]
+        started = time.perf_counter()
         try:
             node = remote_call(
                 lambda remote: remote.get_asset_tree_node(token, asset_type, object_id, timeline_token)
             )
             stats["node_requests"] += 1
             node_cache[node_key] = node
+            log_event(
+                "asset-card-build",
+                "node.discovered",
+                level=logging.DEBUG,
+                asset_type=asset_type,
+                object_id=object_id,
+                path=path,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            )
             return node
         except (MpVmApiError, requests.RequestException) as exc:
             warn(f"node {path} ({asset_type}/{object_id}): {exc}")
@@ -2830,6 +3139,7 @@ def build_asset_card(
             current_limit = min(limit_per_collection, max_items_per_collection - len(items))
             if current_limit <= 0:
                 break
+            page_started = time.perf_counter()
             try:
                 response = remote_call(
                     lambda remote: remote.get_asset_tree_collection(
@@ -2853,6 +3163,20 @@ def build_asset_card(
             if count is not None:
                 reported_count = count
             items.extend(batch)
+            log_event(
+                "asset-card-build",
+                "collection.page.loaded",
+                level=logging.DEBUG,
+                parent_type=parent_type,
+                object_id=object_id,
+                collection=name,
+                path=path,
+                offset=offset,
+                limit=current_limit,
+                item_count=len(batch),
+                reported_count=reported_count,
+                duration_ms=round((time.perf_counter() - page_started) * 1000, 2),
+            )
             if not batch or len(batch) < current_limit:
                 break
             offset += len(batch)
@@ -2873,6 +3197,14 @@ def build_asset_card(
         object_id = clean_text(first_present(node.get("objectId"), ""))
         node_key = f"{node_type}|{object_id}"
         if object_id and node_key in seen_nodes:
+            log_event(
+                "asset-card-build",
+                "node.deduplicated",
+                level=logging.DEBUG,
+                asset_type=node_type,
+                object_id=object_id,
+                path=path,
+            )
             return
         if object_id:
             seen_nodes.add(node_key)
@@ -2991,8 +3323,27 @@ def build_asset_card(
             return
         collection_key = f"{parent_type}|{object_id}|{name}"
         if collection_key in seen_collections:
+            log_event(
+                "asset-card-build",
+                "collection.deduplicated",
+                level=logging.DEBUG,
+                parent_type=parent_type,
+                object_id=object_id,
+                collection=name,
+                path=path,
+            )
             return
         seen_collections.add(collection_key)
+        log_event(
+            "asset-card-build",
+            "collection.discovered",
+            level=logging.DEBUG,
+            parent_type=parent_type,
+            object_id=object_id,
+            collection=name,
+            path=path,
+            depth=depth,
+        )
 
         items, reported_count, truncated = fetch_collection(parent_type, object_id, name, path)
         collection_doc: dict[str, Any] = {
@@ -3161,7 +3512,7 @@ def build_asset_card(
     if stage_callback:
         stage_callback("assembling")
 
-    return {
+    result = {
         "asset_id": root_asset_id,
         "requested_asset_id": asset_id,
         "display_name": root.get("displayName"),
@@ -3177,6 +3528,13 @@ def build_asset_card(
         "vulnerabilities": vulnerabilities,
         "stats": stats,
     }
+    log_event(
+        "asset-card-build",
+        "build.snapshot.completed",
+        duration_ms=stats["elapsed_ms"],
+        stats=stats,
+    )
+    return result
 
 
 def extract_collection_items(response: Any) -> list[Any]:
@@ -3321,6 +3679,7 @@ def build_asset_vulnerability_snapshot(
             current_limit = min(page_size, max_items - len(items))
             if request_executor:
                 request_executor.record_request_started()
+            page_started = time.perf_counter()
             try:
                 batch = remote.get_asset_vulnerability_collection(
                     token,
@@ -3338,6 +3697,17 @@ def build_asset_vulnerability_snapshot(
                 if request_executor:
                     request_executor.record_request_completed()
             items.extend(normalize_asset_vulnerability_item(entry) for entry in batch)
+            log_event(
+                "asset-card-build",
+                "vulnerability.page.loaded",
+                level=logging.DEBUG,
+                collection_type=spec["collection_type"],
+                collection_id=spec["collection_id"],
+                offset=offset,
+                limit=current_limit,
+                item_count=len(batch),
+                duration_ms=round((time.perf_counter() - page_started) * 1000, 2),
+            )
             if not batch or len(batch) < current_limit:
                 break
             offset += len(batch)

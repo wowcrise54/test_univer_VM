@@ -1,2 +1,6 @@
 test.sql
 test.sql
+__pycache__/
+*.py[cod]
+output/logs/
+output/diagnostics/

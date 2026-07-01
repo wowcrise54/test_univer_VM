@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api/client.js";
+import { recordFrontendEvent } from "./diagnostics.js";
 import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
 
@@ -1058,6 +1059,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               <Button variant="tiny-danger" busy={busy.assetCardJobCancel} onClick={cancelAssetCardJob}>Остановить</Button>
             ) : null}
           </div>
+          {assetCardJob.trace_id ? <small>Trace ID: <code>{assetCardJob.trace_id}</code></small> : null}
           <div className="passport-job__track" role="progressbar" aria-label="Прогресс сборки карточки" aria-valuemin="0" aria-valuemax="100" aria-valuenow={assetCardJobProgress} aria-valuetext={`${assetCardJobProgress}% — ${assetCardJobStageLabel(assetCardJob.stage)}`}>
             <span style={{ width: `${assetCardJobProgress}%` }} />
           </div>
@@ -1602,6 +1604,24 @@ function AssetCard({ card, loading, onOpenPassport }) {
     setSelectedPath(treeEntries[0].path);
     setActiveTab("configuration");
   }, [card, treeEntries]);
+
+  useEffect(() => {
+    if (!card) return undefined;
+    const started = performance.now();
+    const frame = window.requestAnimationFrame(() => {
+      recordFrontendEvent(
+        "ui.section.rendered",
+        {
+          section: `asset-card:${activeTab}`,
+          asset_id: assetId,
+          duration_ms: Math.round((performance.now() - started) * 100) / 100,
+          tree_entry_count: treeEntries.length,
+        },
+        { section: activeTab },
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, assetId, card, treeEntries.length]);
 
   const toggleTreeEntry = useCallback((path) => {
     setExpandedPaths((current) => (

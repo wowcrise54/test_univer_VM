@@ -53,6 +53,31 @@ docker compose -f docker-compose.corpnet.example.yml up --build
 
 Dockerfile собирает React через Vite и копирует готовую статику в Python-образ. Данные PostgreSQL сохраняются в volume `mpvm_postgres`, CSV-экспорты - в `mpvm_exports`.
 
+## Диагностическое логирование
+
+Backend, сборка карточек, MP VM HTTP, PostgreSQL и frontend пишут связанные JSONL-события в `MPVM_LOG_DIR` (по умолчанию `output/logs`). Каждый API-ответ содержит `X-Trace-ID`, `X-Request-ID` и `Server-Timing`; trace ID также показывается в задании сборки карточки и добавляется к frontend-ошибкам.
+
+Файлы журналов: `app.jsonl`, `asset-card-build.jsonl`, `mpvm-http.jsonl`, `database.jsonl`, `frontend.jsonl`, `errors.jsonl`. Ротация задаётся через `MPVM_LOG_MAX_BYTES` и `MPVM_LOG_BACKUP_COUNT`, срок хранения — через `MPVM_LOG_RETENTION_DAYS`.
+
+`MPVM_DEBUG_PAYLOADS=true` включает отдельный `debug-payloads.jsonl`. Тела ограничиваются `MPVM_DEBUG_PAYLOAD_MAX_BYTES` и очищаются от token/password/secret/cookie/Authorization и реквизитов строки подключения. Этот режим предназначен только для кратковременной диагностики.
+
+Диагностический архив по заданию или трассе:
+
+```powershell
+python -m app.diagnostics bundle --job-id <job-id>
+python -m app.diagnostics bundle --trace-id <trace-id> --output output/diagnostics/trace.zip
+```
+
+Архив содержит очищенные события, сводку типов событий и безопасную конфигурацию логирования.
+
+Для проверки накладных расходов выполните одинаковые 20 запросов после запуска приложения с `MPVM_LOG_LEVEL=INFO`, затем с `DEBUG`, и сравните p95:
+
+```powershell
+python scripts/benchmark_logging_sla.py run --url http://127.0.0.1:8000/api/asset-cards/<asset-id> --label INFO --output output/info.json
+python scripts/benchmark_logging_sla.py run --url http://127.0.0.1:8000/api/asset-cards/<asset-id> --label DEBUG --output output/debug.json
+python scripts/benchmark_logging_sla.py compare --info output/info.json --debug output/debug.json --max-overhead-percent 10
+```
+
 ## Паспорта уязвимостей
 
 Раздел `Паспорта` выполняет PDQL:

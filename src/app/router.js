@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { recordFrontendEvent } from "../diagnostics.js";
 import { defaultRoutePath, normalizeRoutePath, routeById, routeByPath } from "./navigation.js";
 
 function routePathFromHash(hash) {
@@ -22,7 +23,13 @@ export function useRouter() {
     }
     setPath(initialPath);
 
-    const handlePopState = () => setPath(currentBrowserPath());
+    const handlePopState = () => {
+      const nextPath = currentBrowserPath();
+      setPath((currentPath) => {
+        recordFrontendEvent("ui.navigation", { from: currentPath, to: nextPath, navigation_type: "popstate" });
+        return nextPath;
+      });
+    };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
@@ -30,6 +37,7 @@ export function useRouter() {
   const navigate = useCallback((targetPath) => {
     const nextPath = normalizeRoutePath(targetPath);
     if (nextPath === path) return;
+    recordFrontendEvent("ui.navigation", { from: path, to: nextPath, navigation_type: "push" });
     window.history.pushState({}, "", nextPath);
     setPath(nextPath);
     window.scrollTo({ top: 0, behavior: "instant" });

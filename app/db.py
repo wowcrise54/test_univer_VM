@@ -11,6 +11,13 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .diagnostics import (
+    DiagnosticConnection,
+    DiagnosticCursor,
+    log_event,
+    log_exception,
+)
+
 
 DATABASE_URL = (
     os.getenv("MPVM_DATABASE_URL")
@@ -35,7 +42,25 @@ def now_utc() -> str:
 
 
 def connect() -> psycopg.Connection[dict[str, Any]]:
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    started = datetime.now(timezone.utc)
+    try:
+        connection = DiagnosticConnection.connect(
+            DATABASE_URL,
+            row_factory=dict_row,
+            cursor_factory=DiagnosticCursor,
+        )
+    except Exception:
+        log_exception("database", "db.connection.failed", database=database_label())
+        raise
+    elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+    log_event(
+        "database",
+        "db.connection.opened",
+        level=10,
+        database=database_label(),
+        duration_ms=round(elapsed_ms, 2),
+    )
+    return connection
 
 
 def init_db() -> None:
@@ -180,6 +205,7 @@ def _initialize_schema() -> None:
         """
         CREATE TABLE IF NOT EXISTS asset_card_build_jobs (
             job_id TEXT PRIMARY KEY,
+            trace_id TEXT,
             asset_id TEXT NOT NULL,
             operation TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -345,6 +371,7 @@ def _initialize_schema() -> None:
         """,
         "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS vulnerabilities_json TEXT NOT NULL DEFAULT '{}'",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS trace_id TEXT",
         """
         CREATE TABLE IF NOT EXISTS asset_card_vulnerability_groups (
             id BIGSERIAL PRIMARY KEY,
@@ -1695,6 +1722,7 @@ def asset_card_exists(asset_id: str) -> bool:
 def create_asset_card_build_job(
     job_id: str,
     *,
+    trace_id: str | None,
     asset_id: str,
     operation: str,
     request: dict[str, Any],
@@ -1705,12 +1733,12 @@ def create_asset_card_build_job(
         row = conn.execute(
             """
             INSERT INTO asset_card_build_jobs (
-                job_id, asset_id, operation, status, stage, request_json, created_at, updated_at
+                job_id, trace_id, asset_id, operation, status, stage, request_json, created_at, updated_at
             )
-            VALUES (%s, %s, %s, 'queued', 'queued', %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'queued', 'queued', %s, %s, %s)
             RETURNING *
             """,
-            (job_id, asset_id, operation, json.dumps(request, ensure_ascii=False), current, current),
+            (job_id, trace_id, asset_id, operation, json.dumps(request, ensure_ascii=False), current, current),
         ).fetchone()
     return decode_asset_card_build_job(dict(row))
 
@@ -1870,6 +1898,7 @@ def finish_asset_card_build_job(
 
 def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
     init_db()
+    write_started = datetime.now(timezone.utc)
     root = card.get("root") if isinstance(card.get("root"), dict) else {}
     data = root.get("data") if isinstance(root.get("data"), dict) else {}
     asset_id = clean_value(first_non_empty(card.get("asset_id"), root.get("objectId")))
@@ -1937,7 +1966,18 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
-    return decode_asset_card_summary(dict(row)) if row else None
+    result = decode_asset_card_summary(dict(row)) if row else None
+    log_event(
+        "database",
+        "db.write.completed",
+        asset_id=asset_id,
+        operation="upsert_asset_card",
+        duration_ms=round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2),
+        node_count=len(card.get("nodes") or []),
+        collection_count=len(card.get("collections") or []),
+        table_row_count=len(card.get("table_rows") or []),
+    )
+    return result
 
 
 def replace_asset_card_cache(
@@ -2668,6 +2708,7 @@ def decode_asset_card_build_job(row: dict[str, Any]) -> dict[str, Any]:
     stats = json_loads(row.get("stats_json"), {})
     return {
         "job_id": row.get("job_id"),
+        "trace_id": row.get("trace_id"),
         "asset_id": row.get("asset_id"),
         "operation": row.get("operation"),
         "status": row.get("status"),

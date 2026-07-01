@@ -13,6 +13,7 @@ services:
         condition: service_healthy
     volumes:
       - ./exports:/app/exports
+      - ./output:/app/output
     restart: unless-stopped
 
   postgres:
