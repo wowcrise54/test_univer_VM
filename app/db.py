@@ -202,6 +202,53 @@ def _initialize_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS scan_postprocess_runs (
+            run_id TEXT PRIMARY KEY,
+            mp_task_id TEXT NOT NULL,
+            mp_run_id TEXT,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            options_json TEXT NOT NULL DEFAULT '{}',
+            started_from TEXT NOT NULL,
+            run_started_at TEXT,
+            total_job_count INTEGER NOT NULL DEFAULT 0,
+            successful_job_count INTEGER NOT NULL DEFAULT 0,
+            target_count INTEGER NOT NULL DEFAULT 0,
+            asset_count INTEGER NOT NULL DEFAULT 0,
+            completed_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            error TEXT,
+            worker_id TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scan_postprocess_items (
+            id BIGSERIAL PRIMARY KEY,
+            postprocess_run_id TEXT NOT NULL REFERENCES scan_postprocess_runs(run_id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL,
+            mp_job_id TEXT,
+            target TEXT,
+            asset_id TEXT,
+            display_name TEXT,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            build_job_id TEXT,
+            removal_operation_id TEXT,
+            message TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(postprocess_run_id, item_key)
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS asset_cards (
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT UNIQUE NOT NULL,
@@ -360,6 +407,10 @@ def _initialize_schema() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_single_active ON vulnerability_passport_detail_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_build_jobs_created ON asset_card_build_jobs(created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_card_build_jobs_single_active ON asset_card_build_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
+        "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_task_created ON scan_postprocess_runs(mp_task_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_status ON scan_postprocess_runs(status, updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_items_run_status ON scan_postprocess_items(postprocess_run_id, status, id)",
+        "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_items_asset ON scan_postprocess_items(asset_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_display_name_lower ON asset_cards((LOWER(display_name)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_fqdn_lower ON asset_cards((LOWER(fqdn)))",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
@@ -482,13 +533,339 @@ def delete_scan_task(mp_task_id: str) -> None:
 def list_scan_tasks() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM scan_tasks ORDER BY updated_at DESC, id DESC").fetchall()
-    return [_decode_scan_task(dict(row)) for row in rows]
+        postprocess_rows = conn.execute(
+            """
+            SELECT DISTINCT ON (mp_task_id) *
+            FROM scan_postprocess_runs
+            ORDER BY mp_task_id, created_at DESC
+            """
+        ).fetchall()
+    latest = {str(row["mp_task_id"]): decode_scan_postprocess_run(dict(row)) for row in postprocess_rows}
+    result = [_decode_scan_task(dict(row)) for row in rows]
+    for task in result:
+        task["postprocess"] = latest.get(str(task.get("mp_task_id")))
+    return result
 
 
 def get_scan_task(mp_task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM scan_tasks WHERE mp_task_id = %s", (mp_task_id,)).fetchone()
     return _decode_scan_task(dict(row)) if row else None
+
+
+SCAN_POSTPROCESS_ACTIVE_STATUSES = {"monitoring", "resolving", "processing", "waiting"}
+SCAN_POSTPROCESS_FAILED_ITEM_STATUSES = {"resolution_failed", "build_failed", "removal_failed"}
+
+
+def create_scan_postprocess_run(
+    run_id: str,
+    *,
+    mp_task_id: str,
+    started_from: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO scan_postprocess_runs (
+                run_id, mp_task_id, status, stage, options_json, started_from,
+                created_at, updated_at
+            )
+            VALUES (%s, %s, 'monitoring', 'waiting_for_run', %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (run_id, mp_task_id, json.dumps(options, ensure_ascii=False), started_from, current, current),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row))
+
+
+def get_scan_postprocess_run(run_id: str, *, include_items: bool = False) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM scan_postprocess_runs WHERE run_id = %s", (run_id,)).fetchone()
+        items = (
+            conn.execute(
+                "SELECT * FROM scan_postprocess_items WHERE postprocess_run_id = %s ORDER BY id",
+                (run_id,),
+            ).fetchall()
+            if row and include_items
+            else []
+        )
+    if not row:
+        return None
+    result = decode_scan_postprocess_run(dict(row))
+    if include_items:
+        result["items"] = [decode_scan_postprocess_item(dict(item)) for item in items]
+    return result
+
+
+def get_latest_scan_postprocess_run(mp_task_id: str, *, include_items: bool = False) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM scan_postprocess_runs
+            WHERE mp_task_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (mp_task_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return get_scan_postprocess_run(str(row["run_id"]), include_items=include_items)
+
+
+def list_resumable_scan_postprocess_runs() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM scan_postprocess_runs
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+              AND worker_id IS NULL
+            ORDER BY created_at
+            """
+        ).fetchall()
+    return [decode_scan_postprocess_run(dict(row)) for row in rows]
+
+
+def claim_scan_postprocess_run(run_id: str, worker_id: str) -> dict[str, Any] | None:
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE scan_postprocess_runs
+            SET worker_id = %s, started_at = COALESCE(started_at, %s), updated_at = %s
+            WHERE run_id = %s
+              AND worker_id IS NULL
+              AND status IN ('monitoring', 'resolving', 'processing', 'waiting')
+            RETURNING *
+            """,
+            (worker_id, current, current, run_id),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row)) if row else None
+
+
+def release_scan_postprocess_leases() -> None:
+    current = now_utc()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_postprocess_runs
+            SET worker_id = NULL, updated_at = %s
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+            """,
+            (current,),
+        )
+        conn.execute(
+            """
+            UPDATE scan_postprocess_items
+            SET status = 'queued', stage = 'queued', updated_at = %s
+            WHERE status IN ('building', 'card_saved')
+            """,
+            (current,),
+        )
+
+
+def update_scan_postprocess_run(run_id: str, **values: Any) -> dict[str, Any] | None:
+    allowed = {
+        "mp_run_id",
+        "status",
+        "stage",
+        "run_started_at",
+        "total_job_count",
+        "successful_job_count",
+        "target_count",
+        "asset_count",
+        "completed_count",
+        "failed_count",
+        "message",
+        "error",
+        "worker_id",
+    }
+    updates = [(key, value) for key, value in values.items() if key in allowed]
+    if not updates:
+        return get_scan_postprocess_run(run_id)
+    current = now_utc()
+    assignments = ", ".join(f"{key} = %s" for key, _ in updates)
+    params = [value for _, value in updates]
+    params.extend([current, run_id])
+    with connect() as conn:
+        row = conn.execute(
+            f"UPDATE scan_postprocess_runs SET {assignments}, updated_at = %s WHERE run_id = %s RETURNING *",
+            params,
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row)) if row else None
+
+
+def finish_scan_postprocess_run(
+    run_id: str,
+    *,
+    status: str,
+    stage: str,
+    message: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any] | None:
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE scan_postprocess_runs
+            SET status = %s, stage = %s, message = %s, error = %s,
+                worker_id = NULL, finished_at = %s, updated_at = %s
+            WHERE run_id = %s
+            RETURNING *
+            """,
+            (status, stage, message, error, current, current, run_id),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row)) if row else None
+
+
+def upsert_scan_postprocess_item(
+    postprocess_run_id: str,
+    *,
+    item_key: str,
+    mp_job_id: str | None,
+    target: str | None,
+    asset_id: str | None,
+    display_name: str | None,
+    status: str,
+    stage: str,
+) -> dict[str, Any]:
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO scan_postprocess_items (
+                postprocess_run_id, item_key, mp_job_id, target, asset_id,
+                display_name, status, stage, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(postprocess_run_id, item_key) DO UPDATE SET
+                mp_job_id = COALESCE(EXCLUDED.mp_job_id, scan_postprocess_items.mp_job_id),
+                target = COALESCE(EXCLUDED.target, scan_postprocess_items.target),
+                asset_id = COALESCE(EXCLUDED.asset_id, scan_postprocess_items.asset_id),
+                display_name = COALESCE(EXCLUDED.display_name, scan_postprocess_items.display_name),
+                updated_at = EXCLUDED.updated_at
+            RETURNING *
+            """,
+            (
+                postprocess_run_id,
+                item_key,
+                mp_job_id,
+                target,
+                asset_id,
+                display_name,
+                status,
+                stage,
+                current,
+                current,
+            ),
+        ).fetchone()
+    return decode_scan_postprocess_item(dict(row))
+
+
+def update_scan_postprocess_item(item_id: int, **values: Any) -> dict[str, Any] | None:
+    allowed = {
+        "status",
+        "stage",
+        "build_job_id",
+        "removal_operation_id",
+        "message",
+        "error",
+        "started_at",
+        "finished_at",
+    }
+    updates = [(key, value) for key, value in values.items() if key in allowed]
+    if not updates:
+        return None
+    current = now_utc()
+    assignments = ", ".join(f"{key} = %s" for key, _ in updates)
+    params = [value for _, value in updates]
+    params.extend([current, item_id])
+    with connect() as conn:
+        row = conn.execute(
+            f"UPDATE scan_postprocess_items SET {assignments}, updated_at = %s WHERE id = %s RETURNING *",
+            params,
+        ).fetchone()
+    return decode_scan_postprocess_item(dict(row)) if row else None
+
+
+def list_scan_postprocess_items(run_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scan_postprocess_items WHERE postprocess_run_id = %s ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    return [decode_scan_postprocess_item(dict(row)) for row in rows]
+
+
+def refresh_scan_postprocess_counts(run_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE asset_id IS NOT NULL) AS asset_count,
+                COUNT(*) FILTER (WHERE status = 'completed') AS completed_count,
+                COUNT(*) FILTER (WHERE status IN ('resolution_failed', 'build_failed', 'removal_failed')) AS failed_count
+            FROM scan_postprocess_items
+            WHERE postprocess_run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+    return update_scan_postprocess_run(
+        run_id,
+        asset_count=int(row["asset_count"] or 0),
+        completed_count=int(row["completed_count"] or 0),
+        failed_count=int(row["failed_count"] or 0),
+    )
+
+
+def decode_scan_postprocess_run(row: dict[str, Any]) -> dict[str, Any]:
+    options = json_loads(row.get("options_json"), {})
+    return {
+        "run_id": row.get("run_id"),
+        "mp_task_id": row.get("mp_task_id"),
+        "mp_run_id": row.get("mp_run_id"),
+        "status": row.get("status"),
+        "stage": row.get("stage"),
+        "options": options if isinstance(options, dict) else {},
+        "started_from": row.get("started_from"),
+        "run_started_at": row.get("run_started_at"),
+        "total_job_count": int(row.get("total_job_count") or 0),
+        "successful_job_count": int(row.get("successful_job_count") or 0),
+        "target_count": int(row.get("target_count") or 0),
+        "asset_count": int(row.get("asset_count") or 0),
+        "completed_count": int(row.get("completed_count") or 0),
+        "failed_count": int(row.get("failed_count") or 0),
+        "message": row.get("message"),
+        "error": row.get("error"),
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def decode_scan_postprocess_item(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(row.get("id") or 0),
+        "postprocess_run_id": row.get("postprocess_run_id"),
+        "item_key": row.get("item_key"),
+        "mp_job_id": row.get("mp_job_id"),
+        "target": row.get("target"),
+        "asset_id": row.get("asset_id"),
+        "display_name": row.get("display_name"),
+        "status": row.get("status"),
+        "stage": row.get("stage"),
+        "build_job_id": row.get("build_job_id"),
+        "removal_operation_id": row.get("removal_operation_id"),
+        "message": row.get("message"),
+        "error": row.get("error"),
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "updated_at": row.get("updated_at"),
+    }
 
 
 def create_import_run(

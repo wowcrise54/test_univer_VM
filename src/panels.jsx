@@ -6,6 +6,7 @@ import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
+const ACTIVE_SCAN_POSTPROCESS_STATUSES = new Set(["monitoring", "resolving", "processing", "waiting"]);
 
 function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, busy, runBusy, showAlert }) {
   const [form, setForm] = useState({
@@ -164,7 +165,6 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
       precheck_timeout_minutes: "10",
       precheck_max_runtime_minutes: "5",
       precheck_poll_seconds: "10",
-      wait_for_finish: true,
       task_timeout_minutes: "120",
       task_poll_seconds: "15",
       require_clean_jobs: false,
@@ -198,7 +198,6 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
       precheck_timeout_minutes: current.precheck_timeout_minutes,
       precheck_max_runtime_minutes: current.precheck_max_runtime_minutes,
       precheck_poll_seconds: current.precheck_poll_seconds,
-      wait_for_finish: current.wait_for_finish,
       task_timeout_minutes: current.task_timeout_minutes,
       task_poll_seconds: current.task_poll_seconds,
       require_clean_jobs: current.require_clean_jobs,
@@ -226,7 +225,7 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
     precheck_timeout_minutes: Number(form.precheck_timeout_minutes || 10),
     precheck_max_runtime_minutes: Number(form.precheck_max_runtime_minutes || 0),
     precheck_poll_seconds: Number(form.precheck_poll_seconds || 10),
-    wait_for_finish: form.wait_for_finish,
+    wait_for_finish: false,
     task_timeout_minutes: Number(form.task_timeout_minutes || 120),
     task_poll_seconds: Number(form.task_poll_seconds || 15),
     require_clean_jobs: form.require_clean_jobs,
@@ -321,7 +320,7 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
         </div>
         <div className="form-grid form-grid--two">
           <Toggle label="Выполнить precheck перед запуском" checked={form.precheck_enabled} onChange={(value) => update("precheck_enabled", value)} />
-          <Toggle label="Ждать завершения задачи и остановить по таймеру" checked={form.wait_for_finish} onChange={(value) => update("wait_for_finish", value)} />
+          <div className="mini-state mini-state--ok">Мониторинг, карточки и удаление выполняются в фоне</div>
           <Field label="Precheck profile">
             <ProfileSelect
               value={form.precheck_profile_id}
@@ -367,14 +366,47 @@ function startSuccessText(result) {
   if (result.status === "timeout_stop_requested") return `Таймер истёк, отправлена остановка задачи.${precheckText}`;
   if (result.status === "precheck_failed") return `Precheck не нашёл успешных targets.`;
   if (result.status === "validation_failed") return `Validation failed: ${result.error || "unknown error"}`;
+  if (result.postprocess_run_id) return `Сканирование запущено. Фоновая обработка: ${result.postprocess_run_id}.${precheckText}`;
   return `Старт запрошен для ${result.id}.${precheckText}`;
 }
 
 function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refreshTasks, busy, showAlert }) {
   const [mode, setMode] = useState("delete_v3");
   const [deletingId, setDeletingId] = useState(null);
+  const [postprocessDetail, setPostprocessDetail] = useState(null);
   const profilesById = useMemo(() => mapById(lookups.scanner_profiles), [lookups.scanner_profiles]);
   const credentialsById = useMemo(() => mapById(lookups.credentials), [lookups.credentials]);
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.mp_task_id === selectedTaskId) || null,
+    [selectedTaskId, tasks],
+  );
+  const loadPostprocessDetail = useCallback(async () => {
+    if (!selectedTaskId) return null;
+    try {
+      const result = await api(`/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}/postprocess-runs/latest`);
+      setPostprocessDetail(result);
+      return result;
+    } catch (error) {
+      if (!String(error?.message || error).includes("404")) console.warn(error);
+      setPostprocessDetail(null);
+      return null;
+    }
+  }, [selectedTaskId]);
+  const visiblePostprocess = postprocessDetail || selectedTask?.postprocess || null;
+  const postprocessActive = ACTIVE_SCAN_POSTPROCESS_STATUSES.has(visiblePostprocess?.status);
+
+  useEffect(() => {
+    setPostprocessDetail(null);
+    if (selectedTaskId && selectedTask?.postprocess) loadPostprocessDetail();
+  }, [loadPostprocessDetail, selectedTask?.postprocess, selectedTaskId]);
+
+  useEffect(() => {
+    if (!postprocessActive) return undefined;
+    const timer = window.setInterval(() => {
+      Promise.all([refreshTasks(), loadPostprocessDetail()]).catch((error) => console.warn(error));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [loadPostprocessDetail, postprocessActive, refreshTasks]);
 
   const deleteTask = async (taskId) => {
     if (!taskId) return;
@@ -414,6 +446,7 @@ function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refr
               <th>Последний запуск</th>
               <th>Следующий запуск</th>
               <th>Статус</th>
+              <th>Обработка</th>
               <th>Собираемые данные</th>
             </tr>
           </thead>
@@ -437,11 +470,12 @@ function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refr
                   <td>{lastRunText(task)}</td>
                   <td>—</td>
                   <td><TaskStatus status={task.status} /></td>
+                  <td><PostprocessSummary run={task.postprocess} /></td>
                   <td>Активы</td>
                 </tr>
               );
             }) : (
-              <tr><td colSpan={10} className="empty-cell">Локально сохранённых задач пока нет.</td></tr>
+              <tr><td colSpan={11} className="empty-cell">Локально сохранённых задач пока нет.</td></tr>
             )}
           </tbody>
         </table>
@@ -452,8 +486,86 @@ function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refr
           Удалить выбранную
         </Button>
       </div>
+      {visiblePostprocess ? <TaskPostprocessPanel run={visiblePostprocess} /> : null}
     </Panel>
   );
+}
+
+function PostprocessSummary({ run }) {
+  if (!run) return <span className="muted-text">—</span>;
+  return (
+    <div className="postprocess-summary" title={run.message || run.error || run.stage}>
+      <TaskStatus status={run.status} />
+      <small>{formatCount(run.completed_count)} / {formatCount(run.asset_count)}</small>
+    </div>
+  );
+}
+
+function TaskPostprocessPanel({ run }) {
+  const items = Array.isArray(run.items) ? run.items : [];
+  return (
+    <section className="task-postprocess" aria-live="polite">
+      <div className="task-postprocess__header">
+        <div>
+          <span className="eyebrow">Фоновая обработка</span>
+          <h3>{postprocessStageLabel(run.stage)}</h3>
+          <p>{run.message || run.error || `Run ${run.run_id}`}</p>
+        </div>
+        <div className="task-postprocess__metrics">
+          <span>Jobs <strong>{formatCount(run.successful_job_count)} / {formatCount(run.total_job_count)}</strong></span>
+          <span>Assets <strong>{formatCount(run.completed_count)} / {formatCount(run.asset_count)}</strong></span>
+          <span>Ошибки <strong>{formatCount(run.failed_count)}</strong></span>
+        </div>
+      </div>
+      {items.length ? (
+        <div className="mpvm-table-shell">
+          <table className="postprocess-item-table">
+            <thead><tr><th>Target</th><th>Asset ID</th><th>Scan job</th><th>Карточка</th><th>Удаление MP VM</th><th>Статус / ошибка</th></tr></thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id || item.item_key}>
+                  <td>{item.target || "—"}</td>
+                  <td className="mono-cell">{item.asset_id || "—"}</td>
+                  <td className="mono-cell">{item.mp_job_id || "—"}</td>
+                  <td className="mono-cell">{item.build_job_id || postprocessCardLabel(item.status)}</td>
+                  <td className="mono-cell">{item.removal_operation_id || postprocessRemovalLabel(item.status)}</td>
+                  <td><TaskStatus status={item.status} />{item.error ? <small className="error-text">{item.error}</small> : null}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : <div className="empty-cell">Ожидаем завершения сканирования и появления успешных устройств.</div>}
+    </section>
+  );
+}
+
+function postprocessStageLabel(stage) {
+  const labels = {
+    waiting_for_run: "Ожидание запуска MP VM",
+    scanning: "Сканирование выполняется",
+    scan_finished: "Сканирование завершено",
+    resolving_assets: "Поиск просканированных активов",
+    building_cards: "Создание карточек и удаление активов",
+    completed: "Обработка завершена",
+    completed_with_errors: "Обработка завершена с ошибками",
+    failed: "Ошибка фоновой обработки",
+  };
+  return labels[stage] || stage || "Фоновая обработка";
+}
+
+function postprocessCardLabel(status) {
+  if (["queued", "resolution_failed"].includes(status)) return "—";
+  if (status === "building") return "собирается";
+  if (status === "build_failed") return "ошибка";
+  return "сохранена";
+}
+
+function postprocessRemovalLabel(status) {
+  if (["deleting", "card_saved"].includes(status)) return "выполняется";
+  if (status === "completed") return "удалён";
+  if (status === "removal_failed") return "ошибка";
+  return "—";
 }
 
 function TaskToolbar({ mode, setMode, refreshTasks, busy }) {
@@ -472,10 +584,13 @@ function TaskStatus({ status }) {
   const normalized = String(status || "").toLowerCase();
   let kind = "neutral";
   let icon = "•";
-  if (["started", "precheck_started"].some((item) => normalized.includes(item))) {
+  if (["started", "precheck_started", "monitoring", "resolving", "processing", "building", "deleting", "queued", "waiting"].some((item) => normalized.includes(item))) {
     kind = "running";
     icon = "◔";
-  } else if (["finished", "valid", "created", "updated"].some((item) => normalized.includes(item))) {
+  } else if (normalized.includes("with_errors")) {
+    kind = "danger";
+    icon = "⚠";
+  } else if (["finished", "valid", "created", "updated", "completed", "card_saved"].some((item) => normalized.includes(item))) {
     kind = "success";
     icon = "✓";
   } else if (["failed", "timeout", "stop", "deleted"].some((item) => normalized.includes(item))) {

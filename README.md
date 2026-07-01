@@ -92,7 +92,8 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `POST /api/scanner-tasks` - создать задачу через `POST /api/scanning/v4/scanner_tasks/create`.
 - `PUT /api/scanner-tasks/{id}` - изменить задачу через `PUT /api/scanning/v4/scanner_tasks/{id}`.
 - `POST /api/scanner-tasks/{id}/validate` - проверить задачу.
-- `POST /api/scanner-tasks/{id}/start` - запустить задачу, опционально с precheck и таймером.
+- `POST /api/scanner-tasks/{id}/start` - запустить задачу и вернуть `202`; завершение сканирования, создание локальных карточек и удаление успешно просканированных активов в MP VM выполняются в фоне.
+- `GET /api/scanner-tasks/{id}/postprocess-runs/latest` - получить прогресс фоновой обработки и статусы каждого target/asset.
 - `POST /api/scanner-tasks/{id}/stop` - остановить задачу.
 - `POST /api/scanner-tasks/{id}/delete` - удалить задачу в MP VM и убрать локальную строку.
 - `POST /api/exports/pdql` - выполнить PDQL, скачать CSV, импортировать в PostgreSQL и при необходимости удалить активы из MP VM.

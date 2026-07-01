@@ -62,6 +62,11 @@ VulnerPassport.PackageVersion, VulnerPassport.Metrics)
 ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTime) | sort(@Host ASC)"
 
 ASSET_ID_PDQL = "select(Host.@Id as AssetId, @Host as HostName, Host.IpAddress as IpAddress)"
+ASSET_RESOLUTION_PDQL = (
+    "select(Host.@Id as AssetId, @Host as HostName, Host.IpAddress as IpAddress, "
+    "Host.Fqdn as Fqdn, Host.@CreationTime as CreationTime, "
+    "Host.@UpdateTime as UpdateTime)"
+)
 
 
 class MpVmApiError(RuntimeError):
@@ -534,15 +539,64 @@ class MpVmClient:
         *,
         target_pattern: str | None = None,
         orderby: str | None = None,
+        offset: int = 0,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"offset": 0, "limit": limit}
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
         if target_pattern is not None:
             params["targetPattern"] = target_pattern
         if orderby:
             params["orderby"] = orderby
         data = self.get_json(access_token, SCANNER_RUN_JOBS_PATH.format(run_id=run_id), params=params)
         return ensure_items(data, "run jobs")
+
+    def get_all_run_jobs(
+        self,
+        access_token: str,
+        run_id: str,
+        *,
+        target_pattern: str | None = None,
+        orderby: str | None = None,
+        batch_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        jobs: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = self.get_run_jobs(
+                access_token,
+                run_id,
+                target_pattern=target_pattern,
+                orderby=orderby,
+                offset=offset,
+                limit=batch_size,
+            )
+            jobs.extend(batch)
+            if len(batch) < batch_size:
+                return jobs
+            offset += len(batch)
+
+    def split_successful_run_jobs(
+        self,
+        access_token: str,
+        run_id: str,
+        *,
+        require_clean_jobs: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        jobs = self.get_all_run_jobs(access_token, run_id, orderby="startedAt asc")
+        successful: list[dict[str, Any]] = []
+        for job in jobs:
+            if not is_finished(job):
+                continue
+            if has_failed_status(job.get("status")) or has_blocking_error_status(job.get("errorStatus")):
+                continue
+            if require_clean_jobs:
+                if has_error_status(job.get("errorStatus")):
+                    continue
+                job_id = str(job.get("id") or "")
+                if job_id and self.get_job_errors_count(access_token, job_id) > 0:
+                    continue
+            successful.append(job)
+        return jobs, successful
 
     def get_job_errors_count(self, access_token: str, job_id: str) -> int:
         data = self.get_json(access_token, SCANNER_JOB_ERRORS_PATH.format(job_id=job_id), params={"offset": 0, "limit": 1})
@@ -900,6 +954,27 @@ def build_asset_id_pdql_for_ips(ips: list[str]) -> str:
     if not normalized:
         return ASSET_ID_PDQL
     return f"filter(Host.@IpAddresses intersect [{', '.join(normalized)}]) | {ASSET_ID_PDQL}"
+
+
+def build_asset_resolution_pdql(target: str) -> str:
+    value = target.strip()
+    if not value:
+        raise MpVmApiError("Cannot build an asset resolution query for an empty target.")
+    try:
+        if "/" in value:
+            network = str(ipaddress.ip_network(value, strict=False))
+            predicate = f"Host.@IpAddresses.Item in {network}"
+        else:
+            address = str(ipaddress.ip_address(value))
+            predicate = f"Host.@IpAddresses contains {address}"
+    except ValueError:
+        quoted = pdql_quote(value)
+        predicate = f"Host.Fqdn = {quoted}"
+    return f"filter({predicate}) | {ASSET_RESOLUTION_PDQL}"
+
+
+def pdql_quote(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def extract_asset_ids_from_csv(csv_text: str) -> list[str]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import copy
+import ipaddress
 import json
 import re
 import threading
@@ -35,11 +36,13 @@ from .mpvm_client import (
     MpVmApiError,
     MpVmClient,
     build_asset_id_pdql_for_ips,
+    build_asset_resolution_pdql,
     build_default_token_url,
     build_scanner_task_payload,
     extract_asset_ids_from_csv,
     extract_uuid,
     extract_ips_from_csv,
+    is_finished,
     normalize_url,
 )
 
@@ -66,6 +69,18 @@ PASSPORT_DETAIL_WORKERS = min(
 PASSPORT_DETAIL_TTL_HOURS = env_int("MPVM_PASSPORT_DETAIL_TTL_HOURS", 24, minimum=0, maximum=8760)
 PASSPORT_DETAIL_DB_BATCH_SIZE = 100
 ASSET_METADATA_TTL_SECONDS = env_int("MPVM_ASSET_METADATA_TTL_SECONDS", 3600, minimum=0, maximum=86400)
+SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS = env_int(
+    "MPVM_SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS", 600, minimum=1, maximum=3600
+)
+SCAN_ASSET_RESOLUTION_POLL_SECONDS = env_int(
+    "MPVM_SCAN_ASSET_RESOLUTION_POLL_SECONDS", 15, minimum=1, maximum=300
+)
+SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS = env_int(
+    "MPVM_SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS", 1800, minimum=1, maximum=7200
+)
+SCAN_ASSET_REMOVAL_POLL_SECONDS = env_int(
+    "MPVM_SCAN_ASSET_REMOVAL_POLL_SECONDS", 10, minimum=1, maximum=300
+)
 ASSET_CARD_STAGE_PROGRESS = {
     "queued": 0,
     "starting": 5,
@@ -97,6 +112,9 @@ PASSPORT_DETAIL_CANCEL_EVENTS: dict[str, threading.Event] = {}
 PASSPORT_DETAIL_CANCEL_EVENTS_LOCK = threading.Lock()
 ASSET_CARD_CANCEL_EVENTS: dict[str, threading.Event] = {}
 ASSET_CARD_CANCEL_EVENTS_LOCK = threading.Lock()
+SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
+SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
+SCAN_POSTPROCESS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan-postprocess")
 BACKGROUND_REQUEST_SEMAPHORE = threading.BoundedSemaphore(BACKGROUND_REQUEST_LIMIT)
 ASSET_METADATA_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 ASSET_METADATA_CACHE_LOCK = threading.Lock()
@@ -350,11 +368,13 @@ def startup() -> None:
         db.init_db()
         db.interrupt_active_vulnerability_passport_detail_jobs()
         db.interrupt_active_asset_card_build_jobs()
+        db.release_scan_postprocess_leases()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
+    resume_scan_postprocess_runs()
 
 
 @app.exception_handler(psycopg.Error)
@@ -425,6 +445,7 @@ def connect_session(payload: ConnectionRequest) -> dict[str, Any]:
     SESSION.token_url = token_url
     SESSION.username = payload.username
     SESSION.verify_tls = payload.verify_tls
+    resume_scan_postprocess_runs()
     return {
         "connected": True,
         "api_url": api_url,
@@ -525,15 +546,41 @@ def validate_scanner_task(task_id: str) -> dict[str, Any]:
         raise http_error(exc) from exc
 
 
-@app.post("/api/scanner-tasks/{task_id}/start")
-def start_scanner_task(task_id: str, payload: StartScannerTaskRequest | None = None) -> dict[str, Any]:
+@app.post("/api/scanner-tasks/{task_id}/start", status_code=202)
+def start_scanner_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    payload: StartScannerTaskRequest | None = None,
+) -> dict[str, Any]:
     client, token = require_mpvm()
     options = payload or StartScannerTaskRequest()
     try:
         result = start_scanner_task_impl(client=client, token=token, task_id=task_id, options=options)
-        return result
+        if result.get("status") != "started":
+            return result
+        postprocess_run_id = str(uuid.uuid4())
+        postprocess = db.create_scan_postprocess_run(
+            postprocess_run_id,
+            mp_task_id=task_id,
+            started_from=str(result["started_from"]),
+            options=options.model_dump(),
+        )
+        background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
+        return {
+            **result,
+            "postprocess_run_id": postprocess_run_id,
+            "postprocess": postprocess,
+        }
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
+
+
+@app.get("/api/scanner-tasks/{task_id}/postprocess-runs/latest")
+def latest_scanner_task_postprocess_run(task_id: str) -> dict[str, Any]:
+    run = db.get_latest_scan_postprocess_run(task_id, include_items=True)
+    if not run:
+        raise HTTPException(status_code=404, detail="Post-processing run not found.")
+    return run
 
 
 @app.post("/api/scanner-tasks/{task_id}/stop")
@@ -1414,24 +1461,7 @@ def start_scanner_task_impl(
     )
     result["start"] = start_response
     db.update_scan_task_status(task_id, "started", start_response)
-
-    if not options.wait_for_finish:
-        return {**result, "status": "started"}
-
-    ok, message = client.wait_for_task_success(
-        token,
-        task_id,
-        time_from=started_from,
-        timeout_seconds=options.task_timeout_minutes * 60,
-        poll_seconds=options.task_poll_seconds,
-        require_clean_jobs=options.require_clean_jobs,
-        stop_on_timeout=True,
-    )
-    finish_status = "finished" if ok else ("timeout_stop_requested" if "timeout" in message else "failed")
-    finish_payload = {"ok": ok, "message": message}
-    result["finish"] = finish_payload
-    db.update_scan_task_status(task_id, finish_status, finish_payload)
-    return {**result, "status": finish_status}
+    return {**result, "status": "started", "started_from": started_from}
 
 
 def run_precheck_for_scanner_task(
@@ -1516,6 +1546,452 @@ def run_precheck_for_scanner_task(
 def build_precheck_task_name(prefix: str, audit_task_name: str) -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{prefix} {audit_task_name} {stamp}"
+
+
+def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None:
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        current = SCAN_POSTPROCESS_FUTURES.get(run_id)
+        if current and not current.done():
+            return
+        future = SCAN_POSTPROCESS_EXECUTOR.submit(
+            run_scan_postprocess,
+            run_id=run_id,
+            auth=auth,
+            token=token,
+        )
+        SCAN_POSTPROCESS_FUTURES[run_id] = future
+
+    def forget(_future: Future[Any]) -> None:
+        with SCAN_POSTPROCESS_FUTURES_LOCK:
+            if SCAN_POSTPROCESS_FUTURES.get(run_id) is _future:
+                SCAN_POSTPROCESS_FUTURES.pop(run_id, None)
+
+    future.add_done_callback(forget)
+
+
+def resume_scan_postprocess_runs() -> None:
+    if not SESSION.client or not SESSION.access_token:
+        return
+    try:
+        runs = db.list_resumable_scan_postprocess_runs()
+    except psycopg.Error:
+        return
+    for run in runs:
+        schedule_scan_postprocess(str(run["run_id"]), SESSION.client.auth, SESSION.access_token)
+
+
+def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
+    worker_id = str(uuid.uuid4())
+    claimed = db.claim_scan_postprocess_run(run_id, worker_id)
+    if not claimed:
+        return
+    client = MpVmClient(auth)
+    task_id = str(claimed["mp_task_id"])
+    options = claimed.get("options") if isinstance(claimed.get("options"), dict) else {}
+    started_from = str(claimed["started_from"])
+    timeout_seconds = max(1.0, float(options.get("task_timeout_minutes") or 120) * 60)
+    poll_seconds = max(1.0, float(options.get("task_poll_seconds") or 15))
+    require_clean_jobs = bool(options.get("require_clean_jobs"))
+    try:
+        run = wait_for_scanner_run_terminal(
+            client=client,
+            token=token,
+            task_id=task_id,
+            started_from=started_from,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            postprocess_run_id=run_id,
+        )
+        mp_run_id = str(run.get("id") or "")
+        if not mp_run_id:
+            raise RuntimeError("Finished scanner run does not contain id.")
+        run_started_at = str(run.get("startedAt") or started_from)
+        jobs, successful_jobs = client.split_successful_run_jobs(
+            token,
+            mp_run_id,
+            require_clean_jobs=require_clean_jobs,
+        )
+        target_jobs = successful_scan_target_jobs(successful_jobs)
+        db.update_scan_postprocess_run(
+            run_id,
+            mp_run_id=mp_run_id,
+            run_started_at=run_started_at,
+            status="resolving",
+            stage="resolving_assets",
+            total_job_count=len(jobs),
+            successful_job_count=len(successful_jobs),
+            target_count=len(target_jobs),
+            message=f"Resolving assets for {len(target_jobs)} successful target(s).",
+        )
+        if not target_jobs:
+            db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "reason": "no successful targets"})
+            db.finish_scan_postprocess_run(
+                run_id,
+                status="failed",
+                stage="failed",
+                message="The scanner run has no successful job targets.",
+            )
+            return
+
+        resolved, unresolved = resolve_scanned_assets(
+            client=client,
+            token=token,
+            target_jobs=target_jobs,
+            run_started_at=run_started_at,
+            timeout_seconds=SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS,
+            poll_seconds=SCAN_ASSET_RESOLUTION_POLL_SECONDS,
+        )
+        seen_assets: set[str] = set()
+        for asset in resolved:
+            asset_id = str(asset["asset_id"])
+            if asset_id in seen_assets:
+                continue
+            seen_assets.add(asset_id)
+            db.upsert_scan_postprocess_item(
+                run_id,
+                item_key=f"asset:{asset_id}",
+                mp_job_id=asset.get("mp_job_id"),
+                target=asset.get("target"),
+                asset_id=asset_id,
+                display_name=asset.get("display_name"),
+                status="queued",
+                stage="queued",
+            )
+        for target, error in unresolved.items():
+            job_id = target_jobs.get(target)
+            item = db.upsert_scan_postprocess_item(
+                run_id,
+                item_key=f"target:{target}",
+                mp_job_id=job_id,
+                target=target,
+                asset_id=None,
+                display_name=None,
+                status="resolution_failed",
+                stage="resolution_failed",
+            )
+            db.update_scan_postprocess_item(
+                int(item["id"]),
+                status="resolution_failed",
+                stage="resolution_failed",
+                error=error,
+                finished_at=db.now_utc(),
+            )
+
+        db.update_scan_postprocess_run(
+            run_id,
+            status="processing",
+            stage="building_cards",
+            asset_count=len(seen_assets),
+            message=f"Processing {len(seen_assets)} asset(s).",
+        )
+        for item in db.list_scan_postprocess_items(run_id):
+            if not item.get("asset_id") or item.get("status") in {
+                "completed",
+                "resolution_failed",
+                "build_failed",
+                "removal_failed",
+            }:
+                continue
+            process_scanned_asset_item(item=item, auth=auth, token=token)
+            db.refresh_scan_postprocess_counts(run_id)
+
+        summary = db.refresh_scan_postprocess_counts(run_id) or {}
+        failed_count = int(summary.get("failed_count") or 0)
+        completed_count = int(summary.get("completed_count") or 0)
+        final_status = "failed" if failed_count and not completed_count else "completed_with_errors" if failed_count else "completed"
+        message = f"Completed {completed_count} asset(s); failures: {failed_count}."
+        db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
+        db.update_scan_task_status(
+            task_id,
+            "postprocess_failed" if final_status == "failed" else "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
+            {"postprocess_run_id": run_id, "completed_count": completed_count, "failed_count": failed_count},
+        )
+    except Exception as exc:
+        error = str(exc)[:4000]
+        db.finish_scan_postprocess_run(run_id, status="failed", stage="failed", message="Scan post-processing failed.", error=error)
+        db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
+    finally:
+        client.session.close()
+
+
+def wait_for_scanner_run_terminal(
+    *,
+    client: MpVmClient,
+    token: str,
+    task_id: str,
+    started_from: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+    postprocess_run_id: str,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    latest: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        runs = client.get_task_runs(token, task_id, time_from=started_from)
+        if runs:
+            latest = runs[0]
+            db.update_scan_postprocess_run(
+                postprocess_run_id,
+                mp_run_id=str(latest.get("id") or "") or None,
+                run_started_at=str(latest.get("startedAt") or started_from),
+                status="monitoring",
+                stage="scanning" if not is_finished(latest) else "scan_finished",
+                message="Scanner run is in progress." if not is_finished(latest) else "Scanner run finished.",
+            )
+            if is_finished(latest):
+                return latest
+        time.sleep(poll_seconds)
+    client.stop_scanner_task_best_effort(token, task_id)
+    if latest and latest.get("id"):
+        return latest
+    raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
+
+
+def successful_scan_target_jobs(jobs: list[dict[str, Any]]) -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
+    for job in jobs:
+        job_id = str(job.get("id") or "") or None
+        raw_targets = job.get("targets")
+        targets = raw_targets if isinstance(raw_targets, list) else [raw_targets] if isinstance(raw_targets, str) else []
+        for target in targets:
+            value = str(target or "").strip()
+            if value and value not in result:
+                result[value] = job_id
+    return result
+
+
+def resolve_scanned_assets(
+    *,
+    client: MpVmClient,
+    token: str,
+    target_jobs: dict[str, str | None],
+    run_started_at: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    unresolved = dict(target_jobs)
+    results: list[dict[str, Any]] = []
+    errors: dict[str, str] = {}
+    deadline = time.monotonic() + timeout_seconds
+    while unresolved:
+        for target, job_id in list(unresolved.items()):
+            try:
+                records = query_scanned_asset_records(client, token, target)
+                matched = [
+                    normalize_scanned_asset_record(record, target=target, mp_job_id=job_id)
+                    for record in records
+                    if scanned_asset_record_matches(record, target)
+                    and scanned_asset_record_is_current(record, run_started_at)
+                ]
+                matched = [record for record in matched if record.get("asset_id")]
+                if matched:
+                    results.extend(matched)
+                    unresolved.pop(target, None)
+                    errors.pop(target, None)
+                else:
+                    errors[target] = "No asset updated by this scanner run is visible in MP VM yet."
+            except (MpVmApiError, requests.RequestException, ValueError) as exc:
+                errors[target] = str(exc)
+        if not unresolved or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_seconds)
+    return results, {target: errors.get(target, "Asset resolution timed out.") for target in unresolved}
+
+
+def query_scanned_asset_records(client: MpVmClient, token: str, target: str) -> list[dict[str, Any]]:
+    pdql_token = client.create_pdql_token(token, build_asset_resolution_pdql(target))
+    records, _summary = fetch_asset_grid_records(
+        client=client,
+        token=token,
+        pdql_token=pdql_token,
+        limit=50000,
+        batch_size=5000,
+    )
+    return records
+
+
+def normalize_scanned_asset_record(record: dict[str, Any], *, target: str, mp_job_id: str | None) -> dict[str, Any]:
+    candidate = normalize_asset_candidate_record(record)
+    return {
+        "asset_id": candidate.get("asset_id"),
+        "display_name": candidate.get("display_name") or first_present(record.get("Fqdn"), record.get("Hostname"), target),
+        "target": target,
+        "mp_job_id": mp_job_id,
+    }
+
+
+def scanned_asset_record_matches(record: dict[str, Any], target: str) -> bool:
+    ip_values = [
+        record.get("IpAddress"),
+        record.get("Host.IpAddress"),
+        record.get("IP"),
+    ]
+    try:
+        if "/" in target:
+            network = ipaddress.ip_network(target, strict=False)
+            return any(_ip_in_network(value, network) for value in ip_values)
+        address = ipaddress.ip_address(target)
+        return any(_ip_equals(value, address) for value in ip_values)
+    except ValueError:
+        names = [record.get("Fqdn"), record.get("Host.Fqdn"), record.get("Hostname"), record.get("Host.Hostname")]
+        return any(str(value or "").rstrip(".").casefold() == target.rstrip(".").casefold() for value in names)
+
+
+def scanned_asset_record_is_current(record: dict[str, Any], run_started_at: str) -> bool:
+    threshold = parse_mpvm_datetime(run_started_at)
+    if threshold is None:
+        return False
+    values = [
+        record.get("UpdateTime"),
+        record.get("CreationTime"),
+        record.get("Host.@UpdateTime"),
+        record.get("Host.@CreationTime"),
+    ]
+    return any((parsed := parse_mpvm_datetime(value)) is not None and parsed >= threshold for value in values)
+
+
+def parse_mpvm_datetime(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 10_000_000_000:
+            number /= 1000
+        try:
+            return datetime.fromtimestamp(number, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ip_equals(value: Any, address: ipaddress._BaseAddress) -> bool:
+    try:
+        return ipaddress.ip_address(str(value).strip()) == address
+    except ValueError:
+        return False
+
+
+def _ip_in_network(value: Any, network: ipaddress._BaseNetwork) -> bool:
+    try:
+        return ipaddress.ip_address(str(value).strip()) in network
+    except ValueError:
+        return False
+
+
+def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token: str) -> None:
+    item_id = int(item["id"])
+    asset_id = str(item["asset_id"])
+    removal_operation_id = item.get("removal_operation_id")
+    card_saved = bool(removal_operation_id)
+    client = MpVmClient(auth)
+    try:
+        if not removal_operation_id:
+            build_job_id = build_scanned_asset_card(item_id=item_id, asset_id=asset_id, auth=auth, token=token)
+            item = db.update_scan_postprocess_item(
+                item_id,
+                status="card_saved",
+                stage="card_saved",
+                build_job_id=build_job_id,
+                message="Asset card saved locally.",
+                error=None,
+            ) or item
+            card_saved = True
+            removal_operation_id = client.remove_assets(token, [asset_id])
+            db.update_scan_postprocess_item(
+                item_id,
+                status="deleting",
+                stage="deleting_in_mpvm",
+                removal_operation_id=removal_operation_id,
+                message="MP VM asset removal started.",
+            )
+        ok, message, _raw = client.wait_for_asset_removal(
+            token,
+            str(removal_operation_id),
+            timeout_seconds=SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
+            poll_seconds=SCAN_ASSET_REMOVAL_POLL_SECONDS,
+        )
+        if not ok:
+            db.update_scan_postprocess_item(
+                item_id,
+                status="removal_failed",
+                stage="removal_failed",
+                message=message,
+                error=message,
+                finished_at=db.now_utc(),
+            )
+            return
+        db.update_scan_postprocess_item(
+            item_id,
+            status="completed",
+            stage="completed",
+            message=message,
+            error=None,
+            finished_at=db.now_utc(),
+        )
+    except Exception as exc:
+        status = "removal_failed" if card_saved else "build_failed"
+        db.update_scan_postprocess_item(
+            item_id,
+            status=status,
+            stage=status,
+            error=str(exc)[:4000],
+            finished_at=db.now_utc(),
+        )
+    finally:
+        client.session.close()
+
+
+def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, token: str) -> str:
+    request = {
+        "asset_id": asset_id,
+        "timeline_timestamp": None,
+        "limit_per_collection": 5000,
+        "max_items_per_collection": 5000,
+        "max_depth": 8,
+    }
+    while True:
+        active = db.get_active_asset_card_build_job()
+        if active:
+            time.sleep(2)
+            continue
+        build_job_id = str(uuid.uuid4())
+        try:
+            db.create_asset_card_build_job(
+                build_job_id,
+                asset_id=asset_id,
+                operation="refresh" if db.asset_card_exists(asset_id) else "create",
+                request=request,
+            )
+            break
+        except psycopg.errors.UniqueViolation:
+            time.sleep(2)
+    db.update_scan_postprocess_item(
+        item_id,
+        status="building",
+        stage="building_card",
+        build_job_id=build_job_id,
+        started_at=db.now_utc(),
+    )
+    cancel_event = register_asset_card_build_job(build_job_id)
+    run_asset_card_build_job(
+        job_id=build_job_id,
+        auth=auth,
+        token=token,
+        request=request,
+        cancel_event=cancel_event,
+    )
+    job = db.get_asset_card_build_job(build_job_id)
+    if not job or job.get("status") != "completed":
+        raise RuntimeError((job or {}).get("message") or "Asset card build did not complete.")
+    if not db.asset_card_exists(asset_id):
+        raise RuntimeError("Asset card build completed without a saved local card.")
+    return build_job_id
 
 
 def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) -> dict[str, Any]:
