@@ -45,11 +45,12 @@ class ScanPostprocessClientTests(unittest.TestCase):
             {"id": "failed", "status": "finished", "errorStatus": "failed", "runMode": "default", "targets": ["10.0.0.2"]},
             {"id": "running", "status": "assigned", "errorStatus": None, "runMode": "default", "targets": ["10.0.0.3"]},
             {"id": "precheck", "status": "assigned", "errorStatus": "success", "runMode": "connectionCheck", "targets": ["10.0.0.4"]},
+            {"id": "host-discovery", "status": "assigned", "errorStatus": "success", "runMode": "default", "profile": {"name": "HostDiscovery"}, "targets": ["10.0.0.5"]},
         ])
 
         jobs, successful = client.split_successful_run_jobs("token", "run")
 
-        self.assertEqual(len(jobs), 4)
+        self.assertEqual(len(jobs), 5)
         self.assertEqual([job["id"] for job in successful], ["ok"])
         self.assertEqual(main.successful_scan_target_jobs(successful), {"10.0.0.1": "ok"})
         client.get_all_run_jobs.assert_called_once_with(

@@ -593,6 +593,8 @@ class MpVmClient:
         for job in jobs:
             if "connectioncheck" in status_strings(job.get("runMode")):
                 continue
+            if is_host_discovery_profile(job.get("profile")):
+                continue
             if not has_success_status(job.get("errorStatus")):
                 continue
             if require_clean_jobs:
@@ -1146,6 +1148,13 @@ def has_error_status(value: Any) -> bool:
 
 def has_success_status(value: Any) -> bool:
     return any(status in {"success", "succeeded", "successful", "green", "ok"} for status in status_strings(value))
+
+
+def is_host_discovery_profile(value: Any) -> bool:
+    if isinstance(value, dict):
+        value = value.get("name")
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    return "hostdiscovery" in normalized
 
 
 def has_blocking_error_status(value: Any) -> bool:
