@@ -38,19 +38,27 @@ class ScanPostprocessClientTests(unittest.TestCase):
         self.assertEqual(len(jobs), 2005)
         self.assertEqual(client.offsets, [0, 1000, 2000])
 
-    def test_mixed_jobs_keep_each_successful_finished_job(self):
+    def test_main_job_becomes_successful_when_error_status_is_success(self):
         client = PagingClient()
         client.get_all_run_jobs = MagicMock(return_value=[
-            {"id": "ok", "status": "finished", "finishedAt": "2026-01-01T00:00:00Z", "targets": ["10.0.0.1"]},
-            {"id": "failed", "status": "failed", "finishedAt": "2026-01-01T00:00:00Z", "targets": ["10.0.0.2"]},
-            {"id": "running", "status": "running", "targets": ["10.0.0.3"]},
+            {"id": "ok", "status": "assigned", "errorStatus": "success", "runMode": "default", "targets": ["10.0.0.1"]},
+            {"id": "failed", "status": "finished", "errorStatus": "failed", "runMode": "default", "targets": ["10.0.0.2"]},
+            {"id": "running", "status": "assigned", "errorStatus": None, "runMode": "default", "targets": ["10.0.0.3"]},
+            {"id": "precheck", "status": "assigned", "errorStatus": "success", "runMode": "connectionCheck", "targets": ["10.0.0.4"]},
         ])
 
         jobs, successful = client.split_successful_run_jobs("token", "run")
 
-        self.assertEqual(len(jobs), 3)
+        self.assertEqual(len(jobs), 4)
         self.assertEqual([job["id"] for job in successful], ["ok"])
         self.assertEqual(main.successful_scan_target_jobs(successful), {"10.0.0.1": "ok"})
+        client.get_all_run_jobs.assert_called_once_with(
+            "token",
+            "run",
+            target_pattern="",
+            orderby="startedAt desc",
+            batch_size=100,
+        )
 
     def test_resolution_pdql_supports_ip_subnet_and_fqdn(self):
         self.assertIn("contains 10.0.0.1", mpvm_client.build_asset_resolution_pdql("10.0.0.1"))
@@ -77,6 +85,21 @@ class ScanAssetResolutionTests(unittest.TestCase):
         record = {"Fqdn": "HOST.Example.Org."}
         self.assertTrue(main.scanned_asset_record_matches(record, "host.example.org"))
         self.assertFalse(main.scanned_asset_record_matches(record, "other.example.org"))
+
+    def test_exact_ip_from_successful_job_does_not_require_update_time(self):
+        record = {"AssetId": "11111111-1111-1111-1111-111111111111", "IpAddress": "10.0.0.1"}
+        client = MagicMock()
+        with patch.object(main, "query_scanned_asset_records", return_value=[record]):
+            assets, error = main.resolve_scanned_target_once(
+                client=client,
+                token="token",
+                target="10.0.0.1",
+                mp_job_id="job-1",
+                run_started_at="2026-01-01T00:00:00+00:00",
+            )
+
+        self.assertEqual(error, "")
+        self.assertEqual(assets[0]["asset_id"], "11111111-1111-1111-1111-111111111111")
 
 
 class ScanAssetProcessingOrderTests(unittest.TestCase):
@@ -228,10 +251,6 @@ class StartScannerTaskApiTests(unittest.TestCase):
             def __init__(self, _auth) -> None:
                 self.session = FakeSession()
 
-            def split_successful_run_jobs(self, *_args, **_kwargs):
-                job = {"id": "job-1", "status": "finished", "targets": ["10.0.0.1"]}
-                return [job], [job]
-
         with (
             patch.object(main, "require_mpvm", return_value=(endpoint_client, "token")),
             patch.object(main, "start_scanner_task_impl", return_value={
@@ -244,11 +263,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
             patch.object(main, "schedule_scan_postprocess", side_effect=lambda run_id, run_auth, run_token: main.run_scan_postprocess(run_id=run_id, auth=run_auth, token=run_token)),
             patch.object(main, "MpVmClient", OrchestratorClient),
             patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
-            patch.object(main, "wait_for_scanner_run_terminal", return_value={"id": "mp-run-1", "startedAt": "2026-01-01T00:00:00+00:00"}),
-            patch.object(main, "resolve_scanned_assets", return_value=([{"asset_id": "asset-1", "target": "10.0.0.1", "mp_job_id": "job-1", "display_name": "Host 1"}], {})),
-            patch.object(main.db, "upsert_scan_postprocess_item", return_value=item),
-            patch.object(main.db, "list_scan_postprocess_items", return_value=[item]),
-            patch.object(main, "process_scanned_asset_item") as process_item,
+            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 1, "total_job_count": 1, "asset_count": 1}),
             patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 1, "failed_count": 0}),
             patch.object(main.db, "update_scan_postprocess_run"),
             patch.object(main.db, "finish_scan_postprocess_run") as finish_run,
@@ -257,8 +272,60 @@ class StartScannerTaskApiTests(unittest.TestCase):
             response = TestClient(main.app).post("/api/scanner-tasks/task-full/start", json={})
 
         self.assertEqual(response.status_code, 202)
-        process_item.assert_called_once()
         self.assertEqual(finish_run.call_args.kwargs["status"], "completed")
+
+
+class ScanJobLiveMonitoringTests(unittest.TestCase):
+    def test_success_error_status_schedules_card_before_run_finishes(self):
+        running = {"id": "run-1", "status": "running", "startedAt": "2026-01-01T00:00:00+00:00"}
+        finished = {**running, "status": "finished", "finishedAt": "2026-01-01T00:01:00+00:00"}
+        job = {
+            "id": "job-1",
+            "status": "assigned",
+            "errorStatus": "success",
+            "runMode": "default",
+            "targets": ["10.0.0.1"],
+        }
+        client = MagicMock()
+        client.get_task_runs.side_effect = [[running], [finished]]
+        client.split_successful_run_jobs.return_value = ([job], [job])
+        item = {
+            "id": 1,
+            "postprocess_run_id": "post-1",
+            "item_key": "asset:asset-1",
+            "asset_id": "asset-1",
+            "status": "queued",
+        }
+        with (
+            patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+            patch.object(main.db, "upsert_scan_postprocess_item", return_value=item),
+            patch.object(main.db, "update_scan_postprocess_run") as update_run,
+            patch.object(main, "resolve_scanned_target_once", return_value=([{
+                "asset_id": "asset-1",
+                "target": "10.0.0.1",
+                "mp_job_id": "job-1",
+                "display_name": "Host 1",
+            }], "")),
+            patch.object(main, "process_scanned_asset_item") as process_item,
+            patch.object(main.db, "refresh_scan_postprocess_counts"),
+            patch.object(main.time, "sleep"),
+        ):
+            result = main.monitor_successful_scan_jobs(
+                client=client,
+                auth=SimpleNamespace(),
+                token="token",
+                task_id="task-1",
+                started_from="2026-01-01T00:00:00+00:00",
+                timeout_seconds=60,
+                poll_seconds=1,
+                postprocess_run_id="post-1",
+                require_clean_jobs=False,
+            )
+
+        self.assertEqual(result["successful_job_count"], 1)
+        process_item.assert_called_once()
+        first_update = update_run.call_args_list[0].kwargs
+        self.assertEqual(first_update["successful_job_count"], 1)
 
 
 if __name__ == "__main__":

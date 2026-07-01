@@ -94,6 +94,8 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `POST /api/scanner-tasks/{id}/validate` - проверить задачу.
 - `POST /api/scanner-tasks/{id}/start` - запустить задачу и вернуть `202`; завершение сканирования, создание локальных карточек и удаление успешно просканированных активов в MP VM выполняются в фоне.
 - `GET /api/scanner-tasks/{id}/postprocess-runs/latest` - получить прогресс фоновой обработки и статусы каждого target/asset.
+
+После запуска основной задачи клиент опрашивает `/api/scanning/v2/runs/{runId}/jobs`. Каждый job с `runMode=default` обрабатывается отдельно сразу после перехода `errorStatus` в `success`; connection-check/precheck jobs исключаются. Для точного IP/FQDN успешного job asset разрешается без дополнительного фильтра по времени, после чего его локальная карточка пересобирается и перезаписывается.
 - `POST /api/scanner-tasks/{id}/stop` - остановить задачу.
 - `POST /api/scanner-tasks/{id}/delete` - удалить задачу в MP VM и убрать локальную строку.
 - `POST /api/exports/pdql` - выполнить PDQL, скачать CSV, импортировать в PostgreSQL и при необходимости удалить активы из MP VM.

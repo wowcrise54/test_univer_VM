@@ -544,6 +544,7 @@ function postprocessStageLabel(stage) {
   const labels = {
     waiting_for_run: "Ожидание запуска MP VM",
     scanning: "Сканирование выполняется",
+    watching_jobs: "Ожидание успешных scan jobs",
     scan_finished: "Сканирование завершено",
     resolving_assets: "Поиск просканированных активов",
     building_cards: "Создание карточек и удаление активов",

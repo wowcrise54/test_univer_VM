@@ -1593,107 +1593,26 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
     poll_seconds = max(1.0, float(options.get("task_poll_seconds") or 15))
     require_clean_jobs = bool(options.get("require_clean_jobs"))
     try:
-        run = wait_for_scanner_run_terminal(
+        monitoring = monitor_successful_scan_jobs(
             client=client,
+            auth=auth,
             token=token,
             task_id=task_id,
             started_from=started_from,
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
             postprocess_run_id=run_id,
-        )
-        mp_run_id = str(run.get("id") or "")
-        if not mp_run_id:
-            raise RuntimeError("Finished scanner run does not contain id.")
-        run_started_at = str(run.get("startedAt") or started_from)
-        jobs, successful_jobs = client.split_successful_run_jobs(
-            token,
-            mp_run_id,
             require_clean_jobs=require_clean_jobs,
         )
-        target_jobs = successful_scan_target_jobs(successful_jobs)
-        db.update_scan_postprocess_run(
-            run_id,
-            mp_run_id=mp_run_id,
-            run_started_at=run_started_at,
-            status="resolving",
-            stage="resolving_assets",
-            total_job_count=len(jobs),
-            successful_job_count=len(successful_jobs),
-            target_count=len(target_jobs),
-            message=f"Resolving assets for {len(target_jobs)} successful target(s).",
-        )
-        if not target_jobs:
+        if not monitoring["successful_job_count"]:
             db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "reason": "no successful targets"})
             db.finish_scan_postprocess_run(
                 run_id,
                 status="failed",
                 stage="failed",
-                message="The scanner run has no successful job targets.",
+                message="The scanner run has no jobs with errorStatus=success.",
             )
             return
-
-        resolved, unresolved = resolve_scanned_assets(
-            client=client,
-            token=token,
-            target_jobs=target_jobs,
-            run_started_at=run_started_at,
-            timeout_seconds=SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS,
-            poll_seconds=SCAN_ASSET_RESOLUTION_POLL_SECONDS,
-        )
-        seen_assets: set[str] = set()
-        for asset in resolved:
-            asset_id = str(asset["asset_id"])
-            if asset_id in seen_assets:
-                continue
-            seen_assets.add(asset_id)
-            db.upsert_scan_postprocess_item(
-                run_id,
-                item_key=f"asset:{asset_id}",
-                mp_job_id=asset.get("mp_job_id"),
-                target=asset.get("target"),
-                asset_id=asset_id,
-                display_name=asset.get("display_name"),
-                status="queued",
-                stage="queued",
-            )
-        for target, error in unresolved.items():
-            job_id = target_jobs.get(target)
-            item = db.upsert_scan_postprocess_item(
-                run_id,
-                item_key=f"target:{target}",
-                mp_job_id=job_id,
-                target=target,
-                asset_id=None,
-                display_name=None,
-                status="resolution_failed",
-                stage="resolution_failed",
-            )
-            db.update_scan_postprocess_item(
-                int(item["id"]),
-                status="resolution_failed",
-                stage="resolution_failed",
-                error=error,
-                finished_at=db.now_utc(),
-            )
-
-        db.update_scan_postprocess_run(
-            run_id,
-            status="processing",
-            stage="building_cards",
-            asset_count=len(seen_assets),
-            message=f"Processing {len(seen_assets)} asset(s).",
-        )
-        for item in db.list_scan_postprocess_items(run_id):
-            if not item.get("asset_id") or item.get("status") in {
-                "completed",
-                "resolution_failed",
-                "build_failed",
-                "removal_failed",
-            }:
-                continue
-            process_scanned_asset_item(item=item, auth=auth, token=token)
-            db.refresh_scan_postprocess_counts(run_id)
 
         summary = db.refresh_scan_postprocess_counts(run_id) or {}
         failed_count = int(summary.get("failed_count") or 0)
@@ -1714,37 +1633,188 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         client.session.close()
 
 
-def wait_for_scanner_run_terminal(
+def monitor_successful_scan_jobs(
     *,
     client: MpVmClient,
+    auth: AuthConfig,
     token: str,
     task_id: str,
     started_from: str,
     timeout_seconds: float,
     poll_seconds: float,
     postprocess_run_id: str,
-) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout_seconds
-    latest: dict[str, Any] | None = None
-    while time.monotonic() < deadline:
-        runs = client.get_task_runs(token, task_id, time_from=started_from)
-        if runs:
-            latest = runs[0]
-            db.update_scan_postprocess_run(
+    require_clean_jobs: bool,
+) -> dict[str, int]:
+    scan_deadline = time.monotonic() + timeout_seconds
+    resolution_deadline: float | None = None
+    latest_run: dict[str, Any] | None = None
+    latest_jobs: list[dict[str, Any]] = []
+    successful_jobs: list[dict[str, Any]] = []
+    pending_targets: dict[str, str | None] = {}
+    target_errors: dict[str, str] = {}
+    existing_items = db.list_scan_postprocess_items(postprocess_run_id)
+    seen_asset_ids = {str(item["asset_id"]) for item in existing_items if item.get("asset_id")}
+    resolved_job_targets = {
+        (str(item.get("mp_job_id") or ""), str(item.get("target") or ""))
+        for item in existing_items
+        if item.get("asset_id")
+    }
+    futures: list[Future[Any]] = []
+
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan-asset-process") as asset_executor:
+        for item in existing_items:
+            if item.get("asset_id") and item.get("status") not in {
+                "completed",
+                "resolution_failed",
+                "build_failed",
+                "removal_failed",
+            }:
+                futures.append(
+                    asset_executor.submit(
+                        process_scanned_asset_item_with_progress,
+                        item=item,
+                        auth=auth,
+                        token=token,
+                        postprocess_run_id=postprocess_run_id,
+                    )
+                )
+
+        while True:
+            runs = client.get_task_runs(token, task_id, time_from=started_from)
+            if runs:
+                latest_run = runs[0]
+                mp_run_id = str(latest_run.get("id") or "")
+                if mp_run_id:
+                    latest_jobs, successful_jobs = client.split_successful_run_jobs(
+                        token,
+                        mp_run_id,
+                        require_clean_jobs=require_clean_jobs,
+                    )
+                    for target, job_id in successful_scan_target_jobs(successful_jobs).items():
+                        if (str(job_id or ""), target) not in resolved_job_targets:
+                            pending_targets[target] = job_id
+
+                    run_started_at = str(latest_run.get("startedAt") or started_from)
+                    for target, job_id in list(pending_targets.items()):
+                        assets, error = resolve_scanned_target_once(
+                            client=client,
+                            token=token,
+                            target=target,
+                            mp_job_id=job_id,
+                            run_started_at=run_started_at,
+                        )
+                        if not assets:
+                            target_errors[target] = error
+                            continue
+                        for asset in assets:
+                            asset_id = str(asset["asset_id"])
+                            if asset_id in seen_asset_ids:
+                                continue
+                            seen_asset_ids.add(asset_id)
+                            item = db.upsert_scan_postprocess_item(
+                                postprocess_run_id,
+                                item_key=f"asset:{asset_id}",
+                                mp_job_id=asset.get("mp_job_id"),
+                                target=asset.get("target"),
+                                asset_id=asset_id,
+                                display_name=asset.get("display_name"),
+                                status="queued",
+                                stage="queued",
+                            )
+                            futures.append(
+                                asset_executor.submit(
+                                    process_scanned_asset_item_with_progress,
+                                    item=item,
+                                    auth=auth,
+                                    token=token,
+                                    postprocess_run_id=postprocess_run_id,
+                                )
+                            )
+                        resolved_job_targets.add((str(job_id or ""), target))
+                        pending_targets.pop(target, None)
+                        target_errors.pop(target, None)
+
+                    terminal = is_finished(latest_run)
+                    if terminal and resolution_deadline is None:
+                        resolution_deadline = time.monotonic() + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
+                    db.update_scan_postprocess_run(
+                        postprocess_run_id,
+                        mp_run_id=mp_run_id,
+                        run_started_at=run_started_at,
+                        status="processing" if seen_asset_ids else "monitoring",
+                        stage="building_cards" if seen_asset_ids else "watching_jobs",
+                        total_job_count=len(latest_jobs),
+                        successful_job_count=len(successful_jobs),
+                        target_count=len(successful_scan_target_jobs(successful_jobs)),
+                        asset_count=len(seen_asset_ids),
+                        message=(
+                            f"Processing {len(seen_asset_ids)} asset(s); watching errorStatus for {len(latest_jobs)} job(s)."
+                        ),
+                    )
+
+            now = time.monotonic()
+            scan_timed_out = now >= scan_deadline
+            resolution_finished = resolution_deadline is not None and (not pending_targets or now >= resolution_deadline)
+            if resolution_finished or (scan_timed_out and latest_run is None):
+                break
+            if scan_timed_out and latest_run is not None and resolution_deadline is None:
+                client.stop_scanner_task_best_effort(token, task_id)
+                resolution_deadline = now + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
+            time.sleep(min(poll_seconds, SCAN_ASSET_RESOLUTION_POLL_SECONDS))
+
+        for target, job_id in pending_targets.items():
+            item = db.upsert_scan_postprocess_item(
                 postprocess_run_id,
-                mp_run_id=str(latest.get("id") or "") or None,
-                run_started_at=str(latest.get("startedAt") or started_from),
-                status="monitoring",
-                stage="scanning" if not is_finished(latest) else "scan_finished",
-                message="Scanner run is in progress." if not is_finished(latest) else "Scanner run finished.",
+                item_key=f"target:{target}",
+                mp_job_id=job_id,
+                target=target,
+                asset_id=None,
+                display_name=None,
+                status="resolution_failed",
+                stage="resolution_failed",
             )
-            if is_finished(latest):
-                return latest
-        time.sleep(poll_seconds)
-    client.stop_scanner_task_best_effort(token, task_id)
-    if latest and latest.get("id"):
-        return latest
-    raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
+            db.update_scan_postprocess_item(
+                int(item["id"]),
+                status="resolution_failed",
+                stage="resolution_failed",
+                error=target_errors.get(target, "Asset resolution timed out."),
+                finished_at=db.now_utc(),
+            )
+        for future in futures:
+            future.result()
+
+    if latest_run is None:
+        raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
+    return {
+        "total_job_count": len(latest_jobs),
+        "successful_job_count": len(successful_jobs),
+        "asset_count": len(seen_asset_ids),
+    }
+
+
+def resolve_scanned_target_once(
+    *,
+    client: MpVmClient,
+    token: str,
+    target: str,
+    mp_job_id: str | None,
+    run_started_at: str,
+) -> tuple[list[dict[str, Any]], str]:
+    records = query_scanned_asset_records(client, token, target)
+    require_freshness = "/" in target
+    assets = [
+        normalize_scanned_asset_record(record, target=target, mp_job_id=mp_job_id)
+        for record in records
+        if not require_freshness or scanned_asset_record_is_current(record, run_started_at)
+    ]
+    assets = [asset for asset in assets if asset.get("asset_id")]
+    if assets:
+        return assets, ""
+    if not records:
+        return [], f"PDQL returned no assets for successful job target {target}."
+    if require_freshness:
+        return [], f"PDQL returned {len(records)} asset(s) for {target}, but none has CreationTime/UpdateTime from this run."
+    return [], f"PDQL returned {len(records)} record(s) for {target}, but none contains asset_id."
 
 
 def successful_scan_target_jobs(jobs: list[dict[str, Any]]) -> dict[str, str | None]:
@@ -1758,44 +1828,6 @@ def successful_scan_target_jobs(jobs: list[dict[str, Any]]) -> dict[str, str | N
             if value and value not in result:
                 result[value] = job_id
     return result
-
-
-def resolve_scanned_assets(
-    *,
-    client: MpVmClient,
-    token: str,
-    target_jobs: dict[str, str | None],
-    run_started_at: str,
-    timeout_seconds: float,
-    poll_seconds: float,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    unresolved = dict(target_jobs)
-    results: list[dict[str, Any]] = []
-    errors: dict[str, str] = {}
-    deadline = time.monotonic() + timeout_seconds
-    while unresolved:
-        for target, job_id in list(unresolved.items()):
-            try:
-                records = query_scanned_asset_records(client, token, target)
-                matched = [
-                    normalize_scanned_asset_record(record, target=target, mp_job_id=job_id)
-                    for record in records
-                    if scanned_asset_record_matches(record, target)
-                    and scanned_asset_record_is_current(record, run_started_at)
-                ]
-                matched = [record for record in matched if record.get("asset_id")]
-                if matched:
-                    results.extend(matched)
-                    unresolved.pop(target, None)
-                    errors.pop(target, None)
-                else:
-                    errors[target] = "No asset updated by this scanner run is visible in MP VM yet."
-            except (MpVmApiError, requests.RequestException, ValueError) as exc:
-                errors[target] = str(exc)
-        if not unresolved or time.monotonic() >= deadline:
-            break
-        time.sleep(poll_seconds)
-    return results, {target: errors.get(target, "Asset resolution timed out.") for target in unresolved}
 
 
 def query_scanned_asset_records(client: MpVmClient, token: str, target: str) -> list[dict[str, Any]]:
@@ -1945,6 +1977,17 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
         )
     finally:
         client.session.close()
+
+
+def process_scanned_asset_item_with_progress(
+    *,
+    item: dict[str, Any],
+    auth: AuthConfig,
+    token: str,
+    postprocess_run_id: str,
+) -> None:
+    process_scanned_asset_item(item=item, auth=auth, token=token)
+    db.refresh_scan_postprocess_counts(postprocess_run_id)
 
 
 def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, token: str) -> str:

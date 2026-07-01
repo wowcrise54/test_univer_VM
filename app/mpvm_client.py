@@ -582,16 +582,20 @@ class MpVmClient:
         *,
         require_clean_jobs: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        jobs = self.get_all_run_jobs(access_token, run_id, orderby="startedAt asc")
+        jobs = self.get_all_run_jobs(
+            access_token,
+            run_id,
+            target_pattern="",
+            orderby="startedAt desc",
+            batch_size=100,
+        )
         successful: list[dict[str, Any]] = []
         for job in jobs:
-            if not is_finished(job):
+            if "connectioncheck" in status_strings(job.get("runMode")):
                 continue
-            if has_failed_status(job.get("status")) or has_blocking_error_status(job.get("errorStatus")):
+            if not has_success_status(job.get("errorStatus")):
                 continue
             if require_clean_jobs:
-                if has_error_status(job.get("errorStatus")):
-                    continue
                 job_id = str(job.get("id") or "")
                 if job_id and self.get_job_errors_count(access_token, job_id) > 0:
                     continue
@@ -1138,6 +1142,10 @@ def has_error_status(value: Any) -> bool:
     if isinstance(value, dict):
         return any(has_error_status(item) for item in value.values())
     return bool(value)
+
+
+def has_success_status(value: Any) -> bool:
+    return any(status in {"success", "succeeded", "successful", "green", "ok"} for status in status_strings(value))
 
 
 def has_blocking_error_status(value: Any) -> bool:
