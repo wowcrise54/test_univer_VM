@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api/client.js";
-import { formatCount, optionLabel, splitTokens } from "./shared/format.js";
+import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -99,6 +99,48 @@ function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, b
         <div className={session.connected ? "mini-state mini-state--ok" : "mini-state"}>{session.connected ? session.api_url : "Ожидает подключения"}</div>
       </div>
     </Panel>
+  );
+}
+
+function ProfileSelect({ value, onChange, profiles, emptyLabel, searchLabel = "Поиск профиля по имени или ID" }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase("ru-RU");
+  const filteredProfiles = useMemo(() => filterOptions(profiles, normalizedQuery), [normalizedQuery, profiles]);
+  const selectedProfile = useMemo(
+    () => profiles.find((item) => String(item.id || "") === String(value || "")),
+    [profiles, value],
+  );
+  const visibleProfiles = useMemo(() => {
+    if (!selectedProfile || filteredProfiles.some((item) => item.id === selectedProfile.id)) return filteredProfiles;
+    return [selectedProfile, ...filteredProfiles];
+  }, [filteredProfiles, selectedProfile]);
+
+  return (
+    <div className="profile-select">
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={searchLabel}
+        aria-label={searchLabel}
+        autoComplete="off"
+      />
+      <select
+        value={value}
+        aria-label={`${searchLabel}: выбор`}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setQuery("");
+        }}
+      >
+        <option value="">{emptyLabel}</option>
+        {visibleProfiles.map((item) => (
+          <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>
+        ))}
+        {normalizedQuery && !filteredProfiles.length ? <option disabled>Профили не найдены</option> : null}
+      </select>
+      {normalizedQuery ? <small>Найдено: {filteredProfiles.length}</small> : null}
+    </div>
   );
 }
 
@@ -238,10 +280,12 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
           </select>
         </Field>
         <Field label="Профиль сканирования">
-          <select value={form.profile_id} onChange={(event) => update("profile_id", event.target.value)}>
-            <option value="">Выберите профиль</option>
-            {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
-          </select>
+          <ProfileSelect
+            value={form.profile_id}
+            onChange={(value) => update("profile_id", value)}
+            profiles={lookups.scanner_profiles}
+            emptyLabel="Выберите профиль"
+          />
         </Field>
         <Field label="Учётная запись Windows">
           <select value={form.credential_id} onChange={(event) => update("credential_id", event.target.value)}>
@@ -250,10 +294,13 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
           </select>
         </Field>
         <Field label="HostDiscovery profile">
-          <select value={form.host_discovery_profile_id} onChange={(event) => update("host_discovery_profile_id", event.target.value)}>
-            <option value="">Без HostDiscovery profile</option>
-            {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
-          </select>
+          <ProfileSelect
+            value={form.host_discovery_profile_id}
+            onChange={(value) => update("host_discovery_profile_id", value)}
+            profiles={lookups.scanner_profiles}
+            emptyLabel="Без HostDiscovery profile"
+            searchLabel="Поиск HostDiscovery-профиля"
+          />
         </Field>
         <Field label="Коллекторы / agents" wide>
           <textarea rows={3} value={form.agent_ids} onChange={(event) => update("agent_ids", event.target.value)} placeholder="UUID коллекторов через запятую или с новой строки" />
@@ -276,10 +323,13 @@ function TaskBuilderPanel({ defaults, lookups, selectedTask, selectedTaskId, set
           <Toggle label="Выполнить precheck перед запуском" checked={form.precheck_enabled} onChange={(value) => update("precheck_enabled", value)} />
           <Toggle label="Ждать завершения задачи и остановить по таймеру" checked={form.wait_for_finish} onChange={(value) => update("wait_for_finish", value)} />
           <Field label="Precheck profile">
-            <select value={form.precheck_profile_id} onChange={(event) => update("precheck_profile_id", event.target.value)}>
-              <option value="">Использовать профиль основной задачи</option>
-              {lookups.scanner_profiles.map((item) => <option value={item.id || ""} key={item.id || item.name}>{optionLabel(item)}</option>)}
-            </select>
+            <ProfileSelect
+              value={form.precheck_profile_id}
+              onChange={(value) => update("precheck_profile_id", value)}
+              profiles={lookups.scanner_profiles}
+              emptyLabel="Использовать профиль основной задачи"
+              searchLabel="Поиск Precheck-профиля"
+            />
           </Field>
           <Field label="Таймаут задачи, минут">
             <input type="number" min="1" value={form.task_timeout_minutes} onChange={(event) => update("task_timeout_minutes", event.target.value)} />

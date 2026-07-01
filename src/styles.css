@@ -407,6 +407,21 @@ select {
   font-weight: 790;
 }
 
+.profile-select {
+  display: grid;
+  gap: 7px;
+}
+
+.profile-select input[type="search"] {
+  padding-block: 9px;
+  background: var(--panel-muted);
+}
+
+.profile-select small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .toggle {
   display: flex;
   align-items: center;
