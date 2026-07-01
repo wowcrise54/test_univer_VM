@@ -102,6 +102,22 @@ class ScanAssetResolutionTests(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertEqual(assets[0]["asset_id"], "11111111-1111-1111-1111-111111111111")
 
+    def test_host_object_from_pdql_is_normalized_to_text_display_name(self):
+        record = {
+            "AssetId": "11111111-1111-1111-1111-111111111111",
+            "HostName": {
+                "objectId": "11111111-1111-1111-1111-111111111111",
+                "displayName": "Windows host 01",
+                "type": "host",
+            },
+            "IpAddress": "10.0.0.1",
+        }
+
+        asset = main.normalize_scanned_asset_record(record, target="10.0.0.1", mp_job_id="job-1")
+
+        self.assertEqual(asset["display_name"], "Windows host 01")
+        self.assertIsInstance(asset["display_name"], str)
+
 
 class ScanAssetProcessingOrderTests(unittest.TestCase):
     def test_card_is_saved_before_remote_removal_and_local_delete_is_unused(self):

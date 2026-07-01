@@ -2091,9 +2091,14 @@ def query_scanned_asset_records(client: MpVmClient, token: str, target: str) -> 
 
 def normalize_scanned_asset_record(record: dict[str, Any], *, target: str, mp_job_id: str | None) -> dict[str, Any]:
     candidate = normalize_asset_candidate_record(record)
+    raw_display_name = candidate.get("display_name") or first_present(
+        record.get("Fqdn"),
+        record.get("Hostname"),
+        target,
+    )
     return {
         "asset_id": candidate.get("asset_id"),
-        "display_name": candidate.get("display_name") or first_present(record.get("Fqdn"), record.get("Hostname"), target),
+        "display_name": asset_value_to_text(raw_display_name),
         "target": target,
         "mp_job_id": mp_job_id,
     }
