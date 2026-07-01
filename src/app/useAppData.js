@@ -7,9 +7,22 @@ const EMPTY_LOOKUPS = {
   scanner_profiles: [],
 };
 
+const EMPTY_CONNECTION_DRAFT = {
+  api_url: "",
+  token_url: "",
+  username: "",
+  password: "",
+  client_id: "mpx",
+  client_secret: "",
+  scope: "",
+  access_token: "",
+  verify_tls: true,
+};
+
 export function useAppData(routeId) {
   const [defaults, setDefaults] = useState(null);
   const [session, setSession] = useState({ connected: false });
+  const [connectionDraft, setConnectionDraft] = useState(EMPTY_CONNECTION_DRAFT);
   const [lookups, setLookups] = useState(EMPTY_LOOKUPS);
   const [tasks, setTasks] = useState([]);
   const [tasksLoaded, setTasksLoaded] = useState(false);
@@ -64,10 +77,29 @@ export function useAppData(routeId) {
   useEffect(() => {
     let alive = true;
     api("/api/defaults")
-      .then((value) => alive && setDefaults(value))
+      .then((value) => {
+        if (!alive) return;
+        setDefaults(value);
+        setConnectionDraft((current) => ({
+          ...current,
+          api_url: current.api_url || value.api_url || "",
+          client_id: current.client_id || value.client_id || "mpx",
+          scope: current.scope || value.scope || "",
+        }));
+      })
       .catch((error) => alive && showAlert(error.message || String(error), "error"));
     api("/api/session")
-      .then((value) => alive && setSession(value))
+      .then((value) => {
+        if (!alive) return;
+        setSession(value);
+        setConnectionDraft((current) => ({
+          ...current,
+          api_url: value.api_url || current.api_url,
+          token_url: value.token_url || current.token_url,
+          username: value.username ?? current.username,
+          verify_tls: value.verify_tls ?? current.verify_tls,
+        }));
+      })
       .catch((error) => alive && showAlert(error.message || String(error), "error"));
     return () => {
       alive = false;
@@ -94,6 +126,7 @@ export function useAppData(routeId) {
     assetRows,
     assetTotal,
     busy,
+    connectionDraft,
     defaults,
     lookups,
     refreshAssets,
@@ -102,6 +135,7 @@ export function useAppData(routeId) {
     selectedTask,
     selectedTaskId,
     session,
+    setConnectionDraft,
     setLookups,
     setSelectedTaskId,
     setSession,

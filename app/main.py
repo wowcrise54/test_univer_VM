@@ -958,6 +958,14 @@ def create_asset_card_build_job(
                 "job": db.get_active_asset_card_build_job(),
             },
         ) from exc
+    if job is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "An asset card build is already running.",
+                "job": db.get_active_asset_card_build_job(),
+            },
+        )
     cancel_event = register_asset_card_build_job(job_id)
     background_tasks.add_task(
         run_asset_card_build_job,
@@ -2569,13 +2577,22 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
         build_job_id = str(uuid.uuid4())
         build_trace_id = new_trace_id()
         try:
-            db.create_asset_card_build_job(
+            job = db.create_asset_card_build_job(
                 build_job_id,
                 trace_id=build_trace_id,
                 asset_id=asset_id,
                 operation="refresh" if db.asset_card_exists(asset_id) else "create",
                 request=request,
             )
+            if job is None:
+                scan_log(
+                    logging.INFO,
+                    "asset_card_slot_busy_retry",
+                    item_id=item_id,
+                    asset_id=asset_id,
+                )
+                time.sleep(2)
+                continue
             scan_log(
                 logging.INFO,
                 "asset_card_build_job_created",

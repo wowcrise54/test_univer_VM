@@ -759,6 +759,14 @@ def upsert_scan_postprocess_item(
     stage: str,
 ) -> dict[str, Any]:
     current = now_utc()
+    # PDQL fields are not guaranteed to be scalars (for example HostName may
+    # be an object with displayName/objectId).  Keep the persistence boundary
+    # defensive so one unexpected response shape cannot stall the whole scan
+    # post-processing queue with psycopg's "cannot adapt type 'dict'" error.
+    mp_job_id = text_parameter(mp_job_id)
+    target = text_parameter(target)
+    asset_id = text_parameter(asset_id)
+    display_name = text_parameter(display_name)
     with connect() as conn:
         row = conn.execute(
             """
@@ -1726,7 +1734,7 @@ def create_asset_card_build_job(
     asset_id: str,
     operation: str,
     request: dict[str, Any],
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     init_db()
     current = now_utc()
     with connect() as conn:
@@ -1736,11 +1744,12 @@ def create_asset_card_build_job(
                 job_id, trace_id, asset_id, operation, status, stage, request_json, created_at, updated_at
             )
             VALUES (%s, %s, %s, %s, 'queued', 'queued', %s, %s, %s)
+            ON CONFLICT DO NOTHING
             RETURNING *
             """,
             (job_id, trace_id, asset_id, operation, json.dumps(request, ensure_ascii=False), current, current),
         ).fetchone()
-    return decode_asset_card_build_job(dict(row))
+    return decode_asset_card_build_job(dict(row)) if row else None
 
 
 def get_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
@@ -2649,6 +2658,17 @@ def clean_value(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def text_parameter(value: Any) -> str | None:
+    """Return a psycopg-safe text value while preserving structured context."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
 
 
 def safe_int(value: Any) -> int | None:

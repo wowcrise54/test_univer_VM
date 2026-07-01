@@ -118,6 +118,38 @@ class ScanAssetResolutionTests(unittest.TestCase):
         self.assertEqual(asset["display_name"], "Windows host 01")
         self.assertIsInstance(asset["display_name"], str)
 
+    def test_structured_queue_fields_are_serialized_before_psycopg(self):
+        stored = {
+            "id": 1,
+            "postprocess_run_id": "post-1",
+            "item_key": "asset:asset-1",
+            "status": "queued",
+            "stage": "queued",
+        }
+        result = MagicMock()
+        result.fetchone.return_value = stored
+        connection = MagicMock()
+        connection.execute.return_value = result
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(main.db, "connect", connect):
+            item = main.db.upsert_scan_postprocess_item(
+                "post-1",
+                item_key="asset:asset-1",
+                mp_job_id={"id": "job-1"},
+                target={"address": "10.0.0.1"},
+                asset_id={"id": "asset-1"},
+                display_name={"displayName": "Host 1"},
+                status="queued",
+                stage="queued",
+            )
+
+        params = connection.execute.call_args.args[1]
+        self.assertTrue(all(not isinstance(value, dict) for value in params))
+        self.assertIn('"displayName": "Host 1"', params[5])
+        self.assertEqual(item["status"], "queued")
+
 
 class ScanAssetProcessingOrderTests(unittest.TestCase):
     def test_card_is_saved_before_remote_removal_and_local_delete_is_unused(self):

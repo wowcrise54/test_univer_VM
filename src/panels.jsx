@@ -9,28 +9,17 @@ const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_SCAN_POSTPROCESS_STATUSES = new Set(["monitoring", "resolving", "processing", "waiting"]);
 
-function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, busy, runBusy, showAlert }) {
-  const [form, setForm] = useState({
-    api_url: "",
-    token_url: "",
-    username: "",
-    password: "",
-    client_id: "mpx",
-    client_secret: "",
-    scope: "",
-    access_token: "",
-    verify_tls: true,
-  });
-
-  useEffect(() => {
-    if (!defaults) return;
-    setForm((value) => ({
-      ...value,
-      api_url: value.api_url || defaults.api_url || "",
-      client_id: value.client_id || defaults.client_id || "mpx",
-      scope: value.scope || defaults.scope || "",
-    }));
-  }, [defaults]);
+function ConnectionPanel({
+  connectionDraft: form,
+  setConnectionDraft: setForm,
+  session,
+  setSession,
+  lookups,
+  setLookups,
+  busy,
+  runBusy,
+  showAlert,
+}) {
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
@@ -39,8 +28,15 @@ function ConnectionPanel({ defaults, session, setSession, lookups, setLookups, b
       const payload = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value === "" ? null : value]));
       const result = await api("/api/session/connect", { method: "POST", body: JSON.stringify(payload) });
       setSession(result);
+      setForm((current) => ({
+        ...current,
+        api_url: result.api_url || current.api_url,
+        token_url: result.token_url || current.token_url,
+        username: result.username ?? current.username,
+        verify_tls: result.verify_tls ?? current.verify_tls,
+      }));
       showAlert("Подключение к MP VM установлено.", "success");
-      await loadLookups();
+      void loadLookups();
     });
 
   const disconnect = () =>

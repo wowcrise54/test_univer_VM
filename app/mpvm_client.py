@@ -113,7 +113,12 @@ class MpVmClient:
 
     def ensure_access_token(self) -> str:
         if self.auth.access_token:
-            return self.auth.access_token
+            access_token = self.auth.access_token.strip()
+            if access_token.lower().startswith("bearer "):
+                access_token = access_token[7:].strip()
+            if not access_token:
+                raise MpVmApiError("Bearer token is empty.")
+            return access_token
 
         required = {
             "username": self.auth.username,

@@ -254,6 +254,29 @@ class AssetCardJobApiTests(unittest.TestCase):
                 )
         self.assertEqual(raised.exception.status_code, 409)
 
+    def test_slot_lost_during_atomic_insert_is_rejected_without_background_task(self):
+        client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
+        background_tasks = BackgroundTasks()
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(
+                main.db,
+                "get_active_asset_card_build_job",
+                side_effect=[None, {"job_id": "winner", "status": "queued"}],
+            ),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "create_asset_card_build_job", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.create_asset_card_build_job(
+                    main.AssetCardBuildJobRequest(asset_id="asset-1"),
+                    background_tasks,
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["job"]["job_id"], "winner")
+        self.assertEqual(len(background_tasks.tasks), 0)
+
     def test_cancelled_job_does_not_save_a_partial_card(self):
         cancel_event = threading.Event()
         cancel_event.set()
@@ -311,6 +334,26 @@ class AssetCardJobApiTests(unittest.TestCase):
 
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def test_job_slot_conflict_is_silent_and_returns_none(self):
+        result = MagicMock()
+        result.fetchone.return_value = None
+        connection = MagicMock()
+        connection.execute.return_value = result
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            job = db.create_asset_card_build_job(
+                "job-1",
+                trace_id="trace-1",
+                asset_id="asset-1",
+                operation="create",
+                request={"asset_id": "asset-1"},
+            )
+
+        self.assertIsNone(job)
+        self.assertIn("ON CONFLICT DO NOTHING", connection.execute.call_args.args[0])
+
     def test_passport_link_reconciliation_uses_two_set_based_statements(self):
         connection = MagicMock()
         connection.execute.side_effect = [

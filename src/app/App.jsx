@@ -31,11 +31,13 @@ function ActivePage({ routeId, ...props }) {
   if (routeId === "connection") {
     return (
       <ConnectionPage
+        connectionDraft={props.connectionDraft}
         defaults={props.defaults}
         session={props.session}
         setSession={props.setSession}
         lookups={props.lookups}
         setLookups={props.setLookups}
+        setConnectionDraft={props.setConnectionDraft}
         busy={props.busy}
         runBusy={props.runBusy}
         showAlert={props.showAlert}
