@@ -273,6 +273,42 @@ class AssetCardJobApiTests(unittest.TestCase):
         save.assert_not_called()
         self.assertEqual(finish.call_args.kwargs["status"], "cancelled")
 
+    def test_stage_progress_is_monotonic_and_completion_reaches_one_hundred(self):
+        cancel_event = threading.Event()
+        progress_values = []
+
+        def build_fixture(*, stage_callback, **_kwargs):
+            for stage in ("timeline", "root", "tree_and_vulnerabilities", "tree_ready", "assembling"):
+                stage_callback(stage)
+            return {
+                "asset_id": "asset-1",
+                "stats": {"nodes": 1, "collections": 2, "warnings": []},
+                "vulnerabilities": {"stats": {"findings": 3}},
+            }
+
+        def record_progress(_job_id, **kwargs):
+            progress_values.append(kwargs["progress_percent"])
+            return kwargs
+
+        with (
+            patch.object(main.db, "start_asset_card_build_job", return_value={"status": "running"}),
+            patch.object(main.db, "update_asset_card_build_job", side_effect=record_progress),
+            patch.object(main.db, "upsert_asset_card", return_value={"asset_id": "asset-1"}),
+            patch.object(main.db, "finish_asset_card_build_job") as finish,
+            patch.object(main, "build_asset_card", side_effect=build_fixture),
+        ):
+            main.run_asset_card_build_job(
+                job_id="job-progress",
+                auth=SimpleNamespace(api_url="https://fixture"),
+                token="token",
+                request={"asset_id": "asset-1"},
+                cancel_event=cancel_event,
+            )
+
+        self.assertEqual(progress_values, sorted(progress_values))
+        self.assertEqual(progress_values[-1], 100)
+        self.assertEqual(finish.call_args.kwargs["status"], "completed")
+
 
 class AssetCardDatabaseTests(unittest.TestCase):
     def test_passport_link_reconciliation_uses_two_set_based_statements(self):
@@ -303,6 +339,68 @@ class AssetCardDatabaseTests(unittest.TestCase):
         sql = connection.execute.call_args.args[0]
         self.assertIn("status = 'interrupted'", sql)
         self.assertIn("'queued', 'running', 'cancelling'", sql)
+
+    def test_asset_findings_serialize_zero_one_and_multiple_passports(self):
+        passport_sets = [
+            [],
+            [{"internal_id": "passport-1", "name": "One", "match_method": "cve"}],
+            [
+                {"internal_id": "passport-1", "name": "One", "match_method": "cve"},
+                {"internal_id": "passport-2", "name": "Two", "match_method": "vulner_id"},
+            ],
+        ]
+        for passports in passport_sets:
+            with self.subTest(passport_count=len(passports)):
+                stored_result = MagicMock()
+                stored_result.fetchone.return_value = {
+                    "vulnerabilities_json": '{"sources":[{"source":"os","groups":[]}]}'
+                }
+                groups_result = MagicMock()
+                groups_result.fetchall.return_value = [{
+                    "id": 7,
+                    "source_type": "os",
+                    "collection_type": "HostOSVulnerabilities",
+                    "collection_id": "group-1",
+                    "name": "OS",
+                    "severity": "high",
+                    "vulnerability_count": 1,
+                    "cvss_score": 8.1,
+                    "group_order": 0,
+                    "truncated": False,
+                    "group_json": "{}",
+                }]
+                findings_result = MagicMock()
+                findings_result.fetchall.return_value = [{
+                    "vulnerability_json": "{}",
+                    "severity": "high",
+                    "name": "Finding",
+                    "cve_name": "CVE-2026-0001",
+                    "description_key": None,
+                    "cvss_score": 8.1,
+                    "object_id": "object-1",
+                    "vulnerability_id": "vulnerability-1",
+                    "vulnerability_instance_id": "instance-1",
+                    "passport_ids": [item["internal_id"] for item in passports],
+                    "passports": passports,
+                }]
+                connection = MagicMock()
+                connection.execute.side_effect = [stored_result, groups_result, findings_result]
+
+                result = db.load_asset_card_vulnerabilities(connection, "asset-1")
+                finding = result["sources"][0]["groups"][0]["items"][0]
+
+                self.assertEqual(finding["passports"], passports)
+                self.assertEqual(finding["passport_ids"], [item["internal_id"] for item in passports])
+
+    def test_progress_decoder_clamps_database_values(self):
+        base = {
+            "job_id": "job-1",
+            "asset_id": "asset-1",
+            "status": "running",
+            "stage": "saving",
+        }
+        self.assertEqual(db.decode_asset_card_build_job({**base, "progress_percent": -5})["progress_percent"], 0)
+        self.assertEqual(db.decode_asset_card_build_job({**base, "progress_percent": 120})["progress_percent"], 100)
 
 
 if __name__ == "__main__":

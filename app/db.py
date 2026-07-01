@@ -184,6 +184,7 @@ def _initialize_schema() -> None:
             operation TEXT NOT NULL,
             status TEXT NOT NULL,
             stage TEXT NOT NULL DEFAULT 'queued',
+            progress_percent INTEGER NOT NULL DEFAULT 0,
             request_json TEXT NOT NULL DEFAULT '{}',
             stats_json TEXT NOT NULL DEFAULT '{}',
             discovered_requests INTEGER NOT NULL DEFAULT 0,
@@ -296,6 +297,7 @@ def _initialize_schema() -> None:
         )
         """,
         "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS vulnerabilities_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0",
         """
         CREATE TABLE IF NOT EXISTS asset_card_vulnerability_groups (
             id BIGSERIAL PRIMARY KEY,
@@ -1383,6 +1385,7 @@ def start_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
             UPDATE asset_card_build_jobs
             SET status = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'running' END,
                 stage = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'starting' END,
+                progress_percent = GREATEST(progress_percent, 5),
                 started_at = COALESCE(started_at, %s), updated_at = %s
             WHERE job_id = %s AND status = 'queued'
             RETURNING *
@@ -1396,6 +1399,7 @@ def update_asset_card_build_job(
     job_id: str,
     *,
     stage: str,
+    progress_percent: int,
     discovered_requests: int,
     completed_requests: int,
     node_count: int = 0,
@@ -1410,7 +1414,9 @@ def update_asset_card_build_job(
         row = conn.execute(
             """
             UPDATE asset_card_build_jobs
-            SET stage = %s, discovered_requests = %s, completed_requests = %s,
+            SET stage = %s,
+                progress_percent = GREATEST(progress_percent, LEAST(100, GREATEST(0, %s))),
+                discovered_requests = %s, completed_requests = %s,
                 node_count = %s, collection_count = %s, finding_count = %s,
                 warning_count = %s, stats_json = %s, updated_at = %s
             WHERE job_id = %s
@@ -1418,6 +1424,7 @@ def update_asset_card_build_job(
             """,
             (
                 stage,
+                progress_percent,
                 discovered_requests,
                 completed_requests,
                 node_count,
@@ -1463,6 +1470,7 @@ def finish_asset_card_build_job(
             """
             UPDATE asset_card_build_jobs
             SET status = %s, stage = %s, message = %s,
+                progress_percent = CASE WHEN %s = 'completed' THEN 100 ELSE progress_percent END,
                 stats_json = CASE WHEN %s::text IS NULL THEN stats_json ELSE %s END,
                 finished_at = %s, updated_at = %s
             WHERE job_id = %s
@@ -1472,6 +1480,7 @@ def finish_asset_card_build_job(
                 status,
                 stage,
                 message,
+                status,
                 None if stats is None else "present",
                 json.dumps(stats or {}, ensure_ascii=False),
                 current,
@@ -1927,10 +1936,26 @@ def load_asset_card_vulnerabilities(
                     array_agg(link.passport_internal_id ORDER BY link.passport_internal_id)
                     FILTER (WHERE link.passport_internal_id IS NOT NULL),
                     ARRAY[]::TEXT[]
-                ) AS passport_ids
+                ) AS passport_ids,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'internal_id', passports.internal_id,
+                            'external_id', passports.external_id,
+                            'name', passports.name,
+                            'severity', passports.severity,
+                            'has_detail', passports.raw_detail_json IS NOT NULL,
+                            'match_method', link.match_method
+                        )
+                        ORDER BY COALESCE(passports.name, passports.external_id, passports.internal_id), passports.internal_id
+                    ) FILTER (WHERE passports.internal_id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS passports
             FROM asset_card_vulnerabilities AS vulnerability
             LEFT JOIN asset_card_vulnerability_passports AS link
                 ON link.asset_vulnerability_id = vulnerability.id
+            LEFT JOIN vulnerability_passports AS passports
+                ON passports.internal_id = link.passport_internal_id
             WHERE vulnerability.group_id = %s
             GROUP BY vulnerability.id
             ORDER BY vulnerability.cve_name NULLS LAST, vulnerability.name NULLS LAST, vulnerability.id
@@ -1941,6 +1966,7 @@ def load_asset_card_vulnerabilities(
             finding = json_loads(finding_row.get("vulnerability_json"), {})
             if not isinstance(finding, dict):
                 finding = {}
+            passports = json_loads(finding_row.get("passports"), [])
             finding.update({
                 "level": finding_row.get("severity"),
                 "name": finding_row.get("name"),
@@ -1951,6 +1977,7 @@ def load_asset_card_vulnerabilities(
                 "vulnerability_id": finding_row.get("vulnerability_id"),
                 "vulnerability_instance_id": finding_row.get("vulnerability_instance_id"),
                 "passport_ids": finding_row.get("passport_ids") or [],
+                "passports": passports if isinstance(passports, list) else [],
             })
             group["items"].append(finding)
         source["groups"].append(group)
@@ -2268,6 +2295,7 @@ def decode_asset_card_build_job(row: dict[str, Any]) -> dict[str, Any]:
         "operation": row.get("operation"),
         "status": row.get("status"),
         "stage": row.get("stage"),
+        "progress_percent": max(0, min(100, int(row.get("progress_percent") or 0))),
         "request": request if isinstance(request, dict) else {},
         "stats": stats if isinstance(stats, dict) else {},
         "discovered_requests": int(row.get("discovered_requests") or 0),

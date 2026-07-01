@@ -589,6 +589,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetWindowOpen, setAssetWindowOpen] = useState(false);
   const [selectedPassport, setSelectedPassport] = useState(null);
   const [assetPassportDetail, setAssetPassportDetail] = useState(null);
+  const [assetPassportError, setAssetPassportError] = useState("");
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
   const [assetCardJob, setAssetCardJob] = useState(null);
 
@@ -793,21 +794,27 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     });
   };
 
-  const openAssetPassport = (passportId) =>
+  const openAssetPassport = (passport) =>
     runBusy("assetCardPassportDetail", async () => {
+      const passportSummary = typeof passport === "string" ? { internal_id: passport } : passport || {};
+      const passportId = passportSummary.internal_id;
       if (!passportId) throw new Error("Для этой уязвимости ещё не найден локальный паспорт.");
-      setSelectedPassport({ internal_id: passportId });
+      setSelectedPassport(passportSummary);
       setAssetPassportDetail(null);
+      setAssetPassportError("");
       setAssetPassportWindowOpen(true);
-      const result = await api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`);
-      const nextPassport = result.passport || { internal_id: passportId, raw_detail: result.raw || null, has_detail: Boolean(result.raw) };
-      setSelectedPassport(nextPassport);
-      setAssetPassportDetail(result.raw || nextPassport.raw_detail || {});
+      try {
+        const result = await api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`);
+        const nextPassport = result.passport || { ...passportSummary, internal_id: passportId, raw_detail: result.raw || null, has_detail: Boolean(result.raw) };
+        setSelectedPassport(nextPassport);
+        setAssetPassportDetail(result.raw || nextPassport.raw_detail || {});
+      } catch (error) {
+        setAssetPassportError(error.message || String(error));
+        throw error;
+      }
     });
 
-  const assetCardJobProgress = assetCardJob?.discovered_requests
-    ? Math.min(100, Math.round((assetCardJob.completed_requests / assetCardJob.discovered_requests) * 100))
-    : 0;
+  const assetCardJobProgress = Math.max(0, Math.min(100, Number(assetCardJob?.progress_percent) || 0));
   const assetCardJobActive = ACTIVE_ASSET_CARD_JOB_STATUSES.has(assetCardJob?.status);
 
   return (
@@ -869,14 +876,14 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
 
       {assetCardJob ? (
-        <section className={`passport-job asset-card-job passport-job--${assetCardJob.status}`} aria-live="polite">
+        <section className={`passport-job asset-card-job passport-job--${assetCardJob.status}${assetCardJobActive ? " asset-card-job--active" : ""}`} aria-live="polite">
           <div className="passport-job__header">
             <div>
               <strong>
                 Сборка карточки {assetCardJob.asset_id}: {assetCardJobStatusLabel(assetCardJob.status)}
               </strong>
               <span>
-                Этап: {assetCardJobStageLabel(assetCardJob.stage)} · запросов {formatCount(assetCardJob.completed_requests)} / {formatCount(assetCardJob.discovered_requests)} ·
+                Этап: {assetCardJobStageLabel(assetCardJob.stage)} · {formatCount(assetCardJobProgress)}% · запросов {formatCount(assetCardJob.completed_requests)} / {formatCount(assetCardJob.discovered_requests)} ·
                 узлов {formatCount(assetCardJob.node_count)} · коллекций {formatCount(assetCardJob.collection_count)} ·
                 уязвимостей {formatCount(assetCardJob.finding_count)} · предупреждений {formatCount(assetCardJob.warning_count)}
               </span>
@@ -885,7 +892,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               <Button variant="tiny-danger" busy={busy.assetCardJobCancel} onClick={cancelAssetCardJob}>Остановить</Button>
             ) : null}
           </div>
-          <div className="passport-job__track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={assetCardJobProgress}>
+          <div className="passport-job__track" role="progressbar" aria-label="Прогресс сборки карточки" aria-valuemin="0" aria-valuemax="100" aria-valuenow={assetCardJobProgress} aria-valuetext={`${assetCardJobProgress}% — ${assetCardJobStageLabel(assetCardJob.stage)}`}>
             <span style={{ width: `${assetCardJobProgress}%` }} />
           </div>
           {assetCardJob.message ? <small>{assetCardJob.message}</small> : null}
@@ -1009,6 +1016,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           closeLabel="Назад к активу"
           onClose={() => setAssetPassportWindowOpen(false)}
         >
+          {assetPassportError ? <div className="passport-load-error" role="alert">Не удалось загрузить паспорт: {assetPassportError}</div> : null}
           <PassportCard
             row={selectedPassport}
             detail={assetPassportDetail}
@@ -1535,6 +1543,22 @@ function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, st
   );
 }
 
+function assetFindingPassports(finding) {
+  const byId = new Map();
+  const summaries = Array.isArray(finding?.passports) ? finding.passports : [];
+  summaries.forEach((passport) => {
+    if (passport?.internal_id) byId.set(passport.internal_id, passport);
+  });
+  (finding?.passport_ids || []).forEach((passportId) => {
+    if (passportId && !byId.has(passportId)) byId.set(passportId, { internal_id: passportId });
+  });
+  return Array.from(byId.values());
+}
+
+function assetPassportLabel(passport) {
+  return firstFilled(passport?.name, passport?.external_id, passport?.internal_id, "Паспорт");
+}
+
 function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
   const snapshot = assetCardVulnerabilities(card);
   const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
@@ -1667,7 +1691,8 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                   );
                   if (groupCollapsed) return [groupRow];
                   return [groupRow, ...(group.items || []).map((finding, findingIndex) => {
-                    const passportId = finding.passport_ids?.[0];
+                    const passports = assetFindingPassports(finding);
+                    const passport = passports[0];
                     return (
                       <tr className="asset-vulnerability-finding" key={finding.vulnerability_instance_id || `${group.collection_id}-${findingIndex}`}>
                         <td>
@@ -1676,15 +1701,31 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                         </td>
                         <td>{formatVulnerabilityScore(finding.cvss_score)}</td>
                         <td>
-                          {passportId ? (
+                          {passports.length === 1 ? (
                             <button
                               type="button"
                               className="asset-vulnerability-passport-link"
-                              onClick={() => onOpenPassport?.(passportId)}
-                              title={`Открыть паспорт ${passportId}`}
+                              onClick={() => onOpenPassport?.(passport)}
+                              title={`Открыть паспорт ${assetPassportLabel(passport)}`}
                             >
                               {finding.cve_name || "Открыть паспорт"}
                             </button>
+                          ) : passports.length > 1 ? (
+                            <details className="asset-vulnerability-passport-picker">
+                              <summary>Паспорта: {formatCount(passports.length)}</summary>
+                              <div className="asset-vulnerability-passport-options">
+                                {passports.map((item) => (
+                                  <button
+                                    type="button"
+                                    key={item.internal_id}
+                                    onClick={() => onOpenPassport?.(item)}
+                                  >
+                                    <strong>{assetPassportLabel(item)}</strong>
+                                    <span>{[item.severity, item.external_id, item.internal_id].filter(Boolean).join(" · ")}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </details>
                           ) : (
                             finding.cve_name || "—"
                           )}
@@ -2511,9 +2552,12 @@ function assetCardJobStageLabel(stage) {
   return {
     queued: "ожидание",
     starting: "подготовка",
-    root: "timeline и root",
     collecting: "сбор данных",
+    timeline: "timeline token",
+    root: "корневой объект",
     tree_and_vulnerabilities: "дерево и уязвимости",
+    tree_ready: "дерево собрано, загружаются уязвимости",
+    vulnerabilities_ready: "уязвимости собраны, загружается дерево",
     assembling: "сборка результата",
     saving: "сохранение",
     cancelling: "остановка",

@@ -887,6 +887,23 @@ td code {
   transition: width 180ms ease;
 }
 
+.asset-card-job--active .passport-job__track span {
+  background: linear-gradient(90deg, #1f79c7 0%, #26a2a6 42%, #96e4de 50%, #26a2a6 58%, #1f79c7 100%);
+  background-size: 200% 100%;
+  animation: asset-card-progress-flow 1.25s linear infinite;
+}
+
+@keyframes asset-card-progress-flow {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .asset-card-job--active .passport-job__track span {
+    animation: none;
+  }
+}
+
 .passport-job--completed,
 .passport-job--completed_with_errors {
   border-color: #b8ddcf;
@@ -1566,6 +1583,65 @@ td code {
 .asset-vulnerability-passport-link:hover {
   color: #0f5f86;
   text-decoration: underline;
+}
+
+.asset-vulnerability-passport-picker {
+  position: relative;
+  min-width: 130px;
+}
+
+.asset-vulnerability-passport-picker summary {
+  color: #287aa3;
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.asset-vulnerability-passport-options {
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #cbd9e8;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(26, 56, 82, 0.14);
+}
+
+.asset-vulnerability-passport-options button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+  background: #f4f8fc;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.asset-vulnerability-passport-options button:hover,
+.asset-vulnerability-passport-options button:focus-visible {
+  background: #e8f2fb;
+  outline: none;
+}
+
+.asset-vulnerability-passport-options span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.passport-load-error {
+  margin: 0 18px 14px;
+  padding: 12px 14px;
+  border: 1px solid #e8c7c7;
+  border-radius: 12px;
+  color: #8f2f2f;
+  background: #fff6f5;
+  font-weight: 700;
 }
 
 .asset-summary-side {

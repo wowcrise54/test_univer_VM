@@ -66,6 +66,19 @@ PASSPORT_DETAIL_WORKERS = min(
 PASSPORT_DETAIL_TTL_HOURS = env_int("MPVM_PASSPORT_DETAIL_TTL_HOURS", 24, minimum=0, maximum=8760)
 PASSPORT_DETAIL_DB_BATCH_SIZE = 100
 ASSET_METADATA_TTL_SECONDS = env_int("MPVM_ASSET_METADATA_TTL_SECONDS", 3600, minimum=0, maximum=86400)
+ASSET_CARD_STAGE_PROGRESS = {
+    "queued": 0,
+    "starting": 5,
+    "collecting": 5,
+    "timeline": 10,
+    "root": 15,
+    "tree_and_vulnerabilities": 25,
+    "tree_ready": 60,
+    "vulnerabilities_ready": 60,
+    "assembling": 85,
+    "saving": 95,
+    "completed": 100,
+}
 
 
 @dataclass
@@ -797,6 +810,7 @@ def run_asset_card_build_job(
 ) -> None:
     executor: AssetCardRequestExecutor | None = None
     stage = "starting"
+    progress_percent = ASSET_CARD_STAGE_PROGRESS[stage]
     progress_lock = threading.Lock()
     last_progress_write = 0.0
 
@@ -816,6 +830,7 @@ def run_asset_card_build_job(
             db.update_asset_card_build_job(
                 job_id,
                 stage=stage,
+                progress_percent=progress_percent,
                 discovered_requests=discovered,
                 completed_requests=completed,
                 node_count=int(card_stats.get("nodes") or 0),
@@ -826,8 +841,9 @@ def run_asset_card_build_job(
             )
 
     def set_stage(value: str, *, card: dict[str, Any] | None = None) -> None:
-        nonlocal stage
+        nonlocal stage, progress_percent
         stage = value
+        progress_percent = max(progress_percent, ASSET_CARD_STAGE_PROGRESS.get(value, progress_percent))
         discovered = executor.discovered if executor else 0
         completed = executor.completed if executor else 0
         write_progress(discovered, completed, force=True, card=card)
@@ -1747,8 +1763,10 @@ def build_asset_card(
     api_url = request_executor.auth.api_url if request_executor else client.auth.api_url if client else ""
 
     if stage_callback:
-        stage_callback("root")
+        stage_callback("timeline")
     timeline_token = remote_call(lambda remote: remote.create_asset_timeline_token(token, asset_id, timestamp))
+    if stage_callback:
+        stage_callback("root")
     root = remote_call(lambda remote: remote.get_asset_tree_root(token, timeline_token))
     root_asset_id = str(first_present(root.get("objectId"), asset_id))
 
@@ -2244,8 +2262,17 @@ def build_asset_card(
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-card-coordinator") as coordinators:
             tree_future = coordinators.submit(traverse_node, root, "asset", 0)
             vulnerability_future = coordinators.submit(build_asset_vulnerability_snapshot, **vulnerability_args)
-            tree_future.result()
-            vulnerabilities = vulnerability_future.result()
+            first_done, _ = wait((tree_future, vulnerability_future), return_when=FIRST_COMPLETED)
+            if vulnerability_future in first_done and tree_future not in first_done:
+                vulnerabilities = vulnerability_future.result()
+                if stage_callback:
+                    stage_callback("vulnerabilities_ready")
+                tree_future.result()
+            else:
+                tree_future.result()
+                if stage_callback:
+                    stage_callback("tree_ready")
+                vulnerabilities = vulnerability_future.result()
     else:
         traverse_node(root, "asset", 0)
         vulnerabilities = build_asset_vulnerability_snapshot(**vulnerability_args)

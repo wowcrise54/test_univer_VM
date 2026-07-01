@@ -113,8 +113,10 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `DELETE /api/asset-cards/{assetId}` - удалить карточку актива из локальной PostgreSQL.
 - `POST /api/asset-cards/build-jobs` - запустить фоновую сборку полной карточки актива.
 - `GET /api/asset-cards/build-jobs/active` - получить активную сборку карточки.
-- `GET /api/asset-cards/build-jobs/{jobId}` - получить этап и прогресс сборки.
+- `GET /api/asset-cards/build-jobs/{jobId}` - получить этап, монотонный `progress_percent` и счётчики сборки.
 - `POST /api/asset-cards/build-jobs/{jobId}/cancel` - остановить сборку без сохранения частичного результата.
+
+Уязвимости в сохранённой карточке содержат `passport_ids` для совместимости и компактный массив `passports` для прямого открытия одного паспорта или выбора из нескольких.
 
 ## Payload создания задачи
 
