@@ -287,9 +287,17 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             "runMode": "default",
             "targets": ["10.0.0.1"],
         }
+        host_discovery_job = {
+            "id": "job-host-discovery",
+            "status": "assigned",
+            "errorStatus": "success",
+            "runMode": "default",
+            "profile": {"name": "HostDiscovery"},
+            "targets": ["10.0.0.2"],
+        }
         client = MagicMock()
         client.get_task_runs.side_effect = [[running], [finished]]
-        client.split_successful_run_jobs.return_value = ([job], [job])
+        client.split_successful_run_jobs.return_value = ([job, host_discovery_job], [job])
         item = {
             "id": 1,
             "postprocess_run_id": "post-1",
@@ -297,36 +305,38 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             "asset_id": "asset-1",
             "status": "queued",
         }
-        with (
-            patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
-            patch.object(main.db, "upsert_scan_postprocess_item", return_value=item),
-            patch.object(main.db, "update_scan_postprocess_run") as update_run,
-            patch.object(main, "resolve_scanned_target_once", return_value=([{
-                "asset_id": "asset-1",
-                "target": "10.0.0.1",
-                "mp_job_id": "job-1",
-                "display_name": "Host 1",
-            }], "")),
-            patch.object(main, "process_scanned_asset_item") as process_item,
-            patch.object(main.db, "refresh_scan_postprocess_counts"),
-            patch.object(main.time, "sleep"),
-        ):
-            result = main.monitor_successful_scan_jobs(
-                client=client,
-                auth=SimpleNamespace(),
-                token="token",
-                task_id="task-1",
-                started_from="2026-01-01T00:00:00+00:00",
-                timeout_seconds=60,
-                poll_seconds=1,
-                postprocess_run_id="post-1",
-                require_clean_jobs=False,
-            )
+        with self.assertLogs("uvicorn.error", level="INFO") as captured_logs:
+            with (
+                patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+                patch.object(main.db, "upsert_scan_postprocess_item", return_value=item),
+                patch.object(main.db, "update_scan_postprocess_run") as update_run,
+                patch.object(main, "resolve_scanned_target_once", return_value=([{
+                    "asset_id": "asset-1",
+                    "target": "10.0.0.1",
+                    "mp_job_id": "job-1",
+                    "display_name": "Host 1",
+                }], "")),
+                patch.object(main, "process_scanned_asset_item") as process_item,
+                patch.object(main.db, "refresh_scan_postprocess_counts"),
+                patch.object(main.time, "sleep"),
+            ):
+                result = main.monitor_successful_scan_jobs(
+                    client=client,
+                    auth=SimpleNamespace(),
+                    token="token",
+                    task_id="task-1",
+                    started_from="2026-01-01T00:00:00+00:00",
+                    timeout_seconds=60,
+                    poll_seconds=1,
+                    postprocess_run_id="post-1",
+                    require_clean_jobs=False,
+                )
 
         self.assertEqual(result["successful_job_count"], 1)
         process_item.assert_called_once()
         first_update = update_run.call_args_list[0].kwargs
         self.assertEqual(first_update["successful_job_count"], 1)
+        self.assertIn("ignored_host_discovery_profile", "\n".join(captured_logs.output))
 
 
 if __name__ == "__main__":

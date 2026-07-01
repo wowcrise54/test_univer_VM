@@ -4,6 +4,7 @@ import os
 import copy
 import ipaddress
 import json
+import logging
 import re
 import threading
 import time
@@ -42,6 +43,8 @@ from .mpvm_client import (
     extract_asset_ids_from_csv,
     extract_uuid,
     extract_ips_from_csv,
+    has_success_status,
+    is_host_discovery_profile,
     is_finished,
     normalize_url,
 )
@@ -51,6 +54,12 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 EXPORTS_DIR = Path(os.getenv("MPVM_EXPORTS_DIR", "exports"))
 SAMPLE_CSV = Path("host_software_vulnerabilities_10.104.103.0_24.csv")
+SCAN_LOG = logging.getLogger("uvicorn.error")
+
+
+def scan_log(level: int, event: str, **fields: Any) -> None:
+    payload = {"event": event, **{key: value for key, value in fields.items() if value is not None}}
+    SCAN_LOG.log(level, "[scan-postprocess] %s", json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -1552,6 +1561,7 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
     with SCAN_POSTPROCESS_FUTURES_LOCK:
         current = SCAN_POSTPROCESS_FUTURES.get(run_id)
         if current and not current.done():
+            scan_log(logging.DEBUG, "schedule_skipped_already_running", postprocess_run_id=run_id)
             return
         future = SCAN_POSTPROCESS_EXECUTOR.submit(
             run_scan_postprocess,
@@ -1560,6 +1570,7 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
             token=token,
         )
         SCAN_POSTPROCESS_FUTURES[run_id] = future
+        scan_log(logging.INFO, "scheduled", postprocess_run_id=run_id, api_url=auth.api_url)
 
     def forget(_future: Future[Any]) -> None:
         with SCAN_POSTPROCESS_FUTURES_LOCK:
@@ -1571,11 +1582,14 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
 
 def resume_scan_postprocess_runs() -> None:
     if not SESSION.client or not SESSION.access_token:
+        scan_log(logging.DEBUG, "resume_skipped_no_session")
         return
     try:
         runs = db.list_resumable_scan_postprocess_runs()
     except psycopg.Error:
+        SCAN_LOG.exception("[scan-postprocess] failed to list resumable runs")
         return
+    scan_log(logging.INFO, "resume_scan", resumable_count=len(runs))
     for run in runs:
         schedule_scan_postprocess(str(run["run_id"]), SESSION.client.auth, SESSION.access_token)
 
@@ -1584,6 +1598,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
     worker_id = str(uuid.uuid4())
     claimed = db.claim_scan_postprocess_run(run_id, worker_id)
     if not claimed:
+        scan_log(logging.INFO, "claim_skipped", postprocess_run_id=run_id, worker_id=worker_id)
         return
     client = MpVmClient(auth)
     task_id = str(claimed["mp_task_id"])
@@ -1592,6 +1607,17 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
     timeout_seconds = max(1.0, float(options.get("task_timeout_minutes") or 120) * 60)
     poll_seconds = max(1.0, float(options.get("task_poll_seconds") or 15))
     require_clean_jobs = bool(options.get("require_clean_jobs"))
+    scan_log(
+        logging.INFO,
+        "run_started",
+        postprocess_run_id=run_id,
+        task_id=task_id,
+        worker_id=worker_id,
+        started_from=started_from,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        require_clean_jobs=require_clean_jobs,
+    )
     try:
         monitoring = monitor_successful_scan_jobs(
             client=client,
@@ -1605,6 +1631,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             require_clean_jobs=require_clean_jobs,
         )
         if not monitoring["successful_job_count"]:
+            scan_log(
+                logging.ERROR,
+                "no_successful_jobs",
+                postprocess_run_id=run_id,
+                task_id=task_id,
+                total_job_count=monitoring["total_job_count"],
+            )
             db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "reason": "no successful targets"})
             db.finish_scan_postprocess_run(
                 run_id,
@@ -1620,6 +1653,15 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         final_status = "failed" if failed_count and not completed_count else "completed_with_errors" if failed_count else "completed"
         message = f"Completed {completed_count} asset(s); failures: {failed_count}."
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
+        scan_log(
+            logging.INFO if final_status == "completed" else logging.ERROR,
+            "run_finished",
+            postprocess_run_id=run_id,
+            task_id=task_id,
+            status=final_status,
+            completed_count=completed_count,
+            failed_count=failed_count,
+        )
         db.update_scan_task_status(
             task_id,
             "postprocess_failed" if final_status == "failed" else "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
@@ -1627,6 +1669,11 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         )
     except Exception as exc:
         error = str(exc)[:4000]
+        SCAN_LOG.exception(
+            "[scan-postprocess] unhandled failure postprocess_run_id=%s task_id=%s",
+            run_id,
+            task_id,
+        )
         db.finish_scan_postprocess_run(run_id, status="failed", stage="failed", message="Scan post-processing failed.", error=error)
         db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
     finally:
@@ -1660,6 +1707,10 @@ def monitor_successful_scan_jobs(
         if item.get("asset_id")
     }
     futures: list[Future[Any]] = []
+    last_job_states: dict[str, str] = {}
+    last_summary: tuple[int, int, int] | None = None
+    logged_mp_run_id: str | None = None
+    logged_waiting_for_run = False
 
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan-asset-process") as asset_executor:
         for item in existing_items:
@@ -1678,33 +1729,147 @@ def monitor_successful_scan_jobs(
                         postprocess_run_id=postprocess_run_id,
                     )
                 )
+                scan_log(
+                    logging.INFO,
+                    "item_resumed",
+                    postprocess_run_id=postprocess_run_id,
+                    item_id=item.get("id"),
+                    job_id=item.get("mp_job_id"),
+                    target=item.get("target"),
+                    asset_id=item.get("asset_id"),
+                    status=item.get("status"),
+                )
 
         while True:
             runs = client.get_task_runs(token, task_id, time_from=started_from)
+            if not runs and not logged_waiting_for_run:
+                logged_waiting_for_run = True
+                scan_log(
+                    logging.INFO,
+                    "waiting_for_mp_run",
+                    postprocess_run_id=postprocess_run_id,
+                    task_id=task_id,
+                    started_from=started_from,
+                )
             if runs:
                 latest_run = runs[0]
                 mp_run_id = str(latest_run.get("id") or "")
                 if mp_run_id:
+                    if logged_mp_run_id != mp_run_id:
+                        logged_mp_run_id = mp_run_id
+                        scan_log(
+                            logging.INFO,
+                            "mp_run_found",
+                            postprocess_run_id=postprocess_run_id,
+                            task_id=task_id,
+                            mp_run_id=mp_run_id,
+                            run_status=latest_run.get("status"),
+                            run_error_status=latest_run.get("errorStatus"),
+                            run_started_at=latest_run.get("startedAt"),
+                        )
                     latest_jobs, successful_jobs = client.split_successful_run_jobs(
                         token,
                         mp_run_id,
                         require_clean_jobs=require_clean_jobs,
                     )
+                    successful_ids = {str(job.get("id") or "") for job in successful_jobs}
+                    for job in latest_jobs:
+                        job_id = str(job.get("id") or "")
+                        profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+                        profile_name = profile.get("name") if isinstance(profile, dict) else None
+                        state = json.dumps(
+                            {
+                                "status": job.get("status"),
+                                "errorStatus": job.get("errorStatus"),
+                                "runMode": job.get("runMode"),
+                                "profile": profile_name,
+                                "targets": job.get("targets"),
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                        if last_job_states.get(job_id) == state:
+                            continue
+                        last_job_states[job_id] = state
+                        run_mode = re.sub(r"[^a-z0-9]+", "", str(job.get("runMode") or "").casefold())
+                        if "connectioncheck" in run_mode:
+                            decision = "ignored_connection_check"
+                        elif is_host_discovery_profile(job.get("profile")):
+                            decision = "ignored_host_discovery_profile"
+                        elif job_id in successful_ids:
+                            decision = "ready_for_asset_processing"
+                        elif job.get("errorStatus") is None:
+                            decision = "waiting_error_status"
+                        elif not has_success_status(job.get("errorStatus")):
+                            decision = "ignored_non_success_error_status"
+                        else:
+                            decision = "ignored_require_clean_jobs"
+                        scan_log(
+                            logging.INFO,
+                            "job_state_changed",
+                            postprocess_run_id=postprocess_run_id,
+                            task_id=task_id,
+                            mp_run_id=mp_run_id,
+                            job_id=job_id,
+                            decision=decision,
+                            status=job.get("status"),
+                            error_status=job.get("errorStatus"),
+                            run_mode=job.get("runMode"),
+                            profile_name=profile_name,
+                            targets=job.get("targets"),
+                        )
+                    summary_key = (len(latest_jobs), len(successful_jobs), len(seen_asset_ids))
+                    if summary_key != last_summary:
+                        last_summary = summary_key
+                        scan_log(
+                            logging.INFO,
+                            "jobs_summary",
+                            postprocess_run_id=postprocess_run_id,
+                            task_id=task_id,
+                            mp_run_id=mp_run_id,
+                            total_job_count=len(latest_jobs),
+                            successful_job_count=len(successful_jobs),
+                            resolved_asset_count=len(seen_asset_ids),
+                        )
                     for target, job_id in successful_scan_target_jobs(successful_jobs).items():
                         if (str(job_id or ""), target) not in resolved_job_targets:
                             pending_targets[target] = job_id
 
                     run_started_at = str(latest_run.get("startedAt") or started_from)
                     for target, job_id in list(pending_targets.items()):
-                        assets, error = resolve_scanned_target_once(
-                            client=client,
-                            token=token,
-                            target=target,
-                            mp_job_id=job_id,
-                            run_started_at=run_started_at,
-                        )
+                        try:
+                            assets, error = resolve_scanned_target_once(
+                                client=client,
+                                token=token,
+                                target=target,
+                                mp_job_id=job_id,
+                                run_started_at=run_started_at,
+                            )
+                        except (MpVmApiError, requests.RequestException, ValueError) as exc:
+                            error = f"{type(exc).__name__}: {exc}"
+                            target_errors[target] = error
+                            SCAN_LOG.exception(
+                                "[scan-postprocess] asset resolution request failed postprocess_run_id=%s task_id=%s mp_run_id=%s job_id=%s target=%s",
+                                postprocess_run_id,
+                                task_id,
+                                mp_run_id,
+                                job_id,
+                                target,
+                            )
+                            continue
                         if not assets:
                             target_errors[target] = error
+                            scan_log(
+                                logging.WARNING,
+                                "asset_not_resolved_yet",
+                                postprocess_run_id=postprocess_run_id,
+                                task_id=task_id,
+                                mp_run_id=mp_run_id,
+                                job_id=job_id,
+                                target=target,
+                                error=error,
+                            )
                             continue
                         for asset in assets:
                             asset_id = str(asset["asset_id"])
@@ -1720,6 +1885,17 @@ def monitor_successful_scan_jobs(
                                 display_name=asset.get("display_name"),
                                 status="queued",
                                 stage="queued",
+                            )
+                            scan_log(
+                                logging.INFO,
+                                "asset_queued",
+                                postprocess_run_id=postprocess_run_id,
+                                task_id=task_id,
+                                mp_run_id=mp_run_id,
+                                job_id=job_id,
+                                target=target,
+                                asset_id=asset_id,
+                                item_id=item.get("id"),
                             )
                             futures.append(
                                 asset_executor.submit(
@@ -1756,9 +1932,25 @@ def monitor_successful_scan_jobs(
             scan_timed_out = now >= scan_deadline
             resolution_finished = resolution_deadline is not None and (not pending_targets or now >= resolution_deadline)
             if resolution_finished or (scan_timed_out and latest_run is None):
+                scan_log(
+                    logging.INFO,
+                    "monitoring_loop_finished",
+                    postprocess_run_id=postprocess_run_id,
+                    task_id=task_id,
+                    scan_timed_out=scan_timed_out,
+                    pending_target_count=len(pending_targets),
+                    scheduled_asset_count=len(seen_asset_ids),
+                )
                 break
             if scan_timed_out and latest_run is not None and resolution_deadline is None:
                 client.stop_scanner_task_best_effort(token, task_id)
+                scan_log(
+                    logging.WARNING,
+                    "scan_timeout_stop_requested",
+                    postprocess_run_id=postprocess_run_id,
+                    task_id=task_id,
+                    timeout_seconds=timeout_seconds,
+                )
                 resolution_deadline = now + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
             time.sleep(min(poll_seconds, SCAN_ASSET_RESOLUTION_POLL_SECONDS))
 
@@ -1779,6 +1971,15 @@ def monitor_successful_scan_jobs(
                 stage="resolution_failed",
                 error=target_errors.get(target, "Asset resolution timed out."),
                 finished_at=db.now_utc(),
+            )
+            scan_log(
+                logging.ERROR,
+                "asset_resolution_failed",
+                postprocess_run_id=postprocess_run_id,
+                task_id=task_id,
+                job_id=job_id,
+                target=target,
+                error=target_errors.get(target, "Asset resolution timed out."),
             )
         for future in futures:
             future.result()
@@ -1808,6 +2009,16 @@ def resolve_scanned_target_once(
         if not require_freshness or scanned_asset_record_is_current(record, run_started_at)
     ]
     assets = [asset for asset in assets if asset.get("asset_id")]
+    scan_log(
+        logging.INFO,
+        "asset_resolution_result",
+        job_id=mp_job_id,
+        target=target,
+        pdql_record_count=len(records),
+        resolved_asset_count=len(assets),
+        require_freshness=require_freshness,
+        resolved_asset_ids=[asset.get("asset_id") for asset in assets],
+    )
     if assets:
         return assets, ""
     if not records:
@@ -1922,8 +2133,22 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
     removal_operation_id = item.get("removal_operation_id")
     card_saved = bool(removal_operation_id)
     client = MpVmClient(auth)
+    context = {
+        "postprocess_run_id": item.get("postprocess_run_id"),
+        "item_id": item_id,
+        "job_id": item.get("mp_job_id"),
+        "target": item.get("target"),
+        "asset_id": asset_id,
+    }
+    scan_log(
+        logging.INFO,
+        "asset_processing_started",
+        **context,
+        resumed_removal_operation_id=removal_operation_id,
+    )
     try:
         if not removal_operation_id:
+            scan_log(logging.INFO, "asset_card_build_starting", **context)
             build_job_id = build_scanned_asset_card(item_id=item_id, asset_id=asset_id, auth=auth, token=token)
             item = db.update_scan_postprocess_item(
                 item_id,
@@ -1934,6 +2159,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 error=None,
             ) or item
             card_saved = True
+            scan_log(logging.INFO, "asset_card_saved", **context, build_job_id=build_job_id)
             removal_operation_id = client.remove_assets(token, [asset_id])
             db.update_scan_postprocess_item(
                 item_id,
@@ -1941,6 +2167,19 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 stage="deleting_in_mpvm",
                 removal_operation_id=removal_operation_id,
                 message="MP VM asset removal started.",
+            )
+            scan_log(
+                logging.INFO,
+                "mpvm_removal_started",
+                **context,
+                removal_operation_id=removal_operation_id,
+            )
+        else:
+            scan_log(
+                logging.INFO,
+                "mpvm_removal_resumed",
+                **context,
+                removal_operation_id=removal_operation_id,
             )
         ok, message, _raw = client.wait_for_asset_removal(
             token,
@@ -1957,6 +2196,14 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 error=message,
                 finished_at=db.now_utc(),
             )
+            scan_log(
+                logging.ERROR,
+                "mpvm_removal_failed",
+                **context,
+                removal_operation_id=removal_operation_id,
+                message=message,
+                raw_response=_raw,
+            )
             return
         db.update_scan_postprocess_item(
             item_id,
@@ -1966,6 +2213,13 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             error=None,
             finished_at=db.now_utc(),
         )
+        scan_log(
+            logging.INFO,
+            "asset_processing_completed",
+            **context,
+            removal_operation_id=removal_operation_id,
+            message=message,
+        )
     except Exception as exc:
         status = "removal_failed" if card_saved else "build_failed"
         db.update_scan_postprocess_item(
@@ -1974,6 +2228,11 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             stage=status,
             error=str(exc)[:4000],
             finished_at=db.now_utc(),
+        )
+        SCAN_LOG.exception(
+            "[scan-postprocess] asset processing failed status=%s context=%s",
+            status,
+            json.dumps(context, ensure_ascii=False, default=str),
         )
     finally:
         client.session.close()
@@ -1998,9 +2257,22 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
         "max_items_per_collection": 5000,
         "max_depth": 8,
     }
+    logged_active_job_id: str | None = None
     while True:
         active = db.get_active_asset_card_build_job()
         if active:
+            active_job_id = str(active.get("job_id") or "")
+            if logged_active_job_id != active_job_id:
+                logged_active_job_id = active_job_id
+                scan_log(
+                    logging.INFO,
+                    "asset_card_waiting_for_slot",
+                    item_id=item_id,
+                    asset_id=asset_id,
+                    active_build_job_id=active_job_id,
+                    active_asset_id=active.get("asset_id"),
+                    active_status=active.get("status"),
+                )
             time.sleep(2)
             continue
         build_job_id = str(uuid.uuid4())
@@ -2011,8 +2283,21 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
                 operation="refresh" if db.asset_card_exists(asset_id) else "create",
                 request=request,
             )
+            scan_log(
+                logging.INFO,
+                "asset_card_build_job_created",
+                item_id=item_id,
+                asset_id=asset_id,
+                build_job_id=build_job_id,
+            )
             break
         except psycopg.errors.UniqueViolation:
+            scan_log(
+                logging.INFO,
+                "asset_card_slot_race_retry",
+                item_id=item_id,
+                asset_id=asset_id,
+            )
             time.sleep(2)
     db.update_scan_postprocess_item(
         item_id,
@@ -2031,9 +2316,32 @@ def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, t
     )
     job = db.get_asset_card_build_job(build_job_id)
     if not job or job.get("status") != "completed":
+        scan_log(
+            logging.ERROR,
+            "asset_card_build_job_failed",
+            item_id=item_id,
+            asset_id=asset_id,
+            build_job_id=build_job_id,
+            build_status=(job or {}).get("status"),
+            message=(job or {}).get("message"),
+        )
         raise RuntimeError((job or {}).get("message") or "Asset card build did not complete.")
     if not db.asset_card_exists(asset_id):
+        scan_log(
+            logging.ERROR,
+            "asset_card_missing_after_build",
+            item_id=item_id,
+            asset_id=asset_id,
+            build_job_id=build_job_id,
+        )
         raise RuntimeError("Asset card build completed without a saved local card.")
+    scan_log(
+        logging.INFO,
+        "asset_card_build_job_completed",
+        item_id=item_id,
+        asset_id=asset_id,
+        build_job_id=build_job_id,
+    )
     return build_job_id
 
 

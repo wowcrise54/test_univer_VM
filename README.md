@@ -96,6 +96,8 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `GET /api/scanner-tasks/{id}/postprocess-runs/latest` - получить прогресс фоновой обработки и статусы каждого target/asset.
 
 После запуска основной задачи клиент опрашивает `/api/scanning/v2/runs/{runId}/jobs`. Каждый job с `runMode=default` обрабатывается отдельно сразу после перехода `errorStatus` в `success`; connection-check/precheck jobs исключаются. Для точного IP/FQDN успешного job asset разрешается без дополнительного фильтра по времени, после чего его локальная карточка пересобирается и перезаписывается.
+
+Диагностические сообщения этой цепочки выводятся в стандартный лог приложения как JSON с префиксом `[scan-postprocess]`. В Docker их можно смотреть командой `docker compose logs -f mpvm-client` и фильтровать по `postprocess_run_id`, `task_id`, `job_id`, target или `asset_id`.
 - `POST /api/scanner-tasks/{id}/stop` - остановить задачу.
 - `POST /api/scanner-tasks/{id}/delete` - удалить задачу в MP VM и убрать локальную строку.
 - `POST /api/exports/pdql` - выполнить PDQL, скачать CSV, импортировать в PostgreSQL и при необходимости удалить активы из MP VM.
