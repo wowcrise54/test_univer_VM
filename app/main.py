@@ -88,6 +88,12 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
 
 
 BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 10, minimum=1, maximum=32)
+ASSET_CARD_REQUEST_WORKERS = min(
+    BACKGROUND_REQUEST_LIMIT,
+    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 4, minimum=1, maximum=16),
+)
+SCAN_POSTPROCESS_WORKERS = env_int("MPVM_SCAN_POSTPROCESS_WORKERS", 1, minimum=1, maximum=4)
+SCAN_ASSET_PROCESS_WORKERS = env_int("MPVM_SCAN_ASSET_PROCESS_WORKERS", 1, minimum=1, maximum=4)
 PASSPORT_DETAIL_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
     env_int("MPVM_PASSPORT_DETAIL_WORKERS", 10, minimum=1, maximum=32),
@@ -140,7 +146,10 @@ ASSET_CARD_CANCEL_EVENTS: dict[str, threading.Event] = {}
 ASSET_CARD_CANCEL_EVENTS_LOCK = threading.Lock()
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
-SCAN_POSTPROCESS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan-postprocess")
+SCAN_POSTPROCESS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=SCAN_POSTPROCESS_WORKERS,
+    thread_name_prefix="scan-postprocess",
+)
 BACKGROUND_REQUEST_SEMAPHORE = threading.BoundedSemaphore(BACKGROUND_REQUEST_LIMIT)
 ASSET_METADATA_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 ASSET_METADATA_CACHE_LOCK = threading.Lock()
@@ -505,6 +514,13 @@ def startup() -> None:
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
     resume_scan_postprocess_runs()
+    scan_log(
+        logging.INFO,
+        "worker_limits",
+        scan_postprocess_workers=SCAN_POSTPROCESS_WORKERS,
+        scan_asset_process_workers=SCAN_ASSET_PROCESS_WORKERS,
+        asset_card_request_workers=ASSET_CARD_REQUEST_WORKERS,
+    )
     log_event(
         "app",
         "app.startup.completed",
@@ -536,6 +552,11 @@ def health() -> dict[str, Any]:
         "database_error": DATABASE_STARTUP_ERROR,
         "connected": SESSION.client is not None and SESSION.access_token is not None,
         "api_url": SESSION.api_url,
+        "background_workers": {
+            "scan_postprocess": SCAN_POSTPROCESS_WORKERS,
+            "scan_asset_process": SCAN_ASSET_PROCESS_WORKERS,
+            "asset_card_requests": ASSET_CARD_REQUEST_WORKERS,
+        },
     }
 
 
@@ -579,7 +600,7 @@ def defaults() -> dict[str, Any]:
 
 
 @app.post("/api/session/connect")
-def connect_session(payload: ConnectionRequest) -> dict[str, Any]:
+def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     try:
         api_url = normalize_url(payload.api_url)
         token_url = normalize_url(payload.token_url) if payload.token_url else build_default_token_url(api_url)
@@ -606,7 +627,9 @@ def connect_session(payload: ConnectionRequest) -> dict[str, Any]:
     SESSION.token_url = token_url
     SESSION.username = payload.username
     SESSION.verify_tls = payload.verify_tls
-    resume_scan_postprocess_runs()
+    # Returning the authenticated session must not wait for stale scan recovery.
+    # Recovery is queued after the HTTP response and uses its own bounded executor.
+    background_tasks.add_task(resume_scan_postprocess_runs)
     return {
         "connected": True,
         "api_url": api_url,
@@ -1142,7 +1165,7 @@ def _run_asset_card_build_job(
             "asset-card-build",
             "build.started",
             request=redact(request),
-            worker_limit=BACKGROUND_REQUEST_LIMIT,
+            worker_limit=ASSET_CARD_REQUEST_WORKERS,
         )
         started = db.start_asset_card_build_job(job_id)
         if not started:
@@ -1164,7 +1187,7 @@ def _run_asset_card_build_job(
         executor = AssetCardRequestExecutor(
             auth=auth,
             token=token,
-            workers=BACKGROUND_REQUEST_LIMIT,
+            workers=ASSET_CARD_REQUEST_WORKERS,
             cancel_event=cancel_event,
             on_progress=lambda discovered, completed: write_progress(discovered, completed),
         )
@@ -1972,7 +1995,10 @@ def monitor_successful_scan_jobs(
     logged_mp_run_id: str | None = None
     logged_waiting_for_run = False
 
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan-asset-process") as asset_executor:
+    with ThreadPoolExecutor(
+        max_workers=SCAN_ASSET_PROCESS_WORKERS,
+        thread_name_prefix="scan-asset-process",
+    ) as asset_executor:
         for item in existing_items:
             if item.get("asset_id") and item.get("status") not in {
                 "completed",

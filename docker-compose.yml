@@ -8,6 +8,9 @@ services:
         required: false
     environment:
       MPVM_DATABASE_URL: "${MPVM_DATABASE_URL:-postgresql://mpvm:mpvm@postgres:5432/mpvm}"
+      MPVM_ASSET_CARD_REQUEST_WORKERS: "${MPVM_ASSET_CARD_REQUEST_WORKERS:-4}"
+      MPVM_SCAN_POSTPROCESS_WORKERS: "${MPVM_SCAN_POSTPROCESS_WORKERS:-1}"
+      MPVM_SCAN_ASSET_PROCESS_WORKERS: "${MPVM_SCAN_ASSET_PROCESS_WORKERS:-1}"
     depends_on:
       postgres:
         condition: service_healthy
