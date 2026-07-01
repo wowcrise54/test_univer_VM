@@ -1670,9 +1670,11 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
     except Exception as exc:
         error = str(exc)[:4000]
         SCAN_LOG.exception(
-            "[scan-postprocess] unhandled failure postprocess_run_id=%s task_id=%s",
+            "[scan-postprocess] unhandled failure postprocess_run_id=%s task_id=%s error_type=%s error=%s",
             run_id,
             task_id,
+            type(exc).__name__,
+            error,
         )
         db.finish_scan_postprocess_run(run_id, status="failed", stage="failed", message="Scan post-processing failed.", error=error)
         db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
@@ -1871,21 +1873,42 @@ def monitor_successful_scan_jobs(
                                 error=error,
                             )
                             continue
+                        target_scheduled = False
                         for asset in assets:
                             asset_id = str(asset["asset_id"])
                             if asset_id in seen_asset_ids:
+                                target_scheduled = True
+                                continue
+                            try:
+                                item = db.upsert_scan_postprocess_item(
+                                    postprocess_run_id,
+                                    item_key=f"asset:{asset_id}",
+                                    mp_job_id=asset.get("mp_job_id"),
+                                    target=asset.get("target"),
+                                    asset_id=asset_id,
+                                    display_name=asset.get("display_name"),
+                                    status="queued",
+                                    stage="queued",
+                                )
+                            except Exception as exc:
+                                error = f"{type(exc).__name__}: {exc}"
+                                target_errors[target] = error
+                                SCAN_LOG.exception(
+                                    "[scan-postprocess] asset queue persistence failed "
+                                    "postprocess_run_id=%s task_id=%s mp_run_id=%s job_id=%s target=%s asset_id=%s "
+                                    "error_type=%s error=%s",
+                                    postprocess_run_id,
+                                    task_id,
+                                    mp_run_id,
+                                    job_id,
+                                    target,
+                                    asset_id,
+                                    type(exc).__name__,
+                                    str(exc),
+                                )
                                 continue
                             seen_asset_ids.add(asset_id)
-                            item = db.upsert_scan_postprocess_item(
-                                postprocess_run_id,
-                                item_key=f"asset:{asset_id}",
-                                mp_job_id=asset.get("mp_job_id"),
-                                target=asset.get("target"),
-                                asset_id=asset_id,
-                                display_name=asset.get("display_name"),
-                                status="queued",
-                                stage="queued",
-                            )
+                            target_scheduled = True
                             scan_log(
                                 logging.INFO,
                                 "asset_queued",
@@ -1906,6 +1929,19 @@ def monitor_successful_scan_jobs(
                                     postprocess_run_id=postprocess_run_id,
                                 )
                             )
+                        if not target_scheduled:
+                            scan_log(
+                                logging.WARNING,
+                                "asset_queue_retry_pending",
+                                postprocess_run_id=postprocess_run_id,
+                                task_id=task_id,
+                                mp_run_id=mp_run_id,
+                                job_id=job_id,
+                                target=target,
+                                resolved_asset_ids=[str(asset.get("asset_id")) for asset in assets],
+                                error=target_errors.get(target),
+                            )
+                            continue
                         resolved_job_targets.add((str(job_id or ""), target))
                         pending_targets.pop(target, None)
                         target_errors.pop(target, None)

@@ -338,6 +338,68 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
         self.assertEqual(first_update["successful_job_count"], 1)
         self.assertIn("ignored_host_discovery_profile", "\n".join(captured_logs.output))
 
+    def test_asset_queue_database_failure_is_logged_and_retried(self):
+        running = {"id": "run-1", "status": "running", "startedAt": "2026-01-01T00:00:00+00:00"}
+        finished = {**running, "status": "finished", "finishedAt": "2026-01-01T00:01:00+00:00"}
+        job = {
+            "id": "job-1",
+            "status": "finished",
+            "errorStatus": "success",
+            "runMode": "default",
+            "targets": ["10.0.0.1"],
+        }
+        asset = {
+            "asset_id": "asset-1",
+            "target": "10.0.0.1",
+            "mp_job_id": "job-1",
+            "display_name": "Host 1",
+        }
+        item = {
+            "id": 1,
+            "postprocess_run_id": "post-1",
+            "item_key": "asset:asset-1",
+            "asset_id": "asset-1",
+            "status": "queued",
+        }
+        client = MagicMock()
+        client.get_task_runs.side_effect = [[running], [finished]]
+        client.split_successful_run_jobs.return_value = ([job], [job])
+
+        with self.assertLogs("uvicorn.error", level="INFO") as captured_logs:
+            with (
+                patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+                patch.object(
+                    main.db,
+                    "upsert_scan_postprocess_item",
+                    side_effect=[RuntimeError("database unavailable"), item],
+                ) as upsert_item,
+                patch.object(main.db, "update_scan_postprocess_run"),
+                patch.object(main, "resolve_scanned_target_once", return_value=([asset], "")) as resolve_target,
+                patch.object(main, "process_scanned_asset_item") as process_item,
+                patch.object(main.db, "refresh_scan_postprocess_counts"),
+                patch.object(main.time, "sleep"),
+            ):
+                result = main.monitor_successful_scan_jobs(
+                    client=client,
+                    auth=SimpleNamespace(),
+                    token="token",
+                    task_id="task-1",
+                    started_from="2026-01-01T00:00:00+00:00",
+                    timeout_seconds=60,
+                    poll_seconds=1,
+                    postprocess_run_id="post-1",
+                    require_clean_jobs=False,
+                )
+
+        self.assertEqual(result["asset_count"], 1)
+        self.assertEqual(upsert_item.call_count, 2)
+        self.assertEqual(resolve_target.call_count, 2)
+        process_item.assert_called_once()
+        logs = "\n".join(captured_logs.output)
+        self.assertIn("asset queue persistence failed", logs)
+        self.assertIn("asset_queue_retry_pending", logs)
+        self.assertIn("asset_queued", logs)
+
 
 if __name__ == "__main__":
     unittest.main()
