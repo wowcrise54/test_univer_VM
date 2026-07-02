@@ -50,7 +50,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
 
         jobs, successful = client.split_successful_run_jobs("token", "run")
 
-        self.assertEqual(len(jobs), 5)
+        self.assertEqual([job["id"] for job in jobs], ["ok", "failed", "running", "precheck"])
         self.assertEqual([job["id"] for job in successful], ["ok"])
         self.assertEqual(main.successful_scan_target_jobs(successful), {"10.0.0.1": "ok"})
         client.get_all_run_jobs.assert_called_once_with(
@@ -60,6 +60,46 @@ class ScanPostprocessClientTests(unittest.TestCase):
             orderby="startedAt desc",
             batch_size=100,
         )
+
+    def test_empty_accepted_asset_removal_response_is_still_processing(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=202, content=b"", ok=True)
+        client.session.get = MagicMock(return_value=response)
+
+        operation = client.get_asset_removal_operation("token", "operation-1")
+
+        self.assertEqual(operation, {"status": "processing", "httpStatus": 202})
+        response.json.assert_not_called()
+        client.session.close()
+
+    def test_asset_removal_wait_continues_after_empty_accepted_response(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        client.get_asset_removal_operation = MagicMock(side_effect=[
+            {"status": "processing", "httpStatus": 202},
+            {"status": "completed", "totalCount": 1, "succeedCount": 1, "failedCount": 0},
+        ])
+
+        with patch.object(mpvm_client.time, "sleep"):
+            ok, message, operation = client.wait_for_asset_removal(
+                "token",
+                "operation-1",
+                timeout_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "total=1, succeed=1, failed=0")
+        self.assertEqual(operation["status"], "completed")
+        self.assertEqual(client.get_asset_removal_operation.call_count, 2)
+        client.session.close()
 
     def test_resolution_pdql_supports_ip_subnet_and_fqdn(self):
         self.assertIn("contains 10.0.0.1", mpvm_client.build_asset_resolution_pdql("10.0.0.1"))
@@ -335,17 +375,9 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             "runMode": "default",
             "targets": ["10.0.0.1"],
         }
-        host_discovery_job = {
-            "id": "job-host-discovery",
-            "status": "assigned",
-            "errorStatus": "success",
-            "runMode": "default",
-            "profile": {"name": "HostDiscovery"},
-            "targets": ["10.0.0.2"],
-        }
         client = MagicMock()
         client.get_task_runs.side_effect = [[running], [finished]]
-        client.split_successful_run_jobs.return_value = ([job, host_discovery_job], [job])
+        client.split_successful_run_jobs.return_value = ([job], [job])
         item = {
             "id": 1,
             "postprocess_run_id": "post-1",
@@ -381,10 +413,11 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["successful_job_count"], 1)
+        self.assertEqual(result["total_job_count"], 1)
         process_item.assert_called_once()
         first_update = update_run.call_args_list[0].kwargs
         self.assertEqual(first_update["successful_job_count"], 1)
-        self.assertIn("ignored_host_discovery_profile", "\n".join(captured_logs.output))
+        self.assertNotIn("job-host-discovery", "\n".join(captured_logs.output))
 
     def test_asset_queue_database_failure_is_logged_and_retried(self):
         running = {"id": "run-1", "status": "running", "startedAt": "2026-01-01T00:00:00+00:00"}

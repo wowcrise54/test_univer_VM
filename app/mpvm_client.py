@@ -596,11 +596,14 @@ class MpVmClient:
             orderby="startedAt desc",
             batch_size=100,
         )
+        tracked_jobs = [
+            job
+            for job in jobs
+            if not is_host_discovery_profile(job.get("profile"))
+        ]
         successful: list[dict[str, Any]] = []
-        for job in jobs:
+        for job in tracked_jobs:
             if "connectioncheck" in status_strings(job.get("runMode")):
-                continue
-            if is_host_discovery_profile(job.get("profile")):
                 continue
             if not has_success_status(job.get("errorStatus")):
                 continue
@@ -609,7 +612,7 @@ class MpVmClient:
                 if job_id and self.get_job_errors_count(access_token, job_id) > 0:
                     continue
             successful.append(job)
-        return jobs, successful
+        return tracked_jobs, successful
 
     def get_job_errors_count(self, access_token: str, job_id: str) -> int:
         data = self.get_json(access_token, SCANNER_JOB_ERRORS_PATH.format(job_id=job_id), params={"offset": 0, "limit": 1})
@@ -805,7 +808,19 @@ class MpVmClient:
         return str(operation_id)
 
     def get_asset_removal_operation(self, access_token: str, operation_id: str) -> dict[str, Any]:
-        data = self.get_json(access_token, ASSET_REMOVE_OPERATION_PATH, params={"operationId": operation_id})
+        response = self.session.get(
+            self._api_url(ASSET_REMOVE_OPERATION_PATH),
+            headers=self._bearer_headers(access_token),
+            params={"operationId": operation_id},
+            timeout=self.auth.timeout,
+        )
+        self._raise_for_status(response, "get asset removal operation")
+        if response.status_code == 202 and not response.content.strip():
+            return {"status": "processing", "httpStatus": 202}
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise MpVmApiError("Cannot parse JSON while trying to get asset removal operation.") from exc
         if not isinstance(data, dict):
             raise MpVmApiError(f"Unexpected asset removal operation response: {compact_json_summary(data)}")
         return data
