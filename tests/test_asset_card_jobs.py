@@ -117,6 +117,97 @@ class PartialFailureAssetClient(FixtureAssetClient):
         )
 
 
+class ParallelTreeAssetClient(FixtureAssetClient):
+    delay = 0.02
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    collection_names = tuple(f"collection{index}" for index in range(8))
+
+    @classmethod
+    def reset_metrics(cls):
+        cls.active = 0
+        cls.max_active = 0
+
+    def _delay(self):
+        with self.lock:
+            type(self).active += 1
+            type(self).max_active = max(type(self).max_active, type(self).active)
+        try:
+            time.sleep(self.delay)
+        finally:
+            with self.lock:
+                type(self).active -= 1
+
+    def get_asset_tree_root(self, _token, _timeline):
+        return {
+            "objectId": "asset-1",
+            "type": "Host",
+            "displayName": "Parallel host",
+            "data": {name: {"hasItems": True} for name in self.collection_names},
+        }
+
+    def get_asset_metadata(self, _token, asset_type):
+        if asset_type == "Host":
+            return {
+                "properties": [
+                    {"name": name, "title": name, "isCollection": True}
+                    for name in self.collection_names
+                ]
+            }
+        return {"properties": [{"name": "value", "title": "Value", "type": "string"}]}
+
+    def get_asset_tree_collection(
+        self,
+        _token,
+        _parent_type,
+        _object_id,
+        name,
+        _timeline,
+        *,
+        full,
+        limit,
+        offset,
+    ):
+        self._delay()
+        self.assert_full = full
+        items = [
+            {
+                "objectId": "shared-node" if index == 0 else f"{name}-node-{index}",
+                "type": "Leaf",
+                "displayName": f"{name} node {index}",
+                "data": {"value": f"embedded-{index}"},
+            }
+            for index in range(4)
+        ]
+        return {"items": items[offset : offset + limit], "count": len(items)}
+
+    def get_asset_tree_node(self, _token, asset_type, object_id, _timeline):
+        self._delay()
+        return {
+            "objectId": object_id,
+            "type": asset_type,
+            "displayName": object_id,
+            "data": {"value": object_id},
+        }
+
+
+def semantic_card(card):
+    cleaned = main.sanitize_asset_card_for_response(card)
+    stats = cleaned.get("stats") or {}
+    for key in (
+        "elapsed_ms",
+        "stage_duration_ms",
+        "peak_active_requests",
+        "queue_wait_ms",
+        "request_counts",
+        "request_duration_ms",
+        "save_duration_ms",
+    ):
+        stats.pop(key, None)
+    return cleaned
+
+
 class AssetCardExecutorTests(unittest.TestCase):
     def test_one_hundred_requests_complete_under_two_seconds_with_limit_ten(self):
         SlowClient.active = 0
@@ -192,11 +283,50 @@ class AssetCardExecutorTests(unittest.TestCase):
             finally:
                 executor.close()
 
-        parallel_clean = main.sanitize_asset_card_for_response(parallel)
-        sequential_clean = main.sanitize_asset_card_for_response(sequential)
-        parallel_clean["stats"].pop("elapsed_ms", None)
-        sequential_clean["stats"].pop("elapsed_ms", None)
-        self.assertEqual(parallel_clean, sequential_clean)
+        self.assertEqual(semantic_card(parallel), semantic_card(sequential))
+
+    def test_parallel_tree_pipeline_matches_sequential_and_uses_eight_workers(self):
+        auth = SimpleNamespace(api_url="https://parallel-fixture")
+        main.ASSET_METADATA_CACHE.clear()
+        ParallelTreeAssetClient.reset_metrics()
+        sequential_started = time.perf_counter()
+        sequential = main.build_asset_card(
+            client=ParallelTreeAssetClient(auth),
+            token="token",
+            asset_id="asset-1",
+            timeline_timestamp=1,
+            limit_per_collection=2,
+            max_items_per_collection=4,
+            max_depth=8,
+        )
+        sequential_elapsed = time.perf_counter() - sequential_started
+
+        main.ASSET_METADATA_CACHE.clear()
+        ParallelTreeAssetClient.reset_metrics()
+        with patch.object(main, "MpVmClient", ParallelTreeAssetClient):
+            executor = main.AssetCardRequestExecutor(auth=auth, token="token", workers=8)
+            parallel_started = time.perf_counter()
+            try:
+                parallel = main.build_asset_card(
+                    client=None,
+                    token="token",
+                    asset_id="asset-1",
+                    timeline_timestamp=1,
+                    limit_per_collection=2,
+                    max_items_per_collection=4,
+                    max_depth=8,
+                    request_executor=executor,
+                )
+            finally:
+                executor.close()
+            parallel_elapsed = time.perf_counter() - parallel_started
+
+        self.assertEqual(semantic_card(parallel), semantic_card(sequential))
+        self.assertEqual(parallel["stats"]["collection_requests"], 16)
+        self.assertEqual(parallel["stats"]["node_requests"], 25)
+        self.assertLessEqual(ParallelTreeAssetClient.max_active, 8)
+        self.assertGreaterEqual(ParallelTreeAssetClient.max_active, 6)
+        self.assertLess(parallel_elapsed, sequential_elapsed / 2)
 
     def test_child_request_failure_becomes_a_warning_and_other_groups_finish(self):
         auth = SimpleNamespace(api_url="https://fixture")
@@ -334,6 +464,17 @@ class AssetCardJobApiTests(unittest.TestCase):
 
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def test_copy_rows_streams_every_row_in_one_copy_operation(self):
+        writer = MagicMock()
+        cursor = MagicMock()
+        cursor.copy.return_value.__enter__.return_value = writer
+        rows = [(1, "one"), (2, "two"), (3, "three")]
+
+        db.copy_rows(cursor, "asset_card_nodes", ("id", "title"), rows)
+
+        cursor.copy.assert_called_once_with("COPY asset_card_nodes (id, title) FROM STDIN")
+        self.assertEqual([call.args[0] for call in writer.write_row.call_args_list], rows)
+
     def test_job_slot_conflict_is_silent_and_returns_none(self):
         result = MagicMock()
         result.fetchone.return_value = None

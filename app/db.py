@@ -24,7 +24,6 @@ DATABASE_URL = (
     or os.getenv("DATABASE_URL")
     or "postgresql://mpvm:mpvm@localhost:5432/mpvm"
 )
-ASSET_CARD_WRITE_BATCH_SIZE = 500
 _DB_INITIALIZED = False
 _DB_INIT_LOCK = threading.Lock()
 
@@ -1127,6 +1126,29 @@ def chunked(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def copy_rows(
+    cursor: psycopg.Cursor[Any],
+    table: str,
+    columns: tuple[str, ...],
+    rows: list[tuple[Any, ...]],
+) -> None:
+    if not rows:
+        return
+    column_sql = ", ".join(columns)
+    started = datetime.now(timezone.utc)
+    with cursor.copy(f"COPY {table} ({column_sql}) FROM STDIN") as copy:
+        for row in rows:
+            copy.write_row(row)
+    log_event(
+        "database",
+        "db.copy.completed",
+        level=10,
+        table=table,
+        row_count=len(rows),
+        duration_ms=round((datetime.now(timezone.utc) - started).total_seconds() * 1000, 2),
+    )
+
+
 def list_asset_findings(
     *,
     q: str | None = None,
@@ -1975,13 +1997,21 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
+        save_duration_ms = round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2)
+        stats = card.setdefault("stats", {})
+        if isinstance(stats, dict):
+            stats["save_duration_ms"] = save_duration_ms
+            conn.execute(
+                "UPDATE asset_cards SET stats_json = %s WHERE asset_id = %s",
+                (json.dumps(stats, ensure_ascii=False), asset_id),
+            )
     result = decode_asset_card_summary(dict(row)) if row else None
     log_event(
         "database",
         "db.write.completed",
         asset_id=asset_id,
         operation="upsert_asset_card",
-        duration_ms=round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2),
+        duration_ms=save_duration_ms,
         node_count=len(card.get("nodes") or []),
         collection_count=len(card.get("collections") or []),
         table_row_count=len(card.get("table_rows") or []),
@@ -2006,14 +2036,13 @@ def replace_asset_card_cache(
     table_rows = [item for item in card.get("table_rows") or [] if isinstance(item, dict)]
 
     with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO asset_card_nodes (
-                asset_id, path, title, display_name, object_id, object_type,
-                vulnerability_level, data_json, node_json, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+        copy_rows(
+            cur,
+            "asset_card_nodes",
+            (
+                "asset_id", "path", "title", "display_name", "object_id", "object_type",
+                "vulnerability_level", "data_json", "node_json", "updated_at",
+            ),
             [
                 (
                     asset_id,
@@ -2032,15 +2061,14 @@ def replace_asset_card_cache(
             ],
         )
 
-        cur.executemany(
-            """
-            INSERT INTO asset_card_collections (
-                asset_id, path, name, title, value_type, kind, parent_type,
-                parent_object_id, reported_count, fetched_count, truncated,
-                collection_json, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+        copy_rows(
+            cur,
+            "asset_card_collections",
+            (
+                "asset_id", "path", "name", "title", "value_type", "kind", "parent_type",
+                "parent_object_id", "reported_count", "fetched_count", "truncated",
+                "collection_json", "updated_at",
+            ),
             [
                 (
                     asset_id,
@@ -2086,26 +2114,24 @@ def replace_asset_card_cache(
                         updated_at,
                     )
                 )
-        cur.executemany(
-            """
-            INSERT INTO asset_card_collection_items (
-                asset_id, collection_path, item_index, item_path, display_name,
-                object_id, object_type, vulnerability_level, data_json, item_json,
-                updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+        copy_rows(
+            cur,
+            "asset_card_collection_items",
+            (
+                "asset_id", "collection_path", "item_index", "item_path", "display_name",
+                "object_id", "object_type", "vulnerability_level", "data_json", "item_json",
+                "updated_at",
+            ),
             item_rows,
         )
 
-        cur.executemany(
-            """
-            INSERT INTO asset_card_table_rows (
-                asset_id, row_order, path, name, title, value_text, value_type,
-                kind, parent_type, parent_object_id, row_json, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+        copy_rows(
+            cur,
+            "asset_card_table_rows",
+            (
+                "asset_id", "row_order", "path", "name", "title", "value_text", "value_type",
+                "kind", "parent_type", "parent_object_id", "row_json", "updated_at",
+            ),
             [
                 (
                     asset_id,
@@ -2145,17 +2171,15 @@ def replace_asset_card_cache(
         for group in vulnerability_groups
     ]
     with conn.cursor() as cur:
-        for batch in chunked(group_rows, ASSET_CARD_WRITE_BATCH_SIZE):
-            cur.executemany(
-                """
-                INSERT INTO asset_card_vulnerability_groups (
-                    asset_id, source_type, collection_type, collection_id, name, severity,
-                    vulnerability_count, cvss_score, group_order, truncated, group_json, updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                batch,
-            )
+        copy_rows(
+            cur,
+            "asset_card_vulnerability_groups",
+            (
+                "asset_id", "source_type", "collection_type", "collection_id", "name", "severity",
+                "vulnerability_count", "cvss_score", "group_order", "truncated", "group_json", "updated_at",
+            ),
+            group_rows,
+        )
 
     stored_groups = conn.execute(
         """
@@ -2194,18 +2218,16 @@ def replace_asset_card_cache(
                 )
             )
     with conn.cursor() as cur:
-        for batch in chunked(finding_rows, ASSET_CARD_WRITE_BATCH_SIZE):
-            cur.executemany(
-            """
-            INSERT INTO asset_card_vulnerabilities (
-                asset_id, group_id, vulnerability_instance_id, vulnerability_id,
-                object_id, cve_name, name, severity, cvss_score, description_key,
-                vulnerability_json, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-                batch,
-            )
+        copy_rows(
+            cur,
+            "asset_card_vulnerabilities",
+            (
+                "asset_id", "group_id", "vulnerability_instance_id", "vulnerability_id",
+                "object_id", "cve_name", "name", "severity", "cvss_score", "description_key",
+                "vulnerability_json", "updated_at",
+            ),
+            finding_rows,
+        )
 
     reconcile_asset_card_vulnerability_passport_links(conn, None, updated_at, asset_id=asset_id)
 
