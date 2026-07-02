@@ -57,7 +57,7 @@ Dockerfile собирает React через Vite и копирует готов
 
 Backend, сборка карточек, MP VM HTTP, PostgreSQL и frontend пишут связанные JSONL-события в `MPVM_LOG_DIR` (по умолчанию `output/logs`). Каждый API-ответ содержит `X-Trace-ID`, `X-Request-ID` и `Server-Timing`; trace ID также показывается в задании сборки карточки и добавляется к frontend-ошибкам.
 
-Полная карточка актива загружается параллельным конвейером с сохранением всех коллекций (`full=true`, лимиты и глубина не уменьшаются). По умолчанию одновременно выполняется до `MPVM_ASSET_CARD_REQUEST_WORKERS=8` запросов, но не больше общего `MPVM_BACKGROUND_REQUEST_LIMIT=10`. Итоговая статистика карточки содержит длительности дерева, уязвимостей и сохранения, пиковый параллелизм и время ожидания очереди.
+Полная карточка актива загружается потоковым конвейером с сохранением всех коллекций (`full=true`, лимиты и глубина не уменьшаются). Адаптивное окно начинает с `MPVM_ASSET_CARD_INITIAL_WORKERS=8`, растёт до `MPVM_ASSET_CARD_REQUEST_WORKERS=16` при стабильных ответах и снижается до `MPVM_ASSET_CARD_MIN_WORKERS=4` при 429/503, таймаутах или деградации задержки. Общий предел задаёт `MPVM_BACKGROUND_REQUEST_LIMIT=16`; чтобы вернуть прежнюю нагрузку, достаточно установить `MPVM_ASSET_CARD_REQUEST_WORKERS=8`. Статистика карточки содержит p50/p95, историю изменения окна, throttling-события, критический путь и время простоя планировщика.
 
 Файлы журналов: `app.jsonl`, `asset-card-build.jsonl`, `mpvm-http.jsonl`, `database.jsonl`, `frontend.jsonl`, `errors.jsonl`. Ротация задаётся через `MPVM_LOG_MAX_BYTES` и `MPVM_LOG_BACKUP_COUNT`, срок хранения — через `MPVM_LOG_RETENTION_DAYS`.
 

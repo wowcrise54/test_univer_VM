@@ -396,6 +396,11 @@ def capture_debug_payload(*, direction: str, payload: Any, **fields: Any) -> Non
     )
 
 
+def debug_payloads_enabled() -> bool:
+    config = _CONFIG or configure_diagnostics()
+    return config.debug_payloads
+
+
 class DiagnosticSession(requests.Session):
     """Requests session that records sanitized MP VM request lifecycle events."""
 
@@ -415,13 +420,14 @@ class DiagnosticSession(requests.Session):
             timeout=kwargs.get("timeout"),
             worker=threading.current_thread().name,
         )
-        capture_debug_payload(
-            direction="request",
-            payload=kwargs.get("json", kwargs.get("data")),
-            remote_request_id=remote_request_id,
-            method=method.upper(),
-            endpoint=endpoint,
-        )
+        if debug_payloads_enabled():
+            capture_debug_payload(
+                direction="request",
+                payload=kwargs.get("json", kwargs.get("data")),
+                remote_request_id=remote_request_id,
+                method=method.upper(),
+                endpoint=endpoint,
+            )
         try:
             response = super().request(method, url, **kwargs)
         except Exception:
@@ -453,7 +459,7 @@ class DiagnosticSession(requests.Session):
             response_bytes=response_bytes,
             worker=threading.current_thread().name,
         )
-        if not kwargs.get("stream"):
+        if debug_payloads_enabled() and not kwargs.get("stream"):
             content_type = response.headers.get("content-type", "")
             payload: Any = response.text
             if "json" in content_type:

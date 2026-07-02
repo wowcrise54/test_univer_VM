@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
@@ -87,10 +88,18 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 10, minimum=1, maximum=32)
+BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 16, minimum=1, maximum=32)
 ASSET_CARD_REQUEST_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
-    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 8, minimum=1, maximum=16),
+    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 16, minimum=1, maximum=16),
+)
+ASSET_CARD_INITIAL_WORKERS = min(
+    ASSET_CARD_REQUEST_WORKERS,
+    env_int("MPVM_ASSET_CARD_INITIAL_WORKERS", 8, minimum=1, maximum=16),
+)
+ASSET_CARD_MIN_WORKERS = min(
+    ASSET_CARD_INITIAL_WORKERS,
+    env_int("MPVM_ASSET_CARD_MIN_WORKERS", 4, minimum=1, maximum=16),
 )
 SCAN_POSTPROCESS_WORKERS = env_int("MPVM_SCAN_POSTPROCESS_WORKERS", 1, minimum=1, maximum=4)
 SCAN_ASSET_PROCESS_WORKERS = env_int("MPVM_SCAN_ASSET_PROCESS_WORKERS", 1, minimum=1, maximum=4)
@@ -160,6 +169,117 @@ class AssetCardBuildCancelled(Exception):
     pass
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * fraction))))
+    return ordered[index]
+
+
+class AdaptiveConcurrencyController:
+    sample_size = 16
+    cooldown_size = 32
+
+    def __init__(self, *, minimum: int, initial: int, maximum: int) -> None:
+        self.minimum = max(1, min(minimum, maximum))
+        self.maximum = max(self.minimum, maximum)
+        self.current = max(self.minimum, min(initial, self.maximum))
+        self._lock = threading.Lock()
+        self._recent_success_ms: dict[str, deque[float]] = {}
+        self._best_p95_ms: dict[str, float] = {}
+        self._degraded_windows: dict[str, int] = {}
+        self._cooldown_remaining = 0
+        self._completed = 0
+        self.throttle_events = 0
+        self.history: list[dict[str, Any]] = [
+            {"completed": 0, "from": self.current, "to": self.current, "reason": "initial"}
+        ]
+
+    def window(self) -> int:
+        with self._lock:
+            return self.current
+
+    def observe(self, duration_ms: float, error: BaseException | None, *, label: str = "request") -> None:
+        with self._lock:
+            self._completed += 1
+            if isinstance(error, AssetCardBuildCancelled):
+                return
+            reason = adaptive_failure_reason(error)
+            if reason:
+                self.throttle_events += 1
+                new_value = max(self.minimum, self.current // 2)
+                self._change(new_value, reason=reason)
+                self._cooldown_remaining = self.cooldown_size
+                self._recent_success_ms.clear()
+                self._degraded_windows.clear()
+                return
+            if error is not None:
+                return
+            recent = self._recent_success_ms.setdefault(label, deque(maxlen=self.sample_size))
+            recent.append(duration_ms)
+            if self._cooldown_remaining > 0:
+                self._cooldown_remaining -= 1
+                recent.clear()
+                return
+            if len(recent) < self.sample_size:
+                return
+            p95_ms = percentile(list(recent), 0.95)
+            best = self._best_p95_ms.get(label)
+            if best is None or p95_ms < best:
+                self._best_p95_ms[label] = p95_ms
+            baseline = max(1.0, self._best_p95_ms[label])
+            if p95_ms > baseline * 1.75:
+                self._degraded_windows[label] = self._degraded_windows.get(label, 0) + 1
+                if self._degraded_windows[label] >= 2:
+                    self._change(max(self.minimum, self.current // 2), reason="latency", p95_ms=p95_ms)
+                    self._cooldown_remaining = self.cooldown_size
+                    self._degraded_windows[label] = 0
+            else:
+                self._degraded_windows[label] = 0
+                if p95_ms <= baseline * 1.35:
+                    self._change(min(self.maximum, self.current + 2), reason="success", p95_ms=p95_ms)
+            recent.clear()
+
+    def _change(self, value: int, *, reason: str, p95_ms: float | None = None) -> None:
+        if value == self.current:
+            return
+        previous = self.current
+        self.current = value
+        event: dict[str, Any] = {
+            "completed": self._completed,
+            "from": previous,
+            "to": value,
+            "reason": reason,
+        }
+        if p95_ms is not None:
+            event["p95_ms"] = round(p95_ms, 2)
+        self.history.append(event)
+
+    def telemetry(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "concurrency_min": self.minimum,
+                "concurrency_initial": self.history[0]["to"],
+                "concurrency_max": self.maximum,
+                "concurrency_final": self.current,
+                "concurrency_changes": [dict(item) for item in self.history],
+                "throttle_events": self.throttle_events,
+            }
+
+
+def adaptive_failure_reason(error: BaseException | None) -> str | None:
+    if error is None:
+        return None
+    if isinstance(error, requests.Timeout):
+        return "timeout"
+    message = str(error).lower()
+    for status in ("429", "503"):
+        if f"http {status}" in message:
+            return f"http_{status}"
+    return None
+
+
 class AssetCardRequestExecutor:
     def __init__(
         self,
@@ -167,6 +287,8 @@ class AssetCardRequestExecutor:
         auth: AuthConfig,
         token: str,
         workers: int,
+        initial_workers: int | None = None,
+        min_workers: int | None = None,
         cancel_event: threading.Event | None = None,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> None:
@@ -175,11 +297,19 @@ class AssetCardRequestExecutor:
         self.cancel_event = cancel_event or threading.Event()
         self.on_progress = on_progress
         self.worker_count = max(1, workers)
+        initial = min(self.worker_count, initial_workers if initial_workers is not None else self.worker_count)
+        minimum = min(initial, min_workers if min_workers is not None else initial)
+        self.concurrency = AdaptiveConcurrencyController(
+            minimum=minimum,
+            initial=initial,
+            maximum=self.worker_count,
+        )
         self._executor = ThreadPoolExecutor(max_workers=self.worker_count, thread_name_prefix="asset-card-request")
         self._worker_state = threading.local()
         self._clients: list[MpVmClient] = []
         self._clients_lock = threading.Lock()
         self._progress_lock = threading.Lock()
+        self._window_condition = threading.Condition(self._progress_lock)
         self._telemetry_lock = threading.Lock()
         self.discovered = 0
         self.completed = 0
@@ -187,7 +317,12 @@ class AssetCardRequestExecutor:
         self.peak_active = 0
         self.queue_wait_ms = 0.0
         self.request_duration_ms: dict[str, float] = {}
+        self.request_samples_ms: dict[str, list[float]] = {}
         self.request_counts: dict[str, int] = {}
+        self.scheduler_idle_ms = 0.0
+        self._idle_started_at = time.perf_counter()
+        self._outstanding = 0
+        self._reserved = 0
 
     def _client(self) -> MpVmClient:
         client = getattr(self._worker_state, "client", None)
@@ -201,43 +336,55 @@ class AssetCardRequestExecutor:
     def _run(self, operation: Callable[[MpVmClient], Any], queued_at: float, label: str) -> Any:
         if self.cancel_event.is_set():
             raise AssetCardBuildCancelled("Asset card build was cancelled.")
-        with BACKGROUND_REQUEST_SEMAPHORE:
-            if self.cancel_event.is_set():
-                raise AssetCardBuildCancelled("Asset card build was cancelled.")
-            with self._progress_lock:
-                self.active += 1
-                active = self.active
-                self.peak_active = max(self.peak_active, active)
-            started = time.perf_counter()
-            queue_wait_ms = (started - queued_at) * 1000
-            with self._telemetry_lock:
-                self.queue_wait_ms += queue_wait_ms
-            log_event(
-                "asset-card-build",
-                "request.worker.started",
-                level=logging.DEBUG,
-                worker=threading.current_thread().name,
-                active_workers=active,
-                worker_limit=self.worker_count,
-            )
-            try:
-                return operation(self._client())
-            finally:
-                duration_ms = (time.perf_counter() - started) * 1000
+        with self._window_condition:
+            self.active += 1
+            active = self.active
+            self.peak_active = max(self.peak_active, active)
+        error: BaseException | None = None
+        try:
+            with BACKGROUND_REQUEST_SEMAPHORE:
+                if self.cancel_event.is_set():
+                    raise AssetCardBuildCancelled("Asset card build was cancelled.")
+                started = time.perf_counter()
+                queue_wait_ms = (started - queued_at) * 1000
                 with self._telemetry_lock:
-                    self.request_counts[label] = self.request_counts.get(label, 0) + 1
-                    self.request_duration_ms[label] = self.request_duration_ms.get(label, 0.0) + duration_ms
-                with self._progress_lock:
-                    self.active = max(0, self.active - 1)
-                    active = self.active
+                    self.queue_wait_ms += queue_wait_ms
                 log_event(
                     "asset-card-build",
-                    "request.worker.completed",
+                    "request.worker.started",
                     level=logging.DEBUG,
                     worker=threading.current_thread().name,
                     active_workers=active,
                     worker_limit=self.worker_count,
+                    adaptive_window=self.concurrency.window(),
                 )
+                try:
+                    return operation(self._client())
+                except BaseException as exc:
+                    error = exc
+                    raise
+                finally:
+                    duration_ms = (time.perf_counter() - started) * 1000
+                    self.concurrency.observe(duration_ms, error, label=label)
+                    with self._telemetry_lock:
+                        self.request_counts[label] = self.request_counts.get(label, 0) + 1
+                        self.request_duration_ms[label] = self.request_duration_ms.get(label, 0.0) + duration_ms
+                        self.request_samples_ms.setdefault(label, []).append(duration_ms)
+        finally:
+            with self._window_condition:
+                self.active = max(0, self.active - 1)
+                self._reserved = max(0, self._reserved - 1)
+                active = self.active
+                self._window_condition.notify_all()
+            log_event(
+                "asset-card-build",
+                "request.worker.completed",
+                level=logging.DEBUG,
+                worker=threading.current_thread().name,
+                active_workers=active,
+                worker_limit=self.worker_count,
+                adaptive_window=self.concurrency.window(),
+            )
 
     def record_request_started(self) -> None:
         with self._progress_lock:
@@ -262,6 +409,16 @@ class AssetCardRequestExecutor:
         count_progress: bool = True,
         label: str = "request",
     ) -> Future[Any]:
+        with self._window_condition:
+            while self._reserved >= self.concurrency.window():
+                if self.cancel_event.is_set():
+                    raise AssetCardBuildCancelled("Asset card build was cancelled.")
+                self._window_condition.wait(timeout=0.1)
+            self._reserved += 1
+        with self._progress_lock:
+            if self._outstanding == 0:
+                self.scheduler_idle_ms += max(0.0, (time.perf_counter() - self._idle_started_at) * 1000)
+            self._outstanding += 1
         if count_progress:
             self.record_request_started()
         context = copy_context()
@@ -275,11 +432,21 @@ class AssetCardRequestExecutor:
             active_workers=self.active,
             worker_limit=self.worker_count,
         )
-        future = self._executor.submit(context.run, self._run, operation, time.perf_counter(), label)
+        try:
+            future = self._executor.submit(context.run, self._run, operation, time.perf_counter(), label)
+        except BaseException:
+            with self._window_condition:
+                self._reserved = max(0, self._reserved - 1)
+                self._window_condition.notify_all()
+            raise
 
         def mark_completed(_future: Future[Any]) -> None:
             if count_progress:
                 self.record_request_completed()
+            with self._progress_lock:
+                self._outstanding = max(0, self._outstanding - 1)
+                if self._outstanding == 0:
+                    self._idle_started_at = time.perf_counter()
 
         future.add_done_callback(mark_completed)
         return future
@@ -303,24 +470,10 @@ class AssetCardRequestExecutor:
         count_progress: bool = True,
         label: str = "request",
     ) -> list[tuple[Any | None, Exception | None]]:
-        results: list[tuple[Any | None, Exception | None]] = []
-        for start in range(0, len(operations), self.worker_count):
-            if self.cancel_event.is_set():
-                raise AssetCardBuildCancelled("Asset card build was cancelled.")
-            # Keep the executor queue bounded. This also means cancellation stops
-            # the coordinator before it schedules another batch of requests.
-            futures = [
-                self.submit(operation, count_progress=count_progress, label=label)
-                for operation in operations[start : start + self.worker_count]
-            ]
-            for future in futures:
-                try:
-                    results.append((future.result(), None))
-                except AssetCardBuildCancelled:
-                    raise
-                except Exception as exc:
-                    results.append((None, exc))
-        return results
+        return self.map_labeled_settled(
+            [(label, operation) for operation in operations],
+            count_progress=count_progress,
+        )
 
     def map_labeled_settled(
         self,
@@ -328,33 +481,61 @@ class AssetCardRequestExecutor:
         *,
         count_progress: bool = True,
     ) -> list[tuple[Any | None, Exception | None]]:
-        results: list[tuple[Any | None, Exception | None]] = []
-        for start in range(0, len(operations), self.worker_count):
-            if self.cancel_event.is_set():
-                raise AssetCardBuildCancelled("Asset card build was cancelled.")
-            futures = [
-                self.submit(operation, count_progress=count_progress, label=label)
-                for label, operation in operations[start : start + self.worker_count]
-            ]
-            for future in futures:
+        if not operations:
+            return []
+        results: list[tuple[Any | None, Exception | None] | None] = [None] * len(operations)
+        next_index = 0
+        in_flight: dict[Future[Any], int] = {}
+
+        def fill_window() -> None:
+            nonlocal next_index
+            window = self.concurrency.window()
+            while next_index < len(operations) and len(in_flight) < window:
+                if self.cancel_event.is_set():
+                    raise AssetCardBuildCancelled("Asset card build was cancelled.")
+                label, operation = operations[next_index]
+                future = self.submit(operation, count_progress=count_progress, label=label)
+                in_flight[future] = next_index
+                next_index += 1
+
+        fill_window()
+        while in_flight:
+            completed, _pending = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+            for future in completed:
+                index = in_flight.pop(future)
                 try:
-                    results.append((future.result(), None))
+                    results[index] = (future.result(), None)
                 except AssetCardBuildCancelled:
                     raise
                 except Exception as exc:
-                    results.append((None, exc))
-        return results
+                    results[index] = (None, exc)
+            fill_window()
+        return [item if item is not None else (None, RuntimeError("Request result is missing.")) for item in results]
 
     def telemetry(self) -> dict[str, Any]:
         with self._progress_lock, self._telemetry_lock:
-            return {
+            latency = {
+                key: {
+                    "count": len(values),
+                    "p50": round(percentile(values, 0.50), 2),
+                    "p95": round(percentile(values, 0.95), 2),
+                    "max": round(max(values), 2),
+                }
+                for key, values in sorted(self.request_samples_ms.items())
+                if values
+            }
+            result = {
                 "peak_active_requests": self.peak_active,
                 "queue_wait_ms": round(self.queue_wait_ms, 2),
+                "scheduler_idle_ms": round(self.scheduler_idle_ms, 2),
                 "request_counts": dict(sorted(self.request_counts.items())),
                 "request_duration_ms": {
                     key: round(value, 2) for key, value in sorted(self.request_duration_ms.items())
                 },
+                "request_latency_ms": latency,
             }
+        result.update(self.concurrency.telemetry())
+        return result
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=False)
@@ -576,6 +757,8 @@ def startup() -> None:
         scan_postprocess_workers=SCAN_POSTPROCESS_WORKERS,
         scan_asset_process_workers=SCAN_ASSET_PROCESS_WORKERS,
         asset_card_request_workers=ASSET_CARD_REQUEST_WORKERS,
+        asset_card_initial_workers=ASSET_CARD_INITIAL_WORKERS,
+        asset_card_min_workers=ASSET_CARD_MIN_WORKERS,
     )
     log_event(
         "app",
@@ -612,6 +795,8 @@ def health() -> dict[str, Any]:
             "scan_postprocess": SCAN_POSTPROCESS_WORKERS,
             "scan_asset_process": SCAN_ASSET_PROCESS_WORKERS,
             "asset_card_requests": ASSET_CARD_REQUEST_WORKERS,
+            "asset_card_initial": ASSET_CARD_INITIAL_WORKERS,
+            "asset_card_min": ASSET_CARD_MIN_WORKERS,
         },
     }
 
@@ -1244,6 +1429,8 @@ def _run_asset_card_build_job(
             auth=auth,
             token=token,
             workers=ASSET_CARD_REQUEST_WORKERS,
+            initial_workers=ASSET_CARD_INITIAL_WORKERS,
+            min_workers=ASSET_CARD_MIN_WORKERS,
             cancel_event=cancel_event,
             on_progress=lambda discovered, completed: write_progress(discovered, completed),
         )
@@ -3228,343 +3415,304 @@ def build_asset_card(
                 parent_object_id=parent_object_id,
             )
 
-    def run_operations(
-        operations: list[tuple[str, Callable[[MpVmClient], Any]]],
-    ) -> list[tuple[Any | None, Exception | None]]:
-        if request_executor:
-            return request_executor.map_labeled_settled(operations)
-        settled: list[tuple[Any | None, Exception | None]] = []
-        for _label, operation in operations:
-            try:
-                if client is None:
-                    raise RuntimeError("A direct MP VM client is required for asset tree loading.")
-                settled.append((operation(client), None))
-            except Exception as exc:
-                settled.append((None, exc))
-        return settled
+    def traverse_tree() -> None:
+        queued_tasks: deque[dict[str, Any]] = deque()
+        in_flight: dict[Future[Any], dict[str, Any]] = {}
+        node_candidates: dict[str, dict[str, Any]] = {}
+        node_waiters: dict[str, list[dict[str, Any]]] = {}
+        node_tasks: dict[str, dict[str, Any]] = {}
 
-    def fetch_node_specs(specs: list[dict[str, Any]]) -> None:
-        unique: list[dict[str, Any]] = []
-        scheduled: set[str] = set()
-        for spec in specs:
-            key = f"{spec['type']}|{spec['id']}"
-            if key in node_cache or key in scheduled:
-                continue
-            scheduled.add(key)
-            unique.append(spec)
-        operations = [
-            (
-                "tree_node",
-                lambda remote, spec=spec: remote.get_asset_tree_node(
-                    token, spec["type"], spec["id"], timeline_token
-                ),
-            )
-            for spec in unique
-        ]
-        for spec, (value, error) in zip(unique, run_operations(operations)):
-            key = f"{spec['type']}|{spec['id']}"
-            if error is not None:
-                warn(f"node {spec['path']} ({spec['type']}/{spec['id']}): {error}")
-                continue
-            if isinstance(value, dict):
-                node_cache[key] = value
-                stats["node_requests"] += 1
-
-    def fetch_collection_specs(specs: list[dict[str, Any]]) -> None:
-        if not specs:
-            return
-        page_size = max(1, min(limit_per_collection, max_items_per_collection))
-        first_operations = [
-            (
-                "tree_collection",
-                lambda remote, spec=spec: remote.get_asset_tree_collection(
-                    token,
-                    spec["parent_type"],
-                    spec["object_id"],
-                    spec["name"],
-                    timeline_token,
-                    full=True,
-                    limit=page_size,
-                    offset=0,
-                ),
-            )
-            for spec in specs
-        ]
-        for spec, (response, error) in zip(specs, run_operations(first_operations)):
-            spec["pages"] = {}
-            spec["reported_count"] = None
-            spec["next_offset"] = 0
-            spec["done"] = True
-            if error is not None:
-                warn(
-                    f"collection {spec['path']} ({spec['parent_type']}/{spec['object_id']}/{spec['name']}): {error}"
-                )
-                continue
-            stats["collection_requests"] += 1
-            batch = extract_collection_items(response)
-            spec["pages"][0] = batch
-            spec["reported_count"] = extract_collection_count(response)
-            spec["next_offset"] = len(batch)
-            spec["done"] = not batch or len(batch) < page_size
-
-        while True:
-            page_specs: list[tuple[dict[str, Any], int, int]] = []
-            for spec in specs:
-                if spec.get("done"):
-                    continue
-                offset = int(spec["next_offset"])
-                reported_count = spec.get("reported_count")
-                target = min(max_items_per_collection, reported_count) if reported_count is not None else max_items_per_collection
-                if offset >= target:
-                    spec["done"] = True
-                    continue
-                if reported_count is not None:
-                    while offset < target:
-                        current_limit = min(limit_per_collection, target - offset)
-                        page_specs.append((spec, offset, current_limit))
-                        offset += current_limit
-                    spec["done"] = True
-                else:
-                    current_limit = min(limit_per_collection, target - offset)
-                    page_specs.append((spec, offset, current_limit))
-            if not page_specs:
-                break
-            operations = [
-                (
-                    "tree_collection",
-                    lambda remote, spec=spec, offset=offset, current_limit=current_limit:
+        def queue_collection_page(spec: dict[str, Any], offset: int, current_limit: int) -> None:
+            if offset in spec["pending_offsets"] or offset in spec["pages"]:
+                return
+            spec["pending_offsets"].add(offset)
+            queued_tasks.append(
+                {
+                    "kind": "collection_page",
+                    "label": "tree_collection",
+                    "path": spec["path"],
+                    "spec": spec,
+                    "offset": offset,
+                    "limit": current_limit,
+                    "operation": lambda remote, spec=spec, offset=offset, current_limit=current_limit:
                         remote.get_asset_tree_collection(
-                            token,
-                            spec["parent_type"],
-                            spec["object_id"],
-                            spec["name"],
-                            timeline_token,
-                            full=True,
-                            limit=current_limit,
-                            offset=offset,
+                            token, spec["parent_type"], spec["object_id"], spec["name"], timeline_token,
+                            full=True, limit=current_limit, offset=offset,
                         ),
-                )
-                for spec, offset, current_limit in page_specs
-            ]
-            for (spec, offset, current_limit), (response, error) in zip(page_specs, run_operations(operations)):
-                if error is not None:
-                    warn(f"collection {spec['path']} offset {offset}: {error}")
-                    spec["done"] = True
-                    continue
-                stats["collection_requests"] += 1
-                batch = extract_collection_items(response)
-                spec["pages"][offset] = batch
-                count = extract_collection_count(response)
-                if count is not None:
-                    spec["reported_count"] = count
-                spec["next_offset"] = offset + len(batch)
-                if not batch or len(batch) < current_limit:
-                    spec["done"] = True
-
-        for spec in specs:
-            spec["items"] = [
-                item
-                for offset in sorted(spec.get("pages", {}))
-                for item in spec["pages"][offset]
-            ][:max_items_per_collection]
-            reported_count = spec.get("reported_count")
-            spec["truncated"] = (
-                len(spec["items"]) < reported_count
-                if reported_count is not None
-                else len(spec["items"]) >= max_items_per_collection
+                }
             )
-            if spec["truncated"]:
+
+        def queue_collection(spec: dict[str, Any]) -> None:
+            key = f"{spec['parent_type']}|{spec['object_id']}|{spec['name']}"
+            if not spec["parent_type"] or not spec["object_id"]:
+                warn(f"collection {spec['path']}: parent type or object id is empty")
+                return
+            if key in seen_collections:
+                return
+            seen_collections.add(key)
+            spec.update({"pages": {}, "pending_offsets": set(), "reported_count": None, "errors": []})
+            queue_collection_page(spec, 0, max(1, min(limit_per_collection, max_items_per_collection)))
+
+        def queue_node_ref(ref: dict[str, Any]) -> None:
+            key = f"{ref['type']}|{ref['id']}"
+            child = node_cache.get(key)
+            if child is not None:
+                if ref.get("item_doc") is not None:
+                    ref["item_doc"]["node"] = child
+                candidate = node_candidates.setdefault(key, {"node": child, "refs": []})
+                candidate["refs"].append(ref)
+                return
+            node_waiters.setdefault(key, []).append(ref)
+            if key in node_tasks:
+                node_tasks[key]["path"] = min(node_tasks[key]["path"], ref["path"])
+                return
+            task = {
+                "kind": "node",
+                "label": "tree_node",
+                "path": ref["path"],
+                "key": key,
+                "type": ref["type"],
+                "id": ref["id"],
+                "operation": lambda remote, ref=ref:
+                    remote.get_asset_tree_node(token, ref["type"], ref["id"], timeline_token),
+            }
+            node_tasks[key] = task
+            queued_tasks.append(task)
+
+        def finalize_collection(spec: dict[str, Any]) -> None:
+            items = [item for offset in sorted(spec["pages"]) for item in spec["pages"][offset]][
+                :max_items_per_collection
+            ]
+            reported_count = spec.get("reported_count")
+            truncated = len(items) < reported_count if reported_count is not None else len(items) >= max_items_per_collection
+            if truncated:
                 warn(
-                    f"collection {spec['path']}: fetched {len(spec['items'])} item(s), "
+                    f"collection {spec['path']}: fetched {len(items)} item(s), "
                     f"reported count {reported_count or 'unknown'}"
                 )
-
-    def traverse_tree() -> None:
-        pending_nodes: list[dict[str, Any]] = [
-            {"node": root, "path": "asset", "depth": 0, "title": root.get("displayName")}
-        ]
-        while pending_nodes:
-            current_nodes: list[dict[str, Any]] = []
-            for entry in sorted(pending_nodes, key=lambda item: item["path"]):
-                node = entry["node"]
-                node_type = clean_text(first_present(node.get("type"), ""))
-                object_id = clean_text(first_present(node.get("objectId"), ""))
-                key = f"{node_type}|{object_id}"
-                if object_id and key in seen_nodes:
+            prop = spec["prop"]
+            collection_doc: dict[str, Any] = {
+                "path": spec["path"], "name": spec["name"],
+                "title": clean_text(first_present(prop.get("title"), spec["name"])),
+                "type": prop.get("type"), "kind": prop.get("kind"),
+                "parent_type": spec["parent_type"], "parent_object_id": spec["object_id"],
+                "count": reported_count if reported_count is not None else len(items),
+                "fetched_count": len(items), "truncated": truncated, "items": [],
+            }
+            collections.append(collection_doc)
+            stats["collections"] += 1
+            for index, item in enumerate(items):
+                item_path = f"{spec['path']}[{index}]"
+                if not isinstance(item, dict):
+                    collection_doc["items"].append({"path": item_path, "value": item})
+                    add_table_row(
+                        path=item_path, name=spec["name"], title=collection_doc["title"], value=item,
+                        value_type=prop.get("type"), kind=prop.get("kind"),
+                        parent_type=spec["parent_type"], parent_object_id=spec["object_id"],
+                    )
                     continue
-                if object_id:
-                    seen_nodes.add(key)
-                    node_cache[key] = node
-                entry["type"] = node_type
-                entry["id"] = object_id
-                current_nodes.append(entry)
-                if entry["path"] != "asset":
-                    nodes.append(
-                        {
-                            "path": entry["path"],
-                            "title": entry.get("title") or node.get("displayName") or entry["path"],
-                            "display_name": node.get("displayName"),
-                            "object_id": object_id,
-                            "type": node_type,
-                            "vulnerability_level": node.get("vulnerabilityLevel"),
-                            "data": node.get("data") if isinstance(node.get("data"), dict) else {},
-                        }
-                    )
-                    stats["nodes"] += 1
-            if not current_nodes:
-                break
-
-            metadata_for_types([entry["type"] for entry in current_nodes])
-            collection_specs: list[dict[str, Any]] = []
-            direct_refs: list[dict[str, Any]] = []
-            for entry in current_nodes:
-                node = entry["node"]
-                node_type = entry["type"]
-                object_id = entry["id"]
-                depth = int(entry["depth"])
-                path = entry["path"]
-                metadata = metadata_cache.get(node_type) or {}
-                properties = metadata_properties_by_name(metadata)
-                data = node.get("data") if isinstance(node.get("data"), dict) else {}
-                for name, value in data.items():
-                    prop = metadata_property_for_name(properties, name)
-                    title = clean_text(first_present(prop.get("title"), name))
-                    value_type = clean_text(
-                        first_present(prop.get("type"), value.get("type") if isinstance(value, dict) else None)
-                    )
-                    kind = clean_text(prop.get("kind"))
-                    current_path = f"{path}.{name}"
-                    if should_fetch_collection(prop, value):
-                        add_table_row(
-                            path=current_path, name=name, title=title, value=value,
-                            value_type=value_type, kind=kind or "collection",
-                            parent_type=node_type, parent_object_id=object_id,
+                item_doc = {
+                    "path": item_path, "display_name": item.get("displayName"),
+                    "object_id": item.get("objectId"), "type": item.get("type"),
+                    "vulnerability_level": item.get("vulnerabilityLevel"),
+                    "data": item.get("data") if isinstance(item.get("data"), dict) else {},
+                }
+                collection_doc["items"].append(item_doc)
+                add_table_row(
+                    path=item_path, name=spec["name"], title=collection_doc["title"], value=item,
+                    value_type=item.get("type") or prop.get("type"), kind=prop.get("kind"),
+                    parent_type=spec["parent_type"], parent_object_id=spec["object_id"],
+                )
+                if int(spec["depth"]) <= max_depth and is_object_ref(item):
+                    child_type = clean_text(item.get("type"))
+                    child_id = clean_text(item.get("objectId"))
+                    if child_type and child_id:
+                        queue_node_ref(
+                            {"type": child_type, "id": child_id, "path": item_path,
+                             "depth": spec["depth"], "title": item_doc.get("display_name"),
+                             "item": item, "item_doc": item_doc,
+                             "parent_type": spec["parent_type"], "parent_object_id": spec["object_id"]}
                         )
-                        if depth >= max_depth:
-                            warn(f"max depth reached before collection {current_path}")
-                        else:
-                            collection_specs.append(
-                                {
-                                    "parent_type": node_type,
-                                    "object_id": object_id or root_asset_id,
-                                    "name": metadata_collection_name(prop, name),
-                                    "prop": prop,
-                                    "path": current_path,
-                                    "depth": depth + 1,
-                                }
-                            )
                         continue
-                    if is_object_ref(value):
-                        add_table_row(
-                            path=current_path, name=name, title=title, value=value,
-                            value_type=value_type, kind=kind or "node",
-                            parent_type=node_type, parent_object_id=object_id,
-                        )
-                        if depth >= max_depth:
-                            warn(f"max depth reached before node {current_path}")
-                        else:
-                            child_type = clean_text(value.get("type"))
-                            child_id = clean_text(value.get("objectId"))
-                            if child_type and child_id:
-                                direct_refs.append(
-                                    {"type": child_type, "id": child_id, "path": current_path,
-                                     "depth": depth + 1, "title": title}
-                                )
-                        continue
-                    add_value_rows(
-                        path=current_path, name=name, title=title, value=value,
-                        value_type=value_type, kind=kind,
-                        parent_type=node_type, parent_object_id=object_id,
-                    )
+                if int(spec["depth"]) > max_depth:
+                    warn(f"max depth reached inside collection {item_path}")
+                add_embedded_data_rows(item, item_path, spec["parent_type"], spec["object_id"])
 
-                for prop in metadata_collection_properties(metadata):
-                    name = metadata_collection_name(prop)
-                    if not name or metadata_data_has_property(data, name):
-                        continue
-                    current_path = f"{path}.{name}"
+        def process_node(entry: dict[str, Any]) -> None:
+            node = entry["node"]
+            refs = sorted(entry.get("refs") or [], key=lambda item: item["path"])
+            primary = refs[0] if refs else {"path": "asset", "depth": 0, "title": root.get("displayName")}
+            node_type = clean_text(first_present(node.get("type"), ""))
+            object_id = clean_text(first_present(node.get("objectId"), ""))
+            key = f"{node_type}|{object_id}"
+            if object_id and key in seen_nodes:
+                return
+            if object_id:
+                seen_nodes.add(key)
+                node_cache[key] = node
+            path = primary["path"]
+            depth = int(primary["depth"])
+            if path != "asset":
+                nodes.append(
+                    {"path": path, "title": primary.get("title") or node.get("displayName") or path,
+                     "display_name": node.get("displayName"), "object_id": object_id, "type": node_type,
+                     "vulnerability_level": node.get("vulnerabilityLevel"),
+                     "data": node.get("data") if isinstance(node.get("data"), dict) else {}}
+                )
+                stats["nodes"] += 1
+            metadata_for_types([node_type])
+            metadata = metadata_cache.get(node_type) or {}
+            properties = metadata_properties_by_name(metadata)
+            data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            for name, value in data.items():
+                prop = metadata_property_for_name(properties, name)
+                title = clean_text(first_present(prop.get("title"), name))
+                value_type = clean_text(first_present(prop.get("type"), value.get("type") if isinstance(value, dict) else None))
+                kind = clean_text(prop.get("kind"))
+                current_path = f"{path}.{name}"
+                if should_fetch_collection(prop, value):
+                    add_table_row(
+                        path=current_path, name=name, title=title, value=value, value_type=value_type,
+                        kind=kind or "collection", parent_type=node_type, parent_object_id=object_id,
+                    )
                     if depth >= max_depth:
                         warn(f"max depth reached before collection {current_path}")
                     else:
-                        collection_specs.append(
+                        queue_collection(
                             {"parent_type": node_type, "object_id": object_id or root_asset_id,
-                             "name": name, "prop": prop, "path": current_path, "depth": depth + 1}
+                             "name": metadata_collection_name(prop, name), "prop": prop,
+                             "path": current_path, "depth": depth + 1}
                         )
-
-            unique_collections: list[dict[str, Any]] = []
-            for spec in sorted(collection_specs, key=lambda item: item["path"]):
-                key = f"{spec['parent_type']}|{spec['object_id']}|{spec['name']}"
-                if not spec["parent_type"] or not spec["object_id"]:
-                    warn(f"collection {spec['path']}: parent type or object id is empty")
-                elif key not in seen_collections:
-                    seen_collections.add(key)
-                    unique_collections.append(spec)
-
-            fetch_collection_specs(unique_collections)
-            child_refs = list(direct_refs)
-            for spec in unique_collections:
-                items = spec.get("items") or []
-                prop = spec["prop"]
-                collection_doc: dict[str, Any] = {
-                    "path": spec["path"], "name": spec["name"],
-                    "title": clean_text(first_present(prop.get("title"), spec["name"])),
-                    "type": prop.get("type"), "kind": prop.get("kind"),
-                    "parent_type": spec["parent_type"], "parent_object_id": spec["object_id"],
-                    "count": spec.get("reported_count") if spec.get("reported_count") is not None else len(items),
-                    "fetched_count": len(items), "truncated": bool(spec.get("truncated")), "items": [],
-                }
-                collections.append(collection_doc)
-                stats["collections"] += 1
-                for index, item in enumerate(items):
-                    item_path = f"{spec['path']}[{index}]"
-                    if not isinstance(item, dict):
-                        collection_doc["items"].append({"path": item_path, "value": item})
-                        add_table_row(
-                            path=item_path, name=spec["name"], title=collection_doc["title"], value=item,
-                            value_type=prop.get("type"), kind=prop.get("kind"),
-                            parent_type=spec["parent_type"], parent_object_id=spec["object_id"],
-                        )
-                        continue
-                    item_doc = {
-                        "path": item_path, "display_name": item.get("displayName"),
-                        "object_id": item.get("objectId"), "type": item.get("type"),
-                        "vulnerability_level": item.get("vulnerabilityLevel"),
-                        "data": item.get("data") if isinstance(item.get("data"), dict) else {},
-                    }
-                    collection_doc["items"].append(item_doc)
+                    continue
+                if is_object_ref(value):
                     add_table_row(
-                        path=item_path, name=spec["name"], title=collection_doc["title"], value=item,
-                        value_type=item.get("type") or prop.get("type"), kind=prop.get("kind"),
-                        parent_type=spec["parent_type"], parent_object_id=spec["object_id"],
+                        path=current_path, name=name, title=title, value=value, value_type=value_type,
+                        kind=kind or "node", parent_type=node_type, parent_object_id=object_id,
                     )
-                    if int(spec["depth"]) <= max_depth and is_object_ref(item):
-                        child_type = clean_text(item.get("type"))
-                        child_id = clean_text(item.get("objectId"))
+                    if depth >= max_depth:
+                        warn(f"max depth reached before node {current_path}")
+                    else:
+                        child_type = clean_text(value.get("type"))
+                        child_id = clean_text(value.get("objectId"))
                         if child_type and child_id:
-                            child_refs.append(
-                                {"type": child_type, "id": child_id, "path": item_path,
-                                 "depth": spec["depth"], "title": item_doc.get("display_name"),
-                                 "item": item, "item_doc": item_doc,
-                                 "parent_type": spec["parent_type"], "parent_object_id": spec["object_id"]}
+                            queue_node_ref(
+                                {"type": child_type, "id": child_id, "path": current_path,
+                                 "depth": depth + 1, "title": title}
                             )
-                            continue
-                    if int(spec["depth"]) > max_depth:
-                        warn(f"max depth reached inside collection {item_path}")
-                    add_embedded_data_rows(item, item_path, spec["parent_type"], spec["object_id"])
+                    continue
+                add_value_rows(
+                    path=current_path, name=name, title=title, value=value, value_type=value_type,
+                    kind=kind, parent_type=node_type, parent_object_id=object_id,
+                )
+            for prop in metadata_collection_properties(metadata):
+                name = metadata_collection_name(prop)
+                if not name or metadata_data_has_property(data, name):
+                    continue
+                current_path = f"{path}.{name}"
+                if depth >= max_depth:
+                    warn(f"max depth reached before collection {current_path}")
+                else:
+                    queue_collection(
+                        {"parent_type": node_type, "object_id": object_id or root_asset_id,
+                         "name": name, "prop": prop, "path": current_path, "depth": depth + 1}
+                    )
 
-            fetch_node_specs(child_refs)
-            pending_nodes = []
-            for ref in sorted(child_refs, key=lambda item: item["path"]):
-                child = node_cache.get(f"{ref['type']}|{ref['id']}")
-                if child:
+        def handle_task(task: dict[str, Any], value: Any, error: Exception | None) -> None:
+            if task["kind"] == "node":
+                key = task["key"]
+                refs = node_waiters.pop(key, [])
+                node_tasks.pop(key, None)
+                if error is not None or not isinstance(value, dict):
+                    warn(f"node {task['path']} ({task['type']}/{task['id']}): {error or 'unexpected response'}")
+                    for ref in refs:
+                        if ref.get("item") is not None:
+                            add_embedded_data_rows(ref["item"], ref["path"], ref["parent_type"], ref["parent_object_id"])
+                    return
+                node_cache[key] = value
+                stats["node_requests"] += 1
+                for ref in refs:
                     if ref.get("item_doc") is not None:
-                        ref["item_doc"]["node"] = child
-                    pending_nodes.append(
-                        {"node": child, "path": ref["path"], "depth": ref["depth"], "title": ref.get("title")}
+                        ref["item_doc"]["node"] = value
+                node_candidates[key] = {"node": value, "refs": refs}
+                return
+            spec = task["spec"]
+            offset = int(task["offset"])
+            current_limit = int(task["limit"])
+            spec["pending_offsets"].discard(offset)
+            if error is not None:
+                spec["errors"].append((offset, error))
+                warn(f"collection {spec['path']} offset {offset}: {error}")
+            else:
+                stats["collection_requests"] += 1
+                batch = extract_collection_items(value)
+                spec["pages"][offset] = batch
+                count = extract_collection_count(value)
+                if count is not None:
+                    spec["reported_count"] = count
+                if batch and len(batch) == current_limit:
+                    next_offset = offset + len(batch)
+                    target = min(max_items_per_collection, spec["reported_count"]) if spec["reported_count"] is not None else max_items_per_collection
+                    if next_offset < target:
+                        if spec["reported_count"] is None:
+                            queue_collection_page(spec, next_offset, min(limit_per_collection, target - next_offset))
+                        else:
+                            while next_offset < target:
+                                page_limit = min(limit_per_collection, target - next_offset)
+                                queue_collection_page(spec, next_offset, page_limit)
+                                next_offset += page_limit
+            if not spec["pending_offsets"]:
+                finalize_collection(spec)
+
+        root_type = clean_text(first_present(root.get("type"), ""))
+        root_id = clean_text(first_present(root.get("objectId"), root_asset_id))
+        node_candidates[f"{root_type}|{root_id}"] = {"node": root, "refs": []}
+
+        while node_candidates or queued_tasks or in_flight:
+            while node_candidates:
+                producer_paths = [task["path"] for task in queued_tasks]
+                producer_paths.extend(task["path"] for task in in_flight.values())
+                ordered_candidates = sorted(
+                    node_candidates,
+                    key=lambda item: min(
+                        (ref["path"] for ref in node_candidates[item].get("refs") or []),
+                        default="asset",
+                    ),
+                )
+                selected_key: str | None = None
+                for key in ordered_candidates:
+                    candidate_path = min(
+                        (ref["path"] for ref in node_candidates[key].get("refs") or []),
+                        default="asset",
                     )
-                elif ref.get("item") is not None:
-                    add_embedded_data_rows(
-                        ref["item"], ref["path"], ref["parent_type"], ref["parent_object_id"]
-                    )
+                    if candidate_path == "asset" or not any(path < candidate_path for path in producer_paths):
+                        selected_key = key
+                        break
+                if selected_key is None:
+                    break
+                process_node(node_candidates.pop(selected_key))
+            if request_executor:
+                window = request_executor.concurrency.window()
+                while queued_tasks and len(in_flight) < window:
+                    task = queued_tasks.popleft()
+                    future = request_executor.submit(task["operation"], label=task["label"])
+                    in_flight[future] = task
+                if not in_flight:
+                    continue
+                completed, _pending = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+                for future in completed:
+                    task = in_flight.pop(future)
+                    try:
+                        handle_task(task, future.result(), None)
+                    except AssetCardBuildCancelled:
+                        raise
+                    except Exception as exc:
+                        handle_task(task, None, exc)
+            elif queued_tasks:
+                task = queued_tasks.popleft()
+                try:
+                    handle_task(task, task["operation"](client), None)
+                except Exception as exc:
+                    handle_task(task, None, exc)
 
         nodes.sort(key=lambda item: item.get("path") or "")
         collections.sort(key=lambda item: item.get("path") or "")
@@ -3629,6 +3777,7 @@ def build_asset_card(
         )
     ) + 2
     stats["stage_duration_ms"] = dict(sorted(phase_duration_ms.items()))
+    stats["critical_path_ms"] = round(max(phase_duration_ms.values(), default=0.0), 2)
     if request_executor:
         stats.update(request_executor.telemetry())
     stats["warnings"].sort()
@@ -3796,35 +3945,42 @@ def build_asset_vulnerability_snapshot(
                 continue
             group_loads.append({"group": group, "collection_type": collection_type, "collection_id": collection_id})
 
-    def load_group(remote: MpVmClient, spec: dict[str, Any]) -> dict[str, Any]:
-        items: list[dict[str, Any]] = []
-        offset = 0
-        request_count = 0
-        error: Exception | None = None
-        while len(items) < max_items:
-            if request_executor and request_executor.cancel_event.is_set():
-                raise AssetCardBuildCancelled("Asset card build was cancelled.")
-            current_limit = min(page_size, max_items - len(items))
-            if request_executor:
-                request_executor.record_request_started()
-            page_started = time.perf_counter()
-            try:
-                batch = remote.get_asset_vulnerability_collection(
-                    token,
-                    spec["collection_type"],
-                    timeline_token,
-                    spec["collection_id"],
-                    limit=current_limit,
-                    offset=offset,
-                )
-                request_count += 1
-            except (MpVmApiError, requests.RequestException) as exc:
-                error = exc
-                break
-            finally:
-                if request_executor:
-                    request_executor.record_request_completed()
-            items.extend(normalize_asset_vulnerability_item(entry) for entry in batch)
+    for spec in group_loads:
+        spec["pages"] = {}
+        spec["errors"] = []
+
+    def load_pages(page_specs: list[tuple[dict[str, Any], int, int]]) -> None:
+        operations = [
+            (
+                "vulnerability_collection",
+                lambda remote, spec=spec, offset=offset, current_limit=current_limit:
+                    remote.get_asset_vulnerability_collection(
+                        token,
+                        spec["collection_type"],
+                        timeline_token,
+                        spec["collection_id"],
+                        limit=current_limit,
+                        offset=offset,
+                    ),
+            )
+            for spec, offset, current_limit in page_specs
+        ]
+        if request_executor:
+            results = request_executor.map_labeled_settled(operations)
+        else:
+            results = []
+            for _label, operation in operations:
+                try:
+                    results.append((operation(client), None))
+                except Exception as exc:
+                    results.append((None, exc))
+        for (spec, offset, current_limit), (batch, error) in zip(page_specs, results):
+            if error is not None:
+                spec["errors"].append((offset, error))
+                continue
+            values = batch if isinstance(batch, list) else []
+            spec["pages"][offset] = values
+            stats["vulnerability_collection_requests"] += 1
             log_event(
                 "asset-card-build",
                 "vulnerability.page.loaded",
@@ -3833,43 +3989,51 @@ def build_asset_vulnerability_snapshot(
                 collection_id=spec["collection_id"],
                 offset=offset,
                 limit=current_limit,
-                item_count=len(batch),
-                duration_ms=round((time.perf_counter() - page_started) * 1000, 2),
+                item_count=len(values),
             )
-            if not batch or len(batch) < current_limit:
-                break
-            offset += len(batch)
-        return {"items": items, "request_count": request_count, "error": error}
 
-    group_operations = [
-        (lambda remote, spec=spec: load_group(remote, spec))
-        for spec in group_loads
-    ]
-    if request_executor:
-        group_results = request_executor.map_settled(
-            group_operations,
-            count_progress=False,
-            label="vulnerability_collection",
-        )
-    else:
-        group_results = []
-        for operation in group_operations:
-            try:
-                group_results.append((operation(client), None))
-            except Exception as exc:
-                group_results.append((None, exc))
+    known_pages: list[tuple[dict[str, Any], int, int]] = []
+    unknown_specs: list[dict[str, Any]] = []
+    for spec in group_loads:
+        reported_count = int(spec["group"].get("vulnerabilities_count") or 0)
+        if reported_count > 0:
+            target = min(max_items, reported_count)
+            for offset in range(0, target, page_size):
+                known_pages.append((spec, offset, min(page_size, target - offset)))
+        else:
+            unknown_specs.append(spec)
+            known_pages.append((spec, 0, min(page_size, max_items)))
+    load_pages(known_pages)
 
-    for spec, (result, operation_error) in zip(group_loads, group_results):
+    while unknown_specs:
+        next_pages: list[tuple[dict[str, Any], int, int]] = []
+        remaining: list[dict[str, Any]] = []
+        for spec in unknown_specs:
+            offsets = sorted(spec["pages"])
+            if not offsets or spec["errors"]:
+                continue
+            last_offset = offsets[-1]
+            last_batch = spec["pages"][last_offset]
+            next_offset = last_offset + len(last_batch)
+            if len(last_batch) < page_size or next_offset >= max_items:
+                continue
+            current_limit = min(page_size, max_items - next_offset)
+            next_pages.append((spec, next_offset, current_limit))
+            remaining.append(spec)
+        if not next_pages:
+            break
+        load_pages(next_pages)
+        unknown_specs = remaining
+
+    for spec in group_loads:
         group = spec["group"]
-        if operation_error is not None:
-            warn(f"{spec['collection_type']} collection {spec['collection_id']}: {operation_error}")
-            continue
-        if not isinstance(result, dict):
-            continue
-        group["items"] = result.get("items") or []
-        stats["vulnerability_collection_requests"] += int(result.get("request_count") or 0)
-        if result.get("error") is not None:
-            warn(f"{spec['collection_type']} collection {spec['collection_id']}: {result['error']}")
+        group["items"] = [
+            normalize_asset_vulnerability_item(entry)
+            for offset in sorted(spec["pages"])
+            for entry in spec["pages"][offset]
+        ][:max_items]
+        for offset, error in spec["errors"]:
+            warn(f"{spec['collection_type']} collection {spec['collection_id']} offset {offset}: {error}")
         reported_count = group["vulnerabilities_count"]
         group["truncated"] = (
             len(group["items"]) < reported_count

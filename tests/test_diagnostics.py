@@ -6,8 +6,31 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app import diagnostics
+from app.mpvm_client import AuthConfig, MpVmClient
+
+
+class CountingJsonResponse:
+    def __init__(self) -> None:
+        self.ok = True
+        self.status_code = 200
+        self.headers = {"content-type": "application/json"}
+        self.raw = SimpleNamespace(retries=SimpleNamespace(history=()))
+        self.content = b'{"value": 1}'
+        self.json_calls = 0
+        self.text_calls = 0
+
+    @property
+    def text(self):
+        self.text_calls += 1
+        return self.content.decode("utf-8")
+
+    def json(self):
+        self.json_calls += 1
+        return {"value": 1}
 
 
 class DiagnosticLoggingTests(unittest.TestCase):
@@ -105,6 +128,19 @@ class DiagnosticLoggingTests(unittest.TestCase):
         safe_url = diagnostics.sanitize_url("https://user:pass@example.test/api/tree?token=timeline-secret&offset=0")
         self.assertNotIn("timeline-secret", safe_url)
         self.assertNotIn("user:pass", safe_url)
+
+    def test_disabled_debug_payload_does_not_parse_response_twice(self):
+        self.configure(debug_payloads=False)
+        response = CountingJsonResponse()
+        auth = AuthConfig(api_url="https://fixture", token_url="https://fixture/token", access_token="token")
+        client = MpVmClient(auth)
+        with patch.object(diagnostics.requests.Session, "request", return_value=response):
+            value = client.get_json("token", "/api/fixture")
+        client.session.close()
+
+        self.assertEqual(value, {"value": 1})
+        self.assertEqual(response.json_calls, 1)
+        self.assertEqual(response.text_calls, 0)
 
     def test_archive_filters_events_by_trace_and_job(self):
         self.configure()
