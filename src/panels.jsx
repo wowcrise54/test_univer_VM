@@ -4,6 +4,7 @@ import { api } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
 import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, Field, Panel, Toggle } from "./shared/ui.jsx";
+import { ProgressiveAssetCard, invalidateAssetCardCache } from "./features/asset-cards/ProgressiveAssetCard.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -810,11 +811,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           return;
         }
         if (nextJob.status === "completed") {
-          const [card] = await Promise.all([
-            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}`),
-            refreshLocalCards(),
-          ]);
+          invalidateAssetCardCache(nextJob.asset_id);
+          await refreshLocalCards();
           if (!alive) return;
+          const card = { asset_id: nextJob.asset_id, display_name: nextJob.asset_id, _progressive: true };
           setSelectedCard(card);
           setAssetWindowOpen(true);
           showAlert(`Карточка актива ${card.display_name || card.asset_id} собрана.`, "success");
@@ -909,12 +909,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       showAlert(`Загружено карточек из БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`, "success");
     });
 
-  const openLocalCard = (row) =>
-    runBusy("assetCardOpen", async () => {
-      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`);
-      setSelectedCard(result);
-      setAssetWindowOpen(true);
-    });
+  const openLocalCard = (row) => {
+    setSelectedCard({ ...row, _progressive: true });
+    setAssetWindowOpen(true);
+  };
 
   const updateLocalCard = (row) =>
     runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
@@ -948,6 +946,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     if (!window.confirm(`Удалить карточку актива «${label}» из локальной БД?`)) return;
     runBusy(`assetCardDelete:${row.asset_id}`, async () => {
       await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`, { method: "DELETE" });
+      invalidateAssetCardCache(row.asset_id);
       setCards((items) => items.filter((item) => item.asset_id !== row.asset_id));
       if (selectedCard?.asset_id === row.asset_id) {
         setSelectedCard(null);
@@ -1165,11 +1164,15 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           closeLabel="Назад"
           onClose={() => setAssetWindowOpen(false)}
         >
-          <AssetCard
-            card={selectedCard}
-            loading={busy.assetCardBuild || busy.assetCardOpen}
-            onOpenPassport={openAssetPassport}
-          />
+          {selectedCard?._progressive ? (
+            <ProgressiveAssetCard assetId={selectedCard.asset_id} onOpenPassport={openAssetPassport} />
+          ) : (
+            <AssetCard
+              card={selectedCard}
+              loading={busy.assetCardBuild || busy.assetCardOpen}
+              onOpenPassport={openAssetPassport}
+            />
+          )}
       </PassportModal>
       ) : null}
       {assetPassportWindowOpen ? (

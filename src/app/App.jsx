@@ -1,12 +1,14 @@
-import { AssetCardsPage } from "../pages/AssetCardsPage.jsx";
-import { AssetsPage } from "../pages/AssetsPage.jsx";
-import { ConnectionPage } from "../pages/ConnectionPage.jsx";
-import { ExportPage } from "../pages/ExportPage.jsx";
-import { PassportsPage } from "../pages/PassportsPage.jsx";
-import { TasksPage } from "../pages/TasksPage.jsx";
+import { lazy, Suspense } from "react";
 import { AlertStack, Sidebar, Topbar } from "./layout.jsx";
 import { useRouter } from "./router.js";
 import { useAppData } from "./useAppData.js";
+
+const AssetCardsPage = lazy(() => import("../pages/AssetCardsPage.jsx").then((module) => ({ default: module.AssetCardsPage })));
+const AssetsPage = lazy(() => import("../pages/AssetsPage.jsx").then((module) => ({ default: module.AssetsPage })));
+const ConnectionPage = lazy(() => import("../pages/ConnectionPage.jsx").then((module) => ({ default: module.ConnectionPage })));
+const ExportPage = lazy(() => import("../pages/ExportPage.jsx").then((module) => ({ default: module.ExportPage })));
+const PassportsPage = lazy(() => import("../pages/PassportsPage.jsx").then((module) => ({ default: module.PassportsPage })));
+const TasksPage = lazy(() => import("../pages/TasksPage.jsx").then((module) => ({ default: module.TasksPage })));
 
 export function App() {
   const { navigate, path, route } = useRouter();
@@ -18,10 +20,12 @@ export function App() {
       <main className="workspace">
         <Topbar session={appData.session} route={route} />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage
-          routeId={route?.id}
-          {...appData}
-        />
+        <Suspense fallback={<div className="route-loading">Загрузка раздела…</div>}>
+          <ActivePage
+            routeId={route?.id}
+            {...appData}
+          />
+        </Suspense>
       </main>
     </div>
   );

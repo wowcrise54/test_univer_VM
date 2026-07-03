@@ -169,6 +169,7 @@ class PassportQueryTests(unittest.TestCase):
                 "list_vulnerability_passports",
                 return_value={"rows": summaries, "total": 100, "limit": 50, "offset": 0},
             ),
+            patch.object(main.WORKER_RUNNER, "submit", return_value=True) as submit,
         ):
             response = main.query_vulnerability_passports(
                 main.VulnerabilityPassportQueryRequest(),
@@ -178,7 +179,9 @@ class PassportQueryTests(unittest.TestCase):
         self.assertEqual(response["total"], 100)
         self.assertEqual(len(response["records"]), 50)
         self.assertEqual(response["detail_job"]["status"], "queued")
-        self.assertEqual(len(background_tasks.tasks), 1)
+        self.assertEqual(len(background_tasks.tasks), 0)
+        submit.assert_called_once()
+        self.assertEqual(submit.call_args.args[0], "passport-details")
         self.assertNotIn("raw_detail", response["records"][0])
 
     def test_query_rejects_a_second_active_detail_job(self):

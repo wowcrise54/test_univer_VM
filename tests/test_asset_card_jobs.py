@@ -559,7 +559,7 @@ class AssetCardExecutorTests(unittest.TestCase):
 
 
 class AssetCardJobApiTests(unittest.TestCase):
-    def test_create_job_returns_before_background_task_runs(self):
+    def test_create_job_is_submitted_to_common_runner(self):
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
         job = {"job_id": "job-1", "asset_id": "asset-1", "status": "queued", "stage": "queued"}
         background_tasks = BackgroundTasks()
@@ -568,6 +568,7 @@ class AssetCardJobApiTests(unittest.TestCase):
             patch.object(main.db, "get_active_asset_card_build_job", return_value=None),
             patch.object(main.db, "asset_card_exists", return_value=False),
             patch.object(main.db, "create_asset_card_build_job", return_value=job),
+            patch.object(main.WORKER_RUNNER, "submit", return_value=True) as submit,
         ):
             response = main.create_asset_card_build_job(
                 main.AssetCardBuildJobRequest(asset_id="asset-1"),
@@ -576,7 +577,9 @@ class AssetCardJobApiTests(unittest.TestCase):
         main.unregister_asset_card_build_job("job-1")
 
         self.assertEqual(response["job"]["status"], "queued")
-        self.assertEqual(len(background_tasks.tasks), 1)
+        self.assertEqual(len(background_tasks.tasks), 0)
+        submit.assert_called_once()
+        self.assertEqual(submit.call_args.args[0], "asset-card")
 
     def test_second_active_build_is_rejected(self):
         with patch.object(

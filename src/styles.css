@@ -1159,6 +1159,58 @@ td code {
   border-color: #0f8db7;
 }
 
+.asset-progressive-skeleton,
+.asset-tab-loading {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 240px;
+  padding: 28px;
+  color: var(--muted);
+}
+
+.route-loading {
+  display: grid;
+  min-height: 45vh;
+  place-items: center;
+  color: var(--muted);
+}
+
+.asset-progressive-skeleton span {
+  display: block;
+  width: min(520px, 82%);
+  height: 18px;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #edf2f6 20%, #f8fafc 45%, #edf2f6 70%);
+  background-size: 220% 100%;
+  animation: asset-card-skeleton 1.2s ease-in-out infinite;
+}
+
+.asset-progressive-skeleton span:nth-child(2) { width: min(420px, 68%); }
+.asset-progressive-skeleton span:nth-child(3) { width: min(470px, 74%); }
+
+@keyframes asset-card-skeleton {
+  to { background-position: -220% 0; }
+}
+
+.asset-load-more {
+  display: block;
+  margin: 12px auto;
+  border: 1px solid #b9d9e7;
+  border-radius: 7px;
+  padding: 8px 18px;
+  color: #24799e;
+  background: #f3f9fc;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.asset-load-more:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .asset-config-layout {
   display: grid;
   grid-template-columns: clamp(420px, 42vw, 680px) minmax(0, 1fr);

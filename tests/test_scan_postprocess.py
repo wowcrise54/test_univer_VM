@@ -275,7 +275,7 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
 
 
 class StartScannerTaskApiTests(unittest.TestCase):
-    def test_start_returns_postprocess_run_and_schedules_background_monitor(self):
+    def test_start_returns_postprocess_run_and_submits_monitor(self):
         background = BackgroundTasks()
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
         postprocess = {"run_id": "post-1", "status": "monitoring", "stage": "waiting_for_run"}
@@ -288,12 +288,14 @@ class StartScannerTaskApiTests(unittest.TestCase):
             }),
             patch.object(main.uuid, "uuid4", return_value="post-1"),
             patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess),
+            patch.object(main, "schedule_scan_postprocess") as schedule,
         ):
             result = main.start_scanner_task("task-1", background, main.StartScannerTaskRequest())
 
         self.assertEqual(result["postprocess_run_id"], "post-1")
         self.assertEqual(result["postprocess"]["status"], "monitoring")
-        self.assertEqual(len(background.tasks), 1)
+        self.assertEqual(len(background.tasks), 0)
+        schedule.assert_called_once_with("post-1", client.auth, "token")
 
     def test_http_start_is_accepted_and_background_schedule_runs(self):
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))

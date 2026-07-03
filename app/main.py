@@ -46,6 +46,8 @@ from .diagnostics import (
 configure_diagnostics()
 
 from . import db
+from .api.asset_cards import router as asset_card_read_router
+from .jobs import JobRunner
 from .mpvm_client import (
     ASSET_CARD_PDQL,
     SOFTWARE_VULN_PDQL,
@@ -148,17 +150,19 @@ class RuntimeSession:
 
 
 SESSION = RuntimeSession()
+WORKER_RUNNER = JobRunner(
+    {
+        "asset-card": 1,
+        "scan-postprocess": SCAN_POSTPROCESS_WORKERS,
+        "passport-details": 1,
+    },
+    session_ready=lambda: SESSION.client is not None and SESSION.access_token is not None,
+)
 DATABASE_STARTUP_ERROR: str | None = None
 PASSPORT_DETAIL_CANCEL_EVENTS: dict[str, threading.Event] = {}
 PASSPORT_DETAIL_CANCEL_EVENTS_LOCK = threading.Lock()
 ASSET_CARD_CANCEL_EVENTS: dict[str, threading.Event] = {}
 ASSET_CARD_CANCEL_EVENTS_LOCK = threading.Lock()
-SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
-SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
-SCAN_POSTPROCESS_EXECUTOR = ThreadPoolExecutor(
-    max_workers=SCAN_POSTPROCESS_WORKERS,
-    thread_name_prefix="scan-postprocess",
-)
 BACKGROUND_REQUEST_SEMAPHORE = threading.BoundedSemaphore(BACKGROUND_REQUEST_LIMIT)
 ASSET_METADATA_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 ASSET_METADATA_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
@@ -675,6 +679,7 @@ class FrontendDiagnosticBatch(BaseModel):
 
 
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
+app.include_router(asset_card_read_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -741,8 +746,8 @@ def startup() -> None:
     log_event("app", "app.startup.started", process_id=os.getpid())
     try:
         db.init_db()
-        db.interrupt_active_vulnerability_passport_detail_jobs()
-        db.interrupt_active_asset_card_build_jobs()
+        db.requeue_active_vulnerability_passport_detail_jobs()
+        db.requeue_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
@@ -750,6 +755,8 @@ def startup() -> None:
         log_exception("app", "app.startup.database_failed", database=db.database_label())
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
+    WORKER_RUNNER.notify_session_ready()
+    resume_background_jobs()
     resume_scan_postprocess_runs()
     scan_log(
         logging.INFO,
@@ -798,6 +805,7 @@ def health() -> dict[str, Any]:
             "asset_card_initial": ASSET_CARD_INITIAL_WORKERS,
             "asset_card_min": ASSET_CARD_MIN_WORKERS,
         },
+        "job_runner": WORKER_RUNNER.telemetry(),
     }
 
 
@@ -868,9 +876,9 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
     SESSION.token_url = token_url
     SESSION.username = payload.username
     SESSION.verify_tls = payload.verify_tls
-    # Returning the authenticated session must not wait for stale scan recovery.
-    # Recovery is queued after the HTTP response and uses its own bounded executor.
-    background_tasks.add_task(resume_scan_postprocess_runs)
+    WORKER_RUNNER.notify_session_ready()
+    resume_background_jobs()
+    resume_scan_postprocess_runs()
     return {
         "connected": True,
         "api_url": api_url,
@@ -990,7 +998,7 @@ def start_scanner_task(
             started_from=str(result["started_from"]),
             options=options.model_dump(),
         )
-        background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
+        schedule_scan_postprocess(postprocess_run_id, client.auth, token)
         return {
             **result,
             "postprocess_run_id": postprocess_run_id,
@@ -1231,14 +1239,18 @@ def create_asset_card_build_job(
             },
         )
     cancel_event = register_asset_card_build_job(job_id)
-    background_tasks.add_task(
-        run_asset_card_build_job,
-        job_id=job_id,
-        auth=client.auth,
-        token=token,
-        request=request,
-        cancel_event=cancel_event,
-        trace_id=trace_id,
+    WORKER_RUNNER.submit(
+        "asset-card",
+        job_id,
+        lambda: run_asset_card_build_job(
+            job_id=job_id,
+            auth=client.auth,
+            token=token,
+            request=request,
+            cancel_event=cancel_event,
+            trace_id=trace_id,
+        ),
+        heartbeat=lambda: db.heartbeat_background_job("asset-card", job_id),
     )
     log_event(
         "asset-card-build",
@@ -1609,6 +1621,7 @@ def query_vulnerability_passports(
                 requested_count=len(candidates["requested"]),
                 eligible_count=len(candidates["eligible"]),
                 skipped_fresh_count=len(candidates["skipped_fresh"]),
+                internal_ids=candidates["eligible"],
             )
         except psycopg.errors.UniqueViolation as exc:
             active_job = db.get_active_vulnerability_passport_detail_job()
@@ -1621,15 +1634,19 @@ def query_vulnerability_passports(
             ) from exc
         if candidates["eligible"]:
             cancel_event = register_vulnerability_passport_detail_job(job_id)
-            background_tasks.add_task(
-                run_vulnerability_passport_detail_job,
-                job_id=job_id,
-                auth=client.auth,
-                token=token,
-                internal_ids=candidates["eligible"],
-                cancel_event=cancel_event,
-                workers=PASSPORT_DETAIL_WORKERS,
-                batch_size=PASSPORT_DETAIL_DB_BATCH_SIZE,
+            WORKER_RUNNER.submit(
+                "passport-details",
+                job_id,
+                lambda: run_vulnerability_passport_detail_job(
+                    job_id=job_id,
+                    auth=client.auth,
+                    token=token,
+                    internal_ids=candidates["eligible"],
+                    cancel_event=cancel_event,
+                    workers=PASSPORT_DETAIL_WORKERS,
+                    batch_size=PASSPORT_DETAIL_DB_BATCH_SIZE,
+                ),
+                heartbeat=lambda: db.heartbeat_background_job("passport-details", job_id),
             )
         if db_result is not None:
             db_result["detail_job"] = detail_job
@@ -2082,26 +2099,85 @@ def build_precheck_task_name(prefix: str, audit_task_name: str) -> str:
 
 
 def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None:
-    with SCAN_POSTPROCESS_FUTURES_LOCK:
-        current = SCAN_POSTPROCESS_FUTURES.get(run_id)
-        if current and not current.done():
-            scan_log(logging.DEBUG, "schedule_skipped_already_running", postprocess_run_id=run_id)
-            return
-        future = SCAN_POSTPROCESS_EXECUTOR.submit(
-            run_scan_postprocess,
-            run_id=run_id,
-            auth=auth,
-            token=token,
+    submitted = WORKER_RUNNER.submit(
+        "scan-postprocess",
+        run_id,
+        lambda: run_scan_postprocess(run_id=run_id, auth=auth, token=token),
+        heartbeat=lambda: db.heartbeat_background_job("scan-postprocess", run_id),
+    )
+    scan_log(
+        logging.INFO if submitted else logging.DEBUG,
+        "scheduled" if submitted else "schedule_skipped_already_running",
+        postprocess_run_id=run_id,
+        api_url=auth.api_url,
+    )
+
+
+def resume_background_jobs() -> None:
+    if not SESSION.client or not SESSION.access_token:
+        return
+    auth = SESSION.client.auth
+    token = SESSION.access_token
+    try:
+        asset_job = db.get_active_asset_card_build_job()
+        passport_job = db.get_active_vulnerability_passport_detail_job()
+    except psycopg.Error:
+        log_exception("app", "job.resume.database_failed")
+        return
+    if asset_job:
+        job_id = str(asset_job["job_id"])
+        request = asset_job.get("request") if isinstance(asset_job.get("request"), dict) else {}
+        cancel_event = register_asset_card_build_job(job_id)
+        if asset_job.get("cancel_requested"):
+            cancel_event.set()
+        WORKER_RUNNER.submit(
+            "asset-card",
+            job_id,
+            lambda _job_id=job_id, _request=request, _cancel_event=cancel_event, _trace_id=asset_job.get("trace_id"): run_asset_card_build_job(
+                job_id=_job_id,
+                auth=auth,
+                token=token,
+                request=_request,
+                cancel_event=_cancel_event,
+                trace_id=_trace_id,
+            ),
+            heartbeat=lambda _job_id=job_id: db.heartbeat_background_job("asset-card", _job_id),
         )
-        SCAN_POSTPROCESS_FUTURES[run_id] = future
-        scan_log(logging.INFO, "scheduled", postprocess_run_id=run_id, api_url=auth.api_url)
 
-    def forget(_future: Future[Any]) -> None:
-        with SCAN_POSTPROCESS_FUTURES_LOCK:
-            if SCAN_POSTPROCESS_FUTURES.get(run_id) is _future:
-                SCAN_POSTPROCESS_FUTURES.pop(run_id, None)
-
-    future.add_done_callback(forget)
+    if passport_job:
+        job_id = str(passport_job["job_id"])
+        request = passport_job.get("request") if isinstance(passport_job.get("request"), dict) else {}
+        internal_ids = [str(item) for item in request.get("internal_ids") or [] if item]
+        if not internal_ids:
+            candidates = db.vulnerability_passport_detail_refresh_candidates(
+                db.list_vulnerability_passport_internal_ids(),
+                ttl_hours=PASSPORT_DETAIL_TTL_HOURS,
+            )
+            internal_ids = candidates["eligible"]
+        if internal_ids:
+            cancel_event = register_vulnerability_passport_detail_job(job_id)
+            if passport_job.get("cancel_requested"):
+                cancel_event.set()
+            WORKER_RUNNER.submit(
+                "passport-details",
+                job_id,
+                lambda _job_id=job_id, _internal_ids=internal_ids, _cancel_event=cancel_event: run_vulnerability_passport_detail_job(
+                    job_id=_job_id,
+                    auth=auth,
+                    token=token,
+                    internal_ids=_internal_ids,
+                    cancel_event=_cancel_event,
+                    workers=PASSPORT_DETAIL_WORKERS,
+                    batch_size=PASSPORT_DETAIL_DB_BATCH_SIZE,
+                ),
+                heartbeat=lambda _job_id=job_id: db.heartbeat_background_job("passport-details", _job_id),
+            )
+        else:
+            db.finish_vulnerability_passport_detail_job(
+                job_id,
+                status="completed",
+                message="No passport details require refresh after restart.",
+            )
 
 
 def resume_scan_postprocess_runs() -> None:

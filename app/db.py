@@ -40,6 +40,28 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def lease_until_utc(seconds: int = 45) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def asset_card_parent_path(path: Any) -> str | None:
+    value = clean_value(path)
+    if not value or value == "asset":
+        return None
+    if value.endswith("]") and "[" in value:
+        return value.rsplit("[", 1)[0]
+    if "." in value:
+        return value.rsplit(".", 1)[0]
+    return "asset"
+
+
+def asset_card_path_depth(path: Any) -> int:
+    value = clean_value(path)
+    if not value or value == "asset":
+        return 0
+    return value.count(".") + value.count("[") + (0 if value.startswith("asset") else 1)
+
+
 def connect() -> psycopg.Connection[dict[str, Any]]:
     started = datetime.now(timezone.utc)
     try:
@@ -304,6 +326,8 @@ def _initialize_schema() -> None:
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
             path TEXT NOT NULL,
+            parent_path TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
             title TEXT,
             display_name TEXT,
             object_id TEXT,
@@ -320,6 +344,8 @@ def _initialize_schema() -> None:
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
             path TEXT NOT NULL,
+            parent_path TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
             name TEXT,
             title TEXT,
             value_type TEXT,
@@ -371,6 +397,43 @@ def _initialize_schema() -> None:
         "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS vulnerabilities_json TEXT NOT NULL DEFAULT '{}'",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS trace_id TEXT",
+        "ALTER TABLE vulnerability_passport_detail_jobs ADD COLUMN IF NOT EXISTS request_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE vulnerability_passport_detail_jobs ADD COLUMN IF NOT EXISTS worker_id TEXT",
+        "ALTER TABLE vulnerability_passport_detail_jobs ADD COLUMN IF NOT EXISTS lease_until TEXT",
+        "ALTER TABLE vulnerability_passport_detail_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS worker_id TEXT",
+        "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS lease_until TEXT",
+        "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE scan_postprocess_runs ADD COLUMN IF NOT EXISTS lease_until TEXT",
+        "ALTER TABLE scan_postprocess_runs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE asset_card_nodes ADD COLUMN IF NOT EXISTS parent_path TEXT",
+        "ALTER TABLE asset_card_nodes ADD COLUMN IF NOT EXISTS depth INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE asset_card_collections ADD COLUMN IF NOT EXISTS parent_path TEXT",
+        "ALTER TABLE asset_card_collections ADD COLUMN IF NOT EXISTS depth INTEGER NOT NULL DEFAULT 0",
+        """
+        UPDATE asset_card_nodes
+        SET parent_path = CASE
+            WHEN path = 'asset' THEN NULL
+            WHEN path ~ '\\[[0-9]+\\]$' THEN regexp_replace(path, '\\[[0-9]+\\]$', '')
+            WHEN strpos(path, '.') > 0 THEN regexp_replace(path, '\\.[^.]+$', '')
+            ELSE 'asset'
+        END,
+            depth = (length(path) - length(replace(path, '.', ''))) +
+                    (length(path) - length(replace(path, '[', '')))
+        WHERE (parent_path IS NULL OR depth = 0) AND path <> 'asset'
+        """,
+        """
+        UPDATE asset_card_collections
+        SET parent_path = CASE
+            WHEN path = 'asset' THEN NULL
+            WHEN path ~ '\\[[0-9]+\\]$' THEN regexp_replace(path, '\\[[0-9]+\\]$', '')
+            WHEN strpos(path, '.') > 0 THEN regexp_replace(path, '\\.[^.]+$', '')
+            ELSE 'asset'
+        END,
+            depth = (length(path) - length(replace(path, '.', ''))) +
+                    (length(path) - length(replace(path, '[', '')))
+        WHERE (parent_path IS NULL OR depth = 0) AND path <> 'asset'
+        """,
         """
         CREATE TABLE IF NOT EXISTS asset_card_vulnerability_groups (
             id BIGSERIAL PRIMARY KEY,
@@ -442,10 +505,13 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_ip ON asset_cards(ip_address)",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_type ON asset_cards(asset_type)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_nodes_asset_path ON asset_card_nodes(asset_id, path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_nodes_parent ON asset_card_nodes(asset_id, parent_path, path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_nodes_type ON asset_card_nodes(object_type)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_collections_asset_path ON asset_card_collections(asset_id, path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collections_parent ON asset_card_collections(asset_id, parent_path, path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_collections_name ON asset_card_collections(name)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_asset_collection ON asset_card_collection_items(asset_id, collection_path, item_index)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_asset_path ON asset_card_collection_items(asset_id, item_path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_type ON asset_card_collection_items(object_type)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_asset_path ON asset_card_table_rows(asset_id, path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_kind ON asset_card_table_rows(kind)",
@@ -660,13 +726,15 @@ def claim_scan_postprocess_run(run_id: str, worker_id: str) -> dict[str, Any] | 
         row = conn.execute(
             """
             UPDATE scan_postprocess_runs
-            SET worker_id = %s, started_at = COALESCE(started_at, %s), updated_at = %s
+            SET worker_id = %s, lease_until = %s,
+                attempt_count = attempt_count + 1,
+                started_at = COALESCE(started_at, %s), updated_at = %s
             WHERE run_id = %s
               AND worker_id IS NULL
               AND status IN ('monitoring', 'resolving', 'processing', 'waiting')
             RETURNING *
             """,
-            (worker_id, current, current, run_id),
+            (worker_id, lease_until_utc(), current, current, run_id),
         ).fetchone()
     return decode_scan_postprocess_run(dict(row)) if row else None
 
@@ -677,7 +745,7 @@ def release_scan_postprocess_leases() -> None:
         conn.execute(
             """
             UPDATE scan_postprocess_runs
-            SET worker_id = NULL, updated_at = %s
+            SET worker_id = NULL, lease_until = NULL, updated_at = %s
             WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
             """,
             (current,),
@@ -689,6 +757,23 @@ def release_scan_postprocess_leases() -> None:
             WHERE status IN ('building', 'card_saved')
             """,
             (current,),
+        )
+
+
+def heartbeat_background_job(kind: str, job_id: str) -> None:
+    tables = {
+        "asset-card": ("asset_card_build_jobs", "job_id"),
+        "passport-details": ("vulnerability_passport_detail_jobs", "job_id"),
+        "scan-postprocess": ("scan_postprocess_runs", "run_id"),
+    }
+    table = tables.get(kind)
+    if table is None:
+        raise ValueError(f"Unknown background job kind: {kind}")
+    table_name, id_column = table
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE {table_name} SET lease_until = %s, updated_at = %s WHERE {id_column} = %s",
+            (lease_until_utc(), now_utc(), job_id),
         )
 
 
@@ -737,7 +822,7 @@ def finish_scan_postprocess_run(
             """
             UPDATE scan_postprocess_runs
             SET status = %s, stage = %s, message = %s, error = %s,
-                worker_id = NULL, finished_at = %s, updated_at = %s
+                worker_id = NULL, lease_until = NULL, finished_at = %s, updated_at = %s
             WHERE run_id = %s
             RETURNING *
             """,
@@ -873,6 +958,9 @@ def decode_scan_postprocess_run(row: dict[str, Any]) -> dict[str, Any]:
         "failed_count": int(row.get("failed_count") or 0),
         "message": row.get("message"),
         "error": row.get("error"),
+        "worker_id": row.get("worker_id"),
+        "lease_until": row.get("lease_until"),
+        "attempt_count": int(row.get("attempt_count") or 0),
         "created_at": row.get("created_at"),
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
@@ -1534,12 +1622,23 @@ def vulnerability_passport_detail_refresh_candidates(
     return {"requested": ordered_ids, "eligible": eligible, "skipped_fresh": skipped_fresh}
 
 
+def list_vulnerability_passport_internal_ids(limit: int = 50000) -> list[str]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT internal_id FROM vulnerability_passports ORDER BY internal_id LIMIT %s",
+            (max(1, min(int(limit), 50000)),),
+        ).fetchall()
+    return [str(row["internal_id"]) for row in rows if row.get("internal_id")]
+
+
 def create_vulnerability_passport_detail_job(
     job_id: str,
     *,
     requested_count: int,
     eligible_count: int,
     skipped_fresh_count: int,
+    internal_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     init_db()
     current = now_utc()
@@ -1550,9 +1649,9 @@ def create_vulnerability_passport_detail_job(
             """
             INSERT INTO vulnerability_passport_detail_jobs (
                 job_id, status, requested_count, eligible_count, skipped_fresh_count,
-                created_at, finished_at, updated_at
+                request_json, created_at, finished_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -1561,6 +1660,7 @@ def create_vulnerability_passport_detail_job(
                 requested_count,
                 eligible_count,
                 skipped_fresh_count,
+                json.dumps({"internal_ids": internal_ids or []}, ensure_ascii=False),
                 current,
                 finished_at,
                 current,
@@ -1612,6 +1712,24 @@ def interrupt_active_vulnerability_passport_detail_jobs() -> int:
     return int(result.rowcount or 0)
 
 
+def requeue_active_vulnerability_passport_detail_jobs() -> int:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        result = conn.execute(
+            """
+            UPDATE vulnerability_passport_detail_jobs
+            SET status = 'queued',
+                message = 'Waiting for MP VM connection after application restart.',
+                worker_id = NULL, lease_until = NULL,
+                started_at = NULL, finished_at = NULL, updated_at = %s
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """,
+            (current,),
+        )
+    return int(result.rowcount or 0)
+
+
 def start_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any] | None:
     init_db()
     current = now_utc()
@@ -1621,11 +1739,12 @@ def start_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any] | Non
             UPDATE vulnerability_passport_detail_jobs
             SET status = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'running' END,
                 started_at = COALESCE(started_at, %s),
-                updated_at = %s
+                worker_id = %s, lease_until = %s,
+                attempt_count = attempt_count + 1, updated_at = %s
             WHERE job_id = %s AND status = 'queued'
             RETURNING *
             """,
-            (current, current, job_id),
+            (current, job_id, lease_until_utc(), current, job_id),
         ).fetchone()
     return decode_vulnerability_passport_detail_job(dict(row)) if row else None
 
@@ -1705,6 +1824,8 @@ def finish_vulnerability_passport_detail_job(
             UPDATE vulnerability_passport_detail_jobs
             SET status = %s,
                 message = %s,
+                worker_id = NULL,
+                lease_until = NULL,
                 finished_at = %s,
                 updated_at = %s
             WHERE job_id = %s
@@ -1812,6 +1933,24 @@ def interrupt_active_asset_card_build_jobs() -> int:
     return int(result.rowcount or 0)
 
 
+def requeue_active_asset_card_build_jobs() -> int:
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        result = conn.execute(
+            """
+            UPDATE asset_card_build_jobs
+            SET status = 'queued', stage = 'queued',
+                message = 'Waiting for MP VM connection after application restart.',
+                worker_id = NULL, lease_until = NULL,
+                started_at = NULL, finished_at = NULL, updated_at = %s
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """,
+            (current,),
+        )
+    return int(result.rowcount or 0)
+
+
 def start_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
     init_db()
     current = now_utc()
@@ -1822,11 +1961,12 @@ def start_asset_card_build_job(job_id: str) -> dict[str, Any] | None:
             SET status = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'running' END,
                 stage = CASE WHEN cancel_requested THEN 'cancelling' ELSE 'starting' END,
                 progress_percent = GREATEST(progress_percent, 5),
-                started_at = COALESCE(started_at, %s), updated_at = %s
+                started_at = COALESCE(started_at, %s), worker_id = %s,
+                lease_until = %s, attempt_count = attempt_count + 1, updated_at = %s
             WHERE job_id = %s AND status = 'queued'
             RETURNING *
             """,
-            (current, current, job_id),
+            (current, job_id, lease_until_utc(), current, job_id),
         ).fetchone()
     return decode_asset_card_build_job(dict(row)) if row else None
 
@@ -1908,6 +2048,7 @@ def finish_asset_card_build_job(
             SET status = %s, stage = %s, message = %s,
                 progress_percent = CASE WHEN %s = 'completed' THEN 100 ELSE progress_percent END,
                 stats_json = CASE WHEN %s::text IS NULL THEN stats_json ELSE %s END,
+                worker_id = NULL, lease_until = NULL,
                 finished_at = %s, updated_at = %s
             WHERE job_id = %s
             RETURNING *
@@ -2040,13 +2181,15 @@ def replace_asset_card_cache(
             cur,
             "asset_card_nodes",
             (
-                "asset_id", "path", "title", "display_name", "object_id", "object_type",
+                "asset_id", "path", "parent_path", "depth", "title", "display_name", "object_id", "object_type",
                 "vulnerability_level", "data_json", "node_json", "updated_at",
             ),
             [
                 (
                     asset_id,
                     clean_value(node.get("path")) or "",
+                    asset_card_parent_path(node.get("path")),
+                    asset_card_path_depth(node.get("path")),
                     clean_value(node.get("title")),
                     clean_value(node.get("display_name")),
                     clean_value(node.get("object_id")),
@@ -2065,7 +2208,7 @@ def replace_asset_card_cache(
             cur,
             "asset_card_collections",
             (
-                "asset_id", "path", "name", "title", "value_type", "kind", "parent_type",
+                "asset_id", "path", "parent_path", "depth", "name", "title", "value_type", "kind", "parent_type",
                 "parent_object_id", "reported_count", "fetched_count", "truncated",
                 "collection_json", "updated_at",
             ),
@@ -2073,6 +2216,8 @@ def replace_asset_card_cache(
                 (
                     asset_id,
                     clean_value(collection.get("path")) or "",
+                    asset_card_parent_path(collection.get("path")),
+                    asset_card_path_depth(collection.get("path")),
                     clean_value(collection.get("name")),
                     clean_value(collection.get("title")),
                     clean_value(collection.get("type")),
@@ -2765,6 +2910,9 @@ def decode_asset_card_build_job(row: dict[str, Any]) -> dict[str, Any]:
         "finding_count": int(row.get("finding_count") or 0),
         "warning_count": int(row.get("warning_count") or 0),
         "cancel_requested": bool(row.get("cancel_requested")),
+        "worker_id": row.get("worker_id"),
+        "lease_until": row.get("lease_until"),
+        "attempt_count": int(row.get("attempt_count") or 0),
         "message": row.get("message"),
         "created_at": row.get("created_at"),
         "started_at": row.get("started_at"),
@@ -2874,6 +3022,7 @@ def decode_vulnerability_passport_summary(row: dict[str, Any]) -> dict[str, Any]
 
 def decode_vulnerability_passport_detail_job(row: dict[str, Any]) -> dict[str, Any]:
     errors = json_loads(row.get("errors_json"), [])
+    request = json_loads(row.get("request_json"), {})
     return {
         "job_id": row.get("job_id"),
         "status": row.get("status"),
@@ -2885,6 +3034,10 @@ def decode_vulnerability_passport_detail_job(row: dict[str, Any]) -> dict[str, A
         "skipped_fresh_count": int(row.get("skipped_fresh_count") or 0),
         "cancel_requested": bool(row.get("cancel_requested")),
         "errors": errors if isinstance(errors, list) else [],
+        "request": request if isinstance(request, dict) else {},
+        "worker_id": row.get("worker_id"),
+        "lease_until": row.get("lease_until"),
+        "attempt_count": int(row.get("attempt_count") or 0),
         "message": row.get("message"),
         "created_at": row.get("created_at"),
         "started_at": row.get("started_at"),

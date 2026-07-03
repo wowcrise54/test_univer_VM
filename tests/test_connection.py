@@ -34,7 +34,7 @@ class ConnectionTokenTests(unittest.TestCase):
         finally:
             client.session.close()
 
-    def test_scan_resume_is_deferred_until_after_connection_response(self):
+    def test_connection_wakes_common_runner_and_resumes_jobs(self):
         background_tasks = BackgroundTasks()
         runtime_session = SimpleNamespace(
             client=None,
@@ -52,14 +52,18 @@ class ConnectionTokenTests(unittest.TestCase):
         with (
             patch.object(main, "SESSION", runtime_session),
             patch.object(main, "resume_scan_postprocess_runs") as resume,
+            patch.object(main, "resume_background_jobs") as resume_jobs,
+            patch.object(main.WORKER_RUNNER, "notify_session_ready", return_value=0) as notify,
         ):
             result = main.connect_session(payload, background_tasks)
 
         try:
             self.assertTrue(result["connected"])
             self.assertEqual(runtime_session.access_token, "token-value")
-            resume.assert_not_called()
-            self.assertEqual(len(background_tasks.tasks), 1)
+            notify.assert_called_once()
+            resume_jobs.assert_called_once()
+            resume.assert_called_once()
+            self.assertEqual(len(background_tasks.tasks), 0)
         finally:
             runtime_session.client.session.close()
 
