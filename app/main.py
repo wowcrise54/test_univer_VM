@@ -90,18 +90,26 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 16, minimum=1, maximum=32)
+def env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    return value if value in choices else default
+
+
+ASSET_CARD_CONCURRENCY_MODE = env_choice(
+    "MPVM_ASSET_CARD_CONCURRENCY_MODE", "fixed", {"fixed", "adaptive"}
+)
+BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 64, minimum=1, maximum=128)
 ASSET_CARD_REQUEST_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
-    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 16, minimum=1, maximum=16),
+    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 64, minimum=1, maximum=128),
 )
 ASSET_CARD_INITIAL_WORKERS = min(
     ASSET_CARD_REQUEST_WORKERS,
-    env_int("MPVM_ASSET_CARD_INITIAL_WORKERS", 8, minimum=1, maximum=16),
+    env_int("MPVM_ASSET_CARD_INITIAL_WORKERS", 8, minimum=1, maximum=128),
 )
 ASSET_CARD_MIN_WORKERS = min(
     ASSET_CARD_INITIAL_WORKERS,
-    env_int("MPVM_ASSET_CARD_MIN_WORKERS", 4, minimum=1, maximum=16),
+    env_int("MPVM_ASSET_CARD_MIN_WORKERS", 4, minimum=1, maximum=128),
 )
 SCAN_POSTPROCESS_WORKERS = env_int("MPVM_SCAN_POSTPROCESS_WORKERS", 1, minimum=1, maximum=4)
 SCAN_ASSET_PROCESS_WORKERS = env_int("MPVM_SCAN_ASSET_PROCESS_WORKERS", 1, minimum=1, maximum=4)
@@ -284,6 +292,29 @@ def adaptive_failure_reason(error: BaseException | None) -> str | None:
     return None
 
 
+class FixedConcurrencyController:
+    def __init__(self, workers: int) -> None:
+        self.workers = max(1, workers)
+
+    def window(self) -> int:
+        return self.workers
+
+    def observe(self, _duration_ms: float, _error: BaseException | None, *, label: str = "request") -> None:
+        return None
+
+    def telemetry(self) -> dict[str, Any]:
+        return {
+            "concurrency_mode": "fixed",
+            "configured_workers": self.workers,
+            "concurrency_min": self.workers,
+            "concurrency_initial": self.workers,
+            "concurrency_max": self.workers,
+            "concurrency_final": self.workers,
+            "concurrency_changes": [],
+            "throttle_events": 0,
+        }
+
+
 class AssetCardRequestExecutor:
     def __init__(
         self,
@@ -291,6 +322,7 @@ class AssetCardRequestExecutor:
         auth: AuthConfig,
         token: str,
         workers: int,
+        concurrency_mode: str = "adaptive",
         initial_workers: int | None = None,
         min_workers: int | None = None,
         cancel_event: threading.Event | None = None,
@@ -301,12 +333,13 @@ class AssetCardRequestExecutor:
         self.cancel_event = cancel_event or threading.Event()
         self.on_progress = on_progress
         self.worker_count = max(1, workers)
+        self.concurrency_mode = concurrency_mode if concurrency_mode in {"fixed", "adaptive"} else "adaptive"
         initial = min(self.worker_count, initial_workers if initial_workers is not None else self.worker_count)
         minimum = min(initial, min_workers if min_workers is not None else initial)
-        self.concurrency = AdaptiveConcurrencyController(
-            minimum=minimum,
-            initial=initial,
-            maximum=self.worker_count,
+        self.concurrency = (
+            FixedConcurrencyController(self.worker_count)
+            if self.concurrency_mode == "fixed"
+            else AdaptiveConcurrencyController(minimum=minimum, initial=initial, maximum=self.worker_count)
         )
         self._executor = ThreadPoolExecutor(max_workers=self.worker_count, thread_name_prefix="asset-card-request")
         self._worker_state = threading.local()
@@ -529,6 +562,8 @@ class AssetCardRequestExecutor:
                 if values
             }
             result = {
+                "concurrency_mode": self.concurrency_mode,
+                "configured_workers": self.worker_count,
                 "peak_active_requests": self.peak_active,
                 "queue_wait_ms": round(self.queue_wait_ms, 2),
                 "scheduler_idle_ms": round(self.scheduler_idle_ms, 2),
@@ -764,6 +799,7 @@ def startup() -> None:
         scan_postprocess_workers=SCAN_POSTPROCESS_WORKERS,
         scan_asset_process_workers=SCAN_ASSET_PROCESS_WORKERS,
         asset_card_request_workers=ASSET_CARD_REQUEST_WORKERS,
+        asset_card_concurrency_mode=ASSET_CARD_CONCURRENCY_MODE,
         asset_card_initial_workers=ASSET_CARD_INITIAL_WORKERS,
         asset_card_min_workers=ASSET_CARD_MIN_WORKERS,
     )
@@ -802,6 +838,7 @@ def health() -> dict[str, Any]:
             "scan_postprocess": SCAN_POSTPROCESS_WORKERS,
             "scan_asset_process": SCAN_ASSET_PROCESS_WORKERS,
             "asset_card_requests": ASSET_CARD_REQUEST_WORKERS,
+            "asset_card_concurrency_mode": ASSET_CARD_CONCURRENCY_MODE,
             "asset_card_initial": ASSET_CARD_INITIAL_WORKERS,
             "asset_card_min": ASSET_CARD_MIN_WORKERS,
         },
@@ -1441,6 +1478,7 @@ def _run_asset_card_build_job(
             auth=auth,
             token=token,
             workers=ASSET_CARD_REQUEST_WORKERS,
+            concurrency_mode=ASSET_CARD_CONCURRENCY_MODE,
             initial_workers=ASSET_CARD_INITIAL_WORKERS,
             min_workers=ASSET_CARD_MIN_WORKERS,
             cancel_event=cancel_event,
@@ -3497,6 +3535,117 @@ def build_asset_card(
         node_candidates: dict[str, dict[str, Any]] = {}
         node_waiters: dict[str, list[dict[str, Any]]] = {}
         node_tasks: dict[str, dict[str, Any]] = {}
+        node_primary_paths: dict[str, str] = {}
+        metadata_waiters: dict[str, list[dict[str, Any]]] = {}
+        metadata_tasks: dict[str, dict[str, Any]] = {}
+
+        def node_entry_path(entry: dict[str, Any]) -> str:
+            return min((ref["path"] for ref in entry.get("refs") or []), default="asset")
+
+        def descendant_path(value: str, old: str) -> bool:
+            return value.startswith(old + ".") or value.startswith(old + "[")
+
+        def replace_path(value: str, old: str, new: str, *, include_exact: bool) -> str:
+            if (include_exact and value == old) or descendant_path(value, old):
+                return new + value[len(old):]
+            return value
+
+        def repath_node_subtree(old: str, new: str) -> None:
+            if not old or old == new:
+                return
+            for node in nodes:
+                node["path"] = replace_path(str(node.get("path") or ""), old, new, include_exact=True)
+            for collection in collections:
+                collection["path"] = replace_path(
+                    str(collection.get("path") or ""), old, new, include_exact=False
+                )
+                for item in collection.get("items") or []:
+                    if isinstance(item, dict):
+                        item["path"] = replace_path(
+                            str(item.get("path") or ""), old, new, include_exact=False
+                        )
+            for row in table_rows:
+                row["path"] = replace_path(str(row.get("path") or ""), old, new, include_exact=False)
+            for task in [*queued_tasks, *in_flight.values()]:
+                task["path"] = replace_path(str(task.get("path") or ""), old, new, include_exact=False)
+                spec = task.get("spec")
+                if isinstance(spec, dict):
+                    spec["path"] = replace_path(str(spec.get("path") or ""), old, new, include_exact=False)
+            for refs in [
+                *node_waiters.values(),
+                *metadata_waiters.values(),
+                *(entry.get("refs") or [] for entry in node_candidates.values()),
+            ]:
+                for ref in refs:
+                    ref["path"] = replace_path(str(ref.get("path") or ""), old, new, include_exact=False)
+                    item_doc = ref.get("item_doc")
+                    if isinstance(item_doc, dict):
+                        item_doc["path"] = replace_path(
+                            str(item_doc.get("path") or ""), old, new, include_exact=False
+                        )
+            for key, path in list(node_primary_paths.items()):
+                node_primary_paths[key] = replace_path(path, old, new, include_exact=False)
+
+        def requeue_node_candidate(entry: dict[str, Any]) -> None:
+            node = entry["node"]
+            node_type = clean_text(first_present(node.get("type"), ""))
+            object_id = clean_text(first_present(node.get("objectId"), ""))
+            key = f"{node_type}|{object_id}"
+            current = node_candidates.get(key)
+            if current is None:
+                node_candidates[key] = entry
+            else:
+                current.setdefault("refs", []).extend(entry.get("refs") or [])
+
+        def queue_metadata(entry: dict[str, Any], node_type: str) -> bool:
+            if node_type in metadata_cache:
+                return True
+            cache_key = (api_url, node_type)
+            now = time.monotonic()
+            with ASSET_METADATA_CACHE_LOCK:
+                cached = ASSET_METADATA_CACHE.get(cache_key)
+                if ASSET_METADATA_TTL_SECONDS and cached and now - cached[0] <= ASSET_METADATA_TTL_SECONDS:
+                    metadata_cache[node_type] = cached[1]
+                    return True
+                event = ASSET_METADATA_INFLIGHT.get(cache_key)
+                owner = event is None
+                if event is None:
+                    event = threading.Event()
+                    ASSET_METADATA_INFLIGHT[cache_key] = event
+            metadata_waiters.setdefault(node_type, []).append(entry)
+            existing = metadata_tasks.get(node_type)
+            if existing is not None:
+                existing["path"] = min(existing["path"], node_entry_path(entry))
+                return False
+            if owner:
+                operation = lambda remote, node_type=node_type: remote.get_asset_metadata(token, node_type)
+            else:
+                def operation(_remote: MpVmClient, cache_key=cache_key, event=event) -> dict[str, Any]:
+                    event.wait()
+                    with ASSET_METADATA_CACHE_LOCK:
+                        value = ASSET_METADATA_CACHE.get(cache_key)
+                    return value[1] if value else {}
+            task = {
+                "kind": "metadata",
+                "label": "metadata",
+                "path": node_entry_path(entry),
+                "asset_type": node_type,
+                "cache_key": cache_key,
+                "event": event,
+                "owner": owner,
+                "operation": operation,
+            }
+            metadata_tasks[node_type] = task
+            queued_tasks.append(task)
+            return False
+
+        def cleanup_metadata_tasks() -> None:
+            with ASSET_METADATA_CACHE_LOCK:
+                for task in metadata_tasks.values():
+                    if task.get("owner"):
+                        ASSET_METADATA_INFLIGHT.pop(task["cache_key"], None)
+                        task["event"].set()
+            metadata_tasks.clear()
 
         def queue_collection_page(spec: dict[str, Any], offset: int, current_limit: int) -> None:
             if offset in spec["pending_offsets"] or offset in spec["pages"]:
@@ -3620,13 +3769,24 @@ def build_asset_card(
             primary = refs[0] if refs else {"path": "asset", "depth": 0, "title": root.get("displayName")}
             node_type = clean_text(first_present(node.get("type"), ""))
             object_id = clean_text(first_present(node.get("objectId"), ""))
+            if not queue_metadata(entry, node_type):
+                return
             key = f"{node_type}|{object_id}"
+            path = primary["path"]
             if object_id and key in seen_nodes:
+                previous = node_primary_paths.get(key)
+                if previous and path < previous:
+                    repath_node_subtree(previous, path)
+                    node_primary_paths[key] = path
+                    for saved_node in nodes:
+                        if saved_node.get("object_id") == object_id and saved_node.get("type") == node_type:
+                            saved_node["title"] = primary.get("title") or node.get("displayName") or path
+                            break
                 return
             if object_id:
                 seen_nodes.add(key)
                 node_cache[key] = node
-            path = primary["path"]
+                node_primary_paths[key] = path
             depth = int(primary["depth"])
             if path != "asset":
                 nodes.append(
@@ -3636,7 +3796,6 @@ def build_asset_card(
                      "data": node.get("data") if isinstance(node.get("data"), dict) else {}}
                 )
                 stats["nodes"] += 1
-            metadata_for_types([node_type])
             metadata = metadata_cache.get(node_type) or {}
             properties = metadata_properties_by_name(metadata)
             data = node.get("data") if isinstance(node.get("data"), dict) else {}
@@ -3694,6 +3853,27 @@ def build_asset_card(
                     )
 
         def handle_task(task: dict[str, Any], value: Any, error: Exception | None) -> None:
+            if task["kind"] == "metadata":
+                node_type = task["asset_type"]
+                metadata_tasks.pop(node_type, None)
+                metadata = value if isinstance(value, dict) else {}
+                if error is not None:
+                    warn(f"metadata {node_type}: {error}")
+                elif task["owner"]:
+                    stats["metadata_requests"] += 1
+                metadata_cache[node_type] = metadata
+                if task["owner"]:
+                    with ASSET_METADATA_CACHE_LOCK:
+                        if metadata and ASSET_METADATA_TTL_SECONDS:
+                            ASSET_METADATA_CACHE[task["cache_key"]] = (time.monotonic(), metadata)
+                            if len(ASSET_METADATA_CACHE) > 128:
+                                oldest_key = min(ASSET_METADATA_CACHE, key=lambda key: ASSET_METADATA_CACHE[key][0])
+                                ASSET_METADATA_CACHE.pop(oldest_key, None)
+                        ASSET_METADATA_INFLIGHT.pop(task["cache_key"], None)
+                        task["event"].set()
+                for entry in metadata_waiters.pop(node_type, []):
+                    requeue_node_candidate(entry)
+                return
             if task["kind"] == "node":
                 key = task["key"]
                 refs = node_waiters.pop(key, [])
@@ -3745,32 +3925,17 @@ def build_asset_card(
 
         while node_candidates or queued_tasks or in_flight:
             while node_candidates:
-                producer_paths = [task["path"] for task in queued_tasks]
-                producer_paths.extend(task["path"] for task in in_flight.values())
-                ordered_candidates = sorted(
-                    node_candidates,
-                    key=lambda item: min(
-                        (ref["path"] for ref in node_candidates[item].get("refs") or []),
-                        default="asset",
-                    ),
-                )
-                selected_key: str | None = None
-                for key in ordered_candidates:
-                    candidate_path = min(
-                        (ref["path"] for ref in node_candidates[key].get("refs") or []),
-                        default="asset",
-                    )
-                    if candidate_path == "asset" or not any(path < candidate_path for path in producer_paths):
-                        selected_key = key
-                        break
-                if selected_key is None:
-                    break
+                selected_key = min(node_candidates, key=lambda item: node_entry_path(node_candidates[item]))
                 process_node(node_candidates.pop(selected_key))
             if request_executor:
                 window = request_executor.concurrency.window()
                 while queued_tasks and len(in_flight) < window:
                     task = queued_tasks.popleft()
-                    future = request_executor.submit(task["operation"], label=task["label"])
+                    try:
+                        future = request_executor.submit(task["operation"], label=task["label"])
+                    except AssetCardBuildCancelled:
+                        cleanup_metadata_tasks()
+                        raise
                     in_flight[future] = task
                 if not in_flight:
                     continue
@@ -3780,6 +3945,7 @@ def build_asset_card(
                     try:
                         handle_task(task, future.result(), None)
                     except AssetCardBuildCancelled:
+                        cleanup_metadata_tasks()
                         raise
                     except Exception as exc:
                         handle_task(task, None, exc)
@@ -3855,7 +4021,15 @@ def build_asset_card(
     stats["stage_duration_ms"] = dict(sorted(phase_duration_ms.items()))
     stats["critical_path_ms"] = round(max(phase_duration_ms.values(), default=0.0), 2)
     if request_executor:
-        stats.update(request_executor.telemetry())
+        executor_stats = request_executor.telemetry()
+        stats.update(executor_stats)
+        stats["dispatcher_idle_ms"] = executor_stats.get("scheduler_idle_ms", 0)
+        stats["metadata_duration_ms"] = (
+            executor_stats.get("request_duration_ms", {}).get("metadata", 0)
+        )
+    stats["requests_per_second"] = round(
+        stats["network_requests"] / max(0.001, stats["elapsed_ms"] / 1000), 2
+    )
     stats["warnings"].sort()
     if stage_callback:
         stage_callback("assembling")

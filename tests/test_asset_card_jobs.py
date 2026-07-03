@@ -285,6 +285,45 @@ class VulnerabilityPagingClient(FixtureAssetClient):
                 type(self).active -= 1
 
 
+class MetadataParallelClient(ParallelTreeAssetClient):
+    metadata_active = 0
+    metadata_max_active = 0
+    metadata_lock = threading.Lock()
+
+    @classmethod
+    def reset_metrics(cls):
+        super().reset_metrics()
+        cls.metadata_active = 0
+        cls.metadata_max_active = 0
+
+    def get_asset_metadata(self, token, asset_type):
+        if asset_type == "Host":
+            return super().get_asset_metadata(token, asset_type)
+        with self.metadata_lock:
+            type(self).metadata_active += 1
+            type(self).metadata_max_active = max(type(self).metadata_max_active, type(self).metadata_active)
+        try:
+            time.sleep(0.03)
+            return {"properties": [{"name": "value", "type": "string"}]}
+        finally:
+            with self.metadata_lock:
+                type(self).metadata_active -= 1
+
+    def get_asset_tree_collection(
+        self, _token, _parent_type, _object_id, name, _timeline, *, full, limit, offset
+    ):
+        collection_index = int(name.removeprefix("collection"))
+        items = [
+            {
+                "objectId": f"{name}-node-{index}",
+                "type": f"Type{collection_index}_{index}",
+                "displayName": f"{name} node {index}",
+            }
+            for index in range(4)
+        ]
+        return {"items": items[offset : offset + limit], "count": len(items)}
+
+
 def semantic_card(card):
     cleaned = main.sanitize_asset_card_for_response(card)
     stats = cleaned.get("stats") or {}
@@ -305,6 +344,11 @@ def semantic_card(card):
         "concurrency_final",
         "concurrency_changes",
         "throttle_events",
+        "concurrency_mode",
+        "configured_workers",
+        "dispatcher_idle_ms",
+        "metadata_duration_ms",
+        "requests_per_second",
     ):
         stats.pop(key, None)
     return cleaned
@@ -355,6 +399,31 @@ class AssetCardExecutorTests(unittest.TestCase):
         self.assertEqual(values, list(range(16)))
         self.assertLessEqual(SlowClient.max_active, 8)
         self.assertEqual(executor.telemetry()["concurrency_final"], 10)
+
+    def test_fixed_mode_runs_sixty_four_requests_without_adaptive_throttling(self):
+        SlowClient.active = 0
+        SlowClient.max_active = 0
+        with patch.object(main, "MpVmClient", SlowClient):
+            executor = main.AssetCardRequestExecutor(
+                auth=SimpleNamespace(api_url="https://fixture"),
+                token="token",
+                workers=64,
+                concurrency_mode="fixed",
+            )
+            try:
+                values = executor.map([
+                    (lambda client, value=value: client.slow(value))
+                    for value in range(64)
+                ])
+            finally:
+                executor.close()
+
+        self.assertEqual(values, list(range(64)))
+        self.assertEqual(SlowClient.max_active, 64)
+        telemetry = executor.telemetry()
+        self.assertEqual(telemetry["concurrency_mode"], "fixed")
+        self.assertEqual(telemetry["configured_workers"], 64)
+        self.assertEqual(telemetry["concurrency_final"], 64)
 
     def test_cancellation_stops_scheduling_without_filling_another_window(self):
         cancel_event = threading.Event()
@@ -423,6 +492,11 @@ class AssetCardExecutorTests(unittest.TestCase):
         self.assertEqual(telemetry["concurrency_changes"][-1]["reason"], "http_429")
         self.assertEqual(main.adaptive_failure_reason(main.MpVmApiError("HTTP 503")), "http_503")
         self.assertEqual(main.adaptive_failure_reason(main.requests.Timeout("slow")), "timeout")
+
+        fixed = main.FixedConcurrencyController(64)
+        fixed.observe(5000, main.MpVmApiError("HTTP 429"))
+        fixed.observe(5000, main.MpVmApiError("HTTP 503"))
+        self.assertEqual(fixed.window(), 64)
 
     def test_parallel_and_sequential_fixture_cards_match(self):
         auth = SimpleNamespace(api_url="https://fixture")
@@ -534,6 +608,29 @@ class AssetCardExecutorTests(unittest.TestCase):
         self.assertEqual(card["vulnerabilities"]["stats"]["findings"], 16)
         self.assertEqual(card["stats"]["vulnerability_collection_requests"], 8)
         self.assertGreaterEqual(VulnerabilityPagingClient.max_active, 4)
+
+    def test_metadata_for_new_types_is_loaded_in_parallel(self):
+        auth = SimpleNamespace(api_url="https://metadata-parallel")
+        main.ASSET_METADATA_CACHE.clear()
+        MetadataParallelClient.reset_metrics()
+        with patch.object(main, "MpVmClient", MetadataParallelClient):
+            executor = main.AssetCardRequestExecutor(
+                auth=auth,
+                token="token",
+                workers=32,
+                concurrency_mode="fixed",
+            )
+            try:
+                card = main.build_asset_card(
+                    client=None, token="token", asset_id="asset-1", timeline_timestamp=1,
+                    limit_per_collection=4, max_items_per_collection=4, max_depth=8,
+                    request_executor=executor,
+                )
+            finally:
+                executor.close()
+
+        self.assertEqual(card["stats"]["metadata_requests"], 33)
+        self.assertGreaterEqual(MetadataParallelClient.metadata_max_active, 16)
 
     def test_child_request_failure_becomes_a_warning_and_other_groups_finish(self):
         auth = SimpleNamespace(api_url="https://fixture")
