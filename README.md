@@ -53,6 +53,38 @@ docker compose -f docker-compose.corpnet.example.yml up --build
 
 Dockerfile собирает React через Vite и копирует готовую статику в Python-образ. Данные PostgreSQL сохраняются в volume `mpvm_postgres`, CSV-экспорты - в `mpvm_exports`.
 
+## Надёжность и центр операций
+
+Страница `/operations` объединяет сборку карточек активов, загрузку деталей паспортов, постобработку сканирования, PDQL-импорты и удаление активов. Активные операции опрашиваются раз в 2 секунды, история — раз в 15 секунд. Состояние и хронология сохраняются в PostgreSQL и не зависят от открытой вкладки браузера.
+
+- `GET /api/system/status` — состояние приложения, PostgreSQL, сессии MP VM и фоновых исполнителей;
+- `GET /api/operations` и `GET /api/operations/{id}` — список и детальная хронология;
+- `POST /api/operations/{id}/cancel` — идемпотентная остановка поддерживаемой операции;
+- `POST /api/operations/{id}/retry` — безопасный повтор с новой операцией и ссылкой `retry_of`;
+- `GET /api/operations/{id}/diagnostics` — очищенный ZIP-архив по `trace_id` или `job_id`;
+- `GET|POST|DELETE /api/saved-views` — общие сохранённые фильтры терминала.
+
+Запуски задачи и сборки карточки принимают `X-Idempotency-Key`. Повтор запроса с тем же ключом возвращает ранее созданную операцию и не запускает удалённое действие второй раз.
+
+После перезапуска незавершённые сборки карточек и загрузки паспортов получают статус `interrupted` и могут быть повторены из центра операций. Постобработка сканирования использует существующий механизм lease/recovery и продолжает только безопасно возобновляемые этапы.
+
+Ошибки API возвращаются в едином формате:
+
+```json
+{
+  "detail": {
+    "code": "DATABASE_UNAVAILABLE",
+    "message": "Database is unavailable.",
+    "operator_message": "Локальная база данных недоступна. Проверьте PostgreSQL и повторите действие.",
+    "component": "database",
+    "retryable": true,
+    "trace_id": "...",
+    "request_id": "...",
+    "context": {}
+  }
+}
+```
+
 ## Диагностическое логирование
 
 Backend, сборка карточек, MP VM HTTP, PostgreSQL и frontend пишут связанные JSONL-события в `MPVM_LOG_DIR` (по умолчанию `output/logs`). Каждый API-ответ содержит `X-Trace-ID`, `X-Request-ID` и `Server-Timing`; trace ID также показывается в задании сборки карточки и добавляется к frontend-ошибкам.

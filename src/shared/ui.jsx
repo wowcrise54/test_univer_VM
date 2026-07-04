@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 export function Button({ children, variant = "primary", busy, ...props }) {
   return (
     <button className={`button ${variant}`} disabled={busy || props.disabled} {...props}>
@@ -37,5 +39,34 @@ export function Panel({ id, eyebrow, title, description, action, children, class
       </div>
       {children}
     </section>
+  );
+}
+
+export function ConfirmDialog({ open, title, description, impact = [], confirmLabel = "Подтвердить", requireText = "", busy, onConfirm, onClose }) {
+  const [typed, setTyped] = useState("");
+  useEffect(() => {
+    if (open) setTyped("");
+  }, [open]);
+  if (!open) return null;
+  const allowed = !requireText || typed === requireText;
+  return (
+    <div className="confirm-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <span className="confirm-dialog__eyebrow">Подтверждение действия</span>
+        <h2 id="confirm-title">{title}</h2>
+        <p>{description}</p>
+        {impact.length ? <ul>{impact.map((item) => <li key={item}>{item}</li>)}</ul> : null}
+        {requireText ? (
+          <label className="field">
+            <span>Введите <code>{requireText}</code>, чтобы подтвердить изменение MP VM</span>
+            <input value={typed} onChange={(event) => setTyped(event.target.value)} autoFocus />
+          </label>
+        ) : null}
+        <div className="confirm-dialog__actions">
+          <Button variant="secondary" onClick={onClose}>Отмена</Button>
+          <Button variant="danger" disabled={!allowed} busy={busy} onClick={onConfirm}>{confirmLabel}</Button>
+        </div>
+      </section>
+    </div>
   );
 }

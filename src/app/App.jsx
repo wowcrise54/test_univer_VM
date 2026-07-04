@@ -3,8 +3,9 @@ import { AssetsPage } from "../pages/AssetsPage.jsx";
 import { ConnectionPage } from "../pages/ConnectionPage.jsx";
 import { ExportPage } from "../pages/ExportPage.jsx";
 import { PassportsPage } from "../pages/PassportsPage.jsx";
+import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
-import { AlertStack, Sidebar, Topbar } from "./layout.jsx";
+import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
 import { useRouter } from "./router.js";
 import { useAppData } from "./useAppData.js";
 
@@ -14,9 +15,21 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar session={appData.session} activePath={path} onNavigate={navigate} />
+      <Sidebar
+        session={appData.session}
+        systemStatus={appData.systemStatus}
+        activeOperations={appData.operations.filter((item) => ["queued", "running", "cancelling", "recovering"].includes(item.status)).length}
+        activePath={path}
+        onNavigate={navigate}
+      />
       <main className="workspace">
         <Topbar session={appData.session} route={route} />
+        <SystemBanner
+          status={appData.systemStatus}
+          stale={appData.operationsStale}
+          onRetry={appData.refreshSystemStatus}
+          onNavigate={navigate}
+        />
         <AlertStack alerts={appData.alerts} />
         <ActivePage
           routeId={route?.id}
@@ -56,6 +69,22 @@ function ActivePage({ routeId, ...props }) {
         refreshTasks={props.refreshTasks}
         busy={props.busy}
         runBusy={props.runBusy}
+        showAlert={props.showAlert}
+        session={props.session}
+        systemStatus={props.systemStatus}
+      />
+    );
+  }
+  if (routeId === "operations") {
+    return (
+      <OperationsPage
+        operations={props.operations}
+        total={props.operationsTotal}
+        updatedAt={props.operationsUpdatedAt}
+        stale={props.operationsStale}
+        refreshOperations={props.refreshOperations}
+        runBusy={props.runBusy}
+        busy={props.busy}
         showAlert={props.showAlert}
       />
     );

@@ -19,6 +19,27 @@ const EMPTY_CONNECTION_DRAFT = {
   verify_tls: true,
 };
 
+const ACTIVE_OPERATION_STATUSES = new Set(["queued", "running", "cancelling", "recovering"]);
+
+function unavailableSystemStatus(error) {
+  return {
+    state: "down",
+    checked_at: new Date().toISOString(),
+    error,
+    components: {
+      application: {
+        state: "down",
+        message: error?.operatorMessage || error?.message || "Backend недоступен.",
+        retryable: true,
+        trace_id: error?.traceId || null,
+      },
+      database: { state: "down", message: "Состояние PostgreSQL неизвестно, потому что backend недоступен.", retryable: true },
+      mpvm: { state: "degraded", message: "Состояние сессии MP VM неизвестно.", retryable: true },
+      background_workers: { state: "down", message: "Состояние фоновых исполнителей неизвестно.", retryable: true },
+    },
+  };
+}
+
 export function useAppData(routeId) {
   const [defaults, setDefaults] = useState(null);
   const [session, setSession] = useState({ connected: false });
@@ -32,10 +53,18 @@ export function useAppData(routeId) {
   const [assetTotal, setAssetTotal] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [busy, setBusy] = useState({});
+  const [systemStatus, setSystemStatus] = useState(null);
+  const [operations, setOperations] = useState([]);
+  const [operationsTotal, setOperationsTotal] = useState(0);
+  const [operationsUpdatedAt, setOperationsUpdatedAt] = useState(null);
+  const [operationsStale, setOperationsStale] = useState(false);
 
   const showAlert = useCallback((message, type = "info") => {
     const id = Date.now() + "-" + Math.random();
-    setAlerts((items) => [{ id, message, type }, ...items].slice(0, 4));
+    setAlerts((items) => {
+      if (items.some((item) => item.message === message && item.type === type)) return items;
+      return [{ id, message, type }, ...items].slice(0, 4);
+    });
     window.setTimeout(() => setAlerts((items) => items.filter((item) => item.id !== id)), 9000);
   }, []);
 
@@ -74,6 +103,32 @@ export function useAppData(routeId) {
     setAssetTotal(assetsResult.total || 0);
   }, []);
 
+  const refreshSystemStatus = useCallback(async () => {
+    try {
+      const value = await api("/api/system/status");
+      setSystemStatus(value);
+      return value;
+    } catch (error) {
+      const fallback = unavailableSystemStatus(error);
+      setSystemStatus(fallback);
+      return fallback;
+    }
+  }, []);
+
+  const refreshOperations = useCallback(async () => {
+    try {
+      const result = await api("/api/operations?limit=100");
+      setOperations(result.rows || []);
+      setOperationsTotal(result.total || 0);
+      setOperationsUpdatedAt(new Date().toISOString());
+      setOperationsStale(false);
+      return result;
+    } catch (_error) {
+      setOperationsStale(true);
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     let alive = true;
     api("/api/defaults")
@@ -87,7 +142,7 @@ export function useAppData(routeId) {
           scope: current.scope || value.scope || "",
         }));
       })
-      .catch((error) => alive && showAlert(error.message || String(error), "error"));
+      .catch(() => null);
     api("/api/session")
       .then((value) => {
         if (!alive) return;
@@ -100,21 +155,53 @@ export function useAppData(routeId) {
           verify_tls: value.verify_tls ?? current.verify_tls,
         }));
       })
-      .catch((error) => alive && showAlert(error.message || String(error), "error"));
+      .catch(() => null);
     return () => {
       alive = false;
     };
   }, [showAlert]);
 
   useEffect(() => {
-    if (routeId !== "tasks" || tasksLoaded) return;
-    runBusy("tasks", () => refreshTasks());
-  }, [refreshTasks, routeId, runBusy, tasksLoaded]);
+    let alive = true;
+    const poll = async () => {
+      await refreshSystemStatus();
+      if (alive) window.setTimeout(poll, 10000);
+    };
+    poll();
+    return () => {
+      alive = false;
+    };
+  }, [refreshSystemStatus]);
+
+  const hasActiveOperations = operations.some((item) => ACTIVE_OPERATION_STATUSES.has(item.status));
 
   useEffect(() => {
-    if (routeId !== "assets" || summary !== null) return;
+    if (systemStatus?.components?.database?.state === "down") {
+      setOperationsStale(true);
+      return undefined;
+    }
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      await refreshOperations();
+      if (alive) timerId = window.setTimeout(poll, hasActiveOperations ? 2000 : 15000);
+    };
+    poll();
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [hasActiveOperations, refreshOperations, systemStatus?.components?.database?.state]);
+
+  useEffect(() => {
+    if (routeId !== "tasks" || tasksLoaded || !systemStatus || systemStatus?.components?.database?.state === "down") return;
+    runBusy("tasks", () => refreshTasks());
+  }, [refreshTasks, routeId, runBusy, systemStatus, tasksLoaded]);
+
+  useEffect(() => {
+    if (routeId !== "assets" || summary !== null || !systemStatus || systemStatus?.components?.database?.state === "down") return;
     runBusy("assets", () => refreshAssets());
-  }, [refreshAssets, routeId, runBusy, summary]);
+  }, [refreshAssets, routeId, runBusy, summary, systemStatus]);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.mp_task_id === selectedTaskId) || null,
@@ -129,7 +216,13 @@ export function useAppData(routeId) {
     connectionDraft,
     defaults,
     lookups,
+    operations,
+    operationsStale,
+    operationsTotal,
+    operationsUpdatedAt,
     refreshAssets,
+    refreshOperations,
+    refreshSystemStatus,
     refreshTasks,
     runBusy,
     selectedTask,
@@ -141,6 +234,7 @@ export function useAppData(routeId) {
     setSession,
     showAlert,
     summary,
+    systemStatus,
     tasks,
   };
 }

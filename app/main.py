@@ -19,7 +19,8 @@ from typing import Any, Callable, Literal
 import requests
 import psycopg
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
@@ -32,6 +33,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from .diagnostics import (
     configure_diagnostics,
+    build_diagnostic_archive,
     current_trace_id,
     diagnostic_context,
     log_event,
@@ -493,6 +495,12 @@ class FrontendDiagnosticBatch(BaseModel):
     events: list[FrontendDiagnosticEvent] = Field(min_length=1, max_length=100)
 
 
+class SavedViewRequest(BaseModel):
+    route: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -511,6 +519,8 @@ async def diagnostic_http_middleware(request: Request, call_next):
     trace_id = normalize_correlation_id(request.headers.get("x-trace-id")) or new_trace_id()
     request_id = normalize_correlation_id(request.headers.get("x-request-id")) or new_trace_id()
     started = time.perf_counter()
+    request.state.trace_id = trace_id
+    request.state.request_id = request_id
     with diagnostic_context(trace_id=trace_id, request_id=request_id):
         log_event(
             "app",
@@ -554,6 +564,73 @@ async def diagnostic_http_middleware(request: Request, call_next):
         return response
 
 
+def error_component(path: str) -> str:
+    if path.startswith("/api/session") or path.startswith("/api/mpvm"):
+        return "mpvm"
+    if path.startswith("/api/asset-cards"):
+        return "asset_cards"
+    if path.startswith("/api/vulnerability-passports"):
+        return "vulnerability_passports"
+    if path.startswith("/api/scanner-tasks"):
+        return "scanner_tasks"
+    if path.startswith("/api/operations"):
+        return "operations"
+    return "application"
+
+
+def operator_error_message(status_code: int, component: str, message: str) -> str:
+    if status_code == 503:
+        return "Локальная база данных недоступна. Проверьте PostgreSQL и повторите действие."
+    if status_code == 502:
+        return "MP VM не ответил на запрос. Проверьте подключение и повторите действие."
+    if status_code == 409:
+        return "Операция конфликтует с уже запущенной. Откройте центр операций для подробностей."
+    if status_code == 404:
+        return "Запрошенный объект не найден или уже был удалён."
+    if status_code == 422:
+        return "Проверьте заполненные поля и параметры запроса."
+    return message or f"Ошибка компонента {component}."
+
+
+@app.exception_handler(HTTPException)
+def structured_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    message = str(detail.get("message") or detail.get("operator_message") or "Request failed")
+    component = str(detail.get("component") or error_component(request.url.path))
+    trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
+    request_id = getattr(request.state, "request_id", None)
+    payload = {
+        "code": str(detail.get("code") or f"HTTP_{exc.status_code}"),
+        "message": message,
+        "operator_message": str(detail.get("operator_message") or operator_error_message(exc.status_code, component, message)),
+        "component": component,
+        "retryable": bool(detail.get("retryable", exc.status_code in {409, 429, 502, 503, 504})),
+        "trace_id": trace_id,
+        "request_id": request_id,
+        "context": detail.get("context") or {key: value for key, value in detail.items() if key not in {"code", "message", "operator_message", "component", "retryable"}},
+    }
+    return JSONResponse(status_code=exc.status_code, content={"detail": payload}, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+def structured_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request validation failed.",
+            "operator_message": "Проверьте заполненные поля и параметры запроса.",
+            "component": error_component(request.url.path),
+            "retryable": False,
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "context": {"fields": exc.errors()},
+        }},
+    )
+
+
 @app.on_event("startup")
 def startup() -> None:
     global DATABASE_STARTUP_ERROR
@@ -563,6 +640,7 @@ def startup() -> None:
         db.interrupt_active_vulnerability_passport_detail_jobs()
         db.interrupt_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
+        db.sync_operations_from_sources()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
@@ -586,10 +664,23 @@ def startup() -> None:
 
 
 @app.exception_handler(psycopg.Error)
-def database_error_handler(_request, exc: psycopg.Error) -> JSONResponse:
+def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse:
+    trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
+    request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=503,
-        content={"detail": f"Database is unavailable: {exc}"},
+        content={
+            "detail": {
+                "code": "DATABASE_UNAVAILABLE",
+                "message": "Database is unavailable.",
+                "operator_message": "Локальная база данных недоступна. Проверьте PostgreSQL и повторите действие.",
+                "component": "database",
+                "retryable": True,
+                "trace_id": trace_id,
+                "request_id": request_id,
+                "context": {},
+            }
+        },
     )
 
 
@@ -614,6 +705,155 @@ def health() -> dict[str, Any]:
             "asset_card_requests": ASSET_CARD_REQUEST_WORKERS,
         },
     }
+
+
+@app.get("/api/system/status")
+def system_status() -> dict[str, Any]:
+    global DATABASE_STARTUP_ERROR
+    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    database_error = None
+    try:
+        with db.connect() as conn:
+            conn.execute("SELECT 1")
+        DATABASE_STARTUP_ERROR = None
+        database_state = "ok"
+    except psycopg.Error as exc:
+        database_state = "down"
+        database_error = type(exc).__name__
+        DATABASE_STARTUP_ERROR = str(exc)
+    connected = SESSION.client is not None and SESSION.access_token is not None
+    mpvm_state = "ok" if connected else "degraded"
+    workers_state = "ok" if database_state == "ok" else "down"
+    components = {
+        "application": {"state": "ok", "message": "Приложение работает.", "retryable": False},
+        "database": {
+            "state": database_state,
+            "message": "PostgreSQL доступен." if database_state == "ok" else "PostgreSQL недоступен.",
+            "reason": database_error,
+            "retryable": database_state != "ok",
+        },
+        "mpvm": {
+            "state": mpvm_state,
+            "message": "Сессия MP VM активна." if connected else "Нет активной сессии MP VM.",
+            "retryable": not connected,
+            "api_url": SESSION.api_url,
+        },
+        "background_workers": {
+            "state": workers_state,
+            "message": "Фоновые исполнители готовы." if workers_state == "ok" else "Фоновые операции ожидают восстановления PostgreSQL.",
+            "retryable": workers_state != "ok",
+            "limits": {
+                "scan_postprocess": SCAN_POSTPROCESS_WORKERS,
+                "scan_asset_process": SCAN_ASSET_PROCESS_WORKERS,
+                "asset_card_requests": ASSET_CARD_REQUEST_WORKERS,
+                "passport_details": PASSPORT_DETAIL_WORKERS,
+            },
+        },
+    }
+    overall = "ok" if database_state == "ok" and connected else "degraded"
+    return {"state": overall, "checked_at": checked_at, "components": components}
+
+
+@app.get("/api/operations")
+def operations(
+    status: str | None = None,
+    kind: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    return db.list_operations(status=status, kind=kind, q=q, limit=limit, offset=offset)
+
+
+@app.get("/api/operations/{operation_id}")
+def operation_detail(operation_id: str) -> dict[str, Any]:
+    operation = db.get_operation(operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
+    return operation
+
+
+@app.post("/api/operations/{operation_id}/cancel")
+def cancel_operation(operation_id: str) -> dict[str, Any]:
+    operation = db.get_operation(operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
+    if not operation["can_cancel"]:
+        return operation
+    if operation["kind"] == "asset_card_build":
+        cancel_asset_card_build_job(operation["source_id"])
+    elif operation["kind"] == "passport_detail_sync":
+        cancel_vulnerability_passport_detail_job(operation["source_id"])
+    return db.get_operation(operation_id) or operation
+
+
+@app.post("/api/operations/{operation_id}/retry", status_code=202)
+def retry_operation(
+    operation_id: str,
+    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    clean_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_key)
+    if replay:
+        return {"operation": replay, "idempotent_replay": True}
+    operation = db.get_operation(operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
+    if not operation["can_retry"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OPERATION_NOT_RETRYABLE", "message": "Operation cannot be retried safely.", "component": "operations"},
+        )
+    request_data = operation.get("request") if isinstance(operation.get("request"), dict) else {}
+    if operation["kind"] == "asset_card_build":
+        result = create_asset_card_build_job(AssetCardBuildJobRequest(**request_data), background_tasks)
+        new_id = result["job"]["job_id"]
+    elif operation["kind"] == "passport_detail_sync":
+        if not request_data.get("pdql"):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RETRY_CONTEXT_MISSING", "message": "Original passport query is unavailable.", "component": "operations"},
+            )
+        result = query_vulnerability_passports(VulnerabilityPassportQueryRequest(**request_data), background_tasks)
+        detail_job = result.get("detail_job") or {}
+        new_id = detail_job.get("job_id")
+        if not new_id:
+            raise HTTPException(status_code=409, detail={"code": "RETRY_NOT_REQUIRED", "message": "No passport details require refresh.", "component": "operations"})
+    else:
+        raise HTTPException(status_code=409, detail={"code": "OPERATION_NOT_RETRYABLE", "message": "Operation cannot be retried safely.", "component": "operations"})
+    db.sync_operations_from_sources()
+    retried = db.set_operation_retry(new_id, operation_id, clean_key) or db.get_operation(new_id)
+    return {"operation": retried, "retry_of": operation_id}
+
+
+@app.get("/api/operations/{operation_id}/diagnostics")
+def operation_diagnostics(operation_id: str) -> FileResponse:
+    operation = db.get_operation(operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
+    path = build_diagnostic_archive(
+        trace_id=operation.get("trace_id") or None,
+        job_id=None if operation.get("trace_id") else operation.get("source_id"),
+    )
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+
+@app.get("/api/saved-views")
+def saved_views(route: str) -> dict[str, Any]:
+    return {"rows": db.list_saved_views(route)}
+
+
+@app.post("/api/saved-views")
+def upsert_saved_view(payload: SavedViewRequest) -> dict[str, Any]:
+    return db.save_view(payload.route.strip(), payload.name.strip(), payload.filters)
+
+
+@app.delete("/api/saved-views/{view_id}")
+def remove_saved_view(view_id: int) -> dict[str, Any]:
+    if not db.delete_saved_view(view_id):
+        raise HTTPException(status_code=404, detail={"code": "SAVED_VIEW_NOT_FOUND", "message": "Saved view not found.", "component": "application"})
+    return {"id": view_id, "deleted": True}
 
 
 @app.post("/api/diagnostics/frontend", status_code=202)
@@ -791,7 +1031,18 @@ def start_scanner_task(
     task_id: str,
     background_tasks: BackgroundTasks,
     payload: StartScannerTaskRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
 ) -> dict[str, Any]:
+    clean_idempotency_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
+    if replay and replay.get("kind") == "scan_postprocess":
+        return {
+            "status": "started",
+            "postprocess_run_id": replay["source_id"],
+            "postprocess": db.get_scan_postprocess_run(replay["source_id"], include_items=True),
+            "operation": replay,
+            "idempotent_replay": True,
+        }
     client, token = require_mpvm()
     options = payload or StartScannerTaskRequest()
     try:
@@ -804,12 +1055,14 @@ def start_scanner_task(
             mp_task_id=task_id,
             started_from=str(result["started_from"]),
             options=options.model_dump(),
+            idempotency_key=clean_idempotency_key,
         )
         background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
         return {
             **result,
             "postprocess_run_id": postprocess_run_id,
             "postprocess": postprocess,
+            "operation_id": postprocess_run_id,
         }
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
@@ -835,13 +1088,85 @@ def stop_scanner_task(task_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/scanner-tasks/{task_id}/delete")
-def delete_scanner_task_post(task_id: str, payload: DeleteScannerTaskRequest | None = None) -> dict[str, Any]:
-    return delete_scanner_task_impl(task_id, payload or DeleteScannerTaskRequest())
+def delete_scanner_task_post(
+    task_id: str,
+    payload: DeleteScannerTaskRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    return delete_scanner_task_idempotent(task_id, payload or DeleteScannerTaskRequest(), idempotency_key)
 
 
 @app.delete("/api/scanner-tasks/{task_id}")
-def delete_scanner_task_delete(task_id: str, payload: DeleteScannerTaskRequest | None = None) -> dict[str, Any]:
-    return delete_scanner_task_impl(task_id, payload or DeleteScannerTaskRequest())
+def delete_scanner_task_delete(
+    task_id: str,
+    payload: DeleteScannerTaskRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    return delete_scanner_task_idempotent(task_id, payload or DeleteScannerTaskRequest(), idempotency_key)
+
+
+def delete_scanner_task_idempotent(
+    task_id: str,
+    payload: DeleteScannerTaskRequest,
+    idempotency_key: str | None,
+) -> dict[str, Any]:
+    clean_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_key)
+    if replay:
+        if replay.get("kind") != "task_delete":
+            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": "Idempotency key belongs to another operation.", "component": "operations"})
+        return {**(replay.get("result") or {}), "idempotent_replay": True, "operation_id": replay["operation_id"]}
+    operation_id = str(uuid.uuid4())
+    db.register_operation(
+        operation_id,
+        kind="task_delete",
+        source_id=operation_id,
+        status="running",
+        stage="deleting_remote_task",
+        progress_percent=10,
+        subject_type="scanner_task",
+        subject_id=task_id,
+        subject_label=task_id,
+        message="Deleting scanner task from MP VM.",
+        request={"mode": payload.mode},
+        idempotency_key=clean_key,
+    )
+    try:
+        result = delete_scanner_task_impl(task_id, payload)
+    except Exception as exc:
+        db.register_operation(
+            operation_id,
+            kind="task_delete",
+            source_id=operation_id,
+            status="failed",
+            stage="failed",
+            progress_percent=100,
+            subject_type="scanner_task",
+            subject_id=task_id,
+            subject_label=task_id,
+            message="Scanner task deletion failed.",
+            error={"message": str(exc)[:1000]},
+            idempotency_key=clean_key,
+            finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        raise
+    db.register_operation(
+        operation_id,
+        kind="task_delete",
+        source_id=operation_id,
+        status="completed",
+        stage="completed",
+        progress_percent=100,
+        subject_type="scanner_task",
+        subject_id=task_id,
+        subject_label=task_id,
+        message="Scanner task deleted from MP VM.",
+        request={"mode": payload.mode},
+        result=result,
+        idempotency_key=clean_key,
+        finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    return {**result, "operation_id": operation_id}
 
 
 @app.post("/api/exports/pdql")
@@ -1006,7 +1331,13 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
 def create_asset_card_build_job(
     payload: AssetCardBuildJobRequest,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
 ) -> dict[str, Any]:
+    clean_idempotency_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
+    if replay and replay.get("kind") == "asset_card_build":
+        replay_job = db.get_asset_card_build_job(replay["source_id"])
+        return {"job": replay_job, "operation": replay, "idempotent_replay": True}
     asset_id = payload.asset_id.strip()
     if not asset_id:
         raise HTTPException(status_code=422, detail="asset_id is required")
@@ -1028,6 +1359,7 @@ def create_asset_card_build_job(
             asset_id=asset_id,
             operation="refresh" if db.asset_card_exists(asset_id) else "create",
             request=request,
+            idempotency_key=clean_idempotency_key,
         )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(
@@ -1063,7 +1395,7 @@ def create_asset_card_build_job(
         asset_id=asset_id,
         operation=job.get("operation"),
     )
-    return {"job": job}
+    return {"job": job, "operation_id": job_id}
 
 
 @app.get("/api/asset-cards/build-jobs/active")
@@ -1422,6 +1754,7 @@ def query_vulnerability_passports(
                 requested_count=len(candidates["requested"]),
                 eligible_count=len(candidates["eligible"]),
                 skipped_fresh_count=len(candidates["skipped_fresh"]),
+                request=payload.model_dump(),
             )
         except psycopg.errors.UniqueViolation as exc:
             active_job = db.get_active_vulnerability_passport_detail_job()

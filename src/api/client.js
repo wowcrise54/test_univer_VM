@@ -22,7 +22,7 @@ export async function api(path, options = {}) {
       { method, path, duration_ms: Math.round((performance.now() - started) * 100) / 100, message: error?.message },
       { level: "error", requestId, stack: error?.stack },
     );
-    throw error;
+    throw normalizeApiError(error, { path, requestId });
   }
 
   const traceId = response.headers.get("x-trace-id");
@@ -56,17 +56,43 @@ export async function api(path, options = {}) {
   );
   if (!response.ok) {
     const detail = typeof body === "object" && body ? body.detail : null;
+    const normalizedDetail = typeof detail === "object" && detail ? detail : {};
     const baseMessage = typeof body === "string"
       ? body
       : typeof detail === "string"
         ? detail
-        : detail?.message || JSON.stringify(body);
-    const message = traceId ? `${baseMessage} [trace: ${traceId}]` : baseMessage;
+        : normalizedDetail.message || JSON.stringify(body);
+    const operatorMessage = normalizedDetail.operator_message || baseMessage;
+    const message = traceId ? `${operatorMessage} [trace: ${traceId}]` : operatorMessage;
     const error = new Error(message);
-    error.traceId = traceId;
-    error.requestId = requestId;
+    error.code = normalizedDetail.code || `HTTP_${response.status}`;
+    error.operatorMessage = operatorMessage;
+    error.component = normalizedDetail.component || "application";
+    error.retryable = Boolean(normalizedDetail.retryable);
+    error.context = normalizedDetail.context || {};
+    error.traceId = normalizedDetail.trace_id || traceId;
+    error.requestId = normalizedDetail.request_id || requestId;
     error.status = response.status;
     throw error;
   }
   return body;
+}
+
+export function normalizeApiError(error, context = {}) {
+  if (error?.operatorMessage) return error;
+  const normalized = new Error("Сервис приложения недоступен. Проверьте, что backend запущен, и повторите действие.");
+  normalized.code = "NETWORK_UNAVAILABLE";
+  normalized.operatorMessage = normalized.message;
+  normalized.component = "application";
+  normalized.retryable = true;
+  normalized.traceId = error?.traceId || null;
+  normalized.requestId = context.requestId || error?.requestId || null;
+  normalized.context = { path: context.path || null };
+  normalized.cause = error;
+  return normalized;
+}
+
+export function createIdempotencyKey(prefix = "operation") {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return `${prefix}:${uuid || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }

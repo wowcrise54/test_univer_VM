@@ -2,5 +2,7 @@ test.sql
 test.sql
 __pycache__/
 *.py[cod]
+node_modules/
+.vite/
 output/logs/
 output/diagnostics/

@@ -1,6 +1,6 @@
 import { routes } from "./navigation.js";
 
-export function Sidebar({ session, activePath, onNavigate }) {
+export function Sidebar({ session, systemStatus, activeOperations = 0, activePath, onNavigate }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -22,7 +22,8 @@ export function Sidebar({ session, activePath, onNavigate }) {
             }}
             key={route.id}
           >
-            {route.label}
+            <span>{route.label}</span>
+            {route.id === "operations" && activeOperations ? <em className="nav-badge">{activeOperations}</em> : null}
           </a>
         ))}
       </nav>
@@ -33,7 +34,31 @@ export function Sidebar({ session, activePath, onNavigate }) {
           <p>{session.connected ? session.api_url : "Подключите MP VM, чтобы загрузить справочники."}</p>
         </div>
       </div>
+      {systemStatus?.components?.database?.state === "down" ? (
+        <div className="sidebar-warning">PostgreSQL недоступен</div>
+      ) : null}
     </aside>
+  );
+}
+
+export function SystemBanner({ status, stale, onRetry, onNavigate }) {
+  if (!status || (status.state === "ok" && !stale)) return null;
+  const components = Object.entries(status.components || {}).filter(([, value]) => value?.state !== "ok");
+  const primary = components[0]?.[1];
+  const isDown = status.state === "down" || components.some(([, value]) => value?.state === "down");
+  return (
+    <section className={`system-banner system-banner--${isDown ? "down" : "degraded"}`} role="status">
+      <div>
+        <strong>{isDown ? "Часть системы недоступна" : "Система работает с ограничениями"}</strong>
+        <span>{primary?.message || "Данные операций могут быть устаревшими."}</span>
+        {primary?.trace_id ? <code>trace: {primary.trace_id}</code> : null}
+      </div>
+      <div className="system-banner__actions">
+        {components.some(([key]) => key === "mpvm") ? <button onClick={() => onNavigate("/connection")}>Подключение</button> : null}
+        {stale ? <button onClick={() => onNavigate("/operations")}>Операции</button> : null}
+        <button onClick={onRetry}>Проверить снова</button>
+      </div>
+    </section>
   );
 }
 

@@ -16,6 +16,13 @@ export const routes = [
     description: "Создание, запуск и контроль задач сканирования в MP VM.",
   },
   {
+    id: "operations",
+    path: "/operations",
+    label: "Операции",
+    title: "Центр операций",
+    description: "Единое состояние фоновых заданий, повторов, отмены и диагностики.",
+  },
+  {
     id: "export",
     path: "/export",
     label: "PDQL экспорт",

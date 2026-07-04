@@ -10,6 +10,8 @@ export function TasksPage({
   selectedTaskId,
   setSelectedTaskId,
   showAlert,
+  session,
+  systemStatus,
   tasks,
 }) {
   return (
@@ -34,6 +36,8 @@ export function TasksPage({
         busy={busy}
         runBusy={runBusy}
         showAlert={showAlert}
+        session={session}
+        systemStatus={systemStatus}
       />
     </>
   );
