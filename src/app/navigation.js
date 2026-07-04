@@ -37,6 +37,13 @@ export const routes = [
     description: "Поиск, построение и сохранение детальных карточек активов в локальную БД.",
   },
   {
+    id: "asset-query",
+    path: "/asset-query",
+    label: "Выборки активов",
+    title: "Выборки по карточкам активов",
+    description: "Локальные выборки по firewall и другим индексированным полям карточек активов.",
+  },
+  {
     id: "passports",
     path: "/passports",
     label: "Паспорта",

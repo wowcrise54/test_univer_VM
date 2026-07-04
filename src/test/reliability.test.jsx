@@ -4,6 +4,8 @@ import { SystemBanner } from "../app/layout.jsx";
 import { normalizeApiError } from "../api/client.js";
 import { ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
+import { buildAssetPropertyRows, formatAssetCell } from "../panels.jsx";
+import { sortRows } from "../shared/table.jsx";
 
 vi.mock("../api/client.js", async (importOriginal) => {
   const original = await importOriginal();
@@ -45,5 +47,23 @@ describe("reliability UI", () => {
     expect(screen.getByText("host-1")).toBeInTheDocument();
     expect(screen.getByText("Passports")).toBeInTheDocument();
     expect(screen.getByText("требуют внимания").previousSibling).toHaveTextContent("1");
+  });
+
+  it("sorts typed values stably and always leaves empty cells last", () => {
+    const rows = [{ id: "empty", value: null }, { id: "ten", value: 10 }, { id: "two", value: 2 }];
+    expect(sortRows(rows, { key: "value", direction: "asc" }).map((row) => row.id)).toEqual(["two", "ten", "empty"]);
+    expect(sortRows(rows, { key: "value", direction: "desc" }).map((row) => row.id)).toEqual(["ten", "two", "empty"]);
+  });
+
+  it("removes raw containers while preserving nested asset-card leaves", () => {
+    const rows = buildAssetPropertyRows({
+      name: "firewall",
+      title: "Firewall",
+      path: "asset.firewall",
+      value: { rawDetail: { debug: true }, rules: [{ port: 443, action: "allow", objectId: "hidden" }] },
+    });
+    expect(rows.map((row) => row.path)).toEqual(["asset.firewall.rules[0].port", "asset.firewall.rules[0].action"]);
+    expect(rows.map((row) => row.value)).toEqual([443, "allow"]);
+    expect(formatAssetCell({ arbitrary: "container" })).toBe("—");
   });
 });

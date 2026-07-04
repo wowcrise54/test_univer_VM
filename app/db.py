@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -416,6 +417,21 @@ def _initialize_schema() -> None:
             updated_at TEXT NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS asset_card_search_fields (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            entity_path TEXT NOT NULL,
+            field_path TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            value_type TEXT NOT NULL,
+            value_text TEXT,
+            value_text_normalized TEXT,
+            value_number NUMERIC,
+            value_boolean BOOLEAN,
+            updated_at TEXT NOT NULL
+        )
+        """,
         "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS vulnerabilities_json TEXT NOT NULL DEFAULT '{}'",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS trace_id TEXT",
@@ -503,6 +519,11 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_collection_items_type ON asset_card_collection_items(object_type)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_asset_path ON asset_card_table_rows(asset_id, path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_kind ON asset_card_table_rows(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_asset ON asset_card_search_fields(asset_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_path_text ON asset_card_search_fields(field_path, value_text_normalized, asset_id) WHERE value_type = 'text'",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_path_number ON asset_card_search_fields(field_path, value_number, asset_id) WHERE value_type = 'number'",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_path_boolean ON asset_card_search_fields(field_path, value_boolean, asset_id) WHERE value_type = 'boolean'",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_entity ON asset_card_search_fields(asset_id, entity_path, field_path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_asset_source ON asset_card_vulnerability_groups(asset_id, source_type, group_order)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_cve ON asset_card_vulnerabilities(asset_id, cve_name)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_vulnerability_id ON asset_card_vulnerabilities(vulnerability_id)",
@@ -520,6 +541,14 @@ def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
 
 ACTIVE_OPERATION_STATUSES = {"queued", "running", "cancelling", "recovering"}
 RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync"}
+
+
+def validated_sort_sql(sort_by: str | None, sort_dir: str | None, allowed: dict[str, str], *, default: str) -> tuple[str, str]:
+    key = sort_by or default
+    expression = allowed.get(key)
+    if not expression:
+        raise ValueError(f"Unsupported sort column: {key}")
+    return expression, "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
 
 
 def register_operation(
@@ -749,6 +778,8 @@ def list_operations(
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> dict[str, Any]:
     sync_operations_from_sources()
     clauses: list[str] = []
@@ -766,10 +797,18 @@ def list_operations(
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     limit = max(1, min(200, int(limit)))
     offset = max(0, int(offset))
+    sort_expression, direction = validated_sort_sql(
+        sort_by,
+        sort_dir,
+        {"created_at": "created_at", "updated_at": "updated_at", "status": "LOWER(status)", "kind": "LOWER(kind)", "subject": "LOWER(subject_label)", "progress": "progress_percent"},
+        default="created_at",
+    )
+    if sort_by is None:
+        direction = "DESC"
     with connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) AS count FROM operations {where}", params).fetchone()["count"]
         rows = conn.execute(
-            f"SELECT * FROM operations {where} ORDER BY created_at DESC, operation_id DESC LIMIT %s OFFSET %s",
+            f"SELECT * FROM operations {where} ORDER BY {sort_expression} {direction} NULLS LAST, operation_id ASC LIMIT %s OFFSET %s",
             [*params, limit, offset],
         ).fetchall()
     return {"total": int(total), "rows": [decode_operation(dict(row)) for row in rows], "limit": limit, "offset": offset}
@@ -1548,6 +1587,8 @@ def list_asset_findings(
     severity: str | None = None,
     limit: int = 200,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> dict[str, Any]:
     filters: list[str] = []
     params: list[Any] = []
@@ -1563,6 +1604,19 @@ def list_asset_findings(
     where = "WHERE " + " AND ".join(filters) if filters else ""
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
+    if sort_by:
+        sort_expression, direction = validated_sort_sql(
+            sort_by,
+            sort_dir,
+            {"ip_address": "LOWER(a.ip_address)", "fqdn": "LOWER(a.fqdn)", "software_name": "LOWER(s.name)", "software_version": "LOWER(s.version)", "vulnerability_name": "LOWER(vf.vulnerability_name)", "cve": "LOWER(vf.cve)", "severity": "CASE LOWER(COALESCE(vf.severity, '')) WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 WHEN 'none' THEN 5 ELSE 6 END", "created_at": "vf.created_at"},
+            default="severity",
+        )
+        order_sql = f"{sort_expression} {direction} NULLS LAST, vf.id ASC"
+    else:
+        order_sql = """
+            CASE LOWER(COALESCE(vf.severity, '')) WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 WHEN 'none' THEN 5 ELSE 6 END,
+            a.ip_address, s.name, vf.cve
+        """
 
     with connect() as conn:
         total_row = conn.execute(
@@ -1593,18 +1647,7 @@ def list_asset_findings(
             JOIN assets a ON a.id = vf.asset_id
             LEFT JOIN software s ON s.id = vf.software_id
             {where}
-            ORDER BY
-                CASE LOWER(COALESCE(vf.severity, ''))
-                    WHEN 'critical' THEN 1
-                    WHEN 'high' THEN 2
-                    WHEN 'medium' THEN 3
-                    WHEN 'low' THEN 4
-                    WHEN 'none' THEN 5
-                    ELSE 6
-                END,
-                a.ip_address,
-                s.name,
-                vf.cve
+            ORDER BY {order_sql}
             LIMIT %s OFFSET %s
             """,
             [*params, limit, offset],
@@ -1831,6 +1874,8 @@ def list_vulnerability_passports(
     pdql_token: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> dict[str, Any]:
     init_db()
     filters: list[str] = []
@@ -1855,6 +1900,25 @@ def list_vulnerability_passports(
     where = "WHERE " + " AND ".join(filters) if filters else ""
     limit = min(200, max(1, limit))
     offset = max(0, offset)
+    if sort_by:
+        sort_expression, direction = validated_sort_sql(
+            sort_by,
+            sort_dir,
+            {
+                "name": "LOWER(name)", "external_id": "LOWER(external_id)",
+                "severity": "CASE LOWER(COALESCE(severity, '')) WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 WHEN 'none' THEN 5 ELSE 6 END",
+                "score": "CASE WHEN REPLACE(COALESCE(score, ''), ',', '.') ~ '^[0-9]+([.][0-9]+)?$' THEN REPLACE(score, ',', '.')::numeric ELSE NULL END",
+                "package": "LOWER(package_id)", "issue_time": "issue_time", "detail_updated_at": "detail_updated_at", "internal_id": "LOWER(internal_id)",
+            },
+            default="severity",
+        )
+        order_sql = f"{sort_expression} {direction} NULLS LAST, internal_id ASC"
+    else:
+        order_sql = """
+            CASE LOWER(COALESCE(severity, '')) WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 WHEN 'none' THEN 5 ELSE 6 END,
+            CASE WHEN REPLACE(COALESCE(score, ''), ',', '.') ~ '^[0-9]+([.][0-9]+)?$' THEN REPLACE(score, ',', '.')::numeric ELSE NULL END DESC NULLS LAST,
+            name NULLS LAST, internal_id
+        """
 
     with connect() as conn:
         total_row = conn.execute(f"SELECT COUNT(*) AS count FROM vulnerability_passports {where}", params).fetchone()
@@ -1867,22 +1931,7 @@ def list_vulnerability_passports(
                 (raw_detail_json IS NOT NULL) AS has_detail
             FROM vulnerability_passports
             {where}
-            ORDER BY
-                CASE LOWER(COALESCE(severity, ''))
-                    WHEN 'critical' THEN 1
-                    WHEN 'high' THEN 2
-                    WHEN 'medium' THEN 3
-                    WHEN 'low' THEN 4
-                    WHEN 'none' THEN 5
-                    ELSE 6
-                END,
-                CASE
-                    WHEN REPLACE(COALESCE(score, ''), ',', '.') ~ '^[0-9]+([.][0-9]+)?$'
-                    THEN REPLACE(score, ',', '.')::numeric
-                    ELSE NULL
-                END DESC NULLS LAST,
-                name NULLS LAST,
-                internal_id
+            ORDER BY {order_sql}
             LIMIT %s OFFSET %s
             """,
             [*params, limit, offset],
@@ -2427,6 +2476,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
+        replace_asset_card_search_index(conn, asset_id, card, current)
         save_duration_ms = round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2)
         stats = card.setdefault("stats", {})
         if isinstance(stats, dict):
@@ -2660,6 +2710,142 @@ def replace_asset_card_cache(
         )
 
     reconcile_asset_card_vulnerability_passport_links(conn, None, updated_at, asset_id=asset_id)
+
+
+ASSET_SEARCH_HIDDEN_KEYS = {
+    "raw", "rawcard", "rawrecord", "rawdetail", "rawvalue", "objectid", "type",
+}
+
+
+def is_hidden_asset_search_key(key: Any) -> bool:
+    normalized = re.sub(r"[_-]", "", str(key or "")).lower()
+    return normalized in ASSET_SEARCH_HIDDEN_KEYS or normalized.startswith("raw")
+
+
+def asset_search_leaf_rows(
+    value: Any,
+    *,
+    entity_path: str,
+    field_path: str,
+    field_name: str,
+    depth: int = 0,
+) -> list[tuple[str, str, str, str, str | None, str | None, Any, bool | None]]:
+    if depth > 8 or value is None:
+        return []
+    if isinstance(value, dict):
+        if "hasItems" in value and isinstance(value.get("hasItems"), bool):
+            value = value["hasItems"]
+        else:
+            rows: list[tuple[str, str, str, str, str | None, str | None, Any, bool | None]] = []
+            nested = value.get("data") if isinstance(value.get("data"), dict) else value
+            for key, child in nested.items():
+                if is_hidden_asset_search_key(key):
+                    continue
+                child_path = f"{field_path}.{key}" if field_path else str(key)
+                rows.extend(asset_search_leaf_rows(
+                    child,
+                    entity_path=entity_path,
+                    field_path=child_path,
+                    field_name=str(key),
+                    depth=depth + 1,
+                ))
+            return rows
+    if isinstance(value, list):
+        rows = []
+        for item in value:
+            rows.extend(asset_search_leaf_rows(
+                item,
+                entity_path=entity_path,
+                field_path=field_path,
+                field_name=field_name,
+                depth=depth + 1,
+            ))
+        return rows
+    if isinstance(value, bool):
+        return [(entity_path, field_path, field_name, "boolean", "true" if value else "false", "true" if value else "false", None, value)]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return [(entity_path, field_path, field_name, "number", str(value), str(value), value, None)]
+    text = clean_value(value)
+    if text is None:
+        return []
+    return [(entity_path, field_path, field_name, "text", text, text.lower(), None, None)]
+
+
+def build_asset_card_search_rows(card: dict[str, Any]) -> list[tuple[str, str, str, str, str | None, str | None, Any, bool | None]]:
+    root = card.get("root") if isinstance(card.get("root"), dict) else {}
+    root_data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    rows: list[tuple[str, str, str, str, str | None, str | None, Any, bool | None]] = []
+    summary = {
+        "assetId": clean_value(card.get("asset_id")),
+        "displayName": first_non_empty(card.get("display_name"), root.get("displayName")),
+        "assetType": first_non_empty(card.get("asset_type"), root.get("type")),
+        "fqdn": first_non_empty(card.get("fqdn"), root_data.get("fqdn")),
+        "hostname": first_non_empty(card.get("hostname"), root_data.get("hostname")),
+        "ipAddress": first_non_empty(card.get("ip_address"), root_data.get("ipAddress")),
+        "osName": first_non_empty(card.get("os_name"), root_data.get("osName")),
+        "osVersion": first_non_empty(card.get("os_version"), root_data.get("osVersion")),
+        "vulnerabilityLevel": first_non_empty(card.get("vulnerability_level"), root.get("vulnerabilityLevel")),
+    }
+    rows.extend(asset_search_leaf_rows(summary, entity_path="asset", field_path="asset", field_name="asset"))
+    rows.extend(asset_search_leaf_rows(root_data, entity_path="asset", field_path="asset", field_name="asset"))
+    for node in card.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        path = clean_value(node.get("path"))
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if path:
+            rows.extend(asset_search_leaf_rows(data, entity_path=path, field_path=path, field_name=asset_path_leaf(path)))
+    for collection in card.get("collections") or []:
+        if not isinstance(collection, dict):
+            continue
+        collection_path = clean_value(collection.get("path"))
+        if not collection_path:
+            continue
+        for index, item in enumerate(collection.get("items") or []):
+            item_doc = item if isinstance(item, dict) else {"value": item}
+            entity_path = clean_value(item_doc.get("path")) or f"{collection_path}[{index}]"
+            if isinstance(item_doc.get("data"), dict):
+                value = item_doc["data"]
+                field_path = collection_path
+            elif "value" in item_doc:
+                value = item_doc.get("value")
+                field_path = collection_path
+            else:
+                value = {key: val for key, val in item_doc.items() if key not in {"path", "node"}}
+                field_path = collection_path
+            rows.extend(asset_search_leaf_rows(
+                value,
+                entity_path=entity_path,
+                field_path=field_path,
+                field_name=clean_value(collection.get("name")) or asset_path_leaf(collection_path),
+            ))
+    deduped = list(dict.fromkeys(rows))
+    return deduped
+
+
+def asset_path_leaf(path: str) -> str:
+    return re.split(r"[.\[]", str(path))[-1].rstrip("]") or str(path)
+
+
+def replace_asset_card_search_index(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+    card: dict[str, Any],
+    updated_at: str,
+) -> int:
+    conn.execute("DELETE FROM asset_card_search_fields WHERE asset_id = %s", (asset_id,))
+    rows = build_asset_card_search_rows(card)
+    with conn.cursor() as cur:
+        copy_rows(
+            cur,
+            "asset_card_search_fields",
+            (
+                "asset_id", "entity_path", "field_path", "field_name", "value_type",
+                "value_text", "value_text_normalized", "value_number", "value_boolean", "updated_at",
+            ),
+            [(asset_id, *row, updated_at) for row in rows],
+        )
+    return len(rows)
 
 
 def iter_asset_card_vulnerability_groups(vulnerabilities: Any) -> list[dict[str, Any]]:
@@ -2955,6 +3141,8 @@ def list_asset_cards(
     q: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> dict[str, Any]:
     init_db()
     filters: list[str] = []
@@ -2974,6 +3162,14 @@ def list_asset_cards(
     where = "WHERE " + " AND ".join(filters) if filters else ""
     limit = max(1, min(limit, 50000))
     offset = max(0, offset)
+    sort_expression, direction = validated_sort_sql(
+        sort_by,
+        sort_dir,
+        {"display_name": "LOWER(display_name)", "ip_address": "LOWER(ip_address)", "fqdn": "LOWER(fqdn)", "os_name": "LOWER(os_name)", "asset_type": "LOWER(asset_type)", "vulnerability_level": "LOWER(vulnerability_level)", "last_seen": "last_seen"},
+        default="last_seen",
+    )
+    if sort_by is None:
+        direction = "DESC"
 
     with connect() as conn:
         total_row = conn.execute(f"SELECT COUNT(*) AS count FROM asset_cards {where}", params).fetchone()
@@ -2985,7 +3181,7 @@ def list_asset_cards(
                 stats_json, first_seen, last_seen
             FROM asset_cards
             {where}
-            ORDER BY last_seen DESC, display_name NULLS LAST, asset_id
+            ORDER BY {sort_expression} {direction} NULLS LAST, asset_id ASC
             LIMIT %s OFFSET %s
             """,
             [*params, limit, offset],
@@ -2996,6 +3192,286 @@ def list_asset_cards(
         "limit": limit,
         "offset": offset,
     }
+
+
+ASSET_QUERY_TEXT_OPERATORS = {"equals", "not_equals", "contains", "starts_with", "in"}
+ASSET_QUERY_NUMBER_OPERATORS = {"equals", "not_equals", "gt", "gte", "lt", "lte"}
+ASSET_QUERY_BOOLEAN_OPERATORS = {"is_true", "is_false"}
+ASSET_QUERY_COMMON_OPERATORS = {"exists", "not_exists"}
+
+
+def asset_card_search_index_coverage() -> dict[str, int]:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM asset_cards) AS total_cards,
+                (SELECT COUNT(DISTINCT asset_id) FROM asset_card_search_fields) AS indexed_cards
+            """
+        ).fetchone()
+    return {"total_cards": int(row["total_cards"] or 0), "indexed_cards": int(row["indexed_cards"] or 0)}
+
+
+def backfill_asset_card_search_index_batch(limit: int = 20) -> dict[str, int]:
+    init_db()
+    limit = max(1, min(100, int(limit)))
+    with connect() as conn:
+        missing = conn.execute(
+            """
+            SELECT card.asset_id
+            FROM asset_cards card
+            WHERE NOT EXISTS (
+                SELECT 1 FROM asset_card_search_fields field WHERE field.asset_id = card.asset_id
+            )
+            ORDER BY card.last_seen DESC, card.asset_id
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    processed = 0
+    indexed_fields = 0
+    for row in missing:
+        asset_id = str(row["asset_id"])
+        card = get_asset_card(asset_id)
+        if not card:
+            continue
+        current = now_utc()
+        with connect() as conn:
+            indexed_fields += replace_asset_card_search_index(conn, asset_id, card, current)
+        processed += 1
+    coverage = asset_card_search_index_coverage()
+    return {**coverage, "processed": processed, "indexed_fields": indexed_fields}
+
+
+def list_asset_card_search_fields(q: str | None = None, limit: int = 100) -> dict[str, Any]:
+    init_db()
+    limit = max(1, min(500, int(limit)))
+    params: list[Any] = []
+    where = ""
+    if q:
+        needle = f"%{q.strip().lower()}%"
+        where = "WHERE LOWER(field_path) LIKE %s OR LOWER(field_name) LIKE %s"
+        params.extend([needle, needle])
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                field_path,
+                MIN(field_name) AS field_name,
+                value_type,
+                COUNT(DISTINCT asset_id) AS asset_count,
+                MIN(value_text) FILTER (WHERE value_text IS NOT NULL) AS sample_value
+            FROM asset_card_search_fields
+            {where}
+            GROUP BY field_path, value_type
+            ORDER BY field_path, value_type
+            LIMIT %s
+            """,
+            [*params, limit],
+        ).fetchall()
+    return {"rows": rows_to_dicts(rows), **asset_card_search_index_coverage()}
+
+
+def collect_asset_query_rules(node: Any) -> list[dict[str, Any]]:
+    if not isinstance(node, dict):
+        return []
+    if node.get("field_path"):
+        return [node]
+    result: list[dict[str, Any]] = []
+    for child in node.get("rules") or []:
+        result.extend(collect_asset_query_rules(child))
+    return result
+
+
+def validate_asset_query_tree(node: Any, *, depth: int = 0, parent_scope: str | None = None) -> int:
+    if not isinstance(node, dict):
+        raise ValueError("Query node must be an object.")
+    if depth > 3:
+        raise ValueError("Query groups may not be nested deeper than 3 levels.")
+    if node.get("field_path"):
+        if not str(node.get("operator") or ""):
+            raise ValueError("Every field rule requires an operator.")
+        return 1
+    combinator = str(node.get("combinator") or "and").lower()
+    scope = str(node.get("match_scope") or "host").lower()
+    if combinator not in {"and", "or"} or scope not in {"host", "same_entity"}:
+        raise ValueError("Unsupported query group combinator or match_scope.")
+    if parent_scope == "same_entity" and scope == "host":
+        raise ValueError("A host-scoped group cannot be nested inside same_entity.")
+    rules = node.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("Every query group must contain at least one rule.")
+    count = sum(validate_asset_query_tree(child, depth=depth + 1, parent_scope=scope) for child in rules)
+    if count > 20:
+        raise ValueError("A query may contain at most 20 field rules.")
+    if scope == "same_entity" and any(
+        str(rule.get("operator") or "") == "not_exists" for rule in collect_asset_query_rules(node)
+    ):
+        raise ValueError("not_exists is only supported for host-scoped groups.")
+    return count
+
+
+def compile_asset_query_rule(rule: dict[str, Any]) -> tuple[str, list[Any], str]:
+    field_path = str(rule.get("field_path") or "").strip()
+    operator = str(rule.get("operator") or "").lower()
+    value = rule.get("value")
+    if not field_path:
+        raise ValueError("field_path is required.")
+    if operator == "not_exists":
+        return (
+            "SELECT card.asset_id, NULL::text AS entity_path FROM asset_cards card "
+            "WHERE NOT EXISTS (SELECT 1 FROM asset_card_search_fields field WHERE field.asset_id = card.asset_id AND field.field_path = %s)",
+            [field_path],
+            "host",
+        )
+    base = "SELECT asset_id, entity_path FROM asset_card_search_fields WHERE field_path = %s"
+    params: list[Any] = [field_path]
+    if operator == "exists":
+        return base, params, "entity"
+    if operator in ASSET_QUERY_TEXT_OPERATORS:
+        if operator == "in":
+            values = value if isinstance(value, list) else [item.strip() for item in str(value or "").split(",") if item.strip()]
+            if not values:
+                raise ValueError("in requires at least one value.")
+            placeholders = ", ".join(["%s"] * len(values))
+            return f"{base} AND value_text_normalized IN ({placeholders})", [*params, *[str(item).lower() for item in values]], "entity"
+        normalized = str(value or "").lower()
+        expression = {
+            "equals": "value_text_normalized = %s",
+            "not_equals": "value_text_normalized <> %s",
+            "contains": "value_text_normalized LIKE %s",
+            "starts_with": "value_text_normalized LIKE %s",
+        }[operator]
+        if operator == "contains":
+            normalized = f"%{normalized}%"
+        elif operator == "starts_with":
+            normalized = f"{normalized}%"
+        return f"{base} AND {expression}", [*params, normalized], "entity"
+    if operator in ASSET_QUERY_NUMBER_OPERATORS:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{operator} requires a numeric value.") from exc
+        expression = {"equals": "=", "not_equals": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
+        return f"{base} AND value_number {expression} %s", [*params, numeric], "entity"
+    if operator in ASSET_QUERY_BOOLEAN_OPERATORS:
+        return f"{base} AND value_boolean = %s", [*params, operator == "is_true"], "entity"
+    raise ValueError(f"Unsupported asset query operator: {operator}")
+
+
+def compile_asset_query_node(node: dict[str, Any]) -> tuple[str, list[Any], str]:
+    if node.get("field_path"):
+        return compile_asset_query_rule(node)
+    scope = str(node.get("match_scope") or "host").lower()
+    combinator = str(node.get("combinator") or "and").lower()
+    child_parts: list[str] = []
+    params: list[Any] = []
+    for child in node.get("rules") or []:
+        child_sql, child_params, child_scope = compile_asset_query_node(child)
+        if scope == "host":
+            child_sql = f"SELECT DISTINCT asset_id, NULL::text AS entity_path FROM ({child_sql}) child"
+        elif child_scope == "host":
+            raise ValueError("Host-scoped rules cannot be correlated inside same_entity.")
+        child_parts.append(f"SELECT asset_id, entity_path FROM ({child_sql}) grouped_child")
+        params.extend(child_params)
+    joiner = " INTERSECT " if combinator == "and" else " UNION "
+    return joiner.join(child_parts), params, scope
+
+
+ASSET_QUERY_SORT_COLUMNS = {
+    "display_name": "LOWER(card.display_name)",
+    "ip_address": "LOWER(card.ip_address)",
+    "fqdn": "LOWER(card.fqdn)",
+    "os_name": "LOWER(card.os_name)",
+    "asset_type": "LOWER(card.asset_type)",
+    "last_seen": "card.last_seen",
+    "vulnerability_level": "LOWER(card.vulnerability_level)",
+}
+
+
+def query_asset_cards_by_fields(
+    query: dict[str, Any],
+    *,
+    sort_by: str = "display_name",
+    sort_dir: str = "asc",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    validate_asset_query_tree(query)
+    matched_sql, params, _scope = compile_asset_query_node(query)
+    sort_expression = ASSET_QUERY_SORT_COLUMNS.get(sort_by)
+    if not sort_expression:
+        raise ValueError(f"Unsupported asset query sort column: {sort_by}")
+    direction = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
+    limit = max(1, min(50000, int(limit)))
+    offset = max(0, int(offset))
+    matched_cte = f"WITH matched_pairs AS ({matched_sql}), matched AS (SELECT DISTINCT asset_id FROM matched_pairs)"
+    with connect() as conn:
+        total = conn.execute(f"{matched_cte} SELECT COUNT(*) AS count FROM matched", params).fetchone()["count"]
+        cards = conn.execute(
+            f"""
+            {matched_cte}
+            SELECT card.id, card.asset_id, card.display_name, card.asset_type, card.fqdn,
+                   card.hostname, card.ip_address, card.os_name, card.os_version,
+                   card.vulnerability_level, card.token_timestamp, card.stats_json,
+                   card.first_seen, card.last_seen
+            FROM matched JOIN asset_cards card ON card.asset_id = matched.asset_id
+            ORDER BY {sort_expression} {direction} NULLS LAST, card.asset_id ASC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+        asset_ids = [row["asset_id"] for row in cards]
+        rules = collect_asset_query_rules(query)
+        field_paths = list(dict.fromkeys(str(rule.get("field_path")) for rule in rules if rule.get("field_path") and rule.get("operator") != "not_exists"))
+        evidence_rows = []
+        if asset_ids and field_paths:
+            evidence_rows = conn.execute(
+                """
+                SELECT asset_id, entity_path, field_path, field_name, value_type,
+                       value_text, value_number, value_boolean
+                FROM asset_card_search_fields
+                WHERE asset_id = ANY(%s) AND field_path = ANY(%s)
+                ORDER BY asset_id, entity_path, field_path, id
+                """,
+                (asset_ids, field_paths),
+            ).fetchall()
+    evidence_by_asset: dict[str, list[dict[str, Any]]] = {asset_id: [] for asset_id in asset_ids}
+    for raw in evidence_rows:
+        item = dict(raw)
+        matching_rules = [rule for rule in rules if rule.get("field_path") == item["field_path"]]
+        if not any(asset_query_evidence_matches(item, rule) for rule in matching_rules):
+            continue
+        item["value"] = first_non_empty(item.get("value_text"), item.get("value_number"), item.get("value_boolean"))
+        evidence_by_asset[item["asset_id"]].append(item)
+    decoded = []
+    for card in cards:
+        summary = decode_asset_card_summary(dict(card))
+        summary["matches"] = evidence_by_asset.get(card["asset_id"], [])[:50]
+        decoded.append(summary)
+    return {"total": int(total or 0), "rows": decoded, "limit": limit, "offset": offset, **asset_card_search_index_coverage()}
+
+
+def asset_query_evidence_matches(field: dict[str, Any], rule: dict[str, Any]) -> bool:
+    operator = str(rule.get("operator") or "").lower()
+    if operator in {"exists", "not_exists"}:
+        return operator == "exists"
+    value = rule.get("value")
+    if operator in ASSET_QUERY_BOOLEAN_OPERATORS:
+        return bool(field.get("value_boolean")) is (operator == "is_true")
+    if operator in ASSET_QUERY_NUMBER_OPERATORS:
+        try:
+            left, right = float(field.get("value_number")), float(value)
+        except (TypeError, ValueError):
+            return False
+        return {"equals": left == right, "not_equals": left != right, "gt": left > right, "gte": left >= right, "lt": left < right, "lte": left <= right}[operator]
+    left = str(field.get("value_text_normalized") or field.get("value_text") or "").lower()
+    if operator == "in":
+        values = value if isinstance(value, list) else [item.strip() for item in str(value or "").split(",")]
+        return left in {str(item).lower() for item in values}
+    right = str(value or "").lower()
+    return {"equals": left == right, "not_equals": left != right, "contains": right in left, "starts_with": left.startswith(right)}.get(operator, False)
 
 
 def record_asset_removal(

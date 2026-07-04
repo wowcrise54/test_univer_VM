@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import copy
+import csv
+import io
 import ipaddress
 import json
 import logging
@@ -24,7 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -501,6 +503,14 @@ class SavedViewRequest(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
+class AssetCardFieldQueryRequest(BaseModel):
+    query: dict[str, Any]
+    sort_by: str = "display_name"
+    sort_dir: Literal["asc", "desc"] = "asc"
+    limit: int = Field(default=50, ge=1, le=50000)
+    offset: int = Field(default=0, ge=0)
+
+
 app = FastAPI(title="MP VM REST API Client", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -562,6 +572,96 @@ async def diagnostic_http_middleware(request: Request, call_next):
             server_timing=response.headers.get("server-timing"),
         )
         return response
+
+
+ASSET_SEARCH_BACKFILL_LOCK = threading.Lock()
+ASSET_SEARCH_BACKFILL_RUNNING = False
+
+
+def start_asset_search_backfill() -> None:
+    global ASSET_SEARCH_BACKFILL_RUNNING
+    with ASSET_SEARCH_BACKFILL_LOCK:
+        if ASSET_SEARCH_BACKFILL_RUNNING:
+            return
+        try:
+            coverage = db.asset_card_search_index_coverage()
+        except psycopg.Error:
+            return
+        if coverage["indexed_cards"] >= coverage["total_cards"]:
+            return
+        ASSET_SEARCH_BACKFILL_RUNNING = True
+    thread = threading.Thread(target=run_asset_search_backfill, daemon=True, name="asset-search-backfill")
+    thread.start()
+
+
+def run_asset_search_backfill() -> None:
+    global ASSET_SEARCH_BACKFILL_RUNNING
+    operation_id = str(uuid.uuid4())
+    try:
+        coverage = db.asset_card_search_index_coverage()
+        total = max(coverage["total_cards"], 1)
+        db.register_operation(
+            operation_id,
+            kind="asset_search_reindex",
+            source_id=operation_id,
+            status="running",
+            stage="indexing",
+            progress_percent=round(coverage["indexed_cards"] * 100 / total),
+            subject_type="asset_cards",
+            subject_label="Индекс полей карточек активов",
+            message="Индексируются существующие карточки активов.",
+        )
+        while coverage["indexed_cards"] < coverage["total_cards"]:
+            batch = db.backfill_asset_card_search_index_batch(limit=20)
+            if not batch["processed"]:
+                break
+            coverage = batch
+            db.register_operation(
+                operation_id,
+                kind="asset_search_reindex",
+                source_id=operation_id,
+                status="running",
+                stage="indexing",
+                progress_percent=round(coverage["indexed_cards"] * 100 / max(coverage["total_cards"], 1)),
+                subject_type="asset_cards",
+                subject_label="Индекс полей карточек активов",
+                message=f"Проиндексировано карточек: {coverage['indexed_cards']} из {coverage['total_cards']}.",
+                result=coverage,
+            )
+        final_status = "completed" if coverage["indexed_cards"] >= coverage["total_cards"] else "completed_with_errors"
+        db.register_operation(
+            operation_id,
+            kind="asset_search_reindex",
+            source_id=operation_id,
+            status=final_status,
+            stage=final_status,
+            progress_percent=100,
+            subject_type="asset_cards",
+            subject_label="Индекс полей карточек активов",
+            message=f"Индексация завершена: {coverage['indexed_cards']} из {coverage['total_cards']} карточек.",
+            result=coverage,
+            finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        log_exception("app", "asset_search.backfill.failed", operation_id=operation_id)
+        try:
+            db.register_operation(
+                operation_id,
+                kind="asset_search_reindex",
+                source_id=operation_id,
+                status="failed",
+                stage="failed",
+                subject_type="asset_cards",
+                subject_label="Индекс полей карточек активов",
+                message="Не удалось завершить индексацию карточек.",
+                error={"message": str(exc)[:1000]},
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except Exception:
+            pass
+    finally:
+        with ASSET_SEARCH_BACKFILL_LOCK:
+            ASSET_SEARCH_BACKFILL_RUNNING = False
 
 
 def error_component(path: str) -> str:
@@ -647,6 +747,8 @@ def startup() -> None:
         log_exception("app", "app.startup.database_failed", database=db.database_label())
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
+    if DATABASE_STARTUP_ERROR is None:
+        start_asset_search_backfill()
     resume_scan_postprocess_runs()
     scan_log(
         logging.INFO,
@@ -761,8 +863,13 @@ def operations(
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
-    return db.list_operations(status=status, kind=kind, q=q, limit=limit, offset=offset)
+    try:
+        return db.list_operations(status=status, kind=kind, q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
 @app.get("/api/operations/{operation_id}")
@@ -1255,8 +1362,18 @@ def import_sample() -> dict[str, Any]:
 
 
 @app.get("/api/assets")
-def assets(q: str | None = None, severity: str | None = None, limit: int = 200, offset: int = 0) -> dict[str, Any]:
-    return db.list_asset_findings(q=q, severity=severity, limit=limit, offset=offset)
+def assets(
+    q: str | None = None,
+    severity: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: Literal["asc", "desc"] | None = None,
+) -> dict[str, Any]:
+    try:
+        return db.list_asset_findings(q=q, severity=severity, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
 @app.get("/api/assets/summary")
@@ -1644,8 +1761,93 @@ def _run_asset_card_build_job(
 
 
 @app.get("/api/asset-cards/local")
-def local_asset_cards(q: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    return db.list_asset_cards(q=q, limit=limit, offset=offset)
+def local_asset_cards(
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: Literal["asc", "desc"] | None = None,
+) -> dict[str, Any]:
+    try:
+        return db.list_asset_cards(q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
+
+
+@app.get("/api/asset-card-query/fields")
+def asset_card_query_fields(q: str | None = None, limit: int = 100) -> dict[str, Any]:
+    start_asset_search_backfill()
+    return db.list_asset_card_search_fields(q=q, limit=limit)
+
+
+@app.post("/api/asset-card-query")
+def asset_card_query(payload: AssetCardFieldQueryRequest) -> dict[str, Any]:
+    start_asset_search_backfill()
+    try:
+        return db.query_asset_cards_by_fields(
+            payload.query,
+            sort_by=payload.sort_by,
+            sort_dir=payload.sort_dir,
+            limit=payload.limit,
+            offset=payload.offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_ASSET_QUERY", "message": str(exc), "component": "asset_cards"},
+        ) from exc
+
+
+@app.post("/api/asset-card-query/export")
+def export_asset_card_query(payload: AssetCardFieldQueryRequest) -> Response:
+    try:
+        first_page = db.query_asset_cards_by_fields(
+            payload.query,
+            sort_by=payload.sort_by,
+            sort_dir=payload.sort_dir,
+            limit=5000,
+            offset=0,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_ASSET_QUERY", "message": str(exc), "component": "asset_cards"},
+        ) from exc
+    def stream_rows():
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(["asset_id", "display_name", "ip_address", "fqdn", "os_name", "last_seen", "entity_path", "field_path", "value"])
+        yield "\ufeff" + output.getvalue()
+        page = first_page
+        offset = 0
+        while True:
+            for card in page["rows"]:
+                matches = card.get("matches") or [{}]
+                for match in matches:
+                    output.seek(0)
+                    output.truncate(0)
+                    writer.writerow([
+                        card.get("asset_id"), card.get("display_name"), card.get("ip_address"), card.get("fqdn"),
+                        card.get("os_name"), card.get("last_seen"), match.get("entity_path"),
+                        match.get("field_path"), match.get("value"),
+                    ])
+                    yield output.getvalue()
+            offset += len(page["rows"])
+            if not page["rows"] or offset >= page["total"]:
+                break
+            page = db.query_asset_cards_by_fields(
+                payload.query,
+                sort_by=payload.sort_by,
+                sort_dir=payload.sort_dir,
+                limit=5000,
+                offset=offset,
+            )
+    filename = f"asset-query-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+    return StreamingResponse(
+        stream_rows(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/asset-cards/{asset_id}")
@@ -1813,14 +2015,16 @@ def local_vulnerability_passports(
     pdql_token: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
-    return db.list_vulnerability_passports(
-        q=q,
-        severity=severity,
-        pdql_token=pdql_token,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return db.list_vulnerability_passports(
+            q=q, severity=severity, pdql_token=pdql_token, limit=limit, offset=offset,
+            sort_by=sort_by, sort_dir=sort_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
 @app.get("/api/vulnerability-passports/detail-jobs/active")

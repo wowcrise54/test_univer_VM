@@ -4,6 +4,7 @@ import { api, createIdempotencyKey } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
 import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, ConfirmDialog, Field, Panel, Toggle } from "./shared/ui.jsx";
+import { SortableHeader, sortRows, useSortedRows, useTableSort } from "./shared/table.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -405,6 +406,13 @@ function startSuccessText(result) {
 }
 
 function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refreshTasks, busy, showAlert }) {
+  const [tableSort, toggleTableSort] = useTableSort();
+  const sortedTasks = useSortedRows(tasks, tableSort, {
+    name: (task) => task.name || task.mp_task_id,
+    profile: (task) => task.profile_id,
+    created_at: (task) => task.created_at,
+    status: (task) => task.status,
+  });
   const [mode, setMode] = useState("delete_v3");
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
@@ -477,21 +485,21 @@ function TaskListPanel({ tasks, lookups, selectedTaskId, setSelectedTaskId, refr
         <table className="mpvm-task-table">
           <thead>
             <tr>
-              <th>Название</th>
-              <th>Цели</th>
-              <th>Профиль</th>
-              <th>Создана</th>
+              <SortableHeader column="name" sort={tableSort} onSort={toggleTableSort}>Название</SortableHeader>
+              <SortableHeader column="include_targets" sort={tableSort} onSort={toggleTableSort}>Цели</SortableHeader>
+              <SortableHeader column="profile" sort={tableSort} onSort={toggleTableSort}>Профиль</SortableHeader>
+              <SortableHeader column="created_at" sort={tableSort} onSort={toggleTableSort} initialDirection="desc">Создана</SortableHeader>
               <th>Коллектор</th>
               <th>Учётные записи</th>
               <th>Последний запуск</th>
               <th>Следующий запуск</th>
-              <th>Статус</th>
+              <SortableHeader column="status" sort={tableSort} onSort={toggleTableSort}>Статус</SortableHeader>
               <th>Обработка</th>
               <th>Собираемые данные</th>
             </tr>
           </thead>
           <tbody>
-            {tasks.length ? tasks.map((task) => {
+            {sortedTasks.length ? sortedTasks.map((task) => {
               const taskId = task.mp_task_id;
               const isSelected = taskId === selectedTaskId;
               const profile = labelFromMap(profilesById, task.profile_id);
@@ -555,6 +563,8 @@ function PostprocessSummary({ run }) {
 
 function TaskPostprocessPanel({ run }) {
   const items = Array.isArray(run.items) ? run.items : [];
+  const [tableSort, toggleTableSort] = useTableSort();
+  const sortedItems = useSortedRows(items, tableSort);
   return (
     <section className="task-postprocess" aria-live="polite">
       <div className="task-postprocess__header">
@@ -572,9 +582,16 @@ function TaskPostprocessPanel({ run }) {
       {items.length ? (
         <div className="mpvm-table-shell">
           <table className="postprocess-item-table">
-            <thead><tr><th>Target</th><th>Asset ID</th><th>Scan job</th><th>Карточка</th><th>Удаление MP VM</th><th>Статус / ошибка</th></tr></thead>
+            <thead><tr>
+              <SortableHeader column="target" sort={tableSort} onSort={toggleTableSort}>Target</SortableHeader>
+              <SortableHeader column="asset_id" sort={tableSort} onSort={toggleTableSort}>Asset ID</SortableHeader>
+              <SortableHeader column="mp_job_id" sort={tableSort} onSort={toggleTableSort}>Scan job</SortableHeader>
+              <SortableHeader column="build_job_id" sort={tableSort} onSort={toggleTableSort}>Карточка</SortableHeader>
+              <SortableHeader column="removal_operation_id" sort={tableSort} onSort={toggleTableSort}>Удаление MP VM</SortableHeader>
+              <SortableHeader column="status" sort={tableSort} onSort={toggleTableSort}>Статус / ошибка</SortableHeader>
+            </tr></thead>
             <tbody>
-              {items.map((item) => (
+              {sortedItems.map((item) => (
                 <tr key={item.id || item.item_key}>
                   <td>{item.target || "—"}</td>
                   <td className="mono-cell">{item.asset_id || "—"}</td>
@@ -811,14 +828,18 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
   const [assetCardJob, setAssetCardJob] = useState(null);
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
+  const [candidateSort, toggleCandidateSort] = useTableSort();
+  const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
 
-  const refreshLocalCards = useCallback(async () => {
+  const refreshLocalCards = useCallback(async (sorting = cardSort) => {
     const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
     if (cardSearch.trim()) params.set("q", cardSearch.trim());
+    params.set("sort_by", sorting.key);
+    params.set("sort_dir", sorting.direction);
     const result = await api(`/api/asset-cards/local?${params.toString()}`);
     setCards(result.rows || []);
     return result;
-  }, [cardSearch, form.asset_limit]);
+  }, [cardSearch, cardSort, form.asset_limit]);
 
   useEffect(() => {
     if (!defaults) return;
@@ -896,6 +917,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     () => filterAssetCandidates(candidates, candidateSearch),
     [candidates, candidateSearch],
   );
+  const sortedCandidates = useSortedRows(filteredCandidates, candidateSort);
+
+  const changeCardSort = (key, initialDirection = "asc") => {
+    const next = { key, direction: cardSort.key === key ? (cardSort.direction === "asc" ? "desc" : "asc") : initialDirection };
+    toggleCardSort(key, initialDirection);
+    runBusy("assetCardsLocal", () => refreshLocalCards(next));
+  };
 
   const queryAssets = () =>
     runBusy("assetCandidateQuery", async () => {
@@ -1127,7 +1155,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             <input value={candidateSearch} onChange={(event) => setCandidateSearch(event.target.value)} placeholder="Поиск по asset_id, имени, ОС" />
             <select value={form.selected_asset_id} onChange={(event) => update("selected_asset_id", event.target.value)}>
               <option value="">Выберите актив</option>
-              {filteredCandidates.slice(0, 1000).map((row, index) => (
+              {sortedCandidates.slice(0, 1000).map((row, index) => (
                 <option value={row.asset_id || ""} key={row.asset_id || `${row.display_name}-${index}`}>
                   {[row.display_name, row.os_name, row.asset_id].filter(Boolean).join(" · ")}
                 </option>
@@ -1138,16 +1166,16 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             <table className="asset-candidates-table">
               <thead>
                 <tr>
-                  <th>Актив</th>
-                  <th>ОС</th>
-                  <th>Создан</th>
-                  <th>Обновлён</th>
-                  <th>asset_id</th>
+                  <SortableHeader column="display_name" sort={candidateSort} onSort={toggleCandidateSort}>Актив</SortableHeader>
+                  <SortableHeader column="os_name" sort={candidateSort} onSort={toggleCandidateSort}>ОС</SortableHeader>
+                  <SortableHeader column="creation_time" sort={candidateSort} onSort={toggleCandidateSort} initialDirection="desc">Создан</SortableHeader>
+                  <SortableHeader column="update_time" sort={candidateSort} onSort={toggleCandidateSort} initialDirection="desc">Обновлён</SortableHeader>
+                  <SortableHeader column="asset_id" sort={candidateSort} onSort={toggleCandidateSort}>asset_id</SortableHeader>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {filteredCandidates.slice(0, 300).map((row, index) => (
+                {sortedCandidates.slice(0, 300).map((row, index) => (
                   <tr key={row.asset_id || `${row.display_name}-${index}`}>
                     <td>{row.display_name || "—"}</td>
                     <td>{row.os_name || "—"}</td>
@@ -1176,12 +1204,12 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         <table className="asset-card-list-table">
           <thead>
             <tr>
-              <th>Актив</th>
-              <th>IP / FQDN</th>
-              <th>ОС</th>
-              <th>Type</th>
+              <SortableHeader column="display_name" sort={cardSort} onSort={changeCardSort}>Актив</SortableHeader>
+              <SortableHeader column="ip_address" sort={cardSort} onSort={changeCardSort}>IP / FQDN</SortableHeader>
+              <SortableHeader column="os_name" sort={cardSort} onSort={changeCardSort}>ОС</SortableHeader>
+              <SortableHeader column="asset_type" sort={cardSort} onSort={changeCardSort}>Type</SortableHeader>
               <th>Data</th>
-              <th>Обновлено</th>
+              <SortableHeader column="last_seen" sort={cardSort} onSort={changeCardSort} initialDirection="desc">Обновлено</SortableHeader>
               <th>Действия</th>
             </tr>
           </thead>
@@ -1282,6 +1310,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   const [passportJob, setPassportJob] = useState(null);
   const [passportWindowOpen, setPassportWindowOpen] = useState(false);
   const [pendingPassportDelete, setPendingPassportDelete] = useState(null);
+  const [passportSort, togglePassportSort] = useTableSort();
   const passportPageSize = 50;
 
   useEffect(() => {
@@ -1302,6 +1331,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     page,
     search = passportSearch,
     pdqlToken = passportSourceToken,
+    sorting = passportSort,
   ) => {
     const safeRequestedPage = Math.max(1, page);
     const params = new URLSearchParams({
@@ -1310,12 +1340,20 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     });
     if (search.trim()) params.set("q", search.trim());
     if (pdqlToken) params.set("pdql_token", pdqlToken);
+    if (sorting.key) params.set("sort_by", sorting.key);
+    if (sorting.key) params.set("sort_dir", sorting.direction);
     const result = await api(`/api/vulnerability-passports/local?${params.toString()}`);
     setRows(result.rows || []);
     setPassportTotal(result.total || 0);
     setPassportPage(safeRequestedPage);
     return result;
-  }, [passportSearch, passportSourceToken]);
+  }, [passportSearch, passportSort, passportSourceToken]);
+
+  const changePassportSort = (key, initialDirection = "asc") => {
+    const next = { key, direction: passportSort.key === key ? (passportSort.direction === "asc" ? "desc" : "asc") : initialDirection };
+    togglePassportSort(key, initialDirection);
+    runBusy("passportLocal", () => fetchPassportPage(1, passportSearch, passportSourceToken, next));
+  };
 
   useEffect(() => {
     if (!passportWindowOpen) return;
@@ -1569,14 +1607,13 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
         <table className="passport-table">
           <thead>
             <tr>
-              <th>Score</th>
-              <th>Название</th>
+              <SortableHeader column="score" sort={passportSort} onSort={changePassportSort} initialDirection="desc">Score</SortableHeader>
+              <SortableHeader column="name" sort={passportSort} onSort={changePassportSort}>Название</SortableHeader>
               <th>CVE</th>
-              <th>Severity</th>
-              <th>Источник / свежесть</th>
-              <th>Package</th>
-              <th>Детали</th>
-              <th>internalId</th>
+              <SortableHeader column="severity" sort={passportSort} onSort={changePassportSort}>Severity</SortableHeader>
+              <SortableHeader column="package" sort={passportSort} onSort={changePassportSort}>Package</SortableHeader>
+              <SortableHeader column="detail_updated_at" sort={passportSort} onSort={changePassportSort} initialDirection="desc">Детали / свежесть</SortableHeader>
+              <SortableHeader column="internal_id" sort={passportSort} onSort={changePassportSort}>internalId</SortableHeader>
               <th>Действия</th>
             </tr>
           </thead>
@@ -1827,6 +1864,7 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
   const header = snapshot.header || {};
   const [collapsedSources, setCollapsedSources] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState([]);
+  const [tableSort, toggleTableSort] = useTableSort();
   const collapsedSourceSet = useMemo(() => new Set(collapsedSources), [collapsedSources]);
   const collapsedGroupSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const sourceKeys = useMemo(
@@ -1902,14 +1940,14 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
         <table className="asset-vulnerability-table">
           <thead>
             <tr>
-              <th>Уязвимости</th>
-              <th>Интегральная уязвимость</th>
-              <th>CVE</th>
+              <SortableHeader column="name" sort={tableSort} onSort={toggleTableSort}>Уязвимости</SortableHeader>
+              <SortableHeader column="cvss_score" sort={tableSort} onSort={toggleTableSort} initialDirection="desc">Интегральная уязвимость</SortableHeader>
+              <SortableHeader column="cve_name" sort={tableSort} onSort={toggleTableSort}>CVE</SortableHeader>
             </tr>
           </thead>
           <tbody>
             {sources.flatMap((source, sourceIndex) => {
-              const groups = source.groups || [];
+              const groups = sortRows(source.groups || [], tableSort, { name: (group) => group.name, cve_name: (group) => group.name });
               const sourceKey = source.source || source.collection_type || source.title || `source-${sourceIndex}`;
               const sourceCollapsed = collapsedSourceSet.has(sourceKey);
               const sourceRow = (
@@ -1952,7 +1990,7 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                     </tr>
                   );
                   if (groupCollapsed) return [groupRow];
-                  return [groupRow, ...(group.items || []).map((finding, findingIndex) => {
+                  return [groupRow, ...sortRows(group.items || [], tableSort, { name: (finding) => finding.name || finding.cve_name }).map((finding, findingIndex) => {
                     const passports = assetFindingPassports(finding);
                     const passport = passports[0];
                     return (
@@ -2054,6 +2092,9 @@ function AssetTree({ entries, selectedPath, expandedSet, onToggle, onSelect }) {
 }
 
 function AssetConfigTable({ card, entry }) {
+  const [tableSort, toggleTableSort] = useTableSort();
+  const table = entry ? buildAssetDetailTable(card, entry) : { rows: [], columns: [] };
+  const sortedRows = useSortedRows(table.rows, tableSort);
   if (!entry) {
     return (
       <section className="asset-detail-pane">
@@ -2062,7 +2103,6 @@ function AssetConfigTable({ card, entry }) {
     );
   }
 
-  const table = buildAssetDetailTable(card, entry);
   return (
     <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry.label}>
       {table.layout === "properties" ? (
@@ -2072,11 +2112,11 @@ function AssetConfigTable({ card, entry }) {
           <table className="asset-detail-table">
             <thead>
               <tr>
-                {table.columns.map((column) => <th key={column.key}>{column.title}</th>)}
+                {table.columns.map((column) => <SortableHeader key={column.key} column={column.key} sort={tableSort} onSort={toggleTableSort}>{column.title}</SortableHeader>)}
               </tr>
             </thead>
             <tbody>
-              {table.rows.length ? table.rows.slice(0, 1000).map((row, rowIndex) => (
+              {sortedRows.length ? sortedRows.slice(0, 1000).map((row, rowIndex) => (
                 <tr key={row.key || rowIndex}>
                   {table.columns.map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
                 </tr>
@@ -2093,39 +2133,40 @@ function AssetConfigTable({ card, entry }) {
 }
 
 function AssetPropertyList({ rows }) {
-  const visibleRows = rows.slice(0, 1000);
+  const [tableSort, toggleTableSort] = useTableSort();
+  const visibleRows = useSortedRows(rows, tableSort, { title: (row) => row.title || row.name }).slice(0, 1000);
   if (!visibleRows.length) {
     return <div className="empty-cell">В выбранном разделе нет данных.</div>;
   }
 
   return (
-    <div className="asset-property-list">
-      {visibleRows.map((row, index) => (
-        <div className="asset-property-row" style={{ "--depth": row.depth || 0 }} key={row.key || index}>
-          <div className="asset-property-name">
-            <span>{row.title || row.name}</span>
-            {row.name && row.name !== row.title ? <small>{row.name}</small> : null}
-          </div>
-          <strong>{formatAssetCell(row.value)}</strong>
-        </div>
-      ))}
-    </div>
+    <div className="table-shell asset-detail-table-shell"><table className="asset-detail-table asset-property-list">
+      <thead><tr><SortableHeader column="title" sort={tableSort} onSort={toggleTableSort}>Название</SortableHeader><SortableHeader column="value" sort={tableSort} onSort={toggleTableSort}>Значение</SortableHeader></tr></thead>
+      <tbody>{visibleRows.map((row, index) => (
+        <tr className="asset-property-row" style={{ "--depth": row.depth || 0 }} key={row.key || index}>
+          <td className="asset-property-name"><span>{row.title || row.name}</span>{row.name && row.name !== row.title ? <small>{row.name}</small> : null}</td>
+          <td><strong>{formatAssetCell(row.value)}</strong></td>
+        </tr>
+      ))}</tbody>
+    </table></div>
   );
 }
 
 function AssetRowsTable({ rows }) {
+  const [tableSort, toggleTableSort] = useTableSort();
+  const sortedRows = useSortedRows(rows, tableSort, { title: (row) => row.title || row.name });
   return (
     <div className="table-shell asset-detail-table-shell">
       <table className="asset-detail-table">
         <thead>
           <tr>
-            <th>Path</th>
-            <th>Название</th>
-            <th>Значение</th>
+            <SortableHeader column="path" sort={tableSort} onSort={toggleTableSort}>Path</SortableHeader>
+            <SortableHeader column="title" sort={tableSort} onSort={toggleTableSort}>Название</SortableHeader>
+            <SortableHeader column="value" sort={tableSort} onSort={toggleTableSort}>Значение</SortableHeader>
           </tr>
         </thead>
         <tbody>
-          {rows.length ? rows.map((row, index) => (
+          {sortedRows.length ? sortedRows.map((row, index) => (
             <tr key={`${row.path}-${index}`}>
               <td><code>{row.path}</code></td>
               <td>{row.title || row.name}</td>
@@ -2612,10 +2653,13 @@ function metadataPropertiesForType(card, type) {
 
 function isHiddenAssetTechnicalField(key) {
   const normalized = String(key || "").replace(/[_-]/g, "").toLowerCase();
-  return normalized === "type" || normalized === "objectid";
+  return normalized === "type" || normalized === "objectid" || normalized.startsWith("raw");
 }
 
 function buildAssetPropertyRows({ name, title, value, path, type = "", depth = 0 }) {
+  if (isAssetExpandableContainer(value)) {
+    return buildNestedAssetPropertyRows({ value, path, name, title, depth: depth + 1 });
+  }
   const row = {
     key: path,
     title,
@@ -2625,11 +2669,11 @@ function buildAssetPropertyRows({ name, title, value, path, type = "", depth = 0
     path,
     depth,
   };
-  return [row, ...buildNestedAssetPropertyRows({ value, path, name, title, depth: depth + 1 })];
+  return [row];
 }
 
 function buildNestedAssetPropertyRows({ value, path, name, title, depth }) {
-  if (depth > 4 || value === undefined || value === null) return [];
+  if (depth > 8 || value === undefined || value === null) return [];
   if (Array.isArray(value)) {
     return value.flatMap((item, index) => buildAssetPropertyRows({
       name: `${name}[${index}]`,
@@ -2651,6 +2695,11 @@ function buildNestedAssetPropertyRows({ value, path, name, title, depth }) {
       path: `${path}.${key}`,
       depth,
     }));
+}
+
+function isAssetExpandableContainer(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === "object" && !("hasItems" in value));
 }
 
 function assetTreeParentPath(path) {
@@ -2733,7 +2782,7 @@ function formatAssetCell(value) {
   if (Array.isArray(value)) return value.map(formatAssetCell).join(", ");
   if (typeof value === "object") {
     if ("hasItems" in value) return value.hasItems ? "Есть" : "Нет";
-    return firstFilled(value.displayName, value.name, value.title, value.value, value.objectId, JSON.stringify(value));
+    return firstFilled(value.displayName, value.name, value.title, value.value, "—");
   }
   return String(value);
 }
@@ -2832,9 +2881,15 @@ function assetCardJobStageLabel(stage) {
 
 function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {
   const [filters, setFilters] = useState({ q: "", severity: "" });
+  const [assetSort, toggleAssetSort] = useTableSort();
   const [savedViews, setSavedViews] = useState([]);
   const [viewName, setViewName] = useState("");
   const applyFilters = () => runBusy("assets", () => refreshAssets(filters));
+  const changeAssetSort = (key, initialDirection = "asc") => {
+    const next = { key, direction: assetSort.key === key ? (assetSort.direction === "asc" ? "desc" : "asc") : initialDirection };
+    toggleAssetSort(key, initialDirection);
+    runBusy("assets", () => refreshAssets({ ...filters, sort_by: key, sort_dir: next.direction }));
+  };
   useEffect(() => {
     api("/api/saved-views?route=assets").then((result) => setSavedViews(result.rows || [])).catch(() => null);
   }, []);
@@ -2895,13 +2950,14 @@ function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showA
         <table>
           <thead>
             <tr>
-              <th>IP</th>
-              <th>FQDN</th>
-              <th>ПО</th>
-              <th>Версия</th>
-              <th>Уязвимость</th>
-              <th>CVE</th>
-              <th>Severity</th>
+              <SortableHeader column="ip_address" sort={assetSort} onSort={changeAssetSort}>IP</SortableHeader>
+              <SortableHeader column="fqdn" sort={assetSort} onSort={changeAssetSort}>FQDN</SortableHeader>
+              <SortableHeader column="software_name" sort={assetSort} onSort={changeAssetSort}>ПО</SortableHeader>
+              <SortableHeader column="software_version" sort={assetSort} onSort={changeAssetSort}>Версия</SortableHeader>
+              <SortableHeader column="vulnerability_name" sort={assetSort} onSort={changeAssetSort}>Уязвимость</SortableHeader>
+              <SortableHeader column="cve" sort={assetSort} onSort={changeAssetSort}>CVE</SortableHeader>
+              <SortableHeader column="severity" sort={assetSort} onSort={changeAssetSort}>Severity</SortableHeader>
+              <SortableHeader column="created_at" sort={assetSort} onSort={changeAssetSort} initialDirection="desc">Свежесть</SortableHeader>
             </tr>
           </thead>
           <tbody>
@@ -3080,4 +3136,6 @@ export {
   TaskBuilderPanel,
   TaskListPanel,
   VulnerabilityPassportsPanel,
+  buildAssetPropertyRows,
+  formatAssetCell,
 };

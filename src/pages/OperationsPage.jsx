@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, createIdempotencyKey } from "../api/client.js";
 import { Button, Panel } from "../shared/ui.jsx";
+import { SortableHeader, sortRows, useTableSort } from "../shared/table.jsx";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling", "recovering"]);
 
@@ -9,6 +10,13 @@ export function OperationsPage({ operations, total, updatedAt, stale, refreshOpe
   const [selected, setSelected] = useState(null);
   const [savedViews, setSavedViews] = useState([]);
   const [viewName, setViewName] = useState("");
+  const [sort, toggleSort] = useTableSort("created_at", "desc");
+
+  const changeSort = (key, initialDirection) => {
+    const direction = sort.key === key ? (sort.direction === "asc" ? "desc" : "asc") : initialDirection;
+    toggleSort(key, initialDirection);
+    runBusy("operationsSort", () => refreshOperations({ sort_by: key, sort_dir: direction }));
+  };
 
   const filtered = useMemo(() => {
     const needle = filters.q.trim().toLowerCase();
@@ -21,6 +29,10 @@ export function OperationsPage({ operations, total, updatedAt, stale, refreshOpe
         .some((value) => String(value).toLowerCase().includes(needle));
     });
   }, [filters, operations]);
+  const displayed = useMemo(() => sortRows(filtered, sort, {
+    subject: (operation) => operation.subject?.label || operation.subject?.id,
+    progress: (operation) => operation.progress_percent,
+  }), [filtered, sort]);
 
   useEffect(() => {
     api("/api/saved-views?route=operations")
@@ -86,7 +98,7 @@ export function OperationsPage({ operations, total, updatedAt, stale, refreshOpe
           </select>
           <select value={filters.kind} onChange={(event) => setFilters((value) => ({ ...value, kind: event.target.value }))}>
             <option value="">Все типы</option>
-            {["scan_postprocess", "asset_card_build", "passport_detail_sync", "pdql_export", "asset_removal", "task_delete"].map((kind) => <option value={kind} key={kind}>{kindLabel(kind)}</option>)}
+            {["scan_postprocess", "asset_card_build", "asset_search_reindex", "passport_detail_sync", "pdql_export", "asset_removal", "task_delete"].map((kind) => <option value={kind} key={kind}>{kindLabel(kind)}</option>)}
           </select>
         </div>
 
@@ -104,9 +116,16 @@ export function OperationsPage({ operations, total, updatedAt, stale, refreshOpe
 
         <div className="table-shell operation-table-shell">
           <table className="operation-table">
-            <thead><tr><th>Состояние</th><th>Операция</th><th>Объект</th><th>Прогресс</th><th>Обновлено</th><th>Действия</th></tr></thead>
+            <thead><tr>
+              <SortableHeader column="status" sort={sort} onSort={changeSort}>Состояние</SortableHeader>
+              <SortableHeader column="kind" sort={sort} onSort={changeSort}>Операция</SortableHeader>
+              <SortableHeader column="subject" sort={sort} onSort={changeSort}>Объект</SortableHeader>
+              <SortableHeader column="progress" sort={sort} onSort={changeSort}>Прогресс</SortableHeader>
+              <SortableHeader column="updated_at" sort={sort} onSort={changeSort} initialDirection="desc">Обновлено</SortableHeader>
+              <th>Действия</th>
+            </tr></thead>
             <tbody>
-              {filtered.length ? filtered.map((operation) => (
+              {displayed.length ? displayed.map((operation) => (
                 <tr key={operation.operation_id}>
                   <td><span className={`operation-status operation-status--${operation.status}`}>{statusLabel(operation.status)}</span></td>
                   <td><strong>{kindLabel(operation.kind)}</strong><span>{operation.message || operation.stage}</span></td>
@@ -155,7 +174,7 @@ function OperationDetail({ operation, onClose, onCancel, onRetry, busy }) {
 }
 
 function kindLabel(kind) {
-  return ({ scan_postprocess: "Постобработка сканирования", asset_card_build: "Карточка актива", passport_detail_sync: "Детали паспортов", pdql_export: "PDQL экспорт", asset_removal: "Удаление активов", task_delete: "Удаление задачи MP VM" })[kind] || kind;
+  return ({ scan_postprocess: "Постобработка сканирования", asset_card_build: "Карточка актива", asset_search_reindex: "Индексация карточек", passport_detail_sync: "Детали паспортов", pdql_export: "PDQL экспорт", asset_removal: "Удаление активов", task_delete: "Удаление задачи MP VM" })[kind] || kind;
 }
 
 function statusLabel(status) {

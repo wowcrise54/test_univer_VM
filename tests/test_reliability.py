@@ -31,6 +31,7 @@ class SystemStatusTests(unittest.TestCase):
             patch.object(main.db, "interrupt_active_asset_card_build_jobs"),
             patch.object(main.db, "release_scan_postprocess_leases"),
             patch.object(main.db, "sync_operations_from_sources"),
+            patch.object(main, "start_asset_search_backfill"),
             TestClient(main.app) as client,
         ):
             response = client.get("/api/not-found")

@@ -1,4 +1,5 @@
 import { AssetCardsPage } from "../pages/AssetCardsPage.jsx";
+import { AssetQueryPage } from "../pages/AssetQueryPage.jsx";
 import { AssetsPage } from "../pages/AssetsPage.jsx";
 import { ConnectionPage } from "../pages/ConnectionPage.jsx";
 import { ExportPage } from "../pages/ExportPage.jsx";
@@ -102,6 +103,9 @@ function ActivePage({ routeId, ...props }) {
   }
   if (routeId === "asset-cards") {
     return <AssetCardsPage defaults={props.defaults} busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;
+  }
+  if (routeId === "asset-query") {
+    return <AssetQueryPage busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;
   }
   if (routeId === "passports") {
     return <PassportsPage defaults={props.defaults} busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;

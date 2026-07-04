@@ -1450,6 +1450,77 @@ td code {
   }
 }
 
+.sortable-header {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sortable-header__icon { color: var(--muted); font-size: 12px; }
+
+.index-coverage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(61, 180, 125, .25);
+  border-radius: 14px;
+  background: rgba(61, 180, 125, .08);
+}
+
+.index-coverage--warning { border-color: rgba(226, 166, 60, .35); background: rgba(226, 166, 60, .1); }
+.index-coverage span { color: var(--muted); }
+
+.query-group {
+  min-width: 0;
+  min-inline-size: 0;
+  max-width: 100%;
+  margin: 0 0 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .02);
+}
+
+.query-group .query-group { margin: 10px 0 0; background: rgba(10, 19, 31, .35); }
+.query-group legend { padding: 0 8px; font-weight: 700; }
+.query-group__controls, .query-group__actions, .asset-query-toolbar, .asset-query-result-header { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.query-group__controls label, .query-rule label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.query-group__controls > span { flex: 1 1 300px; align-self: center; color: var(--muted); }
+.query-group__rules { display: grid; gap: 10px; margin: 14px 0; }
+.query-rule { display: grid; min-width: 0; grid-template-columns: minmax(250px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr) minmax(150px, 1fr) auto; gap: 10px; align-items: end; }
+.query-rule label, .query-rule input, .query-rule select { min-width: 0; max-width: 100%; width: 100%; }
+.query-rule__meta { align-self: center; color: var(--muted); font-size: 12px; }
+.asset-query-toolbar { margin: 18px 0; }
+.asset-query-columns { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.asset-query-columns label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink); }
+.asset-query-result-header { justify-content: space-between; margin: 22px 0 10px; }
+.asset-query-result-header span { color: var(--muted); }
+.asset-query-table td:first-child { min-width: 220px; }
+.asset-query-table td:first-child code { display: block; margin-top: 5px; color: var(--muted); }
+.query-evidence { display: grid; gap: 7px; min-width: 340px; }
+.query-evidence span { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(180px, 1fr); gap: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.query-evidence code { color: var(--accent); }
+
+@media (max-width: 760px) {
+  .index-coverage { align-items: flex-start; flex-direction: column; }
+  .query-rule { grid-template-columns: 1fr; }
+  .query-group__controls { align-items: stretch; }
+  .query-group__controls label { width: 100%; }
+  .asset-query-toolbar > * { width: 100%; }
+}
+
 .passport-job--completed,
 .passport-job--completed_with_errors {
   border-color: #b8ddcf;
@@ -2642,7 +2713,14 @@ td code {
   .passport-card__body,
   .asset-config-layout,
   .asset-summary-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell,
+  .workspace,
+  .sidebar {
+    min-width: 0;
+    max-width: 100vw;
   }
 
   .asset-config-layout {

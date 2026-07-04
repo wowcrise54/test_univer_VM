@@ -93,6 +93,8 @@ export function useAppData(routeId) {
     const params = new URLSearchParams({ limit: "300" });
     if (filters.q) params.set("q", filters.q);
     if (filters.severity) params.set("severity", filters.severity);
+    if (filters.sort_by) params.set("sort_by", filters.sort_by);
+    if (filters.sort_dir) params.set("sort_dir", filters.sort_dir);
 
     const [summaryResult, assetsResult] = await Promise.all([
       api("/api/assets/summary"),
@@ -115,9 +117,12 @@ export function useAppData(routeId) {
     }
   }, []);
 
-  const refreshOperations = useCallback(async () => {
+  const refreshOperations = useCallback(async (sorting = {}) => {
     try {
-      const result = await api("/api/operations?limit=100");
+      const params = new URLSearchParams({ limit: "100" });
+      if (sorting.sort_by) params.set("sort_by", sorting.sort_by);
+      if (sorting.sort_dir) params.set("sort_dir", sorting.sort_dir);
+      const result = await api(`/api/operations?${params}`);
       setOperations(result.rows || []);
       setOperationsTotal(result.total || 0);
       setOperationsUpdatedAt(new Date().toISOString());
