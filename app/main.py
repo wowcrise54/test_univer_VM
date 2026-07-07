@@ -416,6 +416,11 @@ class StartScannerTaskRequest(BaseModel):
     skip_validation: bool = False
 
 
+class AssetCardRefreshScanRequest(BaseModel):
+    template_task_id: str | None = None
+    start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
+
+
 class PdqlExportRequest(BaseModel):
     pdql: str = SOFTWARE_VULN_PDQL
     utc_offset: str | None = "+05:00"
@@ -1520,6 +1525,132 @@ def active_asset_card_build_job() -> dict[str, Any]:
     return {"job": db.get_active_asset_card_build_job()}
 
 
+@app.post("/api/asset-cards/{asset_id}/refresh-scan", status_code=202)
+def refresh_asset_card_by_scan(
+    asset_id: str,
+    payload: AssetCardRefreshScanRequest,
+    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    """Create and start a one-IP scanner task, then refresh the local card through normal post-processing."""
+    clean_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_key)
+    if replay and replay.get("kind") == "scan_postprocess":
+        run = db.get_scan_postprocess_run(replay["source_id"], include_items=True)
+        return {
+            "status": "started",
+            "task_id": run.get("mp_task_id") if run else None,
+            "postprocess_run_id": replay["source_id"],
+            "postprocess": run,
+            "operation": replay,
+            "idempotent_replay": True,
+        }
+
+    card = db.get_asset_card(asset_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    ip_text = str(card.get("ip_address") or "").strip()
+    try:
+        target_ip = str(ipaddress.ip_address(ip_text))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ASSET_CARD_IP_REQUIRED",
+                "message": "The saved asset card does not contain one valid IP address for a refresh scan.",
+            },
+        ) from exc
+
+    active = db.get_active_asset_card_refresh(asset_id)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ASSET_CARD_REFRESH_ACTIVE", "message": "This asset card is already being refreshed.", "postprocess": active},
+        )
+
+    template = db.get_asset_card_refresh_template(asset_id, payload.template_task_id)
+    if not template or not isinstance(template.get("payload"), dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SCANNER_TASK_TEMPLATE_REQUIRED",
+                "message": "Create a regular scanner task first; its scope, profile, agents and credentials are used as the refresh template.",
+            },
+        )
+
+    client, token = require_mpvm()
+    task_payload = build_asset_refresh_task_payload(
+        template["payload"],
+        asset_id=asset_id,
+        target_ip=target_ip,
+        display_name=str(card.get("display_name") or card.get("hostname") or target_ip),
+    )
+    try:
+        refresh_task_id = client.create_scanner_task(token, task_payload)
+        db.record_scan_task(
+            mp_task_id=refresh_task_id,
+            payload=task_payload,
+            status="asset_refresh_created",
+            remote_response={"id": refresh_task_id, "template_task_id": template.get("mp_task_id"), "refresh_asset_id": asset_id},
+        )
+        start_result = start_scanner_task_impl(
+            client=client,
+            token=token,
+            task_id=refresh_task_id,
+            options=payload.start_options,
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+    if start_result.get("status") != "started":
+        return {
+            **start_result,
+            "task_id": refresh_task_id,
+            "template_task_id": template.get("mp_task_id"),
+            "refresh_asset_id": asset_id,
+            "target_ip": target_ip,
+        }
+
+    postprocess_run_id = str(uuid.uuid4())
+    options = payload.start_options.model_dump()
+    options.update(
+        {
+            "refresh_asset_id": asset_id,
+            "refresh_asset_label": str(card.get("display_name") or card.get("hostname") or target_ip),
+            "refresh_target_ip": target_ip,
+            "refresh_template_task_id": template.get("mp_task_id"),
+            "auto_created_refresh_task": True,
+        }
+    )
+    postprocess = db.create_scan_postprocess_run(
+        postprocess_run_id,
+        mp_task_id=refresh_task_id,
+        started_from=str(start_result["started_from"]),
+        options=options,
+        idempotency_key=clean_key,
+    )
+    background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
+    scan_log(
+        logging.INFO,
+        "asset_refresh_scan_started",
+        postprocess_run_id=postprocess_run_id,
+        task_id=refresh_task_id,
+        template_task_id=template.get("mp_task_id"),
+        refresh_asset_id=asset_id,
+        target=target_ip,
+    )
+    return {
+        **start_result,
+        "task_id": refresh_task_id,
+        "template_task_id": template.get("mp_task_id"),
+        "refresh_asset_id": asset_id,
+        "target_ip": target_ip,
+        "postprocess_run_id": postprocess_run_id,
+        "postprocess": postprocess,
+        "operation_id": postprocess_run_id,
+    }
+
+
 @app.get("/api/asset-cards/build-jobs/{job_id}")
 def asset_card_build_job(job_id: str) -> dict[str, Any]:
     job = db.get_asset_card_build_job(job_id)
@@ -2303,6 +2434,29 @@ def scanner_task_payload(payload: ScannerTaskRequest) -> dict[str, Any]:
     )
 
 
+def build_asset_refresh_task_payload(
+    template_payload: dict[str, Any],
+    *,
+    asset_id: str,
+    target_ip: str,
+    display_name: str,
+) -> dict[str, Any]:
+    task_payload = copy.deepcopy(template_payload)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    task_payload["name"] = f"Asset card refresh {display_name} {stamp}"[:250]
+    task_payload["description"] = f"Automatic refresh scan for local asset card {asset_id}; target {target_ip}."
+    include = task_payload.get("include") if isinstance(task_payload.get("include"), dict) else {}
+    include.update({"assets": [], "targets": [target_ip], "assetsGroups": []})
+    task_payload["include"] = include
+    exclude = task_payload.get("exclude") if isinstance(task_payload.get("exclude"), dict) else {}
+    exclude.update({"assets": [], "targets": [], "assetsGroups": []})
+    task_payload["exclude"] = exclude
+    trigger = task_payload.get("triggerParameters")
+    if isinstance(trigger, dict):
+        trigger["isEnabled"] = False
+    return task_payload
+
+
 def start_scanner_task_impl(
     *,
     client: MpVmClient,
@@ -2524,8 +2678,11 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         summary = db.refresh_scan_postprocess_counts(run_id) or {}
         failed_count = int(summary.get("failed_count") or 0)
         completed_count = int(summary.get("completed_count") or 0)
+        refresh_result = finalize_asset_card_refresh(run_id, options) if completed_count else None
         final_status = "failed" if failed_count and not completed_count else "completed_with_errors" if failed_count else "completed"
         message = f"Completed {completed_count} asset(s); failures: {failed_count}."
+        if refresh_result:
+            message += f" Asset card refreshed as {refresh_result['asset_id']}."
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
         scan_log(
             logging.INFO if final_status == "completed" else logging.ERROR,
@@ -2554,6 +2711,43 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
     finally:
         client.session.close()
+
+
+def finalize_asset_card_refresh(run_id: str, options: dict[str, Any]) -> dict[str, Any] | None:
+    source_asset_id = str(options.get("refresh_asset_id") or "").strip()
+    if not source_asset_id:
+        return None
+    completed_ids = sorted(
+        {
+            str(item.get("asset_id"))
+            for item in db.list_scan_postprocess_items(run_id)
+            if item.get("status") == "completed" and item.get("asset_id") and db.asset_card_exists(str(item["asset_id"]))
+        }
+    )
+    if source_asset_id in completed_ids:
+        refreshed_asset_id = source_asset_id
+    elif len(completed_ids) == 1:
+        refreshed_asset_id = completed_ids[0]
+    else:
+        scan_log(
+            logging.WARNING,
+            "asset_refresh_replacement_skipped",
+            postprocess_run_id=run_id,
+            refresh_asset_id=source_asset_id,
+            completed_asset_ids=completed_ids,
+            reason="no_completed_card" if not completed_ids else "ambiguous_completed_cards",
+        )
+        return None
+    if refreshed_asset_id != source_asset_id:
+        db.delete_asset_card(source_asset_id)
+    scan_log(
+        logging.INFO,
+        "asset_refresh_replaced",
+        postprocess_run_id=run_id,
+        previous_asset_id=source_asset_id,
+        asset_id=refreshed_asset_id,
+    )
+    return {"previous_asset_id": source_asset_id, "asset_id": refreshed_asset_id}
 
 
 def monitor_successful_scan_jobs(

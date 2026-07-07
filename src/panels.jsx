@@ -827,6 +827,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetPassportError, setAssetPassportError] = useState("");
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
   const [assetCardJob, setAssetCardJob] = useState(null);
+  const [assetRefreshRun, setAssetRefreshRun] = useState(null);
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
@@ -911,6 +912,44 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       window.clearTimeout(timerId);
     };
   }, [assetCardJob?.job_id, assetCardJob?.status, refreshLocalCards, showAlert]);
+
+  useEffect(() => {
+    if (!assetRefreshRun?.mp_task_id || !ACTIVE_SCAN_POSTPROCESS_STATUSES.has(assetRefreshRun.status)) return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      try {
+        const nextRun = await api(`/api/scanner-tasks/${encodeURIComponent(assetRefreshRun.mp_task_id)}/postprocess-runs/latest`);
+        if (!alive) return;
+        setAssetRefreshRun(nextRun);
+        if (ACTIVE_SCAN_POSTPROCESS_STATUSES.has(nextRun.status)) {
+          timerId = window.setTimeout(poll, 3000);
+          return;
+        }
+        const refreshed = await refreshLocalCards();
+        if (!alive) return;
+        const completedAssetId = (nextRun.items || []).find((item) => item.status === "completed")?.asset_id;
+        const nextCardSummary = (refreshed.rows || []).find((item) => item.asset_id === completedAssetId)
+          || (refreshed.rows || []).find((item) => item.ip_address === nextRun.options?.refresh_target_ip);
+        if (nextRun.status === "completed" && nextCardSummary?.asset_id) {
+          const card = await api(`/api/asset-cards/${encodeURIComponent(nextCardSummary.asset_id)}`);
+          if (!alive) return;
+          setSelectedCard(card);
+          setAssetWindowOpen(true);
+          showAlert(`Карточка ${card.display_name || card.asset_id} обновлена после повторного сканирования IP.`, "success");
+        } else {
+          showAlert(nextRun.message || "Повторное сканирование карточки завершилось с ошибками.", "error");
+        }
+      } catch (_error) {
+        if (alive) timerId = window.setTimeout(poll, 5000);
+      }
+    };
+    timerId = window.setTimeout(poll, 1000);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [assetRefreshRun?.mp_task_id, refreshLocalCards, showAlert]);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const filteredCandidates = useMemo(
@@ -1003,19 +1042,16 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const updateLocalCard = (row) =>
     runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
-      const result = await api("/api/asset-cards/build-jobs", {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}/refresh-scan`, {
         method: "POST",
-        headers: { "X-Idempotency-Key": createIdempotencyKey("asset-card-refresh") },
-        body: JSON.stringify({
-          asset_id: row.asset_id,
-          timeline_timestamp: form.timeline_timestamp ? Number(form.timeline_timestamp) : null,
-          limit_per_collection: clampNumber(form.limit_per_collection, 5000, 1, 5000),
-          max_items_per_collection: clampNumber(form.max_items_per_collection, 5000, 1, 50000),
-          max_depth: clampNumber(form.max_depth, 8, 0, 8),
-        }),
+        headers: { "X-Idempotency-Key": createIdempotencyKey("asset-card-refresh-scan") },
+        body: JSON.stringify({}),
       });
-      setAssetCardJob(result.job);
-      showAlert(`Обновление карточки ${row.display_name || row.asset_id} запущено в фоне.`, "info");
+      if (!result.postprocess_run_id || result.status !== "started") {
+        throw new Error(result.error || result.message || "Автоматическая задача не была запущена.");
+      }
+      setAssetRefreshRun(result.postprocess);
+      showAlert(`Создана задача ${result.task_id}; IP ${result.target_ip} отправлен на повторное сканирование.`, "info");
     });
 
   const cancelAssetCardJob = () => {
@@ -1065,6 +1101,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
 
   const assetCardJobProgress = Math.max(0, Math.min(100, Number(assetCardJob?.progress_percent) || 0));
   const assetCardJobActive = ACTIVE_ASSET_CARD_JOB_STATUSES.has(assetCardJob?.status);
+  const assetRefreshActive = ACTIVE_SCAN_POSTPROCESS_STATUSES.has(assetRefreshRun?.status);
 
   return (
     <Panel
@@ -1149,6 +1186,19 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </section>
       ) : null}
 
+      {assetRefreshRun ? (
+        <div className="asset-refresh-scan">
+          <div className="asset-local-header">
+            <div>
+              <strong>Обновление карточки через повторное сканирование</strong>
+              <small>Задача MP VM: <code>{assetRefreshRun.mp_task_id}</code></small>
+            </div>
+            {assetRefreshActive ? <span className="status-pill status-pill--running">Выполняется</span> : null}
+          </div>
+          <TaskPostprocessPanel run={assetRefreshRun} />
+        </div>
+      ) : null}
+
       {candidates.length ? (
         <>
           <div className="passport-controls">
@@ -1230,7 +1280,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                   <td>
                     <div className="row-actions">
                       <Button variant="tiny" busy={busy.assetCardOpen && selectedCard?.asset_id === row.asset_id} onClick={() => openLocalCard(row)}>Открыть</Button>
-                      <Button variant="tiny" disabled={assetCardJobActive} busy={busy[`assetCardUpdate:${row.asset_id}`]} onClick={() => updateLocalCard(row)}>Обновить</Button>
+                      <Button variant="tiny" disabled={assetCardJobActive || assetRefreshActive} busy={busy[`assetCardUpdate:${row.asset_id}`]} onClick={() => updateLocalCard(row)}>Обновить</Button>
                       <Button variant="tiny-danger" busy={busy[`assetCardDelete:${row.asset_id}`]} onClick={() => setPendingCardDelete(row)}>Удалить</Button>
                     </div>
                   </td>

@@ -364,6 +364,107 @@ class StartScannerTaskApiTests(unittest.TestCase):
         self.assertEqual(finish_run.call_args.kwargs["status"], "completed")
 
 
+class AssetCardRefreshScanTests(unittest.TestCase):
+    def test_refresh_task_reuses_scan_settings_and_targets_only_card_ip(self):
+        template = {
+            "name": "Regular audit",
+            "description": "template",
+            "scope": "scope-1",
+            "profile": "profile-1",
+            "agents": {"agentIds": ["agent-1"]},
+            "overrides": {"credential": "preserved"},
+            "include": {"assets": ["old"], "targets": ["10.0.0.0/24"], "assetsGroups": ["group"]},
+            "exclude": {"assets": ["old"], "targets": ["10.0.0.8"], "assetsGroups": ["group"]},
+            "triggerParameters": {"isEnabled": True, "type": "Daily"},
+        }
+
+        result = main.build_asset_refresh_task_payload(
+            template,
+            asset_id="asset-old",
+            target_ip="10.0.0.7",
+            display_name="host-7",
+        )
+
+        self.assertEqual(result["scope"], "scope-1")
+        self.assertEqual(result["profile"], "profile-1")
+        self.assertEqual(result["agents"], {"agentIds": ["agent-1"]})
+        self.assertEqual(result["overrides"], {"credential": "preserved"})
+        self.assertEqual(result["include"], {"assets": [], "targets": ["10.0.0.7"], "assetsGroups": []})
+        self.assertEqual(result["exclude"], {"assets": [], "targets": [], "assetsGroups": []})
+        self.assertFalse(result["triggerParameters"]["isEnabled"])
+        self.assertEqual(template["include"]["targets"], ["10.0.0.0/24"])
+
+    def test_refresh_endpoint_creates_and_starts_normal_scanner_pipeline(self):
+        background = BackgroundTasks()
+        client = MagicMock(auth=SimpleNamespace(api_url="https://fixture"))
+        client.create_scanner_task.return_value = "refresh-task-1"
+        template = {
+            "mp_task_id": "template-task-1",
+            "payload": {
+                "name": "Regular audit",
+                "scope": "scope-1",
+                "profile": "profile-1",
+                "include": {"targets": ["10.0.0.0/24"]},
+                "exclude": {"targets": []},
+            },
+        }
+        postprocess = {
+            "run_id": "refresh-run-1",
+            "mp_task_id": "refresh-task-1",
+            "status": "monitoring",
+            "stage": "waiting_for_run",
+        }
+        with (
+            patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
+            patch.object(main.db, "get_asset_card", return_value={"asset_id": "asset-old", "ip_address": "10.0.0.7", "display_name": "host-7"}),
+            patch.object(main.db, "get_active_asset_card_refresh", return_value=None),
+            patch.object(main.db, "get_asset_card_refresh_template", return_value=template),
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "record_scan_task") as record_task,
+            patch.object(main, "start_scanner_task_impl", return_value={"id": "refresh-task-1", "status": "started", "started_from": "2026-01-01T00:00:00+00:00"}),
+            patch.object(main.uuid, "uuid4", return_value="refresh-run-1"),
+            patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess) as create_run,
+        ):
+            result = main.refresh_asset_card_by_scan(
+                "asset-old",
+                main.AssetCardRefreshScanRequest(),
+                background,
+                "refresh-key-1",
+            )
+
+        self.assertEqual(result["task_id"], "refresh-task-1")
+        self.assertEqual(result["target_ip"], "10.0.0.7")
+        self.assertEqual(result["postprocess_run_id"], "refresh-run-1")
+        created_payload = client.create_scanner_task.call_args.args[1]
+        self.assertEqual(created_payload["include"]["targets"], ["10.0.0.7"])
+        record_task.assert_called_once()
+        self.assertEqual(create_run.call_args.kwargs["options"]["refresh_asset_id"], "asset-old")
+        self.assertEqual(len(background.tasks), 1)
+
+    def test_successful_refresh_replaces_old_card_only_after_new_card_exists(self):
+        items = [{"status": "completed", "asset_id": "asset-new"}]
+        with (
+            patch.object(main.db, "list_scan_postprocess_items", return_value=items),
+            patch.object(main.db, "asset_card_exists", return_value=True),
+            patch.object(main.db, "delete_asset_card", return_value=True) as delete_card,
+        ):
+            result = main.finalize_asset_card_refresh("run-1", {"refresh_asset_id": "asset-old"})
+
+        self.assertEqual(result, {"previous_asset_id": "asset-old", "asset_id": "asset-new"})
+        delete_card.assert_called_once_with("asset-old")
+
+    def test_failed_refresh_keeps_old_card(self):
+        with (
+            patch.object(main.db, "list_scan_postprocess_items", return_value=[{"status": "build_failed", "asset_id": "asset-new"}]),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "delete_asset_card") as delete_card,
+        ):
+            result = main.finalize_asset_card_refresh("run-1", {"refresh_asset_id": "asset-old"})
+
+        self.assertIsNone(result)
+        delete_card.assert_not_called()
+
+
 class ScanJobLiveMonitoringTests(unittest.TestCase):
     def test_success_error_status_schedules_card_before_run_finishes(self):
         running = {"id": "run-1", "status": "running", "startedAt": "2026-01-01T00:00:00+00:00"}

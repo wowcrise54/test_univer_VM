@@ -727,15 +727,20 @@ def sync_operations_from_sources() -> None:
         )
     for raw in postprocess_runs:
         row = dict(raw)
+        options = json_loads(row.get("options_json"), {})
+        refresh_asset_id = options.get("refresh_asset_id") if isinstance(options, dict) else None
+        refresh_label = options.get("refresh_asset_label") if isinstance(options, dict) else None
         total = max(int(row.get("target_count") or 0), int(row.get("total_job_count") or 0), 1)
         done = int(row.get("completed_count") or 0) + int(row.get("failed_count") or 0)
         progress = min(100, round(done * 100 / total))
         register_operation(
             row["run_id"], kind="scan_postprocess", source_id=row["run_id"],
             status=row["status"], stage=row.get("stage") or row["status"], progress_percent=progress,
-            subject_type="scanner_task", subject_id=row.get("mp_task_id"), subject_label=row.get("mp_task_id"),
+            subject_type="asset_card" if refresh_asset_id else "scanner_task",
+            subject_id=refresh_asset_id or row.get("mp_task_id"),
+            subject_label=refresh_label or refresh_asset_id or row.get("mp_task_id"),
             message=row.get("message"), error={"message": row.get("error")} if row.get("error") else {},
-            request=json_loads(row.get("options_json"), {}),
+            request=options,
             result={"mp_run_id": row.get("mp_run_id"), "completed_count": row.get("completed_count"), "failed_count": row.get("failed_count")},
             created_at=row.get("created_at"), started_at=row.get("started_at"),
             finished_at=row.get("finished_at"), updated_at=row.get("updated_at"),
@@ -995,6 +1000,56 @@ def get_scan_task(mp_task_id: str) -> dict[str, Any] | None:
     return _decode_scan_task(dict(row)) if row else None
 
 
+def get_asset_card_refresh_template(asset_id: str, template_task_id: str | None = None) -> dict[str, Any] | None:
+    """Return an explicit task, the task that produced the card, or the latest usable local task."""
+    with connect() as conn:
+        if template_task_id:
+            row = conn.execute(
+                "SELECT * FROM scan_tasks WHERE mp_task_id = %s AND deleted_at IS NULL",
+                (template_task_id,),
+            ).fetchone()
+            return _decode_scan_task(dict(row)) if row else None
+
+        row = conn.execute(
+            """
+            SELECT task.*
+            FROM scan_postprocess_items item
+            JOIN scan_postprocess_runs run ON run.run_id = item.postprocess_run_id
+            JOIN scan_tasks task ON task.mp_task_id = run.mp_task_id
+            WHERE item.asset_id = %s
+              AND task.deleted_at IS NULL
+            ORDER BY item.updated_at DESC, task.updated_at DESC
+            LIMIT 1
+            """,
+            (asset_id,),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                """
+                SELECT * FROM scan_tasks
+                WHERE deleted_at IS NULL
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+    return _decode_scan_task(dict(row)) if row else None
+
+
+def get_active_asset_card_refresh(asset_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM scan_postprocess_runs
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+              AND options_json::jsonb ->> 'refresh_asset_id' = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (asset_id,),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row)) if row else None
+
+
 SCAN_POSTPROCESS_ACTIVE_STATUSES = {"monitoring", "resolving", "processing", "waiting"}
 SCAN_POSTPROCESS_FAILED_ITEM_STATUSES = {"resolution_failed", "build_failed", "removal_failed"}
 
@@ -1008,6 +1063,8 @@ def create_scan_postprocess_run(
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     current = now_utc()
+    refresh_asset_id = options.get("refresh_asset_id")
+    refresh_label = options.get("refresh_asset_label")
     with connect() as conn:
         row = conn.execute(
             """
@@ -1026,9 +1083,9 @@ def create_scan_postprocess_run(
             source_id=run_id,
             status="monitoring",
             stage="waiting_for_run",
-            subject_type="scanner_task",
-            subject_id=mp_task_id,
-            subject_label=mp_task_id,
+            subject_type="asset_card" if refresh_asset_id else "scanner_task",
+            subject_id=refresh_asset_id or mp_task_id,
+            subject_label=refresh_label or refresh_asset_id or mp_task_id,
             request=options,
             idempotency_key=idempotency_key,
             created_at=current,
