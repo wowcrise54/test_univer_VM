@@ -1,4 +1,4 @@
-FROM node:20-alpine AS frontend
+FROM node:26-alpine AS frontend
 
 ARG NPM_REGISTRY=http://nexus.utmn.ru/repository/npm-proxy/
 
@@ -9,7 +9,7 @@ RUN npm config set registry "${NPM_REGISTRY}" \
     && npm ci \
     && npm run build
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG PIP_INDEX_URL=https://nexus.utmn.ru/repository/pypi-proxy/simple
 

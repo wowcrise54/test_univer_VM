@@ -32,14 +32,15 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: mpvm-postgres
     environment:
       POSTGRES_DB: "mpvm"
       POSTGRES_USER: "mpvm"
       POSTGRES_PASSWORD: "mpvm"
+      PGDATA: /var/lib/postgresql/18/docker
     volumes:
-      - mpvm_postgres:/var/lib/postgresql/data
+      - mpvm_postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
