@@ -76,6 +76,20 @@ class ScanPostprocessClientTests(unittest.TestCase):
         response.json.assert_not_called()
         client.session.close()
 
+    def test_delete_scanner_task_treats_not_found_as_already_deleted(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=404, content=b"", ok=False)
+        client.session.delete = MagicMock(return_value=response)
+
+        result = client.delete_scanner_task("token", "task-gone")
+
+        self.assertEqual(result, {"id": "task-gone", "mode": "delete_v3", "alreadyDeleted": True})
+        client.session.close()
+
     def test_asset_removal_wait_continues_after_empty_accepted_response(self):
         client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
             api_url="https://fixture",
@@ -463,6 +477,75 @@ class AssetCardRefreshScanTests(unittest.TestCase):
 
         self.assertIsNone(result)
         delete_card.assert_not_called()
+
+    def test_refresh_task_is_deleted_remotely_then_locally(self):
+        client = MagicMock()
+        client.delete_scanner_task.return_value = {"id": "refresh-task-1", "mode": "delete_v3"}
+        with (
+            patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main, "update_refresh_task_cleanup_message") as update_message,
+        ):
+            deleted = main.cleanup_auto_created_refresh_task(
+                client=client,
+                token="token",
+                run_id="refresh-run-1",
+                task_id="refresh-task-1",
+            )
+
+        self.assertTrue(deleted)
+        client.delete_scanner_task.assert_called_once_with("token", "refresh-task-1", mode="delete_v3")
+        delete_local.assert_called_once_with("refresh-task-1")
+        update_message.assert_called_once()
+
+    def test_refresh_task_is_kept_locally_when_remote_deletion_fails(self):
+        client = MagicMock()
+        client.delete_scanner_task.side_effect = mpvm_client.MpVmApiError("temporary failure")
+        with (
+            patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main, "update_refresh_task_cleanup_message") as update_message,
+        ):
+            deleted = main.cleanup_auto_created_refresh_task(
+                client=client,
+                token="token",
+                run_id="refresh-run-1",
+                task_id="refresh-task-1",
+            )
+
+        self.assertFalse(deleted)
+        delete_local.assert_not_called()
+        update_message.assert_called_once()
+
+    def test_refresh_task_cleanup_happens_after_card_actions_and_before_terminal_status(self):
+        events: list[str] = []
+        claimed = {
+            "run_id": "refresh-run-1",
+            "mp_task_id": "refresh-task-1",
+            "started_from": "2026-01-01T00:00:00+00:00",
+            "options": {
+                "task_timeout_minutes": 1,
+                "task_poll_seconds": 1,
+                "refresh_asset_id": "asset-old",
+                "auto_created_refresh_task": True,
+            },
+        }
+
+        class RefreshClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+        with (
+            patch.object(main, "MpVmClient", RefreshClient),
+            patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
+            patch.object(main, "monitor_successful_scan_jobs", side_effect=lambda **_kwargs: events.append("card_actions") or {"successful_job_count": 1, "total_job_count": 1}),
+            patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 1, "failed_count": 0}),
+            patch.object(main, "finalize_asset_card_refresh", return_value={"previous_asset_id": "asset-old", "asset_id": "asset-new"}),
+            patch.object(main.db, "update_scan_task_status", side_effect=lambda *_args, **_kwargs: events.append("task_status")),
+            patch.object(main, "cleanup_auto_created_refresh_task", side_effect=lambda **_kwargs: events.append("task_deleted") or True),
+            patch.object(main.db, "finish_scan_postprocess_run", side_effect=lambda *_args, **_kwargs: events.append("terminal")),
+        ):
+            main.run_scan_postprocess(run_id="refresh-run-1", auth=SimpleNamespace(), token="token")
+
+        self.assertEqual(events, ["card_actions", "task_status", "task_deleted", "terminal"])
 
 
 class ScanJobLiveMonitoringTests(unittest.TestCase):

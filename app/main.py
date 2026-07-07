@@ -2613,10 +2613,19 @@ def resume_scan_postprocess_runs() -> None:
         scan_log(logging.DEBUG, "resume_skipped_no_session")
         return
     try:
+        cleanup_runs = db.list_pending_asset_refresh_task_cleanups()
         runs = db.list_resumable_scan_postprocess_runs()
     except psycopg.Error:
         SCAN_LOG.exception("[scan-postprocess] failed to list resumable runs")
         return
+    scan_log(logging.INFO, "refresh_task_cleanup_resume", pending_count=len(cleanup_runs))
+    for cleanup_run in cleanup_runs:
+        cleanup_auto_created_refresh_task(
+            client=SESSION.client,
+            token=SESSION.access_token,
+            run_id=str(cleanup_run["run_id"]),
+            task_id=str(cleanup_run["mp_task_id"]),
+        )
     scan_log(logging.INFO, "resume_scan", resumable_count=len(runs))
     for run in runs:
         schedule_scan_postprocess(str(run["run_id"]), SESSION.client.auth, SESSION.access_token)
@@ -2667,11 +2676,17 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 total_job_count=monitoring["total_job_count"],
             )
             db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "reason": "no successful targets"})
+            cleanup_deleted = (
+                cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
+                if options.get("auto_created_refresh_task")
+                else None
+            )
+            cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
             db.finish_scan_postprocess_run(
                 run_id,
                 status="failed",
                 stage="failed",
-                message="The scanner run has no jobs with errorStatus=success.",
+                message=f"The scanner run has no jobs with errorStatus=success.{cleanup_text}",
             )
             return
 
@@ -2683,6 +2698,19 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         message = f"Completed {completed_count} asset(s); failures: {failed_count}."
         if refresh_result:
             message += f" Asset card refreshed as {refresh_result['asset_id']}."
+        db.update_scan_task_status(
+            task_id,
+            "postprocess_failed" if final_status == "failed" else "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
+            {"postprocess_run_id": run_id, "completed_count": completed_count, "failed_count": failed_count},
+        )
+        if options.get("auto_created_refresh_task"):
+            cleanup_deleted = cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
+            if cleanup_deleted:
+                message += " Refresh task deleted."
+            else:
+                message += " Refresh task deletion is pending."
+                if final_status == "completed":
+                    final_status = "completed_with_errors"
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
         scan_log(
             logging.INFO if final_status == "completed" else logging.ERROR,
@@ -2693,11 +2721,6 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             completed_count=completed_count,
             failed_count=failed_count,
         )
-        db.update_scan_task_status(
-            task_id,
-            "postprocess_failed" if final_status == "failed" else "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
-            {"postprocess_run_id": run_id, "completed_count": completed_count, "failed_count": failed_count},
-        )
     except Exception as exc:
         error = str(exc)[:4000]
         SCAN_LOG.exception(
@@ -2707,10 +2730,67 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             type(exc).__name__,
             error,
         )
-        db.finish_scan_postprocess_run(run_id, status="failed", stage="failed", message="Scan post-processing failed.", error=error)
         db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
+        cleanup_deleted = (
+            cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
+            if options.get("auto_created_refresh_task")
+            else None
+        )
+        cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
+        db.finish_scan_postprocess_run(
+            run_id,
+            status="failed",
+            stage="failed",
+            message=f"Scan post-processing failed.{cleanup_text}",
+            error=error,
+        )
     finally:
         client.session.close()
+
+
+def cleanup_auto_created_refresh_task(
+    *,
+    client: MpVmClient,
+    token: str,
+    run_id: str,
+    task_id: str,
+) -> bool:
+    try:
+        response = client.delete_scanner_task(token, task_id, mode="delete_v3")
+        db.delete_scan_task(task_id)
+        update_refresh_task_cleanup_message(run_id, f"Refresh task {task_id} deleted from MP VM.")
+        scan_log(
+            logging.INFO,
+            "asset_refresh_task_deleted",
+            postprocess_run_id=run_id,
+            task_id=task_id,
+            already_deleted=bool(response.get("alreadyDeleted")) if isinstance(response, dict) else False,
+        )
+        return True
+    except (MpVmApiError, requests.RequestException, psycopg.Error) as exc:
+        try:
+            update_refresh_task_cleanup_message(run_id, f"Refresh task {task_id} deletion is pending: {exc}")
+        except psycopg.Error:
+            SCAN_LOG.exception(
+                "[scan-postprocess] failed to persist refresh task cleanup error postprocess_run_id=%s task_id=%s",
+                run_id,
+                task_id,
+            )
+        SCAN_LOG.exception(
+            "[scan-postprocess] refresh task cleanup failed postprocess_run_id=%s task_id=%s",
+            run_id,
+            task_id,
+        )
+        return False
+
+
+def update_refresh_task_cleanup_message(run_id: str, cleanup_message: str) -> None:
+    run = db.get_scan_postprocess_run(run_id)
+    if not run:
+        return
+    base_message = str(run.get("message") or "").split(" Refresh task cleanup:", 1)[0].strip()
+    prefix = f"{base_message} " if base_message else ""
+    db.update_scan_postprocess_run(run_id, message=f"{prefix}Refresh task cleanup: {cleanup_message}"[:4000])
 
 
 def finalize_asset_card_refresh(run_id: str, options: dict[str, Any]) -> dict[str, Any] | None:

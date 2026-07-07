@@ -1143,6 +1143,22 @@ def list_resumable_scan_postprocess_runs() -> list[dict[str, Any]]:
     return [decode_scan_postprocess_run(dict(row)) for row in rows]
 
 
+def list_pending_asset_refresh_task_cleanups() -> list[dict[str, Any]]:
+    """Terminal refresh runs keep their local task row until remote task deletion succeeds."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (run.mp_task_id) run.*
+            FROM scan_postprocess_runs run
+            JOIN scan_tasks task ON task.mp_task_id = run.mp_task_id
+            WHERE run.status NOT IN ('monitoring', 'resolving', 'processing', 'waiting')
+              AND run.options_json::jsonb ->> 'auto_created_refresh_task' = 'true'
+            ORDER BY run.mp_task_id, run.updated_at DESC
+            """
+        ).fetchall()
+    return [decode_scan_postprocess_run(dict(row)) for row in rows]
+
+
 def claim_scan_postprocess_run(run_id: str, worker_id: str) -> dict[str, Any] | None:
     current = now_utc()
     with connect() as conn:

@@ -483,6 +483,8 @@ class MpVmClient:
             headers=self._bearer_headers(access_token),
             timeout=self.auth.timeout,
         )
+        if response.status_code == 404:
+            return {"id": task_id, "mode": mode, "alreadyDeleted": True}
         self._raise_for_status(response, "delete scanner task")
         return response.json() if response.content else {"id": task_id, "mode": mode}
 
