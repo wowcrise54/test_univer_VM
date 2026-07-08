@@ -21,6 +21,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
 
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 COPY app ./app
 COPY --from=frontend /app/app/static ./app/static
 COPY host_software_vulnerabilities_10.104.103.0_24.csv ./host_software_vulnerabilities_10.104.103.0_24.csv

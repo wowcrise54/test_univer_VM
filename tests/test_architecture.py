@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from pathlib import Path
 
 from app import db, main
 from app.core.config import Settings
@@ -24,6 +25,11 @@ EXPECTED_API_PATHS = {
 
 
 class ContractTests(unittest.TestCase):
+    def test_runtime_image_includes_alembic_assets(self):
+        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY alembic.ini ./alembic.ini", dockerfile)
+        self.assertIn("COPY migrations ./migrations", dockerfile)
+
     def test_openapi_keeps_public_domain_paths(self):
         schema = main.app.openapi()
         self.assertTrue(EXPECTED_API_PATHS.issubset(schema["paths"]))
