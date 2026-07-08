@@ -1,2 +1,6 @@
 -r requirements.txt
 httpx2==2.5.0
+mypy==1.17.1
+pytest-cov==6.2.1
+ruff==0.12.8
+types-requests==2.32.4.20250611

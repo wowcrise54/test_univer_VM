@@ -1,0 +1,48 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: mpvm_test
+          POSTGRES_USER: mpvm
+          POSTGRES_PASSWORD: mpvm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mpvm -d mpvm_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MPVM_DATABASE_URL: postgresql://mpvm:mpvm@127.0.0.1:5432/mpvm_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+      - run: pip install -r requirements-dev.txt
+      - run: npm ci
+      - run: alembic upgrade head
+      - run: ruff check app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py
+      - run: mypy app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py
+      - run: pytest --cov=app --cov-report=term-missing --cov-report=json:output/coverage-python.json
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run test:coverage -- --coverage.reporter=json-summary --coverage.reportsDirectory=output/coverage-js
+      - run: npm run coverage:check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

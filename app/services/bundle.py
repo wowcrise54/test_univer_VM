@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import builtins
+from typing import Any
+
+from ..repositories import RepositoryBundle
+
+
+class OperationsService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repository = repositories.operations
+
+    def list(self, **filters: Any) -> dict[str, Any]:
+        return self._repository.list(**filters)
+
+
+class AssetsService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repositories = repositories
+
+    def list_findings(self, **filters: Any) -> dict[str, Any]:
+        return self._repositories.assets.list_findings(**filters)
+
+    def summary(self) -> dict[str, Any]:
+        return self._repositories.assets.summary()
+
+
+class TasksService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repository = repositories.tasks
+
+    def list(self) -> builtins.list[dict[str, Any]]:
+        return self._repository.list()
+
+
+class AssetCardsService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repository = repositories.asset_cards
+
+    def list(self, **filters: Any) -> dict[str, Any]:
+        return self._repository.list(**filters)
+
+    def get(self, asset_id: str) -> dict[str, Any] | None:
+        return self._repository.get(asset_id)
+
+
+class PassportsService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repository = repositories.passports
+
+    def list(self, **filters: Any) -> dict[str, Any]:
+        return self._repository.list(**filters)
+
+    def get(self, passport_id: str) -> dict[str, Any] | None:
+        return self._repository.get(passport_id)
+
+
+class AssetQueryService:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self._repository = repositories.asset_query
+
+    def fields(self, **filters: Any) -> dict[str, Any]:
+        return self._repository.fields(**filters)
+
+    def query(self, query: dict[str, Any], **options: Any) -> dict[str, Any]:
+        return self._repository.query(query, **options)
+
+
+class ServiceBundle:
+    def __init__(self, repositories: RepositoryBundle) -> None:
+        self.operations = OperationsService(repositories)
+        self.assets = AssetsService(repositories)
+        self.tasks = TasksService(repositories)
+        self.asset_cards = AssetCardsService(repositories)
+        self.passports = PassportsService(repositories)
+        self.asset_query = AssetQueryService(repositories)

@@ -1,4 +1,4 @@
-import { TaskBuilderPanel, TaskListPanel } from "../panels.jsx";
+import { TaskBuilderPanel, TaskListPanel } from "../features/tasks/index.jsx";
 
 export function TasksPage({
   busy,

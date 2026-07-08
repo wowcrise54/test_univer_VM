@@ -4,24 +4,40 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=26.0.0 <27"
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "coverage:check": "python scripts/check_coverage_ratchet.py --python output/coverage-python.json --frontend output/coverage-js/coverage-summary.json",
+    "lint": "eslint .",
+    "format:check": "prettier --check src/app/App.jsx src/app/AppDataContext.jsx src/app/providers.jsx src/app/useAppData.js src/styles/*.css tests/e2e/*.js *.config.js package.json",
+    "quality": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
     "@vitejs/plugin-react": "^6.0.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "vite": "^8.1.3"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.55.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
     "jsdom": "^29.1.1",
+    "prettier": "^3.7.4",
     "vitest": "^4.1.10"
   }
 }

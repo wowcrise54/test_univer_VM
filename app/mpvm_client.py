@@ -14,9 +14,8 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
-from .diagnostics import DiagnosticSession
+from .mpvm import build_retry_adapter, build_session, resolve_access_token
 
 
 ASSET_GRID_PATH = "/api/assets_temporal_readmodel/v1/assets_grid"
@@ -92,61 +91,14 @@ class AuthConfig:
 class MpVmClient:
     def __init__(self, auth: AuthConfig) -> None:
         self.auth = auth
-        self.session = DiagnosticSession()
-        self.session.verify = auth.verify_tls
-        self.session.headers.update({"User-Agent": "mp-vm-rest-client/1.0"})
-        self.session.mount("https://", self._build_retry_adapter())
-        self.session.mount("http://", self._build_retry_adapter())
+        self.session = build_session(verify_tls=auth.verify_tls)
 
     @staticmethod
     def _build_retry_adapter() -> HTTPAdapter:
-        retry = Retry(
-            total=3,
-            connect=3,
-            read=3,
-            status=3,
-            backoff_factor=0.8,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=("GET", "POST", "PUT", "DELETE"),
-        )
-        return HTTPAdapter(max_retries=retry)
+        return build_retry_adapter()
 
     def ensure_access_token(self) -> str:
-        if self.auth.access_token:
-            access_token = self.auth.access_token.strip()
-            if access_token.lower().startswith("bearer "):
-                access_token = access_token[7:].strip()
-            if not access_token:
-                raise MpVmApiError("Bearer token is empty.")
-            return access_token
-
-        required = {
-            "username": self.auth.username,
-            "password": self.auth.password,
-            "client_secret": self.auth.client_secret,
-        }
-        missing = [name for name, value in required.items() if not value]
-        if missing:
-            raise MpVmApiError("Missing authentication fields: " + ", ".join(missing))
-
-        response = self.session.post(
-            self.auth.token_url,
-            data={
-                "username": self.auth.username,
-                "password": self.auth.password,
-                "client_id": self.auth.client_id,
-                "client_secret": self.auth.client_secret,
-                "grant_type": "password",
-                "response_type": "code id_token",
-                "scope": self.auth.scope,
-            },
-            timeout=self.auth.timeout,
-        )
-        data = self._json_response(response, "get OAuth access token")
-        token = data.get("access_token")
-        if not token:
-            raise MpVmApiError("OAuth response does not contain access_token.")
-        return str(token)
+        return resolve_access_token(self.auth, self.session, self._json_response, MpVmApiError)
 
     def create_pdql_token(
         self,

@@ -1,0 +1,28 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["integration: requires a running PostgreSQL instance"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+exclude = ["app/static", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_unused_configs = true
+check_untyped_defs = true
+no_implicit_optional = true
+exclude = ["app/static"]
+
+[[tool.mypy.overrides]]
+module = ["app.main", "app.db", "app.mpvm_client", "app.diagnostics"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["psycopg.*", "alembic.*", "sqlalchemy.*"]
+ignore_missing_imports = true

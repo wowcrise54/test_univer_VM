@@ -8,6 +8,7 @@ import re
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -75,8 +76,10 @@ def init_db() -> None:
         _DB_INITIALIZED = True
 
 
-def _initialize_schema() -> None:
-    statements = [
+def schema_statements() -> list[str]:
+    """Return the idempotent baseline schema used by Alembic and legacy startup."""
+
+    return [
         """
         CREATE TABLE IF NOT EXISTS scan_tasks (
             id BIGSERIAL PRIMARY KEY,
@@ -534,9 +537,16 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_vulnerability_id ON asset_card_vulnerabilities(asset_id, vulnerability_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
     ]
-    with connect() as conn:
-        for statement in statements:
-            conn.execute(statement)
+
+
+def _initialize_schema() -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    root_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(root_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(root_dir / "migrations"))
+    command.upgrade(config, "head")
 
 
 def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:

@@ -7,19 +7,33 @@ import { PassportsPage } from "../pages/PassportsPage.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
 import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
+import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
-import { useAppData } from "./useAppData.js";
 
 export function App() {
   const { navigate, path, route } = useRouter();
-  const appData = useAppData(route?.id);
+  return (
+    <AppDataProvider routeId={route?.id}>
+      <AppShell navigate={navigate} path={path} route={route} />
+    </AppDataProvider>
+  );
+}
+
+function AppShell({ navigate, path, route }) {
+  const appData = useAppDataContext();
 
   return (
     <div className="app-shell">
       <Sidebar
         session={appData.session}
         systemStatus={appData.systemStatus}
-        activeOperations={appData.operations.filter((item) => ["queued", "running", "cancelling", "recovering"].includes(item.status)).length}
+        activeOperations={
+          appData.operations.filter((item) =>
+            ["queued", "running", "cancelling", "recovering"].includes(
+              item.status,
+            ),
+          ).length
+        }
         activePath={path}
         onNavigate={navigate}
       />
@@ -32,10 +46,7 @@ export function App() {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage
-          routeId={route?.id}
-          {...appData}
-        />
+        <ActivePage routeId={route?.id} {...appData} />
       </main>
     </div>
   );
@@ -102,13 +113,33 @@ function ActivePage({ routeId, ...props }) {
     );
   }
   if (routeId === "asset-cards") {
-    return <AssetCardsPage defaults={props.defaults} busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;
+    return (
+      <AssetCardsPage
+        defaults={props.defaults}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+      />
+    );
   }
   if (routeId === "asset-query") {
-    return <AssetQueryPage busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;
+    return (
+      <AssetQueryPage
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+      />
+    );
   }
   if (routeId === "passports") {
-    return <PassportsPage defaults={props.defaults} busy={props.busy} runBusy={props.runBusy} showAlert={props.showAlert} />;
+    return (
+      <PassportsPage
+        defaults={props.defaults}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+      />
+    );
   }
   if (routeId === "assets") {
     return (

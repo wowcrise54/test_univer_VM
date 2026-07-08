@@ -12,8 +12,8 @@ import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import asynccontextmanager
 from contextvars import copy_context
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -23,12 +23,8 @@ import psycopg
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -49,6 +45,38 @@ from .diagnostics import (
 configure_diagnostics()
 
 from . import db
+from .api.routers import (
+    API_ROUTERS,
+    asset_cards_router,
+    asset_query_router,
+    assets_router,
+    diagnostics_router,
+    imports_router,
+    operations_router,
+    passports_router,
+    session_router,
+    system_router,
+    tasks_router,
+)
+from .api.schemas import (
+    AssetCardAssetQueryRequest,
+    AssetCardBuildJobRequest,
+    AssetCardBuildRequest,
+    AssetCardFieldQueryRequest,
+    AssetCardRefreshScanRequest,
+    AssetCardUpdateRequest,
+    ConnectionRequest,
+    CsvTextImportRequest,
+    DeleteScannerTaskRequest,
+    FrontendDiagnosticBatch,
+    PdqlExportRequest,
+    SavedViewRequest,
+    ScannerTaskRequest,
+    StartScannerTaskRequest,
+    VulnerabilityPassportQueryRequest,
+)
+from .core import AppContainer, get_settings
+from .factory import create_app
 from .mpvm_client import (
     ASSET_CARD_PDQL,
     SOFTWARE_VULN_PDQL,
@@ -91,32 +119,25 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-BACKGROUND_REQUEST_LIMIT = env_int("MPVM_BACKGROUND_REQUEST_LIMIT", 10, minimum=1, maximum=32)
+SETTINGS = get_settings()
+BACKGROUND_REQUEST_LIMIT = min(32, SETTINGS.background_request_limit)
 ASSET_CARD_REQUEST_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
-    env_int("MPVM_ASSET_CARD_REQUEST_WORKERS", 8, minimum=1, maximum=16),
+    min(16, SETTINGS.asset_card_request_workers),
 )
-SCAN_POSTPROCESS_WORKERS = env_int("MPVM_SCAN_POSTPROCESS_WORKERS", 1, minimum=1, maximum=4)
-SCAN_ASSET_PROCESS_WORKERS = env_int("MPVM_SCAN_ASSET_PROCESS_WORKERS", 1, minimum=1, maximum=4)
+SCAN_POSTPROCESS_WORKERS = min(4, SETTINGS.scan_postprocess_workers)
+SCAN_ASSET_PROCESS_WORKERS = min(4, SETTINGS.scan_asset_process_workers)
 PASSPORT_DETAIL_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
-    env_int("MPVM_PASSPORT_DETAIL_WORKERS", 10, minimum=1, maximum=32),
+    min(32, SETTINGS.passport_detail_workers),
 )
-PASSPORT_DETAIL_TTL_HOURS = env_int("MPVM_PASSPORT_DETAIL_TTL_HOURS", 24, minimum=0, maximum=8760)
+PASSPORT_DETAIL_TTL_HOURS = min(8760, SETTINGS.passport_detail_ttl_hours)
 PASSPORT_DETAIL_DB_BATCH_SIZE = 100
-ASSET_METADATA_TTL_SECONDS = env_int("MPVM_ASSET_METADATA_TTL_SECONDS", 3600, minimum=0, maximum=86400)
-SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS = env_int(
-    "MPVM_SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS", 600, minimum=1, maximum=3600
-)
-SCAN_ASSET_RESOLUTION_POLL_SECONDS = env_int(
-    "MPVM_SCAN_ASSET_RESOLUTION_POLL_SECONDS", 15, minimum=1, maximum=300
-)
-SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS = env_int(
-    "MPVM_SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS", 1800, minimum=1, maximum=7200
-)
-SCAN_ASSET_REMOVAL_POLL_SECONDS = env_int(
-    "MPVM_SCAN_ASSET_REMOVAL_POLL_SECONDS", 10, minimum=1, maximum=300
-)
+ASSET_METADATA_TTL_SECONDS = min(86400, SETTINGS.asset_metadata_ttl_seconds)
+SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS = min(3600, SETTINGS.scan_asset_resolution_timeout_seconds)
+SCAN_ASSET_RESOLUTION_POLL_SECONDS = min(300, SETTINGS.scan_asset_resolution_poll_seconds)
+SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS = min(7200, SETTINGS.scan_asset_removal_timeout_seconds)
+SCAN_ASSET_REMOVAL_POLL_SECONDS = min(300, SETTINGS.scan_asset_removal_poll_seconds)
 ASSET_CARD_STAGE_PROGRESS = {
     "queued": 0,
     "starting": 5,
@@ -132,32 +153,15 @@ ASSET_CARD_STAGE_PROGRESS = {
 }
 
 
-@dataclass
-class RuntimeSession:
-    client: MpVmClient | None = None
-    access_token: str | None = None
-    api_url: str | None = None
-    token_url: str | None = None
-    username: str | None = None
-    verify_tls: bool = True
-
-
-SESSION = RuntimeSession()
+CONTAINER = AppContainer(SETTINGS)
+SESSION = CONTAINER.session
 DATABASE_STARTUP_ERROR: str | None = None
-PASSPORT_DETAIL_CANCEL_EVENTS: dict[str, threading.Event] = {}
-PASSPORT_DETAIL_CANCEL_EVENTS_LOCK = threading.Lock()
-ASSET_CARD_CANCEL_EVENTS: dict[str, threading.Event] = {}
-ASSET_CARD_CANCEL_EVENTS_LOCK = threading.Lock()
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
-SCAN_POSTPROCESS_EXECUTOR = ThreadPoolExecutor(
-    max_workers=SCAN_POSTPROCESS_WORKERS,
-    thread_name_prefix="scan-postprocess",
-)
-BACKGROUND_REQUEST_SEMAPHORE = threading.BoundedSemaphore(BACKGROUND_REQUEST_LIMIT)
-ASSET_METADATA_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
-ASSET_METADATA_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
-ASSET_METADATA_CACHE_LOCK = threading.Lock()
+BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
+ASSET_METADATA_CACHE = CONTAINER.asset_metadata_cache
+ASSET_METADATA_INFLIGHT = CONTAINER.asset_metadata_inflight
+ASSET_METADATA_CACHE_LOCK = CONTAINER.asset_metadata_cache_lock
 
 
 class AssetCardBuildCancelled(Exception):
@@ -366,167 +370,21 @@ class AssetCardRequestExecutor:
             client.session.close()
 
 
-class ConnectionRequest(BaseModel):
-    api_url: str
-    token_url: str | None = None
-    username: str | None = None
-    password: str | None = None
-    client_id: str = "mpx"
-    client_secret: str | None = None
-    scope: str = "authorization offline_access mpx.api ptkb.api"
-    access_token: str | None = None
-    verify_tls: bool = True
-    timeout: float = 120
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    startup()
+    try:
+        yield
+    finally:
+        shutdown()
 
 
-class ScannerTaskRequest(BaseModel):
-    name: str
-    description: str | None = ""
-    scope_id: str
-    profile_id: str
-    include_targets: list[str] = Field(default_factory=list)
-    exclude_targets: list[str] = Field(default_factory=list)
-    agent_ids: list[str] = Field(default_factory=list)
-    credential_id: str | None = None
-    host_discovery_enabled: bool = False
-    host_discovery_profile_id: str | None = None
-    time_zone: str = "+05:00"
-    is_fqdn_priority: bool = True
-    raw_payload: dict[str, Any] | None = None
+def shutdown() -> None:
+    CONTAINER.shutdown()
+    log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())
 
 
-class DeleteScannerTaskRequest(BaseModel):
-    mode: Literal["delete_v3", "put_v4"] = "delete_v3"
-    put_payload: dict[str, Any] | None = None
-
-
-class StartScannerTaskRequest(BaseModel):
-    precheck_enabled: bool = False
-    precheck_profile_id: str | None = None
-    precheck_task_prefix: str = "MP VM credential precheck"
-    precheck_timeout_minutes: float = Field(default=10, gt=0)
-    precheck_max_runtime_minutes: float = Field(default=5, ge=0)
-    precheck_poll_seconds: float = Field(default=10, gt=0)
-    precheck_jobs_limit: int = Field(default=1000, gt=0)
-    wait_for_finish: bool = False
-    task_timeout_minutes: float = Field(default=120, gt=0)
-    task_poll_seconds: float = Field(default=15, gt=0)
-    require_clean_jobs: bool = False
-    create_settle_seconds: float = Field(default=30, ge=0)
-    skip_validation: bool = False
-
-
-class AssetCardRefreshScanRequest(BaseModel):
-    template_task_id: str | None = None
-    start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
-
-
-class PdqlExportRequest(BaseModel):
-    pdql: str = SOFTWARE_VULN_PDQL
-    utc_offset: str | None = "+05:00"
-    group_ids: list[str] = Field(default_factory=list)
-    asset_ids: list[str] = Field(default_factory=list)
-    include_nested_groups: bool = True
-    import_results: bool = True
-    delete_assets_after_export: bool = True
-    delete_timeout_minutes: float = 30
-    delete_poll_seconds: float = 10
-
-
-class CsvTextImportRequest(BaseModel):
-    csv_text: str
-    source: str = "manual_text"
-    pdql: str | None = None
-    csv_filename: str | None = None
-
-
-class VulnerabilityPassportQueryRequest(BaseModel):
-    pdql: str = VULNER_PASSPORT_PDQL
-    utc_offset: str | None = "+05:00"
-    group_ids: list[str] = Field(default_factory=list)
-    asset_ids: list[str] = Field(default_factory=list)
-    include_nested_groups: bool = True
-    limit: int | None = Field(default=None, ge=1)
-    batch_size: int = Field(default=5000, ge=1, le=10000)
-    save_to_db: bool = True
-    load_details: bool = True
-
-
-class AssetCardAssetQueryRequest(BaseModel):
-    pdql: str = ASSET_CARD_PDQL
-    utc_offset: str | None = "+05:00"
-    group_ids: list[str] = Field(default_factory=list)
-    asset_ids: list[str] = Field(default_factory=list)
-    include_nested_groups: bool = True
-    limit: int = Field(default=1001, ge=1, le=50000)
-    batch_size: int = Field(default=5000, ge=1, le=10000)
-
-
-class AssetCardBuildRequest(BaseModel):
-    asset_id: str
-    timeline_timestamp: int | None = None
-    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
-    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
-    save_to_db: bool = True
-
-
-class AssetCardBuildJobRequest(BaseModel):
-    asset_id: str
-    timeline_timestamp: int | None = None
-    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
-    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
-
-
-class AssetCardUpdateRequest(BaseModel):
-    timeline_timestamp: int | None = None
-    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
-    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
-
-
-class FrontendDiagnosticEvent(BaseModel):
-    event: str = Field(min_length=1, max_length=128)
-    level: Literal["debug", "info", "warning", "error"] = "info"
-    timestamp: str | None = Field(default=None, max_length=64)
-    trace_id: str | None = Field(default=None, max_length=128)
-    request_id: str | None = Field(default=None, max_length=128)
-    url: str | None = Field(default=None, max_length=2048)
-    section: str | None = Field(default=None, max_length=128)
-    stack: str | None = Field(default=None, max_length=128000)
-    fields: dict[str, Any] = Field(default_factory=dict)
-
-
-class FrontendDiagnosticBatch(BaseModel):
-    events: list[FrontendDiagnosticEvent] = Field(min_length=1, max_length=100)
-
-
-class SavedViewRequest(BaseModel):
-    route: str = Field(min_length=1, max_length=128)
-    name: str = Field(min_length=1, max_length=128)
-    filters: dict[str, Any] = Field(default_factory=dict)
-
-
-class AssetCardFieldQueryRequest(BaseModel):
-    query: dict[str, Any]
-    sort_by: str = "display_name"
-    sort_dir: Literal["asc", "desc"] = "asc"
-    limit: int = Field(default=50, ge=1, le=50000)
-    offset: int = Field(default=0, ge=0)
-
-
-app = FastAPI(title="MP VM REST API Client", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Trace-ID", "X-Request-ID", "Server-Timing", "ETag"],
-)
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan)
 
 
 @app.middleware("http")
@@ -736,9 +594,9 @@ def structured_validation_error(request: Request, exc: RequestValidationError) -
     )
 
 
-@app.on_event("startup")
 def startup() -> None:
     global DATABASE_STARTUP_ERROR
+    CONTAINER.start()
     log_event("app", "app.startup.started", process_id=os.getpid())
     try:
         db.init_db()
@@ -796,7 +654,7 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api/health")
+@system_router.get("/api/health")
 def health() -> dict[str, Any]:
     return {
         "ok": True,
@@ -814,7 +672,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.get("/api/system/status")
+@system_router.get("/api/system/status")
 def system_status() -> dict[str, Any]:
     global DATABASE_STARTUP_ERROR
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -861,7 +719,7 @@ def system_status() -> dict[str, Any]:
     return {"state": overall, "checked_at": checked_at, "components": components}
 
 
-@app.get("/api/operations")
+@operations_router.get("/api/operations")
 def operations(
     status: str | None = None,
     kind: str | None = None,
@@ -872,20 +730,20 @@ def operations(
     sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
     try:
-        return db.list_operations(status=status, kind=kind, q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+        return CONTAINER.services.operations.list(status=status, kind=kind, q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
-@app.get("/api/operations/{operation_id}")
+@operations_router.get("/api/operations/{operation_id}")
 def operation_detail(operation_id: str) -> dict[str, Any]:
-    operation = db.get_operation(operation_id)
+    operation = CONTAINER.repositories.operations.get(operation_id)
     if not operation:
         raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
     return operation
 
 
-@app.post("/api/operations/{operation_id}/cancel")
+@operations_router.post("/api/operations/{operation_id}/cancel")
 def cancel_operation(operation_id: str) -> dict[str, Any]:
     operation = db.get_operation(operation_id)
     if not operation:
@@ -899,7 +757,7 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
     return db.get_operation(operation_id) or operation
 
 
-@app.post("/api/operations/{operation_id}/retry", status_code=202)
+@operations_router.post("/api/operations/{operation_id}/retry", status_code=202)
 def retry_operation(
     operation_id: str,
     background_tasks: BackgroundTasks,
@@ -939,7 +797,7 @@ def retry_operation(
     return {"operation": retried, "retry_of": operation_id}
 
 
-@app.get("/api/operations/{operation_id}/diagnostics")
+@operations_router.get("/api/operations/{operation_id}/diagnostics")
 def operation_diagnostics(operation_id: str) -> FileResponse:
     operation = db.get_operation(operation_id)
     if not operation:
@@ -951,24 +809,24 @@ def operation_diagnostics(operation_id: str) -> FileResponse:
     return FileResponse(path, media_type="application/zip", filename=path.name)
 
 
-@app.get("/api/saved-views")
+@operations_router.get("/api/saved-views")
 def saved_views(route: str) -> dict[str, Any]:
-    return {"rows": db.list_saved_views(route)}
+    return {"rows": CONTAINER.repositories.operations.saved_views(route)}
 
 
-@app.post("/api/saved-views")
+@operations_router.post("/api/saved-views")
 def upsert_saved_view(payload: SavedViewRequest) -> dict[str, Any]:
     return db.save_view(payload.route.strip(), payload.name.strip(), payload.filters)
 
 
-@app.delete("/api/saved-views/{view_id}")
+@operations_router.delete("/api/saved-views/{view_id}")
 def remove_saved_view(view_id: int) -> dict[str, Any]:
     if not db.delete_saved_view(view_id):
         raise HTTPException(status_code=404, detail={"code": "SAVED_VIEW_NOT_FOUND", "message": "Saved view not found.", "component": "application"})
     return {"id": view_id, "deleted": True}
 
 
-@app.post("/api/diagnostics/frontend", status_code=202)
+@diagnostics_router.post("/api/diagnostics/frontend", status_code=202)
 def record_frontend_diagnostics(payload: FrontendDiagnosticBatch) -> dict[str, Any]:
     levels = {
         "debug": logging.DEBUG,
@@ -993,7 +851,7 @@ def record_frontend_diagnostics(payload: FrontendDiagnosticBatch) -> dict[str, A
     return {"accepted": len(payload.events), "trace_id": current_trace_id()}
 
 
-@app.get("/api/defaults")
+@system_router.get("/api/defaults")
 def defaults() -> dict[str, Any]:
     return {
         "api_url": os.getenv("MPVM_API_URL") or os.getenv("MP10_API_URL") or "https://srv-siem.local",
@@ -1007,7 +865,7 @@ def defaults() -> dict[str, Any]:
     }
 
 
-@app.post("/api/session/connect")
+@session_router.post("/api/session/connect")
 def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     try:
         api_url = normalize_url(payload.api_url)
@@ -1047,7 +905,7 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
     }
 
 
-@app.post("/api/session/disconnect")
+@session_router.post("/api/session/disconnect")
 def disconnect_session() -> dict[str, Any]:
     SESSION.client = None
     SESSION.access_token = None
@@ -1057,7 +915,7 @@ def disconnect_session() -> dict[str, Any]:
     return {"connected": False}
 
 
-@app.get("/api/session")
+@session_router.get("/api/session")
 def session_info() -> dict[str, Any]:
     return {
         "connected": SESSION.client is not None and SESSION.access_token is not None,
@@ -1068,7 +926,7 @@ def session_info() -> dict[str, Any]:
     }
 
 
-@app.get("/api/mpvm/lookups")
+@session_router.get("/api/mpvm/lookups")
 def mpvm_lookups() -> dict[str, Any]:
     client, token = require_mpvm()
     try:
@@ -1081,7 +939,7 @@ def mpvm_lookups() -> dict[str, Any]:
         raise http_error(exc) from exc
 
 
-@app.get("/api/mpvm/scanner-tasks/remote")
+@tasks_router.get("/api/mpvm/scanner-tasks/remote")
 def remote_scanner_tasks(offset: int = 0, limit: int = 50, main_filter: str | None = None) -> Any:
     client, token = require_mpvm()
     try:
@@ -1090,12 +948,12 @@ def remote_scanner_tasks(offset: int = 0, limit: int = 50, main_filter: str | No
         raise http_error(exc) from exc
 
 
-@app.get("/api/scanner-tasks")
+@tasks_router.get("/api/scanner-tasks")
 def local_scanner_tasks() -> list[dict[str, Any]]:
-    return db.list_scan_tasks()
+    return CONTAINER.services.tasks.list()
 
 
-@app.post("/api/scanner-tasks")
+@tasks_router.post("/api/scanner-tasks")
 def create_scanner_task(payload: ScannerTaskRequest) -> dict[str, Any]:
     client, token = require_mpvm()
     task_payload = scanner_task_payload(payload)
@@ -1111,7 +969,7 @@ def create_scanner_task(payload: ScannerTaskRequest) -> dict[str, Any]:
         raise http_error(exc) from exc
 
 
-@app.put("/api/scanner-tasks/{task_id}")
+@tasks_router.put("/api/scanner-tasks/{task_id}")
 def update_scanner_task(task_id: str, payload: ScannerTaskRequest) -> dict[str, Any]:
     client, token = require_mpvm()
     task_payload = scanner_task_payload(payload)
@@ -1127,7 +985,7 @@ def update_scanner_task(task_id: str, payload: ScannerTaskRequest) -> dict[str, 
         raise http_error(exc) from exc
 
 
-@app.post("/api/scanner-tasks/{task_id}/validate")
+@tasks_router.post("/api/scanner-tasks/{task_id}/validate")
 def validate_scanner_task(task_id: str) -> dict[str, Any]:
     client, token = require_mpvm()
     try:
@@ -1138,7 +996,7 @@ def validate_scanner_task(task_id: str) -> dict[str, Any]:
         raise http_error(exc) from exc
 
 
-@app.post("/api/scanner-tasks/{task_id}/start", status_code=202)
+@tasks_router.post("/api/scanner-tasks/{task_id}/start", status_code=202)
 def start_scanner_task(
     task_id: str,
     background_tasks: BackgroundTasks,
@@ -1180,7 +1038,7 @@ def start_scanner_task(
         raise http_error(exc) from exc
 
 
-@app.get("/api/scanner-tasks/{task_id}/postprocess-runs/latest")
+@tasks_router.get("/api/scanner-tasks/{task_id}/postprocess-runs/latest")
 def latest_scanner_task_postprocess_run(task_id: str) -> dict[str, Any]:
     run = db.get_latest_scan_postprocess_run(task_id, include_items=True)
     if not run:
@@ -1188,7 +1046,7 @@ def latest_scanner_task_postprocess_run(task_id: str) -> dict[str, Any]:
     return run
 
 
-@app.post("/api/scanner-tasks/{task_id}/stop")
+@tasks_router.post("/api/scanner-tasks/{task_id}/stop")
 def stop_scanner_task(task_id: str) -> dict[str, Any]:
     client, token = require_mpvm()
     try:
@@ -1199,7 +1057,7 @@ def stop_scanner_task(task_id: str) -> dict[str, Any]:
         raise http_error(exc) from exc
 
 
-@app.post("/api/scanner-tasks/{task_id}/delete")
+@tasks_router.post("/api/scanner-tasks/{task_id}/delete")
 def delete_scanner_task_post(
     task_id: str,
     payload: DeleteScannerTaskRequest | None = None,
@@ -1208,7 +1066,7 @@ def delete_scanner_task_post(
     return delete_scanner_task_idempotent(task_id, payload or DeleteScannerTaskRequest(), idempotency_key)
 
 
-@app.delete("/api/scanner-tasks/{task_id}")
+@tasks_router.delete("/api/scanner-tasks/{task_id}")
 def delete_scanner_task_delete(
     task_id: str,
     payload: DeleteScannerTaskRequest | None = None,
@@ -1281,7 +1139,7 @@ def delete_scanner_task_idempotent(
     return {**result, "operation_id": operation_id}
 
 
-@app.post("/api/exports/pdql")
+@imports_router.post("/api/exports/pdql")
 def export_pdql(payload: PdqlExportRequest) -> dict[str, Any]:
     client, token = require_mpvm()
     try:
@@ -1338,7 +1196,7 @@ def export_pdql(payload: PdqlExportRequest) -> dict[str, Any]:
     }
 
 
-@app.post("/api/import/csv-text")
+@imports_router.post("/api/import/csv-text")
 def import_csv_text(payload: CsvTextImportRequest) -> dict[str, Any]:
     return db.import_csv_text(
         payload.csv_text,
@@ -1348,14 +1206,14 @@ def import_csv_text(payload: CsvTextImportRequest) -> dict[str, Any]:
     )
 
 
-@app.post("/api/import/csv-file")
+@imports_router.post("/api/import/csv-file")
 async def import_csv_file(file: UploadFile = File(...)) -> dict[str, Any]:
     content = await file.read()
     text = decode_csv_bytes(content)
     return db.import_csv_text(text, source="uploaded_csv", csv_filename=file.filename)
 
 
-@app.post("/api/import/sample")
+@imports_router.post("/api/import/sample")
 def import_sample() -> dict[str, Any]:
     if not SAMPLE_CSV.exists():
         raise HTTPException(status_code=404, detail=f"Sample CSV not found: {SAMPLE_CSV}")
@@ -1366,7 +1224,7 @@ def import_sample() -> dict[str, Any]:
     )
 
 
-@app.get("/api/assets")
+@assets_router.get("/api/assets")
 def assets(
     q: str | None = None,
     severity: str | None = None,
@@ -1376,17 +1234,17 @@ def assets(
     sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
     try:
-        return db.list_asset_findings(q=q, severity=severity, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+        return CONTAINER.services.assets.list_findings(q=q, severity=severity, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
-@app.get("/api/assets/summary")
+@assets_router.get("/api/assets/summary")
 def assets_summary() -> dict[str, Any]:
-    return db.get_summary()
+    return CONTAINER.services.assets.summary()
 
 
-@app.post("/api/asset-cards/query-assets")
+@asset_cards_router.post("/api/asset-cards/query-assets")
 def query_asset_card_assets(payload: AssetCardAssetQueryRequest) -> dict[str, Any]:
     client, token = require_mpvm()
     try:
@@ -1420,7 +1278,7 @@ def query_asset_card_assets(payload: AssetCardAssetQueryRequest) -> dict[str, An
     }
 
 
-@app.post("/api/asset-cards/build")
+@asset_cards_router.post("/api/asset-cards/build")
 def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
     client, token = require_mpvm()
     asset_id = payload.asset_id.strip()
@@ -1449,7 +1307,7 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
     }
 
 
-@app.post("/api/asset-cards/build-jobs", status_code=202)
+@asset_cards_router.post("/api/asset-cards/build-jobs", status_code=202)
 def create_asset_card_build_job(
     payload: AssetCardBuildJobRequest,
     background_tasks: BackgroundTasks,
@@ -1520,12 +1378,12 @@ def create_asset_card_build_job(
     return {"job": job, "operation_id": job_id}
 
 
-@app.get("/api/asset-cards/build-jobs/active")
+@asset_cards_router.get("/api/asset-cards/build-jobs/active")
 def active_asset_card_build_job() -> dict[str, Any]:
     return {"job": db.get_active_asset_card_build_job()}
 
 
-@app.post("/api/asset-cards/{asset_id}/refresh-scan", status_code=202)
+@asset_cards_router.post("/api/asset-cards/{asset_id}/refresh-scan", status_code=202)
 def refresh_asset_card_by_scan(
     asset_id: str,
     payload: AssetCardRefreshScanRequest,
@@ -1651,7 +1509,7 @@ def refresh_asset_card_by_scan(
     }
 
 
-@app.get("/api/asset-cards/build-jobs/{job_id}")
+@asset_cards_router.get("/api/asset-cards/build-jobs/{job_id}")
 def asset_card_build_job(job_id: str) -> dict[str, Any]:
     job = db.get_asset_card_build_job(job_id)
     if not job:
@@ -1659,7 +1517,7 @@ def asset_card_build_job(job_id: str) -> dict[str, Any]:
     return job
 
 
-@app.post("/api/asset-cards/build-jobs/{job_id}/cancel")
+@asset_cards_router.post("/api/asset-cards/build-jobs/{job_id}/cancel")
 def cancel_asset_card_build_job(job_id: str) -> dict[str, Any]:
     current = db.get_asset_card_build_job(job_id)
     if not current:
@@ -1667,10 +1525,7 @@ def cancel_asset_card_build_job(job_id: str) -> dict[str, Any]:
     if current["status"] not in {"queued", "running", "cancelling"}:
         return current
     job = db.request_asset_card_build_job_cancel(job_id) or current
-    with ASSET_CARD_CANCEL_EVENTS_LOCK:
-        cancel_event = ASSET_CARD_CANCEL_EVENTS.get(job_id)
-    if cancel_event:
-        cancel_event.set()
+    CONTAINER.operation_runner.cancellations.cancel("asset-card", job_id)
     log_event(
         "asset-card-build",
         "build.cancel.requested",
@@ -1683,15 +1538,11 @@ def cancel_asset_card_build_job(job_id: str) -> dict[str, Any]:
 
 
 def register_asset_card_build_job(job_id: str) -> threading.Event:
-    cancel_event = threading.Event()
-    with ASSET_CARD_CANCEL_EVENTS_LOCK:
-        ASSET_CARD_CANCEL_EVENTS[job_id] = cancel_event
-    return cancel_event
+    return CONTAINER.operation_runner.cancellations.register("asset-card", job_id)
 
 
 def unregister_asset_card_build_job(job_id: str) -> None:
-    with ASSET_CARD_CANCEL_EVENTS_LOCK:
-        ASSET_CARD_CANCEL_EVENTS.pop(job_id, None)
+    CONTAINER.operation_runner.cancellations.remove("asset-card", job_id)
 
 
 def run_asset_card_build_job(
@@ -1891,7 +1742,7 @@ def _run_asset_card_build_job(
         unregister_asset_card_build_job(job_id)
 
 
-@app.get("/api/asset-cards/local")
+@asset_cards_router.get("/api/asset-cards/local")
 def local_asset_cards(
     q: str | None = None,
     limit: int = 100,
@@ -1900,22 +1751,22 @@ def local_asset_cards(
     sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
     try:
-        return db.list_asset_cards(q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
+        return CONTAINER.services.asset_cards.list(q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
-@app.get("/api/asset-card-query/fields")
+@asset_query_router.get("/api/asset-card-query/fields")
 def asset_card_query_fields(q: str | None = None, limit: int = 100) -> dict[str, Any]:
     start_asset_search_backfill()
-    return db.list_asset_card_search_fields(q=q, limit=limit)
+    return CONTAINER.services.asset_query.fields(q=q, limit=limit)
 
 
-@app.post("/api/asset-card-query")
+@asset_query_router.post("/api/asset-card-query")
 def asset_card_query(payload: AssetCardFieldQueryRequest) -> dict[str, Any]:
     start_asset_search_backfill()
     try:
-        return db.query_asset_cards_by_fields(
+        return CONTAINER.services.asset_query.query(
             payload.query,
             sort_by=payload.sort_by,
             sort_dir=payload.sort_dir,
@@ -1929,7 +1780,7 @@ def asset_card_query(payload: AssetCardFieldQueryRequest) -> dict[str, Any]:
         ) from exc
 
 
-@app.post("/api/asset-card-query/export")
+@asset_query_router.post("/api/asset-card-query/export")
 def export_asset_card_query(payload: AssetCardFieldQueryRequest) -> Response:
     try:
         first_page = db.query_asset_cards_by_fields(
@@ -1981,15 +1832,15 @@ def export_asset_card_query(payload: AssetCardFieldQueryRequest) -> Response:
     )
 
 
-@app.get("/api/asset-cards/{asset_id}")
+@asset_cards_router.get("/api/asset-cards/{asset_id}")
 def local_asset_card(asset_id: str) -> dict[str, Any]:
-    card = db.get_asset_card(asset_id)
+    card = CONTAINER.services.asset_cards.get(asset_id)
     if not card:
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
     return card
 
 
-@app.put("/api/asset-cards/{asset_id}")
+@asset_cards_router.put("/api/asset-cards/{asset_id}")
 def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> dict[str, Any]:
     if not db.asset_card_exists(asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
@@ -2019,14 +1870,14 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
     }
 
 
-@app.delete("/api/asset-cards/{asset_id}")
+@asset_cards_router.delete("/api/asset-cards/{asset_id}")
 def delete_local_asset_card(asset_id: str) -> dict[str, Any]:
     if not db.delete_asset_card(asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
     return {"asset_id": asset_id, "deleted": True}
 
 
-@app.post("/api/vulnerability-passports/query")
+@passports_router.post("/api/vulnerability-passports/query")
 def query_vulnerability_passports(
     payload: VulnerabilityPassportQueryRequest,
     background_tasks: BackgroundTasks,
@@ -2139,7 +1990,7 @@ def query_vulnerability_passports(
     }
 
 
-@app.get("/api/vulnerability-passports/local")
+@passports_router.get("/api/vulnerability-passports/local")
 def local_vulnerability_passports(
     q: str | None = None,
     severity: str | None = None,
@@ -2150,7 +2001,7 @@ def local_vulnerability_passports(
     sort_dir: Literal["asc", "desc"] | None = None,
 ) -> dict[str, Any]:
     try:
-        return db.list_vulnerability_passports(
+        return CONTAINER.services.passports.list(
             q=q, severity=severity, pdql_token=pdql_token, limit=limit, offset=offset,
             sort_by=sort_by, sort_dir=sort_dir,
         )
@@ -2158,12 +2009,12 @@ def local_vulnerability_passports(
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 
 
-@app.get("/api/vulnerability-passports/detail-jobs/active")
+@passports_router.get("/api/vulnerability-passports/detail-jobs/active")
 def active_vulnerability_passport_detail_job() -> dict[str, Any]:
     return {"job": db.get_active_vulnerability_passport_detail_job()}
 
 
-@app.get("/api/vulnerability-passports/detail-jobs/{job_id}")
+@passports_router.get("/api/vulnerability-passports/detail-jobs/{job_id}")
 def vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
     job = db.get_vulnerability_passport_detail_job(job_id)
     if not job:
@@ -2171,7 +2022,7 @@ def vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
     return job
 
 
-@app.post("/api/vulnerability-passports/detail-jobs/{job_id}/cancel")
+@passports_router.post("/api/vulnerability-passports/detail-jobs/{job_id}/cancel")
 def cancel_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
     current = db.get_vulnerability_passport_detail_job(job_id)
     if not current:
@@ -2179,23 +2030,16 @@ def cancel_vulnerability_passport_detail_job(job_id: str) -> dict[str, Any]:
     if current["status"] not in {"queued", "running", "cancelling"}:
         return current
     job = db.request_vulnerability_passport_detail_job_cancel(job_id) or current
-    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
-        cancel_event = PASSPORT_DETAIL_CANCEL_EVENTS.get(job_id)
-    if cancel_event:
-        cancel_event.set()
+    CONTAINER.operation_runner.cancellations.cancel("passport-detail", job_id)
     return job
 
 
 def register_vulnerability_passport_detail_job(job_id: str) -> threading.Event:
-    cancel_event = threading.Event()
-    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
-        PASSPORT_DETAIL_CANCEL_EVENTS[job_id] = cancel_event
-    return cancel_event
+    return CONTAINER.operation_runner.cancellations.register("passport-detail", job_id)
 
 
 def unregister_vulnerability_passport_detail_job(job_id: str) -> None:
-    with PASSPORT_DETAIL_CANCEL_EVENTS_LOCK:
-        PASSPORT_DETAIL_CANCEL_EVENTS.pop(job_id, None)
+    CONTAINER.operation_runner.cancellations.remove("passport-detail", job_id)
 
 
 def run_vulnerability_passport_detail_job(
@@ -2301,7 +2145,7 @@ def run_vulnerability_passport_detail_job(
         unregister_vulnerability_passport_detail_job(job_id)
 
 
-@app.get("/api/vulnerability-passports/{passport_id}/asset-links")
+@passports_router.get("/api/vulnerability-passports/{passport_id}/asset-links")
 def vulnerability_passport_asset_links(passport_id: str) -> dict[str, Any]:
     return {
         "passport_id": passport_id,
@@ -2309,9 +2153,9 @@ def vulnerability_passport_asset_links(passport_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/api/vulnerability-passports/{passport_id}")
+@passports_router.get("/api/vulnerability-passports/{passport_id}")
 def vulnerability_passport(passport_id: str) -> dict[str, Any]:
-    local = db.get_vulnerability_passport(passport_id)
+    local = CONTAINER.services.passports.get(passport_id)
     if local and local.get("raw_detail"):
         return {"id": passport_id, "raw": local["raw_detail"], "source": "db", "passport": local}
 
@@ -2324,7 +2168,7 @@ def vulnerability_passport(passport_id: str) -> dict[str, Any]:
     return {"id": passport_id, "raw": raw_response, "source": "mpvm", "passport": saved}
 
 
-@app.put("/api/vulnerability-passports/{passport_id}")
+@passports_router.put("/api/vulnerability-passports/{passport_id}")
 def update_vulnerability_passport(passport_id: str) -> dict[str, Any]:
     if not db.get_vulnerability_passport(passport_id):
         raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
@@ -2345,14 +2189,14 @@ def update_vulnerability_passport(passport_id: str) -> dict[str, Any]:
     }
 
 
-@app.delete("/api/vulnerability-passports/{passport_id}")
+@passports_router.delete("/api/vulnerability-passports/{passport_id}")
 def delete_vulnerability_passport(passport_id: str) -> dict[str, Any]:
     if not db.delete_vulnerability_passport(passport_id):
         raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
     return {"id": passport_id, "deleted": True}
 
 
-@app.get("/api/exports/{filename}")
+@imports_router.get("/api/exports/{filename}")
 def download_export(filename: str) -> FileResponse:
     path = EXPORTS_DIR / Path(filename).name
     if not path.exists():
@@ -2591,7 +2435,8 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
         if current and not current.done():
             scan_log(logging.DEBUG, "schedule_skipped_already_running", postprocess_run_id=run_id)
             return
-        future = SCAN_POSTPROCESS_EXECUTOR.submit(
+        future = CONTAINER.operation_runner.submit(
+            "scan-postprocess",
             run_scan_postprocess,
             run_id=run_id,
             auth=auth,
@@ -5094,6 +4939,10 @@ def decode_csv_bytes(content: bytes) -> str:
 
 def http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=str(exc))
+
+
+for api_router in API_ROUTERS:
+    app.include_router(api_router)
 
 
 @app.get("/{full_path:path}", include_in_schema=False)

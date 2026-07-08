@@ -6,3 +6,8 @@ node_modules/
 .vite/
 output/logs/
 output/diagnostics/
+output/coverage-*/
+output/coverage-*.json
+output/playwright/
+coverage/
+.coverage

@@ -1,5 +1,20 @@
 # MP VM REST API Client
 
+## Архитектура и проверки качества
+
+Проект использует application factory, FastAPI lifespan, доменные `APIRouter`, контейнер процессных ресурсов, сервисный и репозиторный слои, Alembic и TanStack Query. Текущие публичные API и маршруты UI сохранены. Подробная карта модулей и правила расширения находятся в [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Основной локальный quality-gate:
+
+```powershell
+python -m pytest
+ruff check app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py
+mypy app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py
+npm run lint
+npm test
+npm run build
+```
+
 React/Vite web UI и FastAPI backend-клиент для MP VM / MP10.
 
 Что умеет приложение:
