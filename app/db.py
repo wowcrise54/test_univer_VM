@@ -520,7 +520,11 @@ def _initialize_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_asset_path ON asset_card_table_rows(asset_id, path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_table_rows_kind ON asset_card_table_rows(kind)",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_asset ON asset_card_search_fields(asset_id)",
-        "CREATE INDEX IF NOT EXISTS idx_asset_search_path_text ON asset_card_search_fields(field_path, value_text_normalized, asset_id) WHERE value_type = 'text'",
+        # Text values may be several kilobytes long and cannot safely be stored
+        # as B-tree keys.  Keep the full value in the table for collision-safe
+        # comparisons and index its fixed-size digest for equality lookups.
+        "DROP INDEX IF EXISTS idx_asset_search_path_text",
+        "CREATE INDEX IF NOT EXISTS idx_asset_search_path_text_hash ON asset_card_search_fields(field_path, md5(value_text_normalized), asset_id) WHERE value_type = 'text'",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_path_number ON asset_card_search_fields(field_path, value_number, asset_id) WHERE value_type = 'number'",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_path_boolean ON asset_card_search_fields(field_path, value_boolean, asset_id) WHERE value_type = 'boolean'",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_entity ON asset_card_search_fields(asset_id, entity_path, field_path)",
@@ -3407,8 +3411,15 @@ def compile_asset_query_rule(rule: dict[str, Any]) -> tuple[str, list[Any], str]
             values = value if isinstance(value, list) else [item.strip() for item in str(value or "").split(",") if item.strip()]
             if not values:
                 raise ValueError("in requires at least one value.")
+            normalized_values = [str(item).lower() for item in values]
             placeholders = ", ".join(["%s"] * len(values))
-            return f"{base} AND value_text_normalized IN ({placeholders})", [*params, *[str(item).lower() for item in values]], "entity"
+            digest_placeholders = ", ".join(["md5(%s)"] * len(values))
+            return (
+                f"{base} AND md5(value_text_normalized) IN ({digest_placeholders}) "
+                f"AND value_text_normalized IN ({placeholders})",
+                [*params, *normalized_values, *normalized_values],
+                "entity",
+            )
         normalized = str(value or "").lower()
         expression = {
             "equals": "value_text_normalized = %s",
@@ -3420,6 +3431,12 @@ def compile_asset_query_rule(rule: dict[str, Any]) -> tuple[str, list[Any], str]
             normalized = f"%{normalized}%"
         elif operator == "starts_with":
             normalized = f"{normalized}%"
+        if operator == "equals":
+            return (
+                f"{base} AND md5(value_text_normalized) = md5(%s) AND value_text_normalized = %s",
+                [*params, normalized, normalized],
+                "entity",
+            )
         return f"{base} AND {expression}", [*params, normalized], "entity"
     if operator in ASSET_QUERY_NUMBER_OPERATORS:
         try:

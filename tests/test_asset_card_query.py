@@ -47,7 +47,23 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertEqual(scope, "same_entity")
         self.assertIn("INTERSECT", sql)
         self.assertNotIn("NULL::text AS entity_path", sql)
-        self.assertEqual(params, ["asset.firewall.rules.port", "443", "asset.firewall.rules.action", "deny"])
+        self.assertEqual(params, [
+            "asset.firewall.rules.port", "443", "443",
+            "asset.firewall.rules.action", "deny", "deny",
+        ])
+
+    def test_long_text_equality_uses_digest_and_full_value_check(self):
+        value = "x" * 5000
+        sql, params, scope = db.compile_asset_query_rule({
+            "field_path": "asset.notes",
+            "operator": "equals",
+            "value": value,
+        })
+
+        self.assertEqual(scope, "entity")
+        self.assertIn("md5(value_text_normalized) = md5(%s)", sql)
+        self.assertIn("value_text_normalized = %s", sql)
+        self.assertEqual(params, ["asset.notes", value, value])
 
     def test_query_limits_and_sort_allowlist_are_validated(self):
         too_many = {"combinator": "or", "match_scope": "host", "rules": [
