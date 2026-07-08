@@ -21,6 +21,10 @@ EXPECTED_API_PATHS = {
     "/api/asset-card-query",
     "/api/vulnerability-passports/local",
     "/api/diagnostics/frontend",
+    "/api/automations/runbooks",
+    "/api/automations/schedules",
+    "/api/automations/runs",
+    "/api/notifications",
 }
 
 

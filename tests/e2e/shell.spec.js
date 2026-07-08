@@ -48,4 +48,13 @@ test("application shell keeps stable routes and navigation", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Центр операций" }),
   ).toBeVisible();
+
+  await page.getByRole("link", { name: "Автоматизация" }).click();
+  await expect(page).toHaveURL(/\/automations$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Автоматизация" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Новый runbook" }),
+  ).toBeVisible();
 });

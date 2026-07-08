@@ -155,3 +155,36 @@ class AssetCardFieldQueryRequest(BaseModel):
     sort_dir: Literal["asc", "desc"] = "asc"
     limit: int = Field(default=50, ge=1, le=50000)
     offset: int = Field(default=0, ge=0)
+
+
+class AutomationStepRequest(BaseModel):
+    step_id: str = Field(min_length=1, max_length=128)
+    type: Literal[
+        "scanner_task_start", "pdql_export", "passport_sync", "asset_card_build", "asset_query", "notification"
+    ]
+    config: dict[str, Any] = Field(default_factory=dict)
+    condition: dict[str, Any] | None = None
+    on_error: Literal["stop", "continue"] = "stop"
+    max_retries: int = Field(default=0, ge=0, le=3)
+
+
+class AutomationRunbookRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    steps: list[AutomationStepRequest] = Field(min_length=1, max_length=50)
+
+
+class AutomationPublishRequest(BaseModel):
+    confirm_name: str | None = None
+
+
+class AutomationRunRequest(BaseModel):
+    dry_run: bool = False
+
+
+class AutomationScheduleRequest(BaseModel):
+    runbook_id: str
+    name: str = Field(min_length=1, max_length=160)
+    cron_expression: str = Field(min_length=1, max_length=128)
+    timezone: str = Field(default="UTC", min_length=1, max_length=128)
+    enabled: bool = True

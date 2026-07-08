@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     scan_asset_resolution_poll_seconds: int = 15
     scan_asset_removal_timeout_seconds: int = 1800
     scan_asset_removal_poll_seconds: int = 10
+    automation_scheduler_poll_seconds: int = 30
+    automation_webhook_url: str = ""
+    automation_webhook_secret: str = Field(default="", repr=False)
 
     @field_validator(
         "timeout",
@@ -56,6 +59,7 @@ class Settings(BaseSettings):
         "scan_asset_resolution_poll_seconds",
         "scan_asset_removal_timeout_seconds",
         "scan_asset_removal_poll_seconds",
+        "automation_scheduler_poll_seconds",
     )
     @classmethod
     def positive_integer(cls, value: int) -> int:
@@ -68,6 +72,14 @@ class Settings(BaseSettings):
     def non_negative_integer(cls, value: int) -> int:
         if value < 0:
             raise ValueError("must not be negative")
+        return value
+
+    @field_validator("automation_webhook_url")
+    @classmethod
+    def secure_webhook_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("automation webhook URL must use HTTPS")
         return value
 
 

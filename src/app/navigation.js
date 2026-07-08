@@ -6,7 +6,8 @@ export const routes = [
     path: "/connection",
     label: "Подключение",
     title: "Подключение к MP VM",
-    description: "Настройте адрес MP VM и проверьте авторизацию для остальных разделов.",
+    description:
+      "Настройте адрес MP VM и проверьте авторизацию для остальных разделов.",
   },
   {
     id: "tasks",
@@ -20,42 +21,56 @@ export const routes = [
     path: "/operations",
     label: "Операции",
     title: "Центр операций",
-    description: "Единое состояние фоновых заданий, повторов, отмены и диагностики.",
+    description:
+      "Единое состояние фоновых заданий, повторов, отмены и диагностики.",
   },
   {
     id: "export",
     path: "/export",
     label: "PDQL экспорт",
     title: "PDQL экспорт",
-    description: "Выгрузка и сохранение результатов PDQL-запросов в локальную БД.",
+    description:
+      "Выгрузка и сохранение результатов PDQL-запросов в локальную БД.",
   },
   {
     id: "asset-cards",
     path: "/asset-cards",
     label: "Карточки активов",
     title: "Карточки активов",
-    description: "Поиск, построение и сохранение детальных карточек активов в локальную БД.",
+    description:
+      "Поиск, построение и сохранение детальных карточек активов в локальную БД.",
+  },
+  {
+    id: "automations",
+    path: "/automations",
+    label: "Автоматизация",
+    title: "Автоматизация",
+    description:
+      "Runbook-сценарии, расписания, история запусков и уведомления.",
   },
   {
     id: "asset-query",
     path: "/asset-query",
     label: "Выборки активов",
     title: "Выборки по карточкам активов",
-    description: "Локальные выборки по firewall и другим индексированным полям карточек активов.",
+    description:
+      "Локальные выборки по firewall и другим индексированным полям карточек активов.",
   },
   {
     id: "passports",
     path: "/passports",
     label: "Паспорта",
     title: "Паспорта уязвимостей",
-    description: "Поиск паспортов уязвимостей и просмотр подробной информации из MP VM.",
+    description:
+      "Поиск паспортов уязвимостей и просмотр подробной информации из MP VM.",
   },
   {
     id: "assets",
     path: "/assets",
     label: "Активы",
     title: "Активы и уязвимости",
-    description: "Локальный снимок активов, установленного ПО и найденных уязвимостей.",
+    description:
+      "Локальный снимок активов, установленного ПО и найденных уязвимостей.",
   },
 ];
 
@@ -69,7 +84,9 @@ export function routeByPath(pathname) {
 }
 
 export function normalizeRoutePath(pathname) {
-  const value = String(pathname || "").split("?")[0].split("#")[0];
+  const value = String(pathname || "")
+    .split("?")[0]
+    .split("#")[0];
   if (!value || value === "/") return defaultRoutePath;
   const normalized = value.startsWith("/") ? value : "/" + value;
   return normalized.replace(/\/+$/, "") || defaultRoutePath;

@@ -10,6 +10,8 @@ asset_cards_router = APIRouter(tags=["asset-cards"])
 asset_query_router = APIRouter(tags=["asset-query"])
 passports_router = APIRouter(tags=["vulnerability-passports"])
 diagnostics_router = APIRouter(tags=["diagnostics"])
+automations_router = APIRouter(prefix="/api/automations", tags=["automations"])
+notifications_router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
 API_ROUTERS = (
@@ -23,4 +25,6 @@ API_ROUTERS = (
     asset_query_router,
     passports_router,
     diagnostics_router,
+    automations_router,
+    notifications_router,
 )

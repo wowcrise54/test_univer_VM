@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import copy
 import csv
 import io
@@ -57,6 +58,8 @@ from .api.routers import (
     session_router,
     system_router,
     tasks_router,
+    automations_router,
+    notifications_router,
 )
 from .api.schemas import (
     AssetCardAssetQueryRequest,
@@ -74,7 +77,12 @@ from .api.schemas import (
     ScannerTaskRequest,
     StartScannerTaskRequest,
     VulnerabilityPassportQueryRequest,
+    AutomationPublishRequest,
+    AutomationRunRequest,
+    AutomationRunbookRequest,
+    AutomationScheduleRequest,
 )
+from .automations import AutomationRepository, AutomationService
 from .core import AppContainer, get_settings
 from .factory import create_app
 from .mpvm_client import (
@@ -155,6 +163,8 @@ ASSET_CARD_STAGE_PROGRESS = {
 
 CONTAINER = AppContainer(SETTINGS)
 SESSION = CONTAINER.session
+AUTOMATION_REPOSITORY = AutomationRepository()
+AUTOMATION_SERVICE: AutomationService | None = None
 DATABASE_STARTUP_ERROR: str | None = None
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
@@ -379,7 +389,30 @@ async def app_lifespan(_app: FastAPI):
         shutdown()
 
 
+def automation_service_account_ready() -> bool:
+    configured = bool(
+        SETTINGS.api_url
+        and (SETTINGS.access_token or (SETTINGS.username and SETTINGS.password and SETTINGS.client_secret))
+    )
+    return configured and SESSION.client is not None and SESSION.access_token is not None
+
+
+def get_automation_service() -> AutomationService:
+    global AUTOMATION_SERVICE
+    if AUTOMATION_SERVICE is None:
+        AUTOMATION_SERVICE = AutomationService(
+            AUTOMATION_REPOSITORY,
+            CONTAINER.operation_runner,
+            SETTINGS,
+            execute_automation_step,
+            automation_service_account_ready,
+        )
+    return AUTOMATION_SERVICE
+
+
 def shutdown() -> None:
+    if AUTOMATION_SERVICE is not None:
+        AUTOMATION_SERVICE.stop_scheduler()
     CONTAINER.shutdown()
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())
 
@@ -612,6 +645,12 @@ def startup() -> None:
     configure_session_from_env()
     if DATABASE_STARTUP_ERROR is None:
         start_asset_search_backfill()
+        try:
+            automation = get_automation_service()
+            automation.resume_runs()
+            automation.start_scheduler()
+        except psycopg.Error:
+            log_exception("app", "automation.startup.failed", database=db.database_label())
     resume_scan_postprocess_runs()
     scan_log(
         logging.INFO,
@@ -754,6 +793,8 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
         cancel_asset_card_build_job(operation["source_id"])
     elif operation["kind"] == "passport_detail_sync":
         cancel_vulnerability_passport_detail_job(operation["source_id"])
+    elif operation["kind"] == "automation_run":
+        AUTOMATION_REPOSITORY.request_cancel(operation["source_id"])
     return db.get_operation(operation_id) or operation
 
 
@@ -790,6 +831,12 @@ def retry_operation(
         new_id = detail_job.get("job_id")
         if not new_id:
             raise HTTPException(status_code=409, detail={"code": "RETRY_NOT_REQUIRED", "message": "No passport details require refresh.", "component": "operations"})
+    elif operation["kind"] == "automation_run":
+        source = AUTOMATION_REPOSITORY.get_run(operation["source_id"], include_steps=False)
+        if not source:
+            raise HTTPException(status_code=409, detail={"code": "RETRY_CONTEXT_MISSING", "message": "Original automation run is unavailable.", "component": "operations"})
+        retried_run = get_automation_service().start_run(source["runbook_id"], trigger_type="retry", idempotency_key=clean_key)
+        new_id = retried_run["run_id"]
     else:
         raise HTTPException(status_code=409, detail={"code": "OPERATION_NOT_RETRYABLE", "message": "Operation cannot be retried safely.", "component": "operations"})
     db.sync_operations_from_sources()
@@ -4939,6 +4986,266 @@ def decode_csv_bytes(content: bytes) -> str:
 
 def http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=str(exc))
+
+
+def run_background_tasks(background_tasks: BackgroundTasks) -> None:
+    if background_tasks.tasks:
+        asyncio.run(background_tasks())
+
+
+def wait_for_automation_operation(operation_id: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    terminal = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
+    while time.monotonic() < deadline:
+        operation = db.get_operation(operation_id)
+        if operation and operation.get("status") in terminal:
+            if operation["status"] not in {"completed", "completed_with_errors"}:
+                raise RuntimeError(operation.get("message") or f"Operation {operation_id} failed.")
+            return operation
+        time.sleep(2)
+    raise TimeoutError(f"Operation {operation_id} did not finish within {timeout_seconds} seconds.")
+
+
+def execute_automation_step(
+    step_type: str,
+    config: dict[str, Any],
+    _context: dict[str, Any],
+    run_id: str,
+    step_index: int,
+) -> dict[str, Any]:
+    idempotency_key = f"automation:{run_id}:{step_index}"
+    if step_type == "scanner_task_start":
+        task_id = str(config.get("task_id") or "").strip()
+        if not task_id:
+            raise ValueError("scanner_task_start requires task_id.")
+        background = BackgroundTasks()
+        options = StartScannerTaskRequest(**(config.get("options") or {}))
+        result = start_scanner_task(task_id, background, options, idempotency_key=idempotency_key)
+        run_background_tasks(background)
+        operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+        if operation_id and bool(config.get("wait", True)):
+            operation = wait_for_automation_operation(str(operation_id), float(config.get("timeout_seconds") or 7200))
+            return {**result, "operation_id": operation_id, "operation": operation}
+        return {**result, "operation_id": operation_id}
+    if step_type == "pdql_export":
+        return export_pdql(PdqlExportRequest(**config))
+    if step_type == "passport_sync":
+        background = BackgroundTasks()
+        result = query_vulnerability_passports(VulnerabilityPassportQueryRequest(**config), background)
+        run_background_tasks(background)
+        operation_id = (result.get("detail_job") or {}).get("job_id")
+        return {**result, "operation_id": operation_id}
+    if step_type == "asset_card_build":
+        background = BackgroundTasks()
+        result = create_asset_card_build_job(
+            AssetCardBuildJobRequest(**config), background, idempotency_key=idempotency_key
+        )
+        run_background_tasks(background)
+        operation_id = result.get("operation_id") or (result.get("job") or {}).get("job_id")
+        return {**result, "operation_id": operation_id}
+    if step_type == "asset_query":
+        return asset_card_query(AssetCardFieldQueryRequest(**config))
+    raise ValueError(f"Unsupported automation step: {step_type}")
+
+
+AUTOMATION_TEMPLATES = [
+    {
+        "template_id": "daily-scan",
+        "name": "Ежедневное сканирование",
+        "description": "Запуск существующей задачи и ожидание постобработки.",
+        "steps": [{"step_id": "scan", "type": "scanner_task_start", "config": {"task_id": ""}, "on_error": "stop", "max_retries": 1}],
+    },
+    {
+        "template_id": "passport-sync",
+        "name": "Синхронизация паспортов",
+        "description": "Обновление списка и деталей паспортов уязвимостей.",
+        "steps": [{"step_id": "passports", "type": "passport_sync", "config": {}, "on_error": "stop", "max_retries": 1}],
+    },
+    {
+        "template_id": "asset-card-refresh",
+        "name": "Обновление карточки актива",
+        "description": "Построение и сохранение карточки выбранного актива.",
+        "steps": [{"step_id": "asset-card", "type": "asset_card_build", "config": {"asset_id": ""}, "on_error": "stop", "max_retries": 1}],
+    },
+    {
+        "template_id": "weekly-export",
+        "name": "Еженедельный PDQL экспорт",
+        "description": "Безопасный экспорт и импорт без удаления активов.",
+        "steps": [{"step_id": "export", "type": "pdql_export", "config": {"delete_assets_after_export": False}, "on_error": "stop", "max_retries": 1}],
+    },
+]
+
+
+@automations_router.get("/templates")
+def automation_templates() -> dict[str, Any]:
+    return {"rows": AUTOMATION_TEMPLATES}
+
+
+@automations_router.get("/runbooks")
+def automation_runbooks() -> dict[str, Any]:
+    return {"rows": AUTOMATION_REPOSITORY.list_runbooks()}
+
+
+@automations_router.post("/runbooks", status_code=201)
+def create_automation_runbook(payload: AutomationRunbookRequest) -> dict[str, Any]:
+    try:
+        return get_automation_service().create_runbook(
+            payload.name, payload.description, {"steps": [step.model_dump() for step in payload.steps]}
+        )
+    except (ValueError, psycopg.errors.UniqueViolation) as exc:
+        raise HTTPException(status_code=409 if isinstance(exc, psycopg.errors.UniqueViolation) else 422, detail=str(exc)) from exc
+
+
+@automations_router.get("/runbooks/{runbook_id}")
+def automation_runbook(runbook_id: str) -> dict[str, Any]:
+    result = AUTOMATION_REPOSITORY.get_runbook(runbook_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Runbook not found.")
+    return result
+
+
+@automations_router.put("/runbooks/{runbook_id}")
+def update_automation_runbook(runbook_id: str, payload: AutomationRunbookRequest) -> dict[str, Any]:
+    try:
+        result = get_automation_service().update_runbook(
+            runbook_id, payload.name, payload.description, {"steps": [step.model_dump() for step in payload.steps]}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="Runbook not found.")
+    return result
+
+
+@automations_router.delete("/runbooks/{runbook_id}")
+def delete_automation_runbook(runbook_id: str) -> dict[str, Any]:
+    if not AUTOMATION_REPOSITORY.delete_runbook(runbook_id):
+        raise HTTPException(status_code=404, detail="Runbook not found.")
+    return {"runbook_id": runbook_id, "deleted": True}
+
+
+@automations_router.post("/runbooks/{runbook_id}/clone", status_code=201)
+def clone_automation_runbook(runbook_id: str) -> dict[str, Any]:
+    source = AUTOMATION_REPOSITORY.get_runbook(runbook_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Runbook not found.")
+    return get_automation_service().create_runbook(
+        f"{source['name']} — копия", source.get("description") or "", source["draft"]
+    )
+
+
+@automations_router.post("/runbooks/{runbook_id}/publish")
+def publish_automation_runbook(runbook_id: str, payload: AutomationPublishRequest) -> dict[str, Any]:
+    try:
+        result = get_automation_service().publish(runbook_id, payload.confirm_name)
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="Runbook not found.")
+    return result
+
+
+@automations_router.post("/runbooks/{runbook_id}/run", status_code=202)
+def run_automation_runbook(
+    runbook_id: str,
+    payload: AutomationRunRequest,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    try:
+        return get_automation_service().start_run(
+            runbook_id, dry_run=payload.dry_run,
+            idempotency_key=idempotency_key if isinstance(idempotency_key, str) else None,
+        )
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@automations_router.get("/schedules")
+def automation_schedules() -> dict[str, Any]:
+    return {"rows": AUTOMATION_REPOSITORY.list_schedules()}
+
+
+@automations_router.post("/schedules", status_code=201)
+def create_automation_schedule(payload: AutomationScheduleRequest) -> dict[str, Any]:
+    if not AUTOMATION_REPOSITORY.get_version(payload.runbook_id):
+        raise HTTPException(status_code=409, detail="Runbook must be published before scheduling.")
+    try:
+        next_run_at = get_automation_service().next_run(payload.cron_expression, payload.timezone)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return AUTOMATION_REPOSITORY.create_schedule(
+        runbook_id=payload.runbook_id, name=payload.name, cron_expression=payload.cron_expression,
+        timezone=payload.timezone, enabled=payload.enabled, next_run_at=next_run_at,
+    )
+
+
+@automations_router.put("/schedules/{schedule_id}")
+def update_automation_schedule(schedule_id: str, payload: AutomationScheduleRequest) -> dict[str, Any]:
+    try:
+        next_run_at = get_automation_service().next_run(payload.cron_expression, payload.timezone)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = AUTOMATION_REPOSITORY.update_schedule(
+        schedule_id, name=payload.name, cron_expression=payload.cron_expression,
+        timezone=payload.timezone, enabled=payload.enabled, next_run_at=next_run_at,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return result
+
+
+@automations_router.delete("/schedules/{schedule_id}")
+def delete_automation_schedule(schedule_id: str) -> dict[str, Any]:
+    if not AUTOMATION_REPOSITORY.delete_schedule(schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return {"schedule_id": schedule_id, "deleted": True}
+
+
+@automations_router.get("/runs")
+def automation_runs(limit: int = 100) -> dict[str, Any]:
+    return {"rows": AUTOMATION_REPOSITORY.list_runs(limit=max(1, min(limit, 500)))}
+
+
+@automations_router.get("/runs/{run_id}")
+def automation_run(run_id: str) -> dict[str, Any]:
+    result = AUTOMATION_REPOSITORY.get_run(run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Automation run not found.")
+    return result
+
+
+@automations_router.post("/runs/{run_id}/cancel")
+def cancel_automation_run(run_id: str) -> dict[str, Any]:
+    if not AUTOMATION_REPOSITORY.request_cancel(run_id):
+        raise HTTPException(status_code=409, detail="Automation run is not active.")
+    current = AUTOMATION_REPOSITORY.get_run(run_id)
+    for step in (current or {}).get("steps") or []:
+        child_id = step.get("child_operation_id")
+        child = db.get_operation(child_id) if child_id else None
+        if child and child.get("can_cancel"):
+            cancel_operation(child_id)
+            break
+    return current or {"run_id": run_id, "status": "cancelling"}
+
+
+@automations_router.post("/runs/{run_id}/retry", status_code=202)
+def retry_automation_run(run_id: str) -> dict[str, Any]:
+    source = AUTOMATION_REPOSITORY.get_run(run_id, include_steps=False)
+    if not source:
+        raise HTTPException(status_code=404, detail="Automation run not found.")
+    return get_automation_service().start_run(source["runbook_id"], trigger_type="retry")
+
+
+@notifications_router.get("")
+def notifications(unread_only: bool = False, limit: int = 100) -> dict[str, Any]:
+    return AUTOMATION_REPOSITORY.list_notifications(unread_only=unread_only, limit=max(1, min(limit, 500)))
+
+
+@notifications_router.post("/{notification_id}/read")
+def mark_notification_read(notification_id: str) -> dict[str, Any]:
+    if not AUTOMATION_REPOSITORY.mark_notification_read(notification_id):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"notification_id": notification_id, "is_read": True}
 
 
 for api_router in API_ROUTERS:

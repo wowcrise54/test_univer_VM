@@ -28,7 +28,13 @@ class AppContainer:
         self.session = RuntimeSession()
         self.repositories = RepositoryBundle()
         self.services = ServiceBundle(self.repositories)
-        self.operation_runner = OperationRunner({"scan-postprocess": settings.scan_postprocess_workers})
+        self.operation_runner = OperationRunner(
+            {
+                "scan-postprocess": settings.scan_postprocess_workers,
+                "automation-run": 2,
+                "automation-scheduler": 1,
+            }
+        )
         self.background_request_semaphore = threading.BoundedSemaphore(settings.background_request_limit)
         self.asset_metadata_cache: dict[tuple[str, str], tuple[float, dict]] = {}
         self.asset_metadata_inflight: dict[tuple[str, str], threading.Event] = {}

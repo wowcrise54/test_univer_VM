@@ -8,3 +8,4 @@ psycopg[binary]==3.3.4
 python-dotenv==1.2.2
 alembic==1.16.5
 SQLAlchemy==2.0.41
+croniter==6.0.0

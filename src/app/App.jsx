@@ -5,6 +5,7 @@ import { ConnectionPage } from "../pages/ConnectionPage.jsx";
 import { ExportPage } from "../pages/ExportPage.jsx";
 import { PassportsPage } from "../pages/PassportsPage.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
+import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
 import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
@@ -100,6 +101,9 @@ function ActivePage({ routeId, ...props }) {
         showAlert={props.showAlert}
       />
     );
+  }
+  if (routeId === "automations") {
+    return <AutomationsPage showAlert={props.showAlert} />;
   }
   if (routeId === "export") {
     return (

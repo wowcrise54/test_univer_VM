@@ -554,7 +554,7 @@ def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 ACTIVE_OPERATION_STATUSES = {"queued", "running", "cancelling", "recovering"}
-RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync"}
+RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync", "automation_run"}
 
 
 def validated_sort_sql(sort_by: str | None, sort_dir: str | None, allowed: dict[str, str], *, default: str) -> tuple[str, str]:
@@ -3776,7 +3776,7 @@ def decode_operation(row: dict[str, Any]) -> dict[str, Any]:
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
         "updated_at": row.get("updated_at"),
-        "can_cancel": status in ACTIVE_OPERATION_STATUSES and kind in {"asset_card_build", "passport_detail_sync"},
+        "can_cancel": status in ACTIVE_OPERATION_STATUSES and kind in {"asset_card_build", "passport_detail_sync", "automation_run"},
         "can_retry": status not in ACTIVE_OPERATION_STATUSES and kind in RETRYABLE_OPERATION_KINDS,
     }
 

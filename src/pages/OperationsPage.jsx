@@ -174,6 +174,7 @@ function OperationDetail({ operation, onClose, onCancel, onRetry, busy }) {
 }
 
 function kindLabel(kind) {
+  if (kind === "automation_run") return "Runbook автоматизации";
   return ({ scan_postprocess: "Постобработка сканирования", asset_card_build: "Карточка актива", asset_search_reindex: "Индексация карточек", passport_detail_sync: "Детали паспортов", pdql_export: "PDQL экспорт", asset_removal: "Удаление активов", task_delete: "Удаление задачи MP VM" })[kind] || kind;
 }
 

@@ -36,8 +36,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: npm ci
       - run: alembic upgrade head
-      - run: ruff check app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py
-      - run: mypy app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py
+      - run: ruff check app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py tests/test_automations.py
+      - run: mypy app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py
       - run: pytest --cov=app --cov-report=term-missing --cov-report=json:output/coverage-python.json
       - run: npm run lint
       - run: npm run format:check
