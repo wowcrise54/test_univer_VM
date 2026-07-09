@@ -1,10 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemBanner } from "../app/layout.jsx";
-import { normalizeApiError } from "../api/client.js";
+import { api, normalizeApiError } from "../api/client.js";
 import { ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
-import { buildAssetPropertyRows, formatAssetCell } from "../panels.jsx";
+import { AssetCard, buildAssetPropertyRows, formatAssetCell } from "../panels.jsx";
 import { sortRows } from "../shared/table.jsx";
 
 vi.mock("../api/client.js", async (importOriginal) => {
@@ -13,6 +13,11 @@ vi.mock("../api/client.js", async (importOriginal) => {
 });
 
 describe("reliability UI", () => {
+  beforeEach(() => {
+    api.mockReset();
+    api.mockResolvedValue({ rows: [] });
+  });
+
   it("normalizes a network failure into an operator-facing error", () => {
     const error = normalizeApiError(new TypeError("fetch failed"), { path: "/api/system/status", requestId: "request-1" });
     expect(error.code).toBe("NETWORK_UNAVAILABLE");
@@ -65,5 +70,71 @@ describe("reliability UI", () => {
     expect(rows.map((row) => row.path)).toEqual(["asset.firewall.rules[0].port", "asset.firewall.rules[0].action"]);
     expect(rows.map((row) => row.value)).toEqual([443, "allow"]);
     expect(formatAssetCell({ arbitrary: "container" })).toBe("—");
+  });
+
+  it("opens asset cards through paged endpoints instead of the full legacy card", async () => {
+    api.mockImplementation((path) => {
+      if (path.includes("/configuration/tree")) {
+        return Promise.resolve({
+          rows: [
+            { path: "asset", label: "Host", kind: "root", has_children: true, depth: 0 },
+            { path: "asset.software", parent_path: "asset", label: "Software", kind: "collection", has_children: false, depth: 1 },
+          ],
+          total: 2,
+          limit: 200,
+          offset: 0,
+          has_more: false,
+        });
+      }
+      if (path.includes("/configuration/detail")) {
+        return Promise.resolve({
+          columns: [{ key: "value", title: "Value" }],
+          rows: [{ key: "row-1", value: "nginx" }],
+          total: 1,
+          limit: 200,
+          offset: 0,
+          has_more: false,
+        });
+      }
+      if (path.includes("/vulnerabilities/groups")) {
+        return Promise.resolve({
+          vulnerabilities: {
+            header: { os_soft_vulnerabilities_count: 1 },
+            sources: [{
+              source: "os",
+              title: "OS vulnerabilities",
+              groups: [{ source: "os", collection_id: "group-1", name: "OS group", vulnerabilities_count: 1 }],
+            }],
+          },
+        });
+      }
+      if (path.includes("/vulnerabilities/findings")) {
+        return Promise.resolve({
+          rows: [{ vulnerability_instance_id: "finding-1", name: "Finding", cve_name: "CVE-1" }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+          has_more: false,
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AssetCard card={{ asset_id: "asset-1", display_name: "Host", loaded_sections: ["summary"], stats: {} }} loading={false} />);
+    const tabButtons = document.querySelectorAll(".asset-tabs button");
+
+    fireEvent.click(tabButtons[2]);
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.stringContaining("/api/asset-cards/asset-1/configuration/tree?")));
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.stringContaining("/api/asset-cards/asset-1/configuration/detail?")));
+    fireEvent.click(await screen.findByText("Software"));
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.stringContaining("path=asset.software")));
+
+    fireEvent.click(tabButtons[1]);
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.stringContaining("/api/asset-cards/asset-1/vulnerabilities/groups")));
+    fireEvent.click((await screen.findByText(/OS group/)).closest("button"));
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.stringContaining("/api/asset-cards/asset-1/vulnerabilities/findings?")));
+
+    const paths = api.mock.calls.map(([path]) => path);
+    expect(paths.some((path) => /^\/api\/asset-cards\/asset-1(?:\?|$)/.test(path))).toBe(false);
   });
 });

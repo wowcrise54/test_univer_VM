@@ -9,6 +9,9 @@ import { SortableHeader, sortRows, useSortedRows, useTableSort } from "./shared/
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_SCAN_POSTPROCESS_STATUSES = new Set(["monitoring", "resolving", "processing", "waiting"]);
+const ASSET_CONFIG_TREE_LIMIT = 200;
+const ASSET_CONFIG_DETAIL_LIMIT = 200;
+const ASSET_VULNERABILITY_FINDING_LIMIT = 100;
 
 function ConnectionPanel({
   connectionDraft: form,
@@ -832,20 +835,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
 
-  const mergeSelectedCardSection = useCallback((sectionCard) => {
-    if (!sectionCard?.asset_id) return;
-    setSelectedCard((current) => mergeAssetCardSection(current, sectionCard));
-  }, []);
-
-  const loadAssetCardSection = useCallback((section) => {
-    const assetId = selectedCard?.asset_id;
-    if (!assetId || hasAssetCardSection(selectedCard, section)) return;
-    runBusy(`assetCardSection:${section}`, async () => {
-      const result = await api(`/api/asset-cards/${encodeURIComponent(assetId)}?section=${encodeURIComponent(section)}`);
-      mergeSelectedCardSection(result);
-    });
-  }, [mergeSelectedCardSection, runBusy, selectedCard]);
-
   const refreshLocalCards = useCallback(async (sorting = cardSort) => {
     const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
     if (cardSearch.trim()) params.set("q", cardSearch.trim());
@@ -903,7 +892,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         }
         if (nextJob.status === "completed") {
           const [card] = await Promise.all([
-            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}?section=summary`),
+            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}/summary`),
             refreshLocalCards(),
           ]);
           if (!alive) return;
@@ -946,7 +935,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         const nextCardSummary = (refreshed.rows || []).find((item) => item.asset_id === completedAssetId)
           || (refreshed.rows || []).find((item) => item.ip_address === nextRun.options?.refresh_target_ip);
         if (nextRun.status === "completed" && nextCardSummary?.asset_id) {
-          const card = await api(`/api/asset-cards/${encodeURIComponent(nextCardSummary.asset_id)}?section=summary`);
+          const card = await api(`/api/asset-cards/${encodeURIComponent(nextCardSummary.asset_id)}/summary`);
           if (!alive) return;
           setSelectedCard(card);
           setAssetWindowOpen(true);
@@ -1316,8 +1305,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           <AssetCard
             card={selectedCard}
             loading={busy.assetCardBuild || busy.assetCardOpen}
-            loadingSections={busy}
-            onLoadSection={loadAssetCardSection}
             onOpenPassport={openAssetPassport}
           />
       </PassportModal>
@@ -1750,30 +1737,12 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   );
 }
 
-function AssetCard({ card, loading, loadingSections = {}, onLoadSection, onOpenPassport }) {
+function AssetCard({ card, loading, onOpenPassport }) {
   const raw = assetCardRaw(card);
   const root = card?.root || raw.root || {};
   const data = root.data || {};
   const stats = assetCardStats(card);
   const [activeTab, setActiveTab] = useState("summary");
-  const configurationLoaded = hasAssetCardSection(card, "configuration");
-  const vulnerabilitiesLoaded = hasAssetCardSection(card, "vulnerabilities");
-  const treeEntries = useMemo(
-    () => (activeTab === "configuration" && configurationLoaded ? buildAssetConfigTree(card) : []),
-    [activeTab, card, configurationLoaded],
-  );
-  const [expandedPaths, setExpandedPaths] = useState(["asset"]);
-  const [selectedPath, setSelectedPath] = useState("asset");
-  const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
-  const visibleTreeEntries = useMemo(
-    () => treeEntries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, treeEntries)),
-    [treeEntries, expandedSet],
-  );
-  const selectedEntry = useMemo(
-    () => treeEntries.find((entry) => entry.path === selectedPath) || treeEntries[0] || null,
-    [treeEntries, selectedPath],
-  );
-  const title = firstFilled(card?.display_name, raw.display_name, root.displayName, data.hostname, card?.asset_id, raw.asset_id);
   const assetId = firstFilled(card?.asset_id, raw.asset_id, root.objectId);
   const assetType = firstFilled(card?.asset_type, raw.asset_type, root.type);
   const hostname = firstFilled(card?.hostname, data.hostname, root.displayName);
@@ -1784,25 +1753,7 @@ function AssetCard({ card, loading, loadingSections = {}, onLoadSection, onOpenP
   useEffect(() => {
     if (!card) return;
     setActiveTab("summary");
-    setExpandedPaths(["asset"]);
-    setSelectedPath("asset");
   }, [card?.asset_id]);
-
-  useEffect(() => {
-    if (!card || !treeEntries.length) return;
-    setExpandedPaths(defaultAssetTreeExpandedPaths(treeEntries));
-    setSelectedPath((current) => treeEntries.some((entry) => entry.path === current) ? current : treeEntries[0].path);
-  }, [card, treeEntries]);
-
-  useEffect(() => {
-    if (!card) return;
-    if (activeTab === "configuration" && !configurationLoaded && !loadingSections["assetCardSection:configuration"]) {
-      onLoadSection?.("configuration");
-    }
-    if (activeTab === "vulnerabilities" && !vulnerabilitiesLoaded && !loadingSections["assetCardSection:vulnerabilities"]) {
-      onLoadSection?.("vulnerabilities");
-    }
-  }, [activeTab, card, configurationLoaded, loadingSections, onLoadSection, vulnerabilitiesLoaded]);
 
   useEffect(() => {
     if (!card) return undefined;
@@ -1814,21 +1765,12 @@ function AssetCard({ card, loading, loadingSections = {}, onLoadSection, onOpenP
           section: `asset-card:${activeTab}`,
           asset_id: assetId,
           duration_ms: Math.round((performance.now() - started) * 100) / 100,
-          tree_entry_count: treeEntries.length,
         },
         { section: activeTab },
       );
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeTab, assetId, card, treeEntries.length]);
-
-  const toggleTreeEntry = useCallback((path) => {
-    setExpandedPaths((current) => (
-      current.includes(path)
-        ? current.filter((item) => item !== path)
-        : [...current, path]
-    ));
-  }, []);
+  }, [activeTab, assetId, card]);
 
   if (!card) {
     return <div className="passport-placeholder">Соберите карточку или откройте сохранённую запись из БД.</div>;
@@ -1866,27 +1808,10 @@ function AssetCard({ card, loading, loadingSections = {}, onLoadSection, onOpenP
         />
       ) : null}
       {activeTab === "vulnerabilities" ? (
-        vulnerabilitiesLoaded ? (
-          <AssetVulnerabilitiesTab card={card} onOpenPassport={onOpenPassport} />
-        ) : (
-          <AssetSectionLoading loading={loadingSections["assetCardSection:vulnerabilities"]} />
-        )
+        assetId ? <AssetVulnerabilitiesTabPaged assetId={assetId} onOpenPassport={onOpenPassport} /> : <AssetSectionLoading loading={false} />
       ) : null}
       {activeTab === "configuration" ? (
-        configurationLoaded ? (
-          <div className="asset-config-layout">
-            <AssetTree
-              entries={visibleTreeEntries}
-              selectedPath={selectedEntry?.path}
-              expandedSet={expandedSet}
-              onToggle={toggleTreeEntry}
-              onSelect={setSelectedPath}
-            />
-            <AssetConfigTable card={card} entry={selectedEntry} />
-          </div>
-        ) : (
-          <AssetSectionLoading loading={loadingSections["assetCardSection:configuration"]} />
-        )
+        assetId ? <AssetConfigurationTab assetId={assetId} card={card} /> : <AssetSectionLoading loading={false} />
       ) : null}
     </div>
   );
@@ -1975,10 +1900,13 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
     [sources],
   );
   const groupKeys = useMemo(
-    () => sources.flatMap((source, sourceIndex) => {
+    () => sources.reduce((keys, source, sourceIndex) => {
       const sourceKey = source.source || source.collection_type || source.title || `source-${sourceIndex}`;
-      return (source.groups || []).map((group, groupIndex) => `${sourceKey}:${group.collection_id || groupIndex}`);
-    }),
+      (source.groups || []).forEach((group, groupIndex) => {
+        keys.push(`${sourceKey}:${group.collection_id || groupIndex}`);
+      });
+      return keys;
+    }, []),
     [sources],
   );
   const findingCount = sources.reduce(
@@ -2049,7 +1977,7 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
             </tr>
           </thead>
           <tbody>
-            {sources.flatMap((source, sourceIndex) => {
+            {sources.map((source, sourceIndex) => {
               const groups = sortRows(source.groups || [], tableSort, { name: (group) => group.name, cve_name: (group) => group.name });
               const sourceKey = source.source || source.collection_type || source.title || `source-${sourceIndex}`;
               const sourceCollapsed = collapsedSourceSet.has(sourceKey);
@@ -2071,7 +1999,7 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
               if (sourceCollapsed) return [sourceRow];
               return [
                 sourceRow,
-                ...groups.flatMap((group, groupIndex) => {
+                ...groups.map((group, groupIndex) => {
                   const groupKey = `${sourceKey}:${group.collection_id || groupIndex}`;
                   const groupCollapsed = collapsedGroupSet.has(groupKey);
                   const groupRow = (
@@ -2149,6 +2077,259 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
   );
 }
 
+function assetSourceKey(source, index) {
+  return source?.source || source?.collection_type || source?.title || `source-${index}`;
+}
+
+function assetGroupKey(source, group, index) {
+  return `${source?.source || group?.source || "source"}:${group?.collection_id || index}`;
+}
+
+function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
+  const [snapshot, setSnapshot] = useState({ header: {}, sources: [] });
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [error, setError] = useState("");
+  const [collapsedSources, setCollapsedSources] = useState([]);
+  const [expandedGroups, setExpandedGroups] = useState([]);
+  const [findingsByGroup, setFindingsByGroup] = useState({});
+  const [loadingFindings, setLoadingFindings] = useState({});
+  const [tableSort, toggleTableSort] = useTableSort();
+  const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+  const header = snapshot.header || {};
+  const collapsedSourceSet = useMemo(() => new Set(collapsedSources), [collapsedSources]);
+  const expandedGroupSet = useMemo(() => new Set(expandedGroups), [expandedGroups]);
+  const sourceKeys = useMemo(() => sources.map(assetSourceKey), [sources]);
+  const loadedFindingCount = Object.values(findingsByGroup).reduce((total, page) => total + (page?.rows?.length || 0), 0);
+  const sourceCount = (source) => (source.groups || []).reduce(
+    (total, group) => total + (Number(group.vulnerabilities_count) || 0),
+    0,
+  );
+
+  useEffect(() => {
+    let alive = true;
+    setSnapshot({ header: {}, sources: [] });
+    setCollapsedSources([]);
+    setExpandedGroups([]);
+    setFindingsByGroup({});
+    setLoadingFindings({});
+    setError("");
+    if (!assetId) return undefined;
+    setLoadingGroups(true);
+    api(`/api/asset-cards/${encodeURIComponent(assetId)}/vulnerabilities/groups`)
+      .then((result) => {
+        if (!alive) return;
+        setSnapshot(result.vulnerabilities || { header: {}, sources: [] });
+      })
+      .catch((requestError) => {
+        if (alive) setError(requestError.message || String(requestError));
+      })
+      .finally(() => {
+        if (alive) setLoadingGroups(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [assetId]);
+
+  const loadFindings = useCallback(async (source, group, offset = 0) => {
+    const key = assetGroupKey(source, group, 0);
+    if (!group?.collection_id || !assetId || loadingFindings[key]) return;
+    setLoadingFindings((current) => ({ ...current, [key]: true }));
+    const params = new URLSearchParams({
+      source: source?.source || group.source || "",
+      collection_id: group.collection_id,
+      limit: String(ASSET_VULNERABILITY_FINDING_LIMIT),
+      offset: String(offset),
+    });
+    try {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(assetId)}/vulnerabilities/findings?${params.toString()}`);
+      setFindingsByGroup((current) => {
+        const previousRows = offset ? current[key]?.rows || [] : [];
+        return {
+          ...current,
+          [key]: {
+            ...result,
+            rows: [...previousRows, ...(result.rows || [])],
+          },
+        };
+      });
+    } catch (requestError) {
+      setError(requestError.message || String(requestError));
+    } finally {
+      setLoadingFindings((current) => ({ ...current, [key]: false }));
+    }
+  }, [assetId, loadingFindings]);
+
+  const toggleSource = useCallback((key) => {
+    setCollapsedSources((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
+  }, []);
+
+  const toggleGroup = useCallback((source, group, groupIndex) => {
+    const key = assetGroupKey(source, group, groupIndex);
+    setExpandedGroups((current) => {
+      if (current.includes(key)) return current.filter((item) => item !== key);
+      return [...current, key];
+    });
+    if (!expandedGroupSet.has(key) && !findingsByGroup[key]) {
+      void loadFindings(source, group, 0);
+    }
+  }, [expandedGroupSet, findingsByGroup, loadFindings]);
+
+  const expandAll = () => setCollapsedSources([]);
+  const collapseAll = () => {
+    setCollapsedSources(sourceKeys);
+    setExpandedGroups([]);
+  };
+
+  return (
+    <section className="asset-vulnerability-pane" aria-label="РЈСЏР·РІРёРјРѕСЃС‚Рё Р°РєС‚РёРІР°">
+      <div className="asset-vulnerability-toolbar">
+        {sources.map((source, index) => (
+          <span key={assetSourceKey(source, index)}>
+            {source.source === "os" ? "РЈСЏР·РІРёРјРѕСЃС‚Рё РћРЎ" : "РЈСЏР·РІРёРјРѕСЃС‚Рё РџРћ"}: <strong>{formatCount(sourceCount(source))}</strong>
+          </span>
+        ))}
+        <span>РЎРµС‚РµРІС‹Рµ СЃРµСЂРІРёСЃС‹: <strong>{formatCount(header.network_services_vulnerabilities_count || 0)}</strong></span>
+      </div>
+      <div className="asset-vulnerability-heading">
+        <div>
+          <strong>РЈСЏР·РІРёРјРѕСЃС‚Рё</strong>
+          <span>Р—Р°РіСЂСѓР¶РµРЅРѕ {formatCount(loadedFindingCount)} РёР· {formatCount(header.os_soft_vulnerabilities_count || loadedFindingCount)} СѓСЏР·РІРёРјРѕСЃС‚РµР№.</span>
+        </div>
+        {sourceKeys.length ? (
+          <div className="asset-vulnerability-controls">
+            <button type="button" onClick={expandAll}>Р Р°Р·РІРµСЂРЅСѓС‚СЊ РІСЃРµ</button>
+            <button type="button" onClick={collapseAll}>РЎРІРµСЂРЅСѓС‚СЊ РІСЃРµ</button>
+          </div>
+        ) : null}
+      </div>
+      {error ? <div className="passport-load-error" role="alert">{error}</div> : null}
+      <div className="asset-vulnerability-table-shell" tabIndex="0" aria-label="РџСЂРѕРєСЂСѓС‡РёРІР°РµРјС‹Р№ СЃРїРёСЃРѕРє СѓСЏР·РІРёРјРѕСЃС‚РµР№">
+        <table className="asset-vulnerability-table">
+          <thead>
+            <tr>
+              <SortableHeader column="name" sort={tableSort} onSort={toggleTableSort}>РЈСЏР·РІРёРјРѕСЃС‚Рё</SortableHeader>
+              <SortableHeader column="cvss_score" sort={tableSort} onSort={toggleTableSort} initialDirection="desc">РРЅС‚РµРіСЂР°Р»СЊРЅР°СЏ СѓСЏР·РІРёРјРѕСЃС‚СЊ</SortableHeader>
+              <SortableHeader column="cve_name" sort={tableSort} onSort={toggleTableSort}>CVE</SortableHeader>
+            </tr>
+          </thead>
+          <tbody>
+            {sources.map((source, sourceIndex) => {
+              const sourceKey = assetSourceKey(source, sourceIndex);
+              const sourceCollapsed = collapsedSourceSet.has(sourceKey);
+              const groups = sortRows(source.groups || [], tableSort, { name: (group) => group.name, cve_name: (group) => group.name });
+              return (
+                <React.Fragment key={sourceKey}>
+                  <tr className="asset-vulnerability-source">
+                    <td colSpan={3}>
+                      <button
+                        type="button"
+                        className="asset-vulnerability-toggle"
+                        aria-expanded={!sourceCollapsed}
+                        onClick={() => toggleSource(sourceKey)}
+                      >
+                        <span className="asset-vulnerability-caret" aria-hidden="true">{sourceCollapsed ? "вЂє" : "вЊ„"}</span>
+                        <span>{source.title || (source.source === "os" ? "РЈСЏР·РІРёРјРѕСЃС‚Рё РћРЎ" : "РЈСЏР·РІРёРјРѕСЃС‚Рё РїСЂРѕРіСЂР°РјРјРЅРѕРіРѕ РѕР±РµСЃРїРµС‡РµРЅРёСЏ")} ({formatCount(sourceCount(source))})</span>
+                      </button>
+                    </td>
+                  </tr>
+                  {!sourceCollapsed ? groups.map((group, groupIndex) => {
+                    const key = assetGroupKey(source, group, groupIndex);
+                    const expanded = expandedGroupSet.has(key);
+                    const page = findingsByGroup[key] || { rows: [], total: Number(group.vulnerabilities_count) || 0, has_more: false };
+                    const rows = sortRows(page.rows || [], tableSort, { name: (finding) => finding.name || finding.cve_name });
+                    return (
+                      <React.Fragment key={key}>
+                        <tr className="asset-vulnerability-group">
+                          <td>
+                            <button
+                              type="button"
+                              className="asset-vulnerability-toggle"
+                              aria-expanded={expanded}
+                              onClick={() => toggleGroup(source, group, groupIndex)}
+                            >
+                              <span className="asset-vulnerability-caret" aria-hidden="true">{expanded ? "вЊ„" : "вЂє"}</span>
+                              <span><strong>{group.name || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ"}</strong> ({formatCount(group.vulnerabilities_count || page.total || 0)})</span>
+                              {group.truncated ? <small>РџРѕРєР°Р·Р°РЅР° РЅРµРїРѕР»РЅР°СЏ РєРѕР»Р»РµРєС†РёСЏ</small> : null}
+                            </button>
+                          </td>
+                          <td>{formatVulnerabilityScore(group.cvss_score)}</td>
+                          <td />
+                        </tr>
+                        {expanded ? rows.map((finding, findingIndex) => {
+                          const passports = assetFindingPassports(finding);
+                          const passport = passports[0];
+                          return (
+                            <tr className="asset-vulnerability-finding" key={finding.vulnerability_instance_id || `${group.collection_id}-${findingIndex}`}>
+                              <td>
+                                <span className="asset-vulnerability-leaf">вЂў</span>
+                                <span>{finding.name || finding.cve_name || "РЈСЏР·РІРёРјРѕСЃС‚СЊ Р±РµР· РЅР°Р·РІР°РЅРёСЏ"}</span>
+                              </td>
+                              <td>{formatVulnerabilityScore(finding.cvss_score)}</td>
+                              <td>
+                                {passports.length === 1 ? (
+                                  <button
+                                    type="button"
+                                    className="asset-vulnerability-passport-link"
+                                    onClick={() => onOpenPassport?.(passport)}
+                                    title={`РћС‚РєСЂС‹С‚СЊ РїР°СЃРїРѕСЂС‚ ${assetPassportLabel(passport)}`}
+                                  >
+                                    {finding.cve_name || "РћС‚РєСЂС‹С‚СЊ РїР°СЃРїРѕСЂС‚"}
+                                  </button>
+                                ) : passports.length > 1 ? (
+                                  <details className="asset-vulnerability-passport-picker">
+                                    <summary>РџР°СЃРїРѕСЂС‚Р°: {formatCount(passports.length)}</summary>
+                                    <div className="asset-vulnerability-passport-options">
+                                      {passports.map((item) => (
+                                        <button
+                                          type="button"
+                                          key={item.internal_id}
+                                          onClick={() => onOpenPassport?.(item)}
+                                        >
+                                          <strong>{assetPassportLabel(item)}</strong>
+                                          <span>{[item.severity, item.external_id, item.internal_id].filter(Boolean).join(" В· ")}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </details>
+                                ) : (
+                                  finding.cve_name || "вЂ”"
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        }) : null}
+                        {expanded && loadingFindings[key] ? <tr><td colSpan={3} className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</td></tr> : null}
+                        {expanded && page.has_more ? (
+                          <tr>
+                            <td colSpan={3} className="table-footer">
+                              <Button variant="tiny" busy={loadingFindings[key]} onClick={() => loadFindings(source, group, page.rows.length)}>
+                                Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘
+                              </Button>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </React.Fragment>
+                    );
+                  }) : null}
+                </React.Fragment>
+              );
+            })}
+            {loadingGroups ? (
+              <tr><td colSpan={3} className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</td></tr>
+            ) : null}
+            {!loadingGroups && !sources.some((source) => (source.groups || []).length) ? (
+              <tr><td colSpan={3} className="empty-cell">РЈСЏР·РІРёРјРѕСЃС‚РµР№ РІ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРј СЃРЅРёРјРєРµ РЅРµС‚.</td></tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function AssetFilteredRows({ title, rows }) {
   const visibleRows = rows.slice(0, 1000);
   return (
@@ -2161,6 +2342,210 @@ function AssetFilteredRows({ title, rows }) {
       </div>
       <AssetRowsTable rows={visibleRows} />
     </div>
+  );
+}
+
+function normalizeAssetTreeEntry(row) {
+  return {
+    ...row,
+    parentPath: row.parentPath ?? row.parent_path ?? null,
+    hasChildren: Boolean(row.hasChildren ?? row.has_children),
+    depth: Number(row.depth || 0),
+  };
+}
+
+function mergeAssetTreeEntries(current, incoming) {
+  const byPath = new Map(current.map((entry) => [entry.path, entry]));
+  incoming.forEach((entry) => {
+    if (!entry?.path) return;
+    byPath.set(entry.path, { ...(byPath.get(entry.path) || {}), ...entry });
+  });
+  return Array.from(byPath.values()).sort((left, right) => {
+    if (left.path === "asset") return -1;
+    if (right.path === "asset") return 1;
+    return String(left.path || "").localeCompare(String(right.path || ""));
+  });
+}
+
+function AssetConfigurationTab({ assetId }) {
+  const [entries, setEntries] = useState([]);
+  const [expandedPaths, setExpandedPaths] = useState(["asset"]);
+  const [selectedPath, setSelectedPath] = useState("asset");
+  const [loadedParents, setLoadedParents] = useState(new Set());
+  const [loadingParents, setLoadingParents] = useState({});
+  const [detailsByPath, setDetailsByPath] = useState({});
+  const [loadingDetails, setLoadingDetails] = useState({});
+  const [error, setError] = useState("");
+  const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
+  const selectedEntry = useMemo(
+    () => entries.find((entry) => entry.path === selectedPath) || entries[0] || null,
+    [entries, selectedPath],
+  );
+  const visibleTreeEntries = useMemo(
+    () => entries.filter((entry) => isAssetTreeEntryVisible(entry, expandedSet, entries)),
+    [entries, expandedSet],
+  );
+
+  const loadTree = useCallback(async (parentPath = null) => {
+    if (!assetId) return;
+    const key = parentPath || "";
+    setLoadingParents((current) => ({ ...current, [key]: true }));
+    const params = new URLSearchParams({ limit: String(ASSET_CONFIG_TREE_LIMIT) });
+    if (parentPath) params.set("parent_path", parentPath);
+    try {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(assetId)}/configuration/tree?${params.toString()}`);
+      const nextEntries = (result.rows || []).map(normalizeAssetTreeEntry);
+      setEntries((current) => mergeAssetTreeEntries(current, nextEntries));
+      setLoadedParents((current) => {
+        const next = new Set(current);
+        next.add(key);
+        return next;
+      });
+    } catch (requestError) {
+      setError(requestError.message || String(requestError));
+    } finally {
+      setLoadingParents((current) => ({ ...current, [key]: false }));
+    }
+  }, [assetId]);
+
+  const loadDetail = useCallback(async (entry, offset = 0) => {
+    if (!assetId || !entry?.path) return;
+    const key = entry.path;
+    setLoadingDetails((current) => ({ ...current, [key]: true }));
+    const params = new URLSearchParams({
+      path: entry.path,
+      kind: entry.kind || "",
+      limit: String(ASSET_CONFIG_DETAIL_LIMIT),
+      offset: String(offset),
+    });
+    try {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(assetId)}/configuration/detail?${params.toString()}`);
+      setDetailsByPath((current) => {
+        const previousRows = offset ? current[key]?.rows || [] : [];
+        return {
+          ...current,
+          [key]: {
+            ...result,
+            rows: [...previousRows, ...(result.rows || [])],
+          },
+        };
+      });
+    } catch (requestError) {
+      setError(requestError.message || String(requestError));
+    } finally {
+      setLoadingDetails((current) => ({ ...current, [key]: false }));
+    }
+  }, [assetId]);
+
+  useEffect(() => {
+    setEntries([]);
+    setExpandedPaths(["asset"]);
+    setSelectedPath("asset");
+    setLoadedParents(new Set());
+    setLoadingParents({});
+    setDetailsByPath({});
+    setLoadingDetails({});
+    setError("");
+    if (assetId) void loadTree(null);
+  }, [assetId, loadTree]);
+
+  useEffect(() => {
+    if (!entries.length) return;
+    setSelectedPath((current) => entries.some((entry) => entry.path === current) ? current : entries[0].path);
+  }, [entries]);
+
+  useEffect(() => {
+    if (!selectedEntry || detailsByPath[selectedEntry.path] || loadingDetails[selectedEntry.path]) return;
+    void loadDetail(selectedEntry, 0);
+  }, [detailsByPath, loadDetail, loadingDetails, selectedEntry]);
+
+  const toggleTreeEntry = useCallback((path) => {
+    const entry = entries.find((item) => item.path === path);
+    setExpandedPaths((current) => (
+      current.includes(path)
+        ? current.filter((item) => item !== path)
+        : [...current, path]
+    ));
+    if (entry?.hasChildren && !expandedSet.has(path) && !loadedParents.has(path) && !loadingParents[path]) {
+      void loadTree(path);
+    }
+  }, [entries, expandedSet, loadedParents, loadingParents, loadTree]);
+
+  const selectEntry = useCallback((path) => {
+    const entry = entries.find((item) => item.path === path);
+    setSelectedPath(path);
+    if (entry && !detailsByPath[path] && !loadingDetails[path]) {
+      void loadDetail(entry, 0);
+    }
+  }, [detailsByPath, entries, loadDetail, loadingDetails]);
+
+  const detail = selectedEntry ? detailsByPath[selectedEntry.path] : null;
+  const loadingDetail = selectedEntry ? Boolean(loadingDetails[selectedEntry.path]) : false;
+
+  return (
+    <div className="asset-config-layout">
+      {error ? <div className="passport-load-error" role="alert">{error}</div> : null}
+      <AssetTree
+        entries={visibleTreeEntries}
+        selectedPath={selectedEntry?.path}
+        expandedSet={expandedSet}
+        onToggle={toggleTreeEntry}
+        onSelect={selectEntry}
+      />
+      <AssetConfigTablePaged
+        entry={selectedEntry}
+        detail={detail}
+        loading={loadingDetail || Boolean(loadingParents[""] && !entries.length)}
+        onLoadMore={() => selectedEntry && detail && loadDetail(selectedEntry, detail.rows?.length || 0)}
+      />
+    </div>
+  );
+}
+
+function AssetConfigTablePaged({ entry, detail, loading, onLoadMore }) {
+  const [tableSort, toggleTableSort] = useTableSort();
+  const table = detail || { rows: [], columns: [{ key: "value", title: "Value" }], total: 0, has_more: false };
+  const sortedRows = useSortedRows(table.rows || [], tableSort);
+  if (!entry) {
+    return (
+      <section className="asset-detail-pane">
+        <div className="empty-cell">{loading ? "Р—Р°РіСЂСѓР·РєР°..." : "Р’С‹Р±РµСЂРёС‚Рµ СЂР°Р·РґРµР» СЃР»РµРІР°."}</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry.label}>
+      {loading && !detail ? <div className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</div> : null}
+      {table.layout === "properties" ? (
+        <AssetPropertyList rows={table.rows || []} />
+      ) : (
+        <div className="table-shell asset-detail-table-shell">
+          <table className="asset-detail-table">
+            <thead>
+              <tr>
+                {(table.columns || []).map((column) => <SortableHeader key={column.key} column={column.key} sort={tableSort} onSort={toggleTableSort}>{column.title}</SortableHeader>)}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRows.length ? sortedRows.map((row, rowIndex) => (
+                <tr key={row.key || rowIndex}>
+                  {(table.columns || []).map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
+                </tr>
+              )) : (
+                <tr><td colSpan={(table.columns || []).length || 1} className="empty-cell">Р’ РІС‹Р±СЂР°РЅРЅРѕРј СЂР°Р·РґРµР»Рµ РЅРµС‚ РґР°РЅРЅС‹С….</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="table-footer">
+        <span>РџРѕРєР°Р·Р°РЅРѕ {formatCount((table.rows || []).length)} РёР· {formatCount(table.total || (table.rows || []).length)} СЃС‚СЂРѕРє.</span>
+        {table.has_more ? (
+          <Button variant="tiny" busy={loading} onClick={onLoadMore}>Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘</Button>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -3266,6 +3651,7 @@ function FreshnessBadge({ value, source }) {
 }
 
 export {
+  AssetCard,
   AssetsPanel,
   AssetCardsPanel,
   ConnectionPanel,

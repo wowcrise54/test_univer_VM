@@ -4,7 +4,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from app.db import DATABASE_URL
+from app.db import DATABASE_CONNECT_TIMEOUT_SECONDS, DATABASE_URL
 
 
 config = context.config
@@ -32,6 +32,7 @@ def run_migrations_online() -> None:
 
     connectable = create_engine(
         config.get_main_option("sqlalchemy.url"),
+        connect_args={"connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS},
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:

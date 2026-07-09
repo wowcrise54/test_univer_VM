@@ -716,15 +716,23 @@ def system_status() -> dict[str, Any]:
     global DATABASE_STARTUP_ERROR
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     database_error = None
-    try:
-        with db.connect() as conn:
-            conn.execute("SELECT 1")
-        DATABASE_STARTUP_ERROR = None
-        database_state = "ok"
-    except psycopg.Error as exc:
+    circuit = db.database_circuit_status()
+    if circuit["open"]:
         database_state = "down"
-        database_error = type(exc).__name__
-        DATABASE_STARTUP_ERROR = str(exc)
+        database_error = circuit.get("reason") or "CircuitOpen"
+        DATABASE_STARTUP_ERROR = circuit.get("message") or "Database connection circuit is open."
+    else:
+        try:
+            with db.connect() as conn:
+                conn.execute("SELECT 1")
+            DATABASE_STARTUP_ERROR = None
+            database_state = "ok"
+            circuit = db.database_circuit_status()
+        except psycopg.Error as exc:
+            database_state = "down"
+            database_error = type(exc).__name__
+            DATABASE_STARTUP_ERROR = str(exc)
+            circuit = db.database_circuit_status()
     connected = SESSION.client is not None and SESSION.access_token is not None
     mpvm_state = "ok" if connected else "degraded"
     workers_state = "ok" if database_state == "ok" else "down"
@@ -735,6 +743,7 @@ def system_status() -> dict[str, Any]:
             "message": "PostgreSQL доступен." if database_state == "ok" else "PostgreSQL недоступен.",
             "reason": database_error,
             "retryable": database_state != "ok",
+            "circuit_breaker": circuit,
         },
         "mpvm": {
             "state": mpvm_state,
@@ -1877,6 +1886,71 @@ def export_asset_card_query(payload: AssetCardFieldQueryRequest) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/summary")
+def local_asset_card_summary(asset_id: str) -> dict[str, Any]:
+    card = db.get_asset_card_summary(asset_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return card
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/configuration/tree")
+def local_asset_card_configuration_tree(
+    asset_id: str,
+    parent_path: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    tree = db.list_asset_card_configuration_tree(asset_id, parent_path=parent_path, limit=limit)
+    if tree is None:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return tree
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/configuration/detail")
+def local_asset_card_configuration_detail(
+    asset_id: str,
+    path: str = "asset",
+    kind: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    detail = db.get_asset_card_configuration_detail(asset_id, path=path, kind=kind, limit=limit, offset=offset)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return detail
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/vulnerabilities/groups")
+def local_asset_card_vulnerability_groups(asset_id: str) -> dict[str, Any]:
+    groups = db.list_asset_card_vulnerability_groups(asset_id)
+    if groups is None:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return groups
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/vulnerabilities/findings")
+def local_asset_card_vulnerability_findings(
+    asset_id: str,
+    source: str,
+    collection_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    try:
+        findings = db.list_asset_card_vulnerability_findings(
+            asset_id,
+            source=source,
+            collection_id=collection_id,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_ASSET_CARD_FINDINGS_QUERY", "message": str(exc)}) from exc
+    if findings is None:
+        raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    return findings
 
 
 @asset_cards_router.get("/api/asset-cards/{asset_id}")

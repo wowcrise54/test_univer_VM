@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,12 @@ DATABASE_URL = (
 )
 _DB_INITIALIZED = False
 _DB_INIT_LOCK = threading.Lock()
+DATABASE_CONNECT_TIMEOUT_SECONDS = max(1, min(10, int(os.getenv("MPVM_DATABASE_CONNECT_TIMEOUT_SECONDS", "2"))))
+DATABASE_CIRCUIT_BREAKER_SECONDS = max(1, min(60, int(os.getenv("MPVM_DATABASE_CIRCUIT_BREAKER_SECONDS", "10"))))
+_DB_CIRCUIT_LOCK = threading.Lock()
+_DB_CIRCUIT_OPEN_UNTIL = 0.0
+_DB_CIRCUIT_ERROR: str | None = None
+_DB_CIRCUIT_REASON: str | None = None
 
 
 def database_label() -> str:
@@ -43,18 +50,59 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def database_circuit_status() -> dict[str, Any]:
+    with _DB_CIRCUIT_LOCK:
+        remaining_seconds = max(0.0, _DB_CIRCUIT_OPEN_UNTIL - time.monotonic())
+        return {
+            "open": remaining_seconds > 0,
+            "retry_ready": remaining_seconds <= 0,
+            "retry_after_seconds": round(remaining_seconds, 2),
+            "message": _DB_CIRCUIT_ERROR,
+            "reason": _DB_CIRCUIT_REASON,
+        }
+
+
+def _open_database_circuit(exc: Exception) -> None:
+    global _DB_CIRCUIT_OPEN_UNTIL, _DB_CIRCUIT_ERROR, _DB_CIRCUIT_REASON
+    with _DB_CIRCUIT_LOCK:
+        _DB_CIRCUIT_OPEN_UNTIL = time.monotonic() + DATABASE_CIRCUIT_BREAKER_SECONDS
+        _DB_CIRCUIT_ERROR = str(exc)
+        _DB_CIRCUIT_REASON = type(exc).__name__
+
+
+def _close_database_circuit() -> None:
+    global _DB_CIRCUIT_OPEN_UNTIL, _DB_CIRCUIT_ERROR, _DB_CIRCUIT_REASON
+    with _DB_CIRCUIT_LOCK:
+        _DB_CIRCUIT_OPEN_UNTIL = 0.0
+        _DB_CIRCUIT_ERROR = None
+        _DB_CIRCUIT_REASON = None
+
+
+def _raise_if_database_circuit_open() -> None:
+    status = database_circuit_status()
+    if not status["open"]:
+        return
+    raise psycopg.OperationalError(
+        f"Database connection circuit is open for {status['retry_after_seconds']}s after: {status['message']}"
+    )
+
+
 def connect() -> psycopg.Connection[dict[str, Any]]:
-    started = datetime.now(timezone.utc)
+    _raise_if_database_circuit_open()
+    started = time.perf_counter()
     try:
         connection = DiagnosticConnection.connect(
             DATABASE_URL,
             row_factory=dict_row,
             cursor_factory=DiagnosticCursor,
+            connect_timeout=DATABASE_CONNECT_TIMEOUT_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
+        _open_database_circuit(exc)
         log_exception("database", "db.connection.failed", database=database_label())
         raise
-    elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+    _close_database_circuit()
+    elapsed_ms = (time.perf_counter() - started) * 1000
     log_event(
         "database",
         "db.connection.opened",
@@ -69,10 +117,17 @@ def init_db() -> None:
     global _DB_INITIALIZED
     if _DB_INITIALIZED:
         return
+    _raise_if_database_circuit_open()
     with _DB_INIT_LOCK:
         if _DB_INITIALIZED:
             return
-        _initialize_schema()
+        _raise_if_database_circuit_open()
+        try:
+            _initialize_schema()
+        except Exception as exc:
+            _open_database_circuit(exc)
+            raise psycopg.OperationalError(str(exc)) from exc
+        _close_database_circuit()
         _DB_INITIALIZED = True
 
 
@@ -533,6 +588,7 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_asset_search_entity ON asset_card_search_fields(asset_id, entity_path, field_path)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_asset_source ON asset_card_vulnerability_groups(asset_id, source_type, group_order)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_cve ON asset_card_vulnerabilities(asset_id, cve_name)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_group_order ON asset_card_vulnerabilities(group_id, cve_name, name, id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_vulnerability_id ON asset_card_vulnerabilities(vulnerability_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_vulnerability_id ON asset_card_vulnerabilities(asset_id, vulnerability_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
@@ -799,8 +855,10 @@ def list_operations(
     offset: int = 0,
     sort_by: str | None = None,
     sort_dir: str | None = None,
+    sync_sources: bool = False,
 ) -> dict[str, Any]:
-    sync_operations_from_sources()
+    if sync_sources:
+        sync_operations_from_sources()
     clauses: list[str] = []
     params: list[Any] = []
     if status:
@@ -833,8 +891,9 @@ def list_operations(
     return {"total": int(total), "rows": [decode_operation(dict(row)) for row in rows], "limit": limit, "offset": offset}
 
 
-def get_operation(operation_id: str, *, include_events: bool = True) -> dict[str, Any] | None:
-    sync_operations_from_sources()
+def get_operation(operation_id: str, *, include_events: bool = True, sync_sources: bool = False) -> dict[str, Any] | None:
+    if sync_sources:
+        sync_operations_from_sources()
     with connect() as conn:
         row = conn.execute("SELECT * FROM operations WHERE operation_id = %s", (operation_id,)).fetchone()
         if not row:
@@ -3255,6 +3314,640 @@ def get_asset_card_section(asset_id: str, section: str) -> dict[str, Any] | None
             card.pop(key, None)
     card["loaded_sections"] = loaded_sections
     return card
+
+
+def get_asset_card_summary(asset_id: str) -> dict[str, Any] | None:
+    return get_asset_card_section(asset_id, "summary")
+
+
+def _page_bounds(limit: int, offset: int, *, default: int, maximum: int) -> tuple[int, int]:
+    safe_limit = safe_int(limit)
+    safe_offset = safe_int(offset)
+    return (
+        max(1, min(maximum, safe_limit if safe_limit is not None else default)),
+        max(0, safe_offset if safe_offset is not None else 0),
+    )
+
+
+def asset_tree_parent_path(path: str | None) -> str | None:
+    if not path or path == "asset":
+        return None
+    match = re.match(r"^(.*)\[\d+\]$", path)
+    if match:
+        return match.group(1)
+    dot_index = path.rfind(".")
+    return "asset" if dot_index <= 0 else path[:dot_index]
+
+
+def asset_tree_depth(path: str | None) -> int:
+    depth = 0
+    current = asset_tree_parent_path(path)
+    while current:
+        depth += 1
+        current = asset_tree_parent_path(current)
+    return depth
+
+
+def asset_path_key(path: str | None) -> str:
+    text = str(path or "")
+    match = re.match(r"^(.*)\[\d+\]$", text)
+    normalized = match.group(1) if match else text
+    return normalized.split(".")[-1] if normalized else ""
+
+
+def labelize_asset_key(key: Any) -> str:
+    labels = {
+        "ipAddress": "IP address",
+        "fqdn": "FQDN",
+        "hostname": "Hostname",
+        "hostType": "Host type",
+        "macAddress": "MAC address",
+        "osName": "OS name",
+        "osVersion": "OS version",
+        "isVirtual": "Virtual",
+        "displayName": "Name",
+        "vulnerabilityLevel": "Vulnerability level",
+    }
+    text = str(key or "")
+    return labels.get(text) or re.sub(r"([a-z])([A-Z])", r"\1 \2", text).replace("_", " ").strip().capitalize()
+
+
+def asset_path_label(path: str | None) -> str:
+    text = str(path or "")
+    match = re.search(r"\[(\d+)\]$", text)
+    if match:
+        return f"Item {int(match.group(1)) + 1}"
+    return labelize_asset_key(asset_path_key(text))
+
+
+def asset_collection_meta(row: dict[str, Any]) -> str:
+    fetched = row.get("fetched_count")
+    total = row.get("reported_count")
+    if fetched is None and total is None:
+        return ""
+    if total is not None and fetched != total:
+        return f"{fetched or 0} / {total}"
+    return str(first_non_empty(fetched, total, ""))
+
+
+def _direct_child_filter_sql(parent_path: str) -> tuple[str, list[Any]]:
+    if parent_path == "asset":
+        prefix = "asset."
+        rest_start = len(prefix) + 1
+        return (
+            """
+            (
+                (path LIKE %s AND POSITION('.' IN SUBSTRING(path FROM %s)) = 0 AND POSITION('[' IN SUBSTRING(path FROM %s)) = 0)
+                OR (path NOT LIKE '%%.%%' AND path NOT LIKE '%%[%%' AND path <> 'asset')
+            )
+            """,
+            [f"{prefix}%", rest_start, rest_start],
+        )
+    prefix = f"{parent_path}."
+    rest_start = len(prefix) + 1
+    return (
+        "path LIKE %s AND POSITION('.' IN SUBSTRING(path FROM %s)) = 0 AND POSITION('[' IN SUBSTRING(path FROM %s)) = 0",
+        [f"{prefix}%", rest_start, rest_start],
+    )
+
+
+def _has_asset_tree_children(conn: psycopg.Connection[dict[str, Any]], asset_id: str, path: str) -> bool:
+    child_prefix = f"{path}.%"
+    return bool(conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM asset_card_nodes WHERE asset_id = %s AND path LIKE %s
+            UNION ALL
+            SELECT 1 FROM asset_card_collections WHERE asset_id = %s AND path LIKE %s
+        ) AS has_children
+        """,
+        (asset_id, child_prefix, asset_id, child_prefix),
+    ).fetchone()["has_children"])
+
+
+def _asset_tree_row(conn: psycopg.Connection[dict[str, Any]], asset_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+    path = clean_value(raw.get("path")) or "asset"
+    kind = clean_value(raw.get("kind")) or "node"
+    parent_path = asset_tree_parent_path(path)
+    if path != "asset" and parent_path is None:
+        parent_path = "asset"
+    label = first_non_empty(raw.get("title"), raw.get("display_name"), raw.get("name"), asset_path_label(path))
+    subtitle = first_non_empty(raw.get("object_type"), raw.get("value_type"), raw.get("subtitle"), asset_path_key(path))
+    meta = asset_collection_meta(raw) if kind == "collection" else ""
+    return {
+        "path": path,
+        "parent_path": parent_path,
+        "label": label,
+        "subtitle": subtitle,
+        "kind": kind,
+        "meta": meta,
+        "has_children": _has_asset_tree_children(conn, asset_id, path),
+        "depth": asset_tree_depth(path),
+        "source": {
+            "path": path,
+            "type": first_non_empty(raw.get("object_type"), raw.get("value_type"), raw.get("kind")),
+            "title": raw.get("title"),
+            "name": raw.get("name"),
+            "display_name": raw.get("display_name"),
+        },
+    }
+
+
+def list_asset_card_configuration_tree(
+    asset_id: str,
+    *,
+    parent_path: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any] | None:
+    init_db()
+    limit, _offset = _page_bounds(limit, 0, default=200, maximum=500)
+    parent = clean_value(parent_path) or "asset"
+    with connect() as conn:
+        card = conn.execute(
+            f"SELECT {ASSET_CARD_BASE_COLUMNS} FROM asset_cards WHERE asset_id = %s",
+            (asset_id,),
+        ).fetchone()
+        if not card:
+            return None
+        filter_sql, filter_params = _direct_child_filter_sql(parent)
+        total = int(conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT path FROM asset_card_nodes WHERE asset_id = %s AND {filter_sql}
+                UNION
+                SELECT path FROM asset_card_collections WHERE asset_id = %s AND {filter_sql}
+            ) AS children
+            """,
+            [asset_id, *filter_params, asset_id, *filter_params],
+        ).fetchone()["count"] or 0)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM (
+                SELECT
+                    path,
+                    title,
+                    display_name,
+                    NULL::text AS name,
+                    object_type,
+                    NULL::text AS value_type,
+                    NULL::integer AS reported_count,
+                    NULL::integer AS fetched_count,
+                    'node' AS kind
+                FROM asset_card_nodes
+                WHERE asset_id = %s AND {filter_sql}
+                UNION ALL
+                SELECT
+                    path,
+                    title,
+                    NULL::text AS display_name,
+                    name,
+                    NULL::text AS object_type,
+                    value_type,
+                    reported_count,
+                    fetched_count,
+                    'collection' AS kind
+                FROM asset_card_collections
+                WHERE asset_id = %s AND {filter_sql}
+            ) AS entries
+            ORDER BY path, kind
+            LIMIT %s
+            """,
+            [asset_id, *filter_params, asset_id, *filter_params, limit],
+        ).fetchall()
+        entries: list[dict[str, Any]] = []
+        if not clean_value(parent_path):
+            root = json_loads(card.get("root_json"), {})
+            root_label = first_non_empty(
+                root.get("displayName") if isinstance(root, dict) else None,
+                card.get("display_name"),
+                card.get("hostname"),
+                asset_id,
+                "Asset",
+            )
+            entries.append({
+                "path": "asset",
+                "parent_path": None,
+                "label": root_label,
+                "subtitle": first_non_empty(root.get("type") if isinstance(root, dict) else None, card.get("asset_type"), "asset"),
+                "kind": "root",
+                "meta": "",
+                "has_children": total > 0,
+                "depth": 0,
+                "source": {"path": "asset", "type": first_non_empty(card.get("asset_type"), "asset"), "title": root_label},
+            })
+        seen = {entry["path"] for entry in entries}
+        for row in rows:
+            entry = _asset_tree_row(conn, asset_id, dict(row))
+            if entry["path"] in seen:
+                continue
+            entries.append(entry)
+            seen.add(entry["path"])
+        effective_total = total + (1 if not clean_value(parent_path) else 0)
+        return {
+            "asset_id": asset_id,
+            "parent_path": None if not clean_value(parent_path) else parent,
+            "rows": entries,
+            "total": effective_total,
+            "limit": limit,
+            "offset": 0,
+            "has_more": total > limit,
+        }
+
+
+def is_hidden_asset_detail_key(key: Any) -> bool:
+    normalized = re.sub(r"[_-]", "", str(key or "")).lower()
+    return normalized in {"type", "objectid"} or normalized.startswith("raw")
+
+
+def is_verbose_asset_detail_value(value: Any) -> bool:
+    return isinstance(value, (dict, list))
+
+
+def asset_collection_columns(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if not items:
+        return [{"key": "value", "title": "Value"}]
+    if all(isinstance(item, dict) and "value" in item for item in items):
+        return [{"key": "value", "title": "Value"}]
+    preferred = ["ipAddress", "address", "hostname", "fqdn", "macAddress", "name", "displayName", "version", "status"]
+    seen: set[str] = set()
+    for item in items:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for key, value in data.items():
+            if not is_hidden_asset_detail_key(key) and not is_verbose_asset_detail_value(value):
+                seen.add(str(key))
+    ordered = sorted(seen, key=lambda item: (preferred.index(item) if item in preferred else 999, item.lower()))
+    columns: list[dict[str, str]] = []
+    if any(first_non_empty(item.get("display_name"), item.get("displayName")) for item in items):
+        columns.append({"key": "display_name", "title": "Name"})
+    if any(first_non_empty(item.get("object_id"), item.get("objectId")) for item in items):
+        columns.append({"key": "object_id", "title": "Object ID"})
+    if any(item.get("type") for item in items):
+        columns.append({"key": "type", "title": "Type"})
+    for key in ordered:
+        if key not in {column["key"] for column in columns}:
+            columns.append({"key": key, "title": labelize_asset_key(key)})
+    if not columns:
+        columns.append({"key": "display_name", "title": "Name"})
+    return columns[:14]
+
+
+def _asset_collection_detail_row(raw: dict[str, Any], index: int, columns: list[dict[str, str]]) -> dict[str, Any]:
+    item = json_loads(raw.get("item_json"), {})
+    if not isinstance(item, dict):
+        item = {"value": item}
+    data = item.get("data") if isinstance(item.get("data"), dict) else json_loads(raw.get("data_json"), {})
+    if not isinstance(data, dict):
+        data = {}
+    row = {
+        "key": first_non_empty(item.get("path"), raw.get("item_path"), raw.get("object_id"), index),
+        "display_name": first_non_empty(item.get("display_name"), item.get("displayName"), raw.get("display_name")),
+        "object_id": first_non_empty(item.get("object_id"), item.get("objectId"), raw.get("object_id")),
+        "type": first_non_empty(item.get("type"), raw.get("object_type")),
+        "value": item.get("value"),
+    }
+    for column in columns:
+        key = column["key"]
+        row[key] = first_non_empty(row.get(key), item.get(key), data.get(key))
+    return row
+
+
+def get_asset_card_configuration_detail(
+    asset_id: str,
+    *,
+    path: str,
+    kind: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any] | None:
+    init_db()
+    limit, offset = _page_bounds(limit, offset, default=200, maximum=500)
+    target_path = clean_value(path) or "asset"
+    target_kind = clean_value(kind) or "node"
+    with connect() as conn:
+        card_row = conn.execute(
+            f"SELECT {ASSET_CARD_BASE_COLUMNS} FROM asset_cards WHERE asset_id = %s",
+            (asset_id,),
+        ).fetchone()
+        if not card_row:
+            return None
+        if target_kind == "root":
+            root = json_loads(card_row.get("root_json"), {})
+            data = root.get("data") if isinstance(root, dict) and isinstance(root.get("data"), dict) else {}
+            base_values = [
+                ("asset_id", "asset_id", card_row.get("asset_id")),
+                ("display_name", "Name", first_non_empty(root.get("displayName") if isinstance(root, dict) else None, card_row.get("display_name"))),
+                ("asset_type", "Type", first_non_empty(root.get("type") if isinstance(root, dict) else None, card_row.get("asset_type"))),
+                ("hostname", "Hostname", first_non_empty(card_row.get("hostname"), data.get("hostname"))),
+                ("fqdn", "FQDN", first_non_empty(card_row.get("fqdn"), data.get("fqdn"))),
+                ("ip_address", "IP address", first_non_empty(card_row.get("ip_address"), data.get("ipAddress"))),
+                ("os_name", "OS name", first_non_empty(card_row.get("os_name"), data.get("osName"))),
+                ("os_version", "OS version", first_non_empty(card_row.get("os_version"), data.get("osVersion"))),
+                ("vulnerability_level", "Vulnerability level", first_non_empty(card_row.get("vulnerability_level"), root.get("vulnerabilityLevel") if isinstance(root, dict) else None)),
+            ]
+            rows = [
+                {"key": key, "path": f"asset.{key}", "title": title, "name": key, "value": value, "depth": 0}
+                for key, title, value in base_values
+                if value is not None and value != ""
+            ]
+            for key, value in data.items():
+                if is_hidden_asset_detail_key(key) or is_verbose_asset_detail_value(value):
+                    continue
+                path_key = f"data.{key}"
+                if any(row["name"] == key for row in rows):
+                    continue
+                rows.append({
+                    "key": path_key,
+                    "path": f"asset.{path_key}",
+                    "title": labelize_asset_key(key),
+                    "name": key,
+                    "value": value,
+                    "depth": 0,
+                })
+            total = len(rows)
+            page_rows = rows[offset:offset + limit]
+            return {
+                "asset_id": asset_id,
+                "path": target_path,
+                "kind": target_kind,
+                "columns": [
+                    {"key": "path", "title": "Path"},
+                    {"key": "title", "title": "Name"},
+                    {"key": "value", "title": "Value"},
+                ],
+                "rows": page_rows,
+                "layout": "properties",
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(page_rows) < total,
+            }
+        if target_kind == "collection":
+            total = int(conn.execute(
+                "SELECT COUNT(*) AS count FROM asset_card_collection_items WHERE asset_id = %s AND collection_path = %s",
+                (asset_id, target_path),
+            ).fetchone()["count"] or 0)
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM asset_card_collection_items
+                WHERE asset_id = %s AND collection_path = %s
+                ORDER BY item_index, id
+                LIMIT %s OFFSET %s
+                """,
+                (asset_id, target_path, limit, offset),
+            ).fetchall()
+            raw_items = [dict(row) for row in rows]
+            item_docs = [json_loads(row.get("item_json"), {}) for row in raw_items]
+            item_docs = [item if isinstance(item, dict) else {"value": item} for item in item_docs]
+            columns = asset_collection_columns(item_docs)
+            detail_rows = [
+                _asset_collection_detail_row(row, offset + index, columns)
+                for index, row in enumerate(raw_items)
+            ]
+            return {
+                "asset_id": asset_id,
+                "path": target_path,
+                "kind": target_kind,
+                "columns": columns,
+                "rows": detail_rows,
+                "layout": "table",
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(detail_rows) < total,
+            }
+
+        prefix = f"{target_path}.%"
+        item_prefix = f"{target_path}[%"
+        where_sql = "asset_id = %s AND (path = %s OR path LIKE %s OR path LIKE %s)"
+        params = (asset_id, target_path, prefix, item_prefix)
+        total = int(conn.execute(
+            f"SELECT COUNT(*) AS count FROM asset_card_table_rows WHERE {where_sql}",
+            params,
+        ).fetchone()["count"] or 0)
+        rows = conn.execute(
+            f"""
+            SELECT row_json, path, title, name, value_text, value_type, row_order
+            FROM asset_card_table_rows
+            WHERE {where_sql}
+            ORDER BY row_order, path
+            LIMIT %s OFFSET %s
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+    detail_rows = []
+    for index, raw in enumerate(rows):
+        row = dict(raw)
+        doc = json_loads(row.get("row_json"), {})
+        if not isinstance(doc, dict):
+            doc = {}
+        detail_rows.append({
+            "key": first_non_empty(doc.get("key"), f"{row.get('path')}-{row.get('row_order')}-{offset + index}"),
+            "path": first_non_empty(doc.get("path"), row.get("path")),
+            "title": first_non_empty(doc.get("title"), row.get("title"), row.get("name"), asset_path_label(row.get("path"))),
+            "name": first_non_empty(doc.get("name"), row.get("name")),
+            "type": first_non_empty(doc.get("type"), row.get("value_type")),
+            "value": first_non_empty(doc.get("value"), row.get("value_text")),
+            "depth": safe_int(doc.get("depth")) or 0,
+        })
+    return {
+        "asset_id": asset_id,
+        "path": target_path,
+        "kind": target_kind,
+        "columns": [
+            {"key": "path", "title": "Path"},
+            {"key": "title", "title": "Name"},
+            {"key": "value", "title": "Value"},
+        ],
+        "rows": detail_rows,
+        "layout": "properties",
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(detail_rows) < total,
+    }
+
+
+def _asset_vulnerability_group(row: dict[str, Any]) -> dict[str, Any]:
+    group = json_loads(row.get("group_json"), {})
+    if not isinstance(group, dict):
+        group = {}
+    group.update({
+        "source": row.get("source_type"),
+        "collection_type": row.get("collection_type"),
+        "collection_id": row.get("collection_id"),
+        "group_key": f"{row.get('source_type')}:{row.get('collection_id')}",
+        "name": row.get("name"),
+        "level": row.get("severity"),
+        "vulnerabilities_count": int(row.get("vulnerability_count") or 0),
+        "cvss_score": decimal_to_number(row.get("cvss_score")),
+        "order": int(row.get("group_order") or 0),
+        "truncated": bool(row.get("truncated")),
+    })
+    group.pop("items", None)
+    return group
+
+
+def list_asset_card_vulnerability_groups(asset_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        stored_row = conn.execute(
+            "SELECT vulnerabilities_json FROM asset_cards WHERE asset_id = %s",
+            (asset_id,),
+        ).fetchone()
+        if not stored_row:
+            return None
+        stored = json_loads(stored_row.get("vulnerabilities_json"), {})
+        result = strip_asset_card_raw(stored) if isinstance(stored, dict) else {}
+        sources = result.get("sources") if isinstance(result.get("sources"), list) else []
+        source_by_kind = {
+            clean_value(source.get("source")): source
+            for source in sources
+            if isinstance(source, dict) and clean_value(source.get("source"))
+        }
+        for source in sources:
+            if isinstance(source, dict):
+                source["groups"] = []
+        group_rows = conn.execute(
+            """
+            SELECT *
+            FROM asset_card_vulnerability_groups
+            WHERE asset_id = %s
+            ORDER BY source_type, group_order, name NULLS LAST, collection_id
+            """,
+            (asset_id,),
+        ).fetchall()
+    for raw in group_rows:
+        row = dict(raw)
+        group = _asset_vulnerability_group(row)
+        source_type = clean_value(row.get("source_type")) or "unknown"
+        source = source_by_kind.get(source_type)
+        if source is None:
+            source = {
+                "source": source_type,
+                "collection_type": row.get("collection_type"),
+                "title": "OS vulnerabilities" if source_type == "os" else "Software vulnerabilities",
+                "groups": [],
+            }
+            source_by_kind[source_type] = source
+            sources.append(source)
+        source.setdefault("groups", []).append(group)
+    result["sources"] = sources
+    result["loaded_sections"] = ["vulnerability_groups"]
+    return {"asset_id": asset_id, "vulnerabilities": result}
+
+
+def _decode_asset_vulnerability_finding(row: dict[str, Any]) -> dict[str, Any]:
+    finding = json_loads(row.get("vulnerability_json"), {})
+    if not isinstance(finding, dict):
+        finding = {}
+    passports = json_loads(row.get("passports"), [])
+    finding.update({
+        "level": row.get("severity"),
+        "name": row.get("name"),
+        "cve_name": row.get("cve_name"),
+        "description_key": row.get("description_key"),
+        "cvss_score": decimal_to_number(row.get("cvss_score")),
+        "object_id": row.get("object_id"),
+        "vulnerability_id": row.get("vulnerability_id"),
+        "vulnerability_instance_id": row.get("vulnerability_instance_id"),
+        "passport_ids": row.get("passport_ids") or [],
+        "passports": passports if isinstance(passports, list) else [],
+    })
+    return finding
+
+
+def list_asset_card_vulnerability_findings(
+    asset_id: str,
+    *,
+    source: str,
+    collection_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any] | None:
+    init_db()
+    limit, offset = _page_bounds(limit, offset, default=100, maximum=500)
+    source_type = clean_value(source)
+    group_collection_id = clean_value(collection_id)
+    if not source_type or not group_collection_id:
+        raise ValueError("source and collection_id are required.")
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone():
+            return None
+        group_row = conn.execute(
+            """
+            SELECT *
+            FROM asset_card_vulnerability_groups
+            WHERE asset_id = %s AND source_type = %s AND collection_id = %s
+            """,
+            (asset_id, source_type, group_collection_id),
+        ).fetchone()
+        if not group_row:
+            return {
+                "asset_id": asset_id,
+                "source": source_type,
+                "collection_id": group_collection_id,
+                "group": None,
+                "rows": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+            }
+        group_id = int(group_row["id"])
+        total = int(conn.execute(
+            "SELECT COUNT(*) AS count FROM asset_card_vulnerabilities WHERE group_id = %s",
+            (group_id,),
+        ).fetchone()["count"] or 0)
+        rows = conn.execute(
+            """
+            SELECT
+                vulnerability.*,
+                COALESCE(
+                    array_agg(link.passport_internal_id ORDER BY link.passport_internal_id)
+                    FILTER (WHERE link.passport_internal_id IS NOT NULL),
+                    ARRAY[]::TEXT[]
+                ) AS passport_ids,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'internal_id', passports.internal_id,
+                            'external_id', passports.external_id,
+                            'name', passports.name,
+                            'severity', passports.severity,
+                            'has_detail', passports.raw_detail_json IS NOT NULL,
+                            'match_method', link.match_method
+                        )
+                        ORDER BY COALESCE(passports.name, passports.external_id, passports.internal_id), passports.internal_id
+                    ) FILTER (WHERE passports.internal_id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS passports
+            FROM asset_card_vulnerabilities AS vulnerability
+            LEFT JOIN asset_card_vulnerability_passports AS link
+                ON link.asset_vulnerability_id = vulnerability.id
+            LEFT JOIN vulnerability_passports AS passports
+                ON passports.internal_id = link.passport_internal_id
+            WHERE vulnerability.group_id = %s
+            GROUP BY vulnerability.id
+            ORDER BY vulnerability.cve_name NULLS LAST, vulnerability.name NULLS LAST, vulnerability.id
+            LIMIT %s OFFSET %s
+            """,
+            (group_id, limit, offset),
+        ).fetchall()
+    findings = [_decode_asset_vulnerability_finding(dict(row)) for row in rows]
+    return {
+        "asset_id": asset_id,
+        "source": source_type,
+        "collection_id": group_collection_id,
+        "group": _asset_vulnerability_group(dict(group_row)),
+        "rows": findings,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(findings) < total,
+    }
 
 
 def delete_asset_card(asset_id: str) -> bool:

@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import psycopg
 from fastapi import BackgroundTasks
 from fastapi import HTTPException
 
@@ -523,6 +524,186 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(card["loaded_sections"], ["summary", "configuration"])
         self.assertEqual(card["nodes"], [{"path": "asset.node"}])
         self.assertNotIn("vulnerabilities", card)
+
+    def db_result(self, *, one=None, many=None):
+        result = MagicMock()
+        result.fetchone.return_value = one
+        result.fetchall.return_value = many or []
+        return result
+
+    def test_asset_card_configuration_tree_returns_only_direct_children(self):
+        connection = MagicMock()
+        connection.execute.side_effect = [
+            self.db_result(one=self.asset_card_row()),
+            self.db_result(one={"count": 2}),
+            self.db_result(many=[
+                {
+                    "path": "asset.software",
+                    "title": "Software",
+                    "display_name": None,
+                    "name": "software",
+                    "object_type": None,
+                    "value_type": "Software",
+                    "reported_count": 300,
+                    "fetched_count": 200,
+                    "kind": "collection",
+                },
+                {
+                    "path": "asset.os",
+                    "title": "OS",
+                    "display_name": "Linux",
+                    "name": None,
+                    "object_type": "Host",
+                    "value_type": None,
+                    "reported_count": None,
+                    "fetched_count": None,
+                    "kind": "node",
+                },
+            ]),
+            self.db_result(one={"has_children": False}),
+            self.db_result(one={"has_children": True}),
+        ]
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            tree = db.list_asset_card_configuration_tree("asset-1", limit=200)
+
+        self.assertEqual([row["path"] for row in tree["rows"]], ["asset", "asset.software", "asset.os"])
+        self.assertEqual(tree["rows"][1]["parent_path"], "asset")
+        self.assertEqual(tree["rows"][1]["meta"], "200 / 300")
+        self.assertTrue(tree["rows"][2]["has_children"])
+
+    def test_asset_card_configuration_detail_is_paginated(self):
+        connection = MagicMock()
+        connection.execute.side_effect = [
+            self.db_result(one={"exists": 1}),
+            self.db_result(one={"count": 2}),
+            self.db_result(many=[
+                {
+                    "item_path": "asset.software[0]",
+                    "display_name": "nginx",
+                    "object_id": "soft-1",
+                    "object_type": "Software",
+                    "data_json": '{"name":"nginx","version":"1.25"}',
+                    "item_json": '{"path":"asset.software[0]","display_name":"nginx","object_id":"soft-1","type":"Software","data":{"name":"nginx","version":"1.25"}}',
+                },
+            ]),
+        ]
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            detail = db.get_asset_card_configuration_detail(
+                "asset-1",
+                path="asset.software",
+                kind="collection",
+                limit=1,
+                offset=0,
+            )
+
+        self.assertEqual(detail["total"], 2)
+        self.assertEqual(detail["limit"], 1)
+        self.assertTrue(detail["has_more"])
+        self.assertEqual(detail["rows"][0]["name"], "nginx")
+
+    def test_asset_card_vulnerability_groups_do_not_return_findings(self):
+        connection = MagicMock()
+        connection.execute.side_effect = [
+            self.db_result(one={"vulnerabilities_json": '{"header":{"os_soft_vulnerabilities_count":2},"sources":[{"source":"os","collection_type":"HostOSVulnerabilities","groups":[{"items":[{"name":"old"}]}]}]}'}),
+            self.db_result(many=[{
+                "id": 7,
+                "source_type": "os",
+                "collection_type": "HostOSVulnerabilities",
+                "collection_id": "group-1",
+                "name": "OS",
+                "severity": "high",
+                "vulnerability_count": 2,
+                "cvss_score": 8.1,
+                "group_order": 0,
+                "truncated": False,
+                "group_json": '{"items":[{"name":"old"}]}',
+            }]),
+        ]
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            result = db.list_asset_card_vulnerability_groups("asset-1")
+
+        group = result["vulnerabilities"]["sources"][0]["groups"][0]
+        self.assertEqual(group["collection_id"], "group-1")
+        self.assertNotIn("items", group)
+
+    def test_asset_card_vulnerability_findings_returns_selected_page(self):
+        group_row = {
+            "id": 7,
+            "source_type": "os",
+            "collection_type": "HostOSVulnerabilities",
+            "collection_id": "group-1",
+            "name": "OS",
+            "severity": "high",
+            "vulnerability_count": 2,
+            "cvss_score": 8.1,
+            "group_order": 0,
+            "truncated": False,
+            "group_json": "{}",
+        }
+        connection = MagicMock()
+        connection.execute.side_effect = [
+            self.db_result(one={"exists": 1}),
+            self.db_result(one=group_row),
+            self.db_result(one={"count": 2}),
+            self.db_result(many=[{
+                "vulnerability_json": "{}",
+                "severity": "high",
+                "name": "Finding",
+                "cve_name": "CVE-2026-0001",
+                "description_key": None,
+                "cvss_score": 8.1,
+                "object_id": "object-1",
+                "vulnerability_id": "vulnerability-1",
+                "vulnerability_instance_id": "instance-1",
+                "passport_ids": ["passport-1"],
+                "passports": [{"internal_id": "passport-1", "name": "Passport"}],
+            }]),
+        ]
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            result = db.list_asset_card_vulnerability_findings(
+                "asset-1",
+                source="os",
+                collection_id="group-1",
+                limit=1,
+                offset=0,
+            )
+
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["rows"][0]["cve_name"], "CVE-2026-0001")
+        self.assertEqual(result["rows"][0]["passport_ids"], ["passport-1"])
+
+    def test_database_circuit_breaker_skips_repeated_connect_attempts(self):
+        db._close_database_circuit()
+        try:
+            with patch.object(
+                db.DiagnosticConnection,
+                "connect",
+                side_effect=psycopg.OperationalError("connect failed"),
+            ) as diagnostic_connect:
+                with self.assertRaises(psycopg.OperationalError):
+                    db.connect()
+                started = time.perf_counter()
+                with self.assertRaises(psycopg.OperationalError):
+                    db.connect()
+                elapsed = time.perf_counter() - started
+
+            self.assertEqual(diagnostic_connect.call_count, 1)
+            self.assertLess(elapsed, 0.05)
+        finally:
+            db._close_database_circuit()
 
     def test_copy_rows_streams_every_row_in_one_copy_operation(self):
         writer = MagicMock()
