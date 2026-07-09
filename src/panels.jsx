@@ -832,6 +832,20 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
 
+  const mergeSelectedCardSection = useCallback((sectionCard) => {
+    if (!sectionCard?.asset_id) return;
+    setSelectedCard((current) => mergeAssetCardSection(current, sectionCard));
+  }, []);
+
+  const loadAssetCardSection = useCallback((section) => {
+    const assetId = selectedCard?.asset_id;
+    if (!assetId || hasAssetCardSection(selectedCard, section)) return;
+    runBusy(`assetCardSection:${section}`, async () => {
+      const result = await api(`/api/asset-cards/${encodeURIComponent(assetId)}?section=${encodeURIComponent(section)}`);
+      mergeSelectedCardSection(result);
+    });
+  }, [mergeSelectedCardSection, runBusy, selectedCard]);
+
   const refreshLocalCards = useCallback(async (sorting = cardSort) => {
     const params = new URLSearchParams({ limit: String(clampNumber(form.asset_limit, 1000, 1, 50000)) });
     if (cardSearch.trim()) params.set("q", cardSearch.trim());
@@ -889,7 +903,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         }
         if (nextJob.status === "completed") {
           const [card] = await Promise.all([
-            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}`),
+            api(`/api/asset-cards/${encodeURIComponent(nextJob.asset_id)}?section=summary`),
             refreshLocalCards(),
           ]);
           if (!alive) return;
@@ -932,7 +946,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         const nextCardSummary = (refreshed.rows || []).find((item) => item.asset_id === completedAssetId)
           || (refreshed.rows || []).find((item) => item.ip_address === nextRun.options?.refresh_target_ip);
         if (nextRun.status === "completed" && nextCardSummary?.asset_id) {
-          const card = await api(`/api/asset-cards/${encodeURIComponent(nextCardSummary.asset_id)}`);
+          const card = await api(`/api/asset-cards/${encodeURIComponent(nextCardSummary.asset_id)}?section=summary`);
           if (!alive) return;
           setSelectedCard(card);
           setAssetWindowOpen(true);
@@ -1033,12 +1047,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       showAlert(`Загружено карточек из БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`, "success");
     });
 
-  const openLocalCard = (row) =>
-    runBusy("assetCardOpen", async () => {
-      const result = await api(`/api/asset-cards/${encodeURIComponent(row.asset_id)}`);
-      setSelectedCard(result);
-      setAssetWindowOpen(true);
-    });
+  const openLocalCard = (row) => {
+    setSelectedCard({ ...row, loaded_sections: ["summary"] });
+    setAssetWindowOpen(true);
+  };
 
   const updateLocalCard = (row) =>
     runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
@@ -1304,6 +1316,8 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           <AssetCard
             card={selectedCard}
             loading={busy.assetCardBuild || busy.assetCardOpen}
+            loadingSections={busy}
+            onLoadSection={loadAssetCardSection}
             onOpenPassport={openAssetPassport}
           />
       </PassportModal>
@@ -1736,13 +1750,18 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   );
 }
 
-function AssetCard({ card, loading, onOpenPassport }) {
+function AssetCard({ card, loading, loadingSections = {}, onLoadSection, onOpenPassport }) {
   const raw = assetCardRaw(card);
   const root = card?.root || raw.root || {};
   const data = root.data || {};
   const stats = assetCardStats(card);
-  const treeEntries = useMemo(() => buildAssetConfigTree(card), [card]);
-  const [activeTab, setActiveTab] = useState("configuration");
+  const [activeTab, setActiveTab] = useState("summary");
+  const configurationLoaded = hasAssetCardSection(card, "configuration");
+  const vulnerabilitiesLoaded = hasAssetCardSection(card, "vulnerabilities");
+  const treeEntries = useMemo(
+    () => (activeTab === "configuration" && configurationLoaded ? buildAssetConfigTree(card) : []),
+    [activeTab, card, configurationLoaded],
+  );
   const [expandedPaths, setExpandedPaths] = useState(["asset"]);
   const [selectedPath, setSelectedPath] = useState("asset");
   const expandedSet = useMemo(() => new Set(expandedPaths), [expandedPaths]);
@@ -1757,16 +1776,33 @@ function AssetCard({ card, loading, onOpenPassport }) {
   const title = firstFilled(card?.display_name, raw.display_name, root.displayName, data.hostname, card?.asset_id, raw.asset_id);
   const assetId = firstFilled(card?.asset_id, raw.asset_id, root.objectId);
   const assetType = firstFilled(card?.asset_type, raw.asset_type, root.type);
+  const hostname = firstFilled(card?.hostname, data.hostname, root.displayName);
   const ipAddress = firstFilled(card?.ip_address, data.ipAddress);
   const fqdn = firstFilled(card?.fqdn, data.fqdn);
   const osLine = [firstFilled(card?.os_name, data.osName), firstFilled(card?.os_version, data.osVersion)].filter(Boolean).join(" ");
 
   useEffect(() => {
+    if (!card) return;
+    setActiveTab("summary");
+    setExpandedPaths(["asset"]);
+    setSelectedPath("asset");
+  }, [card?.asset_id]);
+
+  useEffect(() => {
     if (!card || !treeEntries.length) return;
     setExpandedPaths(defaultAssetTreeExpandedPaths(treeEntries));
-    setSelectedPath(treeEntries[0].path);
-    setActiveTab("configuration");
+    setSelectedPath((current) => treeEntries.some((entry) => entry.path === current) ? current : treeEntries[0].path);
   }, [card, treeEntries]);
+
+  useEffect(() => {
+    if (!card) return;
+    if (activeTab === "configuration" && !configurationLoaded && !loadingSections["assetCardSection:configuration"]) {
+      onLoadSection?.("configuration");
+    }
+    if (activeTab === "vulnerabilities" && !vulnerabilitiesLoaded && !loadingSections["assetCardSection:vulnerabilities"]) {
+      onLoadSection?.("vulnerabilities");
+    }
+  }, [activeTab, card, configurationLoaded, loadingSections, onLoadSection, vulnerabilitiesLoaded]);
 
   useEffect(() => {
     if (!card) return undefined;
@@ -1820,6 +1856,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
         <AssetSummaryTab
           assetId={assetId}
           assetType={assetType}
+          hostname={hostname}
           fqdn={fqdn}
           ipAddress={ipAddress}
           osLine={osLine}
@@ -1829,25 +1866,41 @@ function AssetCard({ card, loading, onOpenPassport }) {
         />
       ) : null}
       {activeTab === "vulnerabilities" ? (
-        <AssetVulnerabilitiesTab card={card} onOpenPassport={onOpenPassport} />
+        vulnerabilitiesLoaded ? (
+          <AssetVulnerabilitiesTab card={card} onOpenPassport={onOpenPassport} />
+        ) : (
+          <AssetSectionLoading loading={loadingSections["assetCardSection:vulnerabilities"]} />
+        )
       ) : null}
       {activeTab === "configuration" ? (
-        <div className="asset-config-layout">
-          <AssetTree
-            entries={visibleTreeEntries}
-            selectedPath={selectedEntry?.path}
-            expandedSet={expandedSet}
-            onToggle={toggleTreeEntry}
-            onSelect={setSelectedPath}
-          />
-          <AssetConfigTable card={card} entry={selectedEntry} />
-        </div>
+        configurationLoaded ? (
+          <div className="asset-config-layout">
+            <AssetTree
+              entries={visibleTreeEntries}
+              selectedPath={selectedEntry?.path}
+              expandedSet={expandedSet}
+              onToggle={toggleTreeEntry}
+              onSelect={setSelectedPath}
+            />
+            <AssetConfigTable card={card} entry={selectedEntry} />
+          </div>
+        ) : (
+          <AssetSectionLoading loading={loadingSections["assetCardSection:configuration"]} />
+        )
       ) : null}
     </div>
   );
 }
 
-function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, stats, loading }) {
+function AssetSectionLoading({ loading }) {
+  return (
+    <div className="passport-placeholder">
+      {loading ? "Р Р°Р·РґРµР» Р·Р°РіСЂСѓР¶Р°РµС‚СЃСЏ..." : "Р Р°Р·РґРµР» Р±СѓРґРµС‚ Р·Р°РіСЂСѓР¶РµРЅ РїСЂРё РѕС‚РєСЂС‹С‚РёРё."}
+    </div>
+  );
+}
+
+function AssetSummaryTab({ assetId, assetType, hostname, fqdn, ipAddress, osLine, root, stats, loading }) {
   const warnings = stats.warnings || [];
   return (
     <div className="asset-summary-grid">
@@ -1855,7 +1908,7 @@ function AssetSummaryTab({ assetId, assetType, fqdn, ipAddress, osLine, root, st
         <PassportSection title="Основная информация">
           <KeyValue label="asset_id" value={assetId} />
           <KeyValue label="Type" value={assetType} />
-          <KeyValue label="Hostname" value={firstFilled(root?.data?.hostname, root?.displayName)} />
+          <KeyValue label="Hostname" value={hostname} />
           <KeyValue label="FQDN" value={fqdn} />
           <KeyValue label="IP" value={ipAddress} />
           <KeyValue label="ОС" value={osLine} />
@@ -2419,6 +2472,40 @@ function buildAssetCandidateSearchText(row) {
 
 function assetCardRaw(card) {
   return card || {};
+}
+
+function assetCardLoadedSections(card) {
+  return new Set(Array.isArray(card?.loaded_sections) ? card.loaded_sections : []);
+}
+
+function hasAssetCardSection(card, section) {
+  if (!card) return false;
+  const sections = assetCardLoadedSections(card);
+  if (sections.has(section) || sections.has("full")) return true;
+  if (!sections.size) {
+    if (section === "configuration") return Array.isArray(card.nodes) || Array.isArray(card.collections) || Array.isArray(card.table_rows);
+    if (section === "vulnerabilities") return Boolean(card.vulnerabilities);
+    return true;
+  }
+  return section === "summary" && sections.has("summary");
+}
+
+function mergeAssetCardSection(current, sectionCard) {
+  if (!sectionCard) return current;
+  if (!current || current.asset_id !== sectionCard.asset_id) return sectionCard;
+  const sections = Array.from(new Set([
+    ...Array.from(assetCardLoadedSections(current)),
+    ...Array.from(assetCardLoadedSections(sectionCard)),
+  ]));
+  const next = { ...current, ...sectionCard, loaded_sections: sections };
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "root") && current.root) next.root = current.root;
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "metadata") && current.metadata) next.metadata = current.metadata;
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "nodes") && current.nodes) next.nodes = current.nodes;
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "collections") && current.collections) next.collections = current.collections;
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "table_rows") && current.table_rows) next.table_rows = current.table_rows;
+  if (!Object.prototype.hasOwnProperty.call(sectionCard, "vulnerabilities") && current.vulnerabilities) next.vulnerabilities = current.vulnerabilities;
+  next.stats = { ...(current.stats || {}), ...(sectionCard.stats || {}) };
+  return next;
 }
 
 function assetCardStats(card) {

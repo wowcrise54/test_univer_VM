@@ -1880,8 +1880,11 @@ def export_asset_card_query(payload: AssetCardFieldQueryRequest) -> Response:
 
 
 @asset_cards_router.get("/api/asset-cards/{asset_id}")
-def local_asset_card(asset_id: str) -> dict[str, Any]:
-    card = CONTAINER.services.asset_cards.get(asset_id)
+def local_asset_card(
+    asset_id: str,
+    section: Literal["full", "summary", "configuration", "vulnerabilities"] = "full",
+) -> dict[str, Any]:
+    card = CONTAINER.services.asset_cards.get(asset_id, section=section)
     if not card:
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
     return card

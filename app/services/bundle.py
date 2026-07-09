@@ -40,8 +40,8 @@ class AssetCardsService:
     def list(self, **filters: Any) -> dict[str, Any]:
         return self._repository.list(**filters)
 
-    def get(self, asset_id: str) -> dict[str, Any] | None:
-        return self._repository.get(asset_id)
+    def get(self, asset_id: str, *, section: str = "full") -> dict[str, Any] | None:
+        return self._repository.get(asset_id, section=section)
 
 
 class PassportsService:

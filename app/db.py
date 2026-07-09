@@ -3137,7 +3137,14 @@ def load_asset_card_vulnerabilities(
     return result
 
 
-def load_asset_card_cache(
+ASSET_CARD_BASE_COLUMNS = """
+    id, asset_id, display_name, asset_type, fqdn, hostname, ip_address,
+    os_name, os_version, vulnerability_level, token_timestamp,
+    root_json, metadata_json, stats_json, first_seen, last_seen
+"""
+
+
+def load_asset_card_structure(
     conn: psycopg.Connection[dict[str, Any]],
     asset_id: str,
 ) -> dict[str, Any]:
@@ -3191,6 +3198,15 @@ def load_asset_card_cache(
         "nodes": [node for node in nodes if isinstance(node, dict)],
         "collections": list(collection_docs.values()),
         "table_rows": [row for row in table_rows if isinstance(row, dict)],
+    }
+
+
+def load_asset_card_cache(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+) -> dict[str, Any]:
+    return {
+        **load_asset_card_structure(conn, asset_id),
         "vulnerabilities": load_asset_card_vulnerabilities(conn, asset_id),
     }
 
@@ -3204,7 +3220,41 @@ def get_asset_card(asset_id: str) -> dict[str, Any] | None:
             legacy_card = decode_asset_card(dict(row))
             replace_asset_card_cache(conn, asset_id, legacy_card, now_utc())
             cache = load_asset_card_cache(conn, asset_id)
-    return decode_asset_card(dict(row), cache=cache) if row else None
+    card = decode_asset_card(dict(row), cache=cache) if row else None
+    if card:
+        card["loaded_sections"] = ["summary", "configuration", "vulnerabilities"]
+    return card
+
+
+def get_asset_card_section(asset_id: str, section: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT {ASSET_CARD_BASE_COLUMNS} FROM asset_cards WHERE asset_id = %s",
+            (asset_id,),
+        ).fetchone()
+        if not row:
+            return None
+        cache: dict[str, Any] = {}
+        loaded_sections = ["summary"]
+        if section == "configuration":
+            cache.update(load_asset_card_structure(conn, asset_id))
+            cache["vulnerabilities"] = {}
+            loaded_sections.append("configuration")
+        elif section == "vulnerabilities":
+            cache["vulnerabilities"] = load_asset_card_vulnerabilities(conn, asset_id)
+            loaded_sections.append("vulnerabilities")
+    card = decode_asset_card(dict(row), cache=cache)
+    if section == "summary":
+        for key in ("metadata", "nodes", "collections", "table_rows", "vulnerabilities"):
+            card.pop(key, None)
+    elif section == "configuration":
+        card.pop("vulnerabilities", None)
+    elif section == "vulnerabilities":
+        for key in ("metadata", "nodes", "collections", "table_rows"):
+            card.pop(key, None)
+    card["loaded_sections"] = loaded_sections
+    return card
 
 
 def delete_asset_card(asset_id: str) -> bool:

@@ -464,6 +464,66 @@ class AssetCardJobApiTests(unittest.TestCase):
 
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def asset_card_row(self):
+        return {
+            "id": 1,
+            "asset_id": "asset-1",
+            "display_name": "Fixture host",
+            "asset_type": "Host",
+            "fqdn": "fixture.local",
+            "hostname": "fixture",
+            "ip_address": "10.0.0.1",
+            "os_name": "Linux",
+            "os_version": "1",
+            "vulnerability_level": "medium",
+            "token_timestamp": 123,
+            "root_json": '{"displayName":"Fixture host","type":"Host","data":{"hostname":"fixture"}}',
+            "metadata_json": '{"Host":{"properties":[]}}',
+            "stats_json": '{"nodes":2,"collections":1}',
+            "first_seen": "2026-01-01T00:00:00+00:00",
+            "last_seen": "2026-01-01T00:00:00+00:00",
+        }
+
+    def test_asset_card_summary_section_omits_heavy_arrays(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = self.asset_card_row()
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+            card = db.get_asset_card_section("asset-1", "summary")
+
+        self.assertEqual(card["loaded_sections"], ["summary"])
+        self.assertEqual(card["display_name"], "Fixture host")
+        self.assertNotIn("nodes", card)
+        self.assertNotIn("collections", card)
+        self.assertNotIn("table_rows", card)
+        self.assertNotIn("vulnerabilities", card)
+
+    def test_asset_card_configuration_section_does_not_load_vulnerabilities(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = self.asset_card_row()
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+
+        with (
+            patch.object(db, "init_db"),
+            patch.object(db, "connect", connect),
+            patch.object(db, "load_asset_card_structure", return_value={
+                "nodes": [{"path": "asset.node"}],
+                "collections": [],
+                "table_rows": [],
+            }) as structure,
+            patch.object(db, "load_asset_card_vulnerabilities") as vulnerabilities,
+        ):
+            card = db.get_asset_card_section("asset-1", "configuration")
+
+        structure.assert_called_once()
+        vulnerabilities.assert_not_called()
+        self.assertEqual(card["loaded_sections"], ["summary", "configuration"])
+        self.assertEqual(card["nodes"], [{"path": "asset.node"}])
+        self.assertNotIn("vulnerabilities", card)
+
     def test_copy_rows_streams_every_row_in_one_copy_operation(self):
         writer = MagicMock()
         cursor = MagicMock()

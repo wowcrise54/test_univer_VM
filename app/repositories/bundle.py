@@ -34,8 +34,10 @@ class AssetsRepository:
 
 
 class AssetCardsRepository:
-    def get(self, asset_id: str) -> dict[str, Any] | None:
-        return db.get_asset_card(asset_id)
+    def get(self, asset_id: str, *, section: str = "full") -> dict[str, Any] | None:
+        if section == "full":
+            return db.get_asset_card(asset_id)
+        return db.get_asset_card_section(asset_id, section)
 
     def list(self, **filters: Any) -> dict[str, Any]:
         return db.list_asset_cards(**filters)
