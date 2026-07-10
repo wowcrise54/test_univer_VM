@@ -16,6 +16,7 @@ EXPECTED_API_PATHS = {
     "/api/scanner-tasks",
     "/api/operations",
     "/api/exports/pdql",
+    "/api/reports/vulnerabilities/{report_type}/csv",
     "/api/assets",
     "/api/asset-cards/local",
     "/api/asset-card-query",

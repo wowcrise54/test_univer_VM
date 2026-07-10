@@ -185,6 +185,7 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `POST /api/scanner-tasks/{id}/stop` - остановить задачу.
 - `POST /api/scanner-tasks/{id}/delete` - удалить задачу в MP VM и убрать локальную строку.
 - `POST /api/exports/pdql` - выполнить PDQL, скачать CSV, импортировать в PostgreSQL и при необходимости удалить активы из MP VM.
+- `POST /api/reports/vulnerabilities/{type}/csv` - скачать детальный CSV по локальным уязвимостям ОС (`os`) или ПО (`software`); пустой `asset_ids` включает все сохранённые хосты.
 - `POST /api/import/sample` - импортировать пример `host_software_vulnerabilities_10.104.103.0_24.csv`.
 - `GET /api/assets` - таблица сохранённых строк уязвимостей.
 - `GET /api/assets/summary` - сводка локальной БД.

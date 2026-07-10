@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, createIdempotencyKey } from "./api/client.js";
+import { api, createIdempotencyKey, downloadApiFile } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
 import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, ConfirmDialog, Field, Panel, Toggle } from "./shared/ui.jsx";
@@ -712,6 +712,7 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
     utc_offset: "+05:00",
     group_ids: "",
     asset_ids: "",
+    report_asset_ids: "",
     include_nested_groups: true,
     import_results: true,
     delete_assets_after_export: true,
@@ -765,6 +766,15 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
     event.target.value = "";
   };
 
+  const downloadVulnerabilityReport = (reportType) =>
+    runBusy(`report-${reportType}`, async () => {
+      const report = await downloadApiFile(`/api/reports/vulnerabilities/${reportType}/csv`, {
+        method: "POST",
+        body: JSON.stringify({ asset_ids: [...new Set(splitTokens(form.report_asset_ids))] }),
+      });
+      showAlert(`CSV-отчёт сформирован: ${report.filename}`, "success");
+    });
+
   return (
     <Panel
       id="export"
@@ -797,6 +807,36 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
           <input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
         </label>
       </div>
+      <section className="options-card" aria-labelledby="vulnerability-reports-title">
+        <div>
+          <h3 id="vulnerability-reports-title">Отчётность по уязвимостям</h3>
+          <p>Детальные CSV формируются по локально сохранённым карточкам хостов. Пустой список включает все хосты.</p>
+        </div>
+        <Field label="Asset ID для отчёта" wide>
+          <textarea
+            rows={3}
+            value={form.report_asset_ids}
+            onChange={(event) => update("report_asset_ids", event.target.value)}
+            placeholder="Один или несколько Asset ID через запятую или с новой строки"
+          />
+        </Field>
+        <div className="action-row">
+          <Button
+            variant="secondary"
+            busy={busy["report-os"]}
+            onClick={() => downloadVulnerabilityReport("os")}
+          >
+            Скачать уязвимости ОС
+          </Button>
+          <Button
+            variant="secondary"
+            busy={busy["report-software"]}
+            onClick={() => downloadVulnerabilityReport("software")}
+          >
+            Скачать уязвимости ПО
+          </Button>
+        </div>
+      </section>
       {result ? <pre className="result-box">{result}</pre> : null}
     </Panel>
   );

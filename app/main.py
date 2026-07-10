@@ -77,6 +77,7 @@ from .api.schemas import (
     ScannerTaskRequest,
     StartScannerTaskRequest,
     VulnerabilityPassportQueryRequest,
+    VulnerabilityReportRequest,
     AutomationPublishRequest,
     AutomationRunRequest,
     AutomationRunbookRequest,
@@ -1563,6 +1564,66 @@ def refresh_asset_card_by_scan(
         "postprocess": postprocess,
         "operation_id": postprocess_run_id,
     }
+
+
+VULNERABILITY_REPORT_HEADERS = {
+    "os": [
+        "Asset ID", "IP-адрес", "FQDN", "Имя хоста", "ОС", "Версия ОС",
+        "CVE", "Уязвимость", "Критичность", "CVSS", "Дата обновления карточки",
+    ],
+    "software": [
+        "Asset ID", "IP-адрес", "FQDN", "Имя хоста", "Программное обеспечение",
+        "CVE", "Уязвимость", "Критичность", "CVSS", "Дата обновления карточки",
+    ],
+}
+
+
+def safe_csv_cell(value: Any) -> Any:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return value
+    if value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def stream_vulnerability_report_csv(report_type: Literal["os", "software"], rows):
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";", lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(VULNERABILITY_REPORT_HEADERS[report_type])
+    yield "\ufeff" + output.getvalue()
+    for row in rows:
+        output.seek(0)
+        output.truncate(0)
+        common = [
+            row.get("asset_id"), row.get("ip_address"), row.get("fqdn"), row.get("hostname"),
+        ]
+        if report_type == "os":
+            values = common + [row.get("os_name"), row.get("os_version")]
+        else:
+            values = common + [row.get("object_name")]
+        values += [
+            row.get("cve_name"), row.get("vulnerability_name"), row.get("severity"),
+            row.get("cvss_score"), row.get("last_seen"),
+        ]
+        writer.writerow([safe_csv_cell(value) for value in values])
+        yield output.getvalue()
+
+
+@imports_router.post("/api/reports/vulnerabilities/{report_type}/csv")
+def export_vulnerability_report(
+    report_type: Literal["os", "software"],
+    payload: VulnerabilityReportRequest,
+) -> StreamingResponse:
+    rows = db.iter_vulnerability_report_rows(report_type, payload.asset_ids)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"host_{'os' if report_type == 'os' else 'software'}_vulnerabilities_{timestamp}.csv"
+    return StreamingResponse(
+        stream_vulnerability_report_csv(report_type, rows),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @asset_cards_router.get("/api/asset-cards/build-jobs/{job_id}")

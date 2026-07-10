@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..mpvm_client import ASSET_CARD_PDQL, SOFTWARE_VULN_PDQL, VULNER_PASSPORT_PDQL
 
@@ -79,6 +79,31 @@ class CsvTextImportRequest(BaseModel):
     source: str = "manual_text"
     pdql: str | None = None
     csv_filename: str | None = None
+
+
+class VulnerabilityReportRequest(BaseModel):
+    asset_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("asset_ids", mode="before")
+    @classmethod
+    def normalize_asset_ids(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("asset_ids must be a list")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("asset_ids must contain strings")
+            asset_id = raw.strip()
+            if not asset_id or asset_id in seen:
+                continue
+            seen.add(asset_id)
+            normalized.append(asset_id)
+            if len(normalized) > 5000:
+                raise ValueError("asset_ids must contain no more than 5000 unique values")
+        return normalized
 
 
 class VulnerabilityPassportQueryRequest(BaseModel):
