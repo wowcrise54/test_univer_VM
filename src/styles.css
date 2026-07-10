@@ -1588,11 +1588,21 @@ td code {
 }
 
 .asset-config-layout {
+  position: relative;
   display: grid;
   grid-template-columns: clamp(420px, 42vw, 680px) minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+.asset-config-layout > .passport-load-error {
+  position: absolute;
+  z-index: 6;
+  top: 8px;
+  right: 12px;
+  left: 12px;
+  margin: 0;
 }
 
 .asset-tree-pane {
@@ -1834,25 +1844,24 @@ td code {
 }
 
 .asset-property-list {
-  display: grid;
-  gap: 10px;
-  width: min(560px, 100%);
-  margin: 0 auto;
-  padding: 14px 24px 38px;
+  display: table;
+  width: 100%;
+  min-width: 520px;
+  margin: 0;
 }
 
 .asset-property-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  padding-left: calc(var(--depth, 0) * 14px);
+  display: table-row;
+}
+
+.asset-property-list th:first-child,
+.asset-property-list td:first-child {
+  width: 38%;
 }
 
 .asset-property-name {
-  display: grid;
-  justify-items: end;
-  text-align: right;
+  padding-left: calc(12px + var(--depth, 0) * 14px) !important;
+  text-align: left;
 }
 
 .asset-property-name span {
@@ -1862,6 +1871,7 @@ td code {
 }
 
 .asset-property-name small {
+  display: block;
   color: #9ca3af;
   font-size: 10px;
   line-height: 1.15;

@@ -3270,6 +3270,46 @@ def load_asset_card_cache(
     }
 
 
+def _hydrate_legacy_asset_card_cache(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+    row: dict[str, Any],
+) -> bool:
+    """Populate normalized paging tables for cards saved before they existed."""
+    legacy_structure = any(
+        json_loads(row.get(column), [])
+        for column in ("nodes_json", "collections_json", "table_rows_json")
+    )
+    legacy_vulnerabilities = json_loads(row.get("vulnerabilities_json"), {})
+    legacy_groups = iter_asset_card_vulnerability_groups(legacy_vulnerabilities)
+    if not legacy_structure and not legacy_groups:
+        return False
+
+    coverage = conn.execute(
+        """
+        SELECT
+            EXISTS (
+                SELECT 1 FROM asset_card_nodes WHERE asset_id = %s
+                UNION ALL
+                SELECT 1 FROM asset_card_collections WHERE asset_id = %s
+                UNION ALL
+                SELECT 1 FROM asset_card_table_rows WHERE asset_id = %s
+            ) AS has_structure,
+            EXISTS (
+                SELECT 1 FROM asset_card_vulnerability_groups WHERE asset_id = %s
+            ) AS has_vulnerabilities
+        """,
+        (asset_id, asset_id, asset_id, asset_id),
+    ).fetchone()
+    needs_structure = bool(legacy_structure) and not bool(coverage["has_structure"])
+    needs_vulnerabilities = bool(legacy_groups) and not bool(coverage["has_vulnerabilities"])
+    if not needs_structure and not needs_vulnerabilities:
+        return False
+
+    replace_asset_card_cache(conn, asset_id, decode_asset_card(row), now_utc())
+    return True
+
+
 def get_asset_card(asset_id: str) -> dict[str, Any] | None:
     init_db()
     with connect() as conn:
@@ -3406,26 +3446,42 @@ def _direct_child_filter_sql(parent_path: str) -> tuple[str, list[Any]]:
     prefix = f"{parent_path}."
     rest_start = len(prefix) + 1
     return (
-        "path LIKE %s AND POSITION('.' IN SUBSTRING(path FROM %s)) = 0 AND POSITION('[' IN SUBSTRING(path FROM %s)) = 0",
-        [f"{prefix}%", rest_start, rest_start],
+        """
+        (
+            (path LIKE %s AND POSITION('.' IN SUBSTRING(path FROM %s)) = 0 AND POSITION('[' IN SUBSTRING(path FROM %s)) = 0)
+            OR path ~ %s
+        )
+        """,
+        [f"{prefix}%", rest_start, rest_start, rf"^{re.escape(parent_path)}\[\d+\]$"],
     )
 
 
-def _has_asset_tree_children(conn: psycopg.Connection[dict[str, Any]], asset_id: str, path: str) -> bool:
-    child_prefix = f"{path}.%"
-    return bool(conn.execute(
+def _asset_tree_paths_with_children(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+    paths: list[str],
+) -> set[str]:
+    if not paths:
+        return set()
+    rows = conn.execute(
         """
-        SELECT EXISTS (
-            SELECT 1 FROM asset_card_nodes WHERE asset_id = %s AND path LIKE %s
+        SELECT DISTINCT candidate.path
+        FROM UNNEST(%s::text[]) AS candidate(path)
+        JOIN (
+            SELECT path FROM asset_card_nodes WHERE asset_id = %s
             UNION ALL
-            SELECT 1 FROM asset_card_collections WHERE asset_id = %s AND path LIKE %s
-        ) AS has_children
+            SELECT path FROM asset_card_collections WHERE asset_id = %s
+        ) AS child
+          ON child.path LIKE candidate.path || '.%%'
+          OR child.path LIKE candidate.path || '[%%'
+        WHERE child.path <> candidate.path
         """,
-        (asset_id, child_prefix, asset_id, child_prefix),
-    ).fetchone()["has_children"])
+        (paths, asset_id, asset_id),
+    ).fetchall()
+    return {str(row["path"]) for row in rows}
 
 
-def _asset_tree_row(conn: psycopg.Connection[dict[str, Any]], asset_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+def _asset_tree_row(raw: dict[str, Any], *, has_children: bool = False) -> dict[str, Any]:
     path = clean_value(raw.get("path")) or "asset"
     kind = clean_value(raw.get("kind")) or "node"
     parent_path = asset_tree_parent_path(path)
@@ -3441,7 +3497,7 @@ def _asset_tree_row(conn: psycopg.Connection[dict[str, Any]], asset_id: str, raw
         "subtitle": subtitle,
         "kind": kind,
         "meta": meta,
-        "has_children": _has_asset_tree_children(conn, asset_id, path),
+        "has_children": has_children,
         "depth": asset_tree_depth(path),
         "source": {
             "path": path,
@@ -3464,11 +3520,12 @@ def list_asset_card_configuration_tree(
     parent = clean_value(parent_path) or "asset"
     with connect() as conn:
         card = conn.execute(
-            f"SELECT {ASSET_CARD_BASE_COLUMNS} FROM asset_cards WHERE asset_id = %s",
+            "SELECT * FROM asset_cards WHERE asset_id = %s",
             (asset_id,),
         ).fetchone()
         if not card:
             return None
+        _hydrate_legacy_asset_card_cache(conn, asset_id, dict(card))
         filter_sql, filter_params = _direct_child_filter_sql(parent)
         total = int(conn.execute(
             f"""
@@ -3516,6 +3573,12 @@ def list_asset_card_configuration_tree(
             """,
             [asset_id, *filter_params, asset_id, *filter_params, limit],
         ).fetchall()
+        raw_rows = [dict(row) for row in rows]
+        child_paths = _asset_tree_paths_with_children(
+            conn,
+            asset_id,
+            [clean_value(row.get("path")) or "asset" for row in raw_rows],
+        )
         entries: list[dict[str, Any]] = []
         if not clean_value(parent_path):
             root = json_loads(card.get("root_json"), {})
@@ -3538,8 +3601,9 @@ def list_asset_card_configuration_tree(
                 "source": {"path": "asset", "type": first_non_empty(card.get("asset_type"), "asset"), "title": root_label},
             })
         seen = {entry["path"] for entry in entries}
-        for row in rows:
-            entry = _asset_tree_row(conn, asset_id, dict(row))
+        for row in raw_rows:
+            path = clean_value(row.get("path")) or "asset"
+            entry = _asset_tree_row(row, has_children=path in child_paths)
             if entry["path"] in seen:
                 continue
             entries.append(entry)
@@ -3627,11 +3691,12 @@ def get_asset_card_configuration_detail(
     target_kind = clean_value(kind) or "node"
     with connect() as conn:
         card_row = conn.execute(
-            f"SELECT {ASSET_CARD_BASE_COLUMNS} FROM asset_cards WHERE asset_id = %s",
+            "SELECT * FROM asset_cards WHERE asset_id = %s",
             (asset_id,),
         ).fetchone()
         if not card_row:
             return None
+        _hydrate_legacy_asset_card_cache(conn, asset_id, dict(card_row))
         if target_kind == "root":
             root = json_loads(card_row.get("root_json"), {})
             data = root.get("data") if isinstance(root, dict) and isinstance(root.get("data"), dict) else {}
@@ -3794,11 +3859,12 @@ def list_asset_card_vulnerability_groups(asset_id: str) -> dict[str, Any] | None
     init_db()
     with connect() as conn:
         stored_row = conn.execute(
-            "SELECT vulnerabilities_json FROM asset_cards WHERE asset_id = %s",
+            "SELECT * FROM asset_cards WHERE asset_id = %s",
             (asset_id,),
         ).fetchone()
         if not stored_row:
             return None
+        _hydrate_legacy_asset_card_cache(conn, asset_id, dict(stored_row))
         stored = json_loads(stored_row.get("vulnerabilities_json"), {})
         result = strip_asset_card_raw(stored) if isinstance(stored, dict) else {}
         sources = result.get("sources") if isinstance(result.get("sources"), list) else []
@@ -3874,8 +3940,10 @@ def list_asset_card_vulnerability_findings(
     if not source_type or not group_collection_id:
         raise ValueError("source and collection_id are required.")
     with connect() as conn:
-        if not conn.execute("SELECT 1 FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone():
+        card_row = conn.execute("SELECT * FROM asset_cards WHERE asset_id = %s", (asset_id,)).fetchone()
+        if not card_row:
             return None
+        _hydrate_legacy_asset_card_cache(conn, asset_id, dict(card_row))
         group_row = conn.execute(
             """
             SELECT *

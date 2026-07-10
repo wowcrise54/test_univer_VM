@@ -560,8 +560,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
                     "kind": "node",
                 },
             ]),
-            self.db_result(one={"has_children": False}),
-            self.db_result(one={"has_children": True}),
+            self.db_result(many=[{"path": "asset.os"}]),
         ]
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
@@ -573,6 +572,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(tree["rows"][1]["parent_path"], "asset")
         self.assertEqual(tree["rows"][1]["meta"], "200 / 300")
         self.assertTrue(tree["rows"][2]["has_children"])
+        self.assertEqual(connection.execute.call_count, 4)
 
     def test_asset_card_configuration_detail_is_paginated(self):
         connection = MagicMock()
@@ -606,6 +606,33 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(detail["limit"], 1)
         self.assertTrue(detail["has_more"])
         self.assertEqual(detail["rows"][0]["name"], "nginx")
+
+    def test_legacy_asset_card_cache_is_hydrated_before_paged_reads(self):
+        row = {
+            **self.asset_card_row(),
+            "nodes_json": '[{"path":"asset.os","title":"OS"}]',
+            "collections_json": "[]",
+            "table_rows_json": "[]",
+            "vulnerabilities_json": "{}",
+        }
+        connection = MagicMock()
+        connection.execute.return_value = self.db_result(
+            one={"has_structure": False, "has_vulnerabilities": False},
+        )
+
+        with patch.object(db, "replace_asset_card_cache") as replace_cache:
+            hydrated = db._hydrate_legacy_asset_card_cache(connection, "asset-1", row)
+
+        self.assertTrue(hydrated)
+        replace_cache.assert_called_once()
+        self.assertEqual(replace_cache.call_args.args[1], "asset-1")
+        self.assertEqual(replace_cache.call_args.args[2]["nodes"][0]["path"], "asset.os")
+
+    def test_direct_child_filter_includes_collection_items(self):
+        sql, params = db._direct_child_filter_sql("asset.software")
+
+        self.assertIn("path ~ %s", sql)
+        self.assertEqual(params[-1], r"^asset\.software\[\d+\]$")
 
     def test_asset_card_vulnerability_groups_do_not_return_findings(self):
         connection = MagicMock()

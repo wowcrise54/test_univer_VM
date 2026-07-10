@@ -1820,7 +1820,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
 function AssetSectionLoading({ loading }) {
   return (
     <div className="passport-placeholder">
-      {loading ? "Р Р°Р·РґРµР» Р·Р°РіСЂСѓР¶Р°РµС‚СЃСЏ..." : "Р Р°Р·РґРµР» Р±СѓРґРµС‚ Р·Р°РіСЂСѓР¶РµРЅ РїСЂРё РѕС‚РєСЂС‹С‚РёРё."}
+      {loading ? "Раздел загружается..." : "Раздел будет загружен при открытии."}
     </div>
   );
 }
@@ -2184,34 +2184,34 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
   };
 
   return (
-    <section className="asset-vulnerability-pane" aria-label="РЈСЏР·РІРёРјРѕСЃС‚Рё Р°РєС‚РёРІР°">
+    <section className="asset-vulnerability-pane" aria-label="Уязвимости актива">
       <div className="asset-vulnerability-toolbar">
         {sources.map((source, index) => (
           <span key={assetSourceKey(source, index)}>
-            {source.source === "os" ? "РЈСЏР·РІРёРјРѕСЃС‚Рё РћРЎ" : "РЈСЏР·РІРёРјРѕСЃС‚Рё РџРћ"}: <strong>{formatCount(sourceCount(source))}</strong>
+            {source.source === "os" ? "Уязвимости ОС" : "Уязвимости ПО"}: <strong>{formatCount(sourceCount(source))}</strong>
           </span>
         ))}
-        <span>РЎРµС‚РµРІС‹Рµ СЃРµСЂРІРёСЃС‹: <strong>{formatCount(header.network_services_vulnerabilities_count || 0)}</strong></span>
+        <span>Сетевые сервисы: <strong>{formatCount(header.network_services_vulnerabilities_count || 0)}</strong></span>
       </div>
       <div className="asset-vulnerability-heading">
         <div>
-          <strong>РЈСЏР·РІРёРјРѕСЃС‚Рё</strong>
-          <span>Р—Р°РіСЂСѓР¶РµРЅРѕ {formatCount(loadedFindingCount)} РёР· {formatCount(header.os_soft_vulnerabilities_count || loadedFindingCount)} СѓСЏР·РІРёРјРѕСЃС‚РµР№.</span>
+          <strong>Уязвимости</strong>
+          <span>Загружено {formatCount(loadedFindingCount)} из {formatCount(header.os_soft_vulnerabilities_count || loadedFindingCount)} уязвимостей.</span>
         </div>
         {sourceKeys.length ? (
           <div className="asset-vulnerability-controls">
-            <button type="button" onClick={expandAll}>Р Р°Р·РІРµСЂРЅСѓС‚СЊ РІСЃРµ</button>
-            <button type="button" onClick={collapseAll}>РЎРІРµСЂРЅСѓС‚СЊ РІСЃРµ</button>
+            <button type="button" onClick={expandAll}>Развернуть все</button>
+            <button type="button" onClick={collapseAll}>Свернуть все</button>
           </div>
         ) : null}
       </div>
       {error ? <div className="passport-load-error" role="alert">{error}</div> : null}
-      <div className="asset-vulnerability-table-shell" tabIndex="0" aria-label="РџСЂРѕРєСЂСѓС‡РёРІР°РµРјС‹Р№ СЃРїРёСЃРѕРє СѓСЏР·РІРёРјРѕСЃС‚РµР№">
+      <div className="asset-vulnerability-table-shell" tabIndex="0" aria-label="Прокручиваемый список уязвимостей">
         <table className="asset-vulnerability-table">
           <thead>
             <tr>
-              <SortableHeader column="name" sort={tableSort} onSort={toggleTableSort}>РЈСЏР·РІРёРјРѕСЃС‚Рё</SortableHeader>
-              <SortableHeader column="cvss_score" sort={tableSort} onSort={toggleTableSort} initialDirection="desc">РРЅС‚РµРіСЂР°Р»СЊРЅР°СЏ СѓСЏР·РІРёРјРѕСЃС‚СЊ</SortableHeader>
+              <SortableHeader column="name" sort={tableSort} onSort={toggleTableSort}>Уязвимости</SortableHeader>
+              <SortableHeader column="cvss_score" sort={tableSort} onSort={toggleTableSort} initialDirection="desc">Интегральная уязвимость</SortableHeader>
               <SortableHeader column="cve_name" sort={tableSort} onSort={toggleTableSort}>CVE</SortableHeader>
             </tr>
           </thead>
@@ -2230,8 +2230,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                         aria-expanded={!sourceCollapsed}
                         onClick={() => toggleSource(sourceKey)}
                       >
-                        <span className="asset-vulnerability-caret" aria-hidden="true">{sourceCollapsed ? "вЂє" : "вЊ„"}</span>
-                        <span>{source.title || (source.source === "os" ? "РЈСЏР·РІРёРјРѕСЃС‚Рё РћРЎ" : "РЈСЏР·РІРёРјРѕСЃС‚Рё РїСЂРѕРіСЂР°РјРјРЅРѕРіРѕ РѕР±РµСЃРїРµС‡РµРЅРёСЏ")} ({formatCount(sourceCount(source))})</span>
+                        <span className="asset-vulnerability-caret" aria-hidden="true">{sourceCollapsed ? "›" : "⌄"}</span>
+                        <span>{source.title || (source.source === "os" ? "Уязвимости ОС" : "Уязвимости программного обеспечения")} ({formatCount(sourceCount(source))})</span>
                       </button>
                     </td>
                   </tr>
@@ -2250,9 +2250,9 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                               aria-expanded={expanded}
                               onClick={() => toggleGroup(source, group, groupIndex)}
                             >
-                              <span className="asset-vulnerability-caret" aria-hidden="true">{expanded ? "вЊ„" : "вЂє"}</span>
-                              <span><strong>{group.name || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ"}</strong> ({formatCount(group.vulnerabilities_count || page.total || 0)})</span>
-                              {group.truncated ? <small>РџРѕРєР°Р·Р°РЅР° РЅРµРїРѕР»РЅР°СЏ РєРѕР»Р»РµРєС†РёСЏ</small> : null}
+                              <span className="asset-vulnerability-caret" aria-hidden="true">{expanded ? "⌄" : "›"}</span>
+                              <span><strong>{group.name || "Без названия"}</strong> ({formatCount(group.vulnerabilities_count || page.total || 0)})</span>
+                              {group.truncated ? <small>Показана неполная коллекция</small> : null}
                             </button>
                           </td>
                           <td>{formatVulnerabilityScore(group.cvss_score)}</td>
@@ -2264,8 +2264,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                           return (
                             <tr className="asset-vulnerability-finding" key={finding.vulnerability_instance_id || `${group.collection_id}-${findingIndex}`}>
                               <td>
-                                <span className="asset-vulnerability-leaf">вЂў</span>
-                                <span>{finding.name || finding.cve_name || "РЈСЏР·РІРёРјРѕСЃС‚СЊ Р±РµР· РЅР°Р·РІР°РЅРёСЏ"}</span>
+                                <span className="asset-vulnerability-leaf">•</span>
+                                <span>{finding.name || finding.cve_name || "Уязвимость без названия"}</span>
                               </td>
                               <td>{formatVulnerabilityScore(finding.cvss_score)}</td>
                               <td>
@@ -2274,13 +2274,13 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                     type="button"
                                     className="asset-vulnerability-passport-link"
                                     onClick={() => onOpenPassport?.(passport)}
-                                    title={`РћС‚РєСЂС‹С‚СЊ РїР°СЃРїРѕСЂС‚ ${assetPassportLabel(passport)}`}
+                                    title={`Открыть паспорт ${assetPassportLabel(passport)}`}
                                   >
-                                    {finding.cve_name || "РћС‚РєСЂС‹С‚СЊ РїР°СЃРїРѕСЂС‚"}
+                                    {finding.cve_name || "Открыть паспорт"}
                                   </button>
                                 ) : passports.length > 1 ? (
                                   <details className="asset-vulnerability-passport-picker">
-                                    <summary>РџР°СЃРїРѕСЂС‚Р°: {formatCount(passports.length)}</summary>
+                                    <summary>Паспорта: {formatCount(passports.length)}</summary>
                                     <div className="asset-vulnerability-passport-options">
                                       {passports.map((item) => (
                                         <button
@@ -2289,24 +2289,24 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                           onClick={() => onOpenPassport?.(item)}
                                         >
                                           <strong>{assetPassportLabel(item)}</strong>
-                                          <span>{[item.severity, item.external_id, item.internal_id].filter(Boolean).join(" В· ")}</span>
+                                          <span>{[item.severity, item.external_id, item.internal_id].filter(Boolean).join(" · ")}</span>
                                         </button>
                                       ))}
                                     </div>
                                   </details>
                                 ) : (
-                                  finding.cve_name || "вЂ”"
+                                  finding.cve_name || "—"
                                 )}
                               </td>
                             </tr>
                           );
                         }) : null}
-                        {expanded && loadingFindings[key] ? <tr><td colSpan={3} className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</td></tr> : null}
+                        {expanded && loadingFindings[key] ? <tr><td colSpan={3} className="empty-cell">Загрузка...</td></tr> : null}
                         {expanded && page.has_more ? (
                           <tr>
                             <td colSpan={3} className="table-footer">
                               <Button variant="tiny" busy={loadingFindings[key]} onClick={() => loadFindings(source, group, page.rows.length)}>
-                                Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘
+                                Загрузить ещё
                               </Button>
                             </td>
                           </tr>
@@ -2318,10 +2318,10 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
               );
             })}
             {loadingGroups ? (
-              <tr><td colSpan={3} className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</td></tr>
+              <tr><td colSpan={3} className="empty-cell">Загрузка...</td></tr>
             ) : null}
             {!loadingGroups && !sources.some((source) => (source.groups || []).length) ? (
-              <tr><td colSpan={3} className="empty-cell">РЈСЏР·РІРёРјРѕСЃС‚РµР№ РІ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРј СЃРЅРёРјРєРµ РЅРµС‚.</td></tr>
+              <tr><td colSpan={3} className="empty-cell">Уязвимостей в сохранённом снимке нет.</td></tr>
             ) : null}
           </tbody>
         </table>
@@ -2509,14 +2509,14 @@ function AssetConfigTablePaged({ entry, detail, loading, onLoadMore }) {
   if (!entry) {
     return (
       <section className="asset-detail-pane">
-        <div className="empty-cell">{loading ? "Р—Р°РіСЂСѓР·РєР°..." : "Р’С‹Р±РµСЂРёС‚Рµ СЂР°Р·РґРµР» СЃР»РµРІР°."}</div>
+        <div className="empty-cell">{loading ? "Загрузка..." : "Выберите раздел слева."}</div>
       </section>
     );
   }
 
   return (
     <section className={`asset-detail-pane asset-detail-pane--${table.layout || "table"}`} aria-label={entry.label}>
-      {loading && !detail ? <div className="empty-cell">Р—Р°РіСЂСѓР·РєР°...</div> : null}
+      {loading && !detail ? <div className="empty-cell">Загрузка...</div> : null}
       {table.layout === "properties" ? (
         <AssetPropertyList rows={table.rows || []} />
       ) : (
@@ -2533,16 +2533,16 @@ function AssetConfigTablePaged({ entry, detail, loading, onLoadMore }) {
                   {(table.columns || []).map((column) => <td key={column.key}>{formatAssetCell(row[column.key])}</td>)}
                 </tr>
               )) : (
-                <tr><td colSpan={(table.columns || []).length || 1} className="empty-cell">Р’ РІС‹Р±СЂР°РЅРЅРѕРј СЂР°Р·РґРµР»Рµ РЅРµС‚ РґР°РЅРЅС‹С….</td></tr>
+                <tr><td colSpan={(table.columns || []).length || 1} className="empty-cell">В выбранном разделе нет данных.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       )}
       <div className="table-footer">
-        <span>РџРѕРєР°Р·Р°РЅРѕ {formatCount((table.rows || []).length)} РёР· {formatCount(table.total || (table.rows || []).length)} СЃС‚СЂРѕРє.</span>
+        <span>Показано {formatCount((table.rows || []).length)} из {formatCount(table.total || (table.rows || []).length)} строк.</span>
         {table.has_more ? (
-          <Button variant="tiny" busy={loading} onClick={onLoadMore}>Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘</Button>
+          <Button variant="tiny" busy={loading} onClick={onLoadMore}>Загрузить ещё</Button>
         ) : null}
       </div>
     </section>
