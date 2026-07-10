@@ -21,29 +21,50 @@
 }
 .automation-steps {
   display: grid;
-  gap: 12px;
+  gap: 18px;
   margin-top: 18px;
 }
 .automation-step {
-  display: grid;
-  grid-template-columns:
-    36px minmax(130px, 0.7fr) minmax(190px, 1fr) repeat(2, minmax(230px, 1.2fr))
-    145px 90px auto;
-  align-items: start;
-  gap: 10px;
-  padding: 14px;
+  display: block;
+  min-width: 0;
+  padding: 20px;
   border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--panel-muted);
+  border-radius: 20px;
+  background: linear-gradient(180deg, #fff, var(--panel-muted));
+  box-shadow: 0 10px 30px rgba(15, 35, 56, 0.06);
 }
-.automation-step > strong {
+.automation-step__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.automation-step__header > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.automation-step__header strong {
+  display: block;
+  font-size: 17px;
+}
+.automation-step__header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.automation-step__number {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   color: #fff;
   background: var(--blue);
   border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
 }
 .automation-step__actions,
 .row-actions {
@@ -53,11 +74,175 @@
 }
 .automation-step__actions button {
   cursor: pointer;
-  min-width: 30px;
-  min-height: 30px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 8px;
   color: var(--text);
   background: #e8eef6;
+  font-weight: 900;
+}
+.automation-step__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.automation-step__actions button.is-danger {
+  color: var(--red);
+  background: #fee2e2;
+}
+.automation-step__type-row {
+  max-width: 520px;
+  margin: 16px 0;
+}
+.automation-config-grid,
+.automation-step__behavior-grid,
+.automation-condition__grid {
+  display: grid;
+  gap: 14px;
+  align-items: end;
+}
+.automation-config-grid--two,
+.automation-step__behavior-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.automation-config-grid--three,
+.automation-condition__grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.automation-toggle-stack {
+  display: grid;
+  gap: 2px;
+  align-self: stretch;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+}
+.automation-toggle-stack .toggle,
+.automation-danger-option .toggle,
+.automation-condition > .toggle {
+  padding-top: 0;
+}
+.automation-config-advanced,
+.automation-step__behavior {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+}
+.automation-config-advanced summary,
+.automation-step__behavior summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: #2c3e55;
+  font-size: 13px;
+  font-weight: 850;
+}
+.automation-config-advanced[open] summary,
+.automation-step__behavior[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+.automation-config-advanced > div,
+.automation-step__behavior > div {
+  padding: 14px;
+}
+.automation-danger-option {
+  margin-top: 14px;
+  padding: 13px 15px;
+  border: 1px solid #cfe0ef;
+  border-radius: 14px;
+  background: #f6f9fc;
+}
+.automation-danger-option.is-enabled {
+  border-color: #efb6b6;
+  background: #fff1f1;
+}
+.automation-danger-option p,
+.automation-condition p {
+  margin: 2px 0 0 28px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.automation-condition {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+}
+.automation-condition.is-enabled {
+  border-style: solid;
+  border-color: #b9d0ee;
+  background: #f4f8ff;
+}
+.automation-condition__grid {
+  margin-top: 10px;
+}
+.automation-token-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.automation-token-field > span {
+  color: #2c3e55;
+  font-size: 13px;
+  font-weight: 790;
+}
+.automation-token-field__control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 45px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+.automation-token-field__control:focus-within {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+.automation-token-field__control input {
+  flex: 1 1 160px;
+  width: auto;
+  min-width: 130px;
+  padding: 4px;
+  border: 0;
+  box-shadow: none;
+}
+.automation-token-field__control button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #174ea6;
+  background: var(--blue-soft);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+.automation-query-builder {
+  display: grid;
+  gap: 14px;
+}
+.automation-query-rules {
+  display: grid;
+  gap: 10px;
+}
+.automation-query-rule {
+  display: grid;
+  grid-template-columns: minmax(240px, 2fr) minmax(160px, 1fr) minmax(
+      180px,
+      1fr
+    ) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
 }
 .automation-templates {
   display: flex;
@@ -119,18 +304,36 @@ td small {
   color: var(--muted);
 }
 @media (max-width: 1200px) {
-  .automation-step {
-    grid-template-columns: 36px repeat(2, minmax(0, 1fr));
+  .automation-config-grid--three,
+  .automation-condition__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .automation-step .field:nth-of-type(3) {
-    grid-column: 2 / -1;
+  .automation-query-rule {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 700px) {
   .automation-step {
+    padding: 15px;
+  }
+  .automation-step__header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .automation-step__actions {
+    margin-left: 44px;
+  }
+  .automation-config-grid--two,
+  .automation-config-grid--three,
+  .automation-step__behavior-grid,
+  .automation-condition__grid,
+  .automation-query-rule {
     grid-template-columns: 1fr;
   }
-  .automation-step .field:nth-of-type(3) {
+  .automation-step {
+    border-radius: 16px;
+  }
+  .automation-step .field--wide {
     grid-column: auto;
   }
 }

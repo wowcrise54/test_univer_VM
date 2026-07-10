@@ -4,7 +4,7 @@ import { api, createIdempotencyKey } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
 import { filterOptions, formatCount, optionLabel, splitTokens } from "./shared/format.js";
 import { Button, ConfirmDialog, Field, Panel, Toggle } from "./shared/ui.jsx";
-import { SortableHeader, sortRows, useSortedRows, useTableSort } from "./shared/table.jsx";
+import { nextTableSort, SortableHeader, sortRows, useSortedRows, useTableSort } from "./shared/table.jsx";
 
 const ACTIVE_PASSPORT_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const ACTIVE_ASSET_CARD_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -3401,28 +3401,124 @@ function assetCardJobStageLabel(stage) {
   }[stage] || stage || "неизвестно";
 }
 
+const ASSET_DEFAULT_FILTERS = { q: "", severity: "" };
+const ASSET_DEFAULT_SORT = { key: "severity", direction: "asc" };
+const ASSET_SORT_OPTIONS = [
+  ["severity", "Критичности"],
+  ["created_at", "Свежести данных"],
+  ["ip_address", "IP-адресу"],
+  ["fqdn", "FQDN"],
+  ["software_name", "Названию ПО"],
+  ["software_version", "Версии ПО"],
+  ["vulnerability_name", "Названию уязвимости"],
+  ["cve", "CVE"],
+];
+
 function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showAlert }) {
-  const [filters, setFilters] = useState({ q: "", severity: "" });
-  const [assetSort, toggleAssetSort] = useTableSort();
+  const [filters, setFilters] = useState(ASSET_DEFAULT_FILTERS);
+  const [assetSort, , setAssetSort] = useTableSort(ASSET_DEFAULT_SORT.key, ASSET_DEFAULT_SORT.direction);
   const [savedViews, setSavedViews] = useState([]);
+  const [activeViewId, setActiveViewId] = useState("");
   const [viewName, setViewName] = useState("");
-  const applyFilters = () => runBusy("assets", () => refreshAssets(filters));
-  const changeAssetSort = (key, initialDirection = "asc") => {
-    const next = { key, direction: assetSort.key === key ? (assetSort.direction === "asc" ? "desc" : "asc") : initialDirection };
-    toggleAssetSort(key, initialDirection);
-    runBusy("assets", () => refreshAssets({ ...filters, sort_by: key, sort_dir: next.direction }));
+
+  const requestAssets = (nextFilters = filters, nextSort = assetSort) =>
+    refreshAssets({
+      ...nextFilters,
+      sort_by: nextSort.key,
+      sort_dir: nextSort.direction,
+    });
+  const applyFilters = () => {
+    setActiveViewId("");
+    return runBusy("assets", () => requestAssets());
   };
+  const updateFilters = (patch) => {
+    setActiveViewId("");
+    setFilters((current) => ({ ...current, ...patch }));
+  };
+  const applySort = (next) => {
+    setActiveViewId("");
+    setAssetSort(next);
+    runBusy("assets", () => requestAssets(filters, next));
+  };
+  const changeAssetSort = (key, initialDirection = "asc") =>
+    applySort(nextTableSort(assetSort, key, initialDirection));
+  const changeSortField = (key) =>
+    applySort({ key, direction: key === "created_at" ? "desc" : "asc" });
+
   useEffect(() => {
-    api("/api/saved-views?route=assets").then((result) => setSavedViews(result.rows || [])).catch(() => null);
+    api("/api/saved-views?route=assets")
+      .then((result) => setSavedViews(result.rows || []))
+      .catch(() => null);
   }, []);
+
+  const applyAssetView = (id) => {
+    if (!id) {
+      setActiveViewId("");
+      setViewName("");
+      return;
+    }
+    const view = savedViews.find((item) => String(item.id) === String(id));
+    if (!view) return;
+    const stored = view.filters || {};
+    const nextFilters = {
+      q: stored.q || "",
+      severity: stored.severity || "",
+    };
+    const nextSort = stored.sort?.key
+      ? stored.sort
+      : {
+          key: stored.sort_by || ASSET_DEFAULT_SORT.key,
+          direction: stored.sort_dir || ASSET_DEFAULT_SORT.direction,
+        };
+    setFilters(nextFilters);
+    setAssetSort(nextSort);
+    setActiveViewId(String(view.id));
+    setViewName(view.name);
+    runBusy("assets", () => requestAssets(nextFilters, nextSort));
+  };
+
   const saveAssetView = () => runBusy("saveAssetView", async () => {
     const name = viewName.trim();
-    if (!name) throw new Error("Введите название представления.");
-    const result = await api("/api/saved-views", { method: "POST", body: JSON.stringify({ route: "assets", name, filters }) });
-    setSavedViews((items) => [...items.filter((item) => item.id !== result.id), result].sort((a, b) => a.name.localeCompare(b.name)));
-    setViewName("");
-    showAlert(`Представление «${name}» сохранено.`, "success");
+    if (!name) throw new Error("Введите название выборки.");
+    const result = await api("/api/saved-views", {
+      method: "POST",
+      body: JSON.stringify({
+        route: "assets",
+        name,
+        filters: { ...filters, sort: assetSort },
+      }),
+    });
+    setSavedViews((items) => [...items.filter((item) => item.id !== result.id), result].sort((a, b) => a.name.localeCompare(b.name, "ru")));
+    setActiveViewId(String(result.id));
+    setViewName(result.name);
+    showAlert(`Выборка «${name}» сохранена.`, "success");
   });
+
+  const deleteAssetView = () => {
+    if (!activeViewId) return;
+    const current = savedViews.find((item) => String(item.id) === activeViewId);
+    runBusy("deleteAssetView", async () => {
+      await api(`/api/saved-views/${encodeURIComponent(activeViewId)}`, { method: "DELETE" });
+      setSavedViews((items) => items.filter((item) => String(item.id) !== activeViewId));
+      setActiveViewId("");
+      setViewName("");
+      showAlert(`Выборка «${current?.name || "без названия"}» удалена.`, "success");
+    });
+  };
+
+  const resetAssets = () => {
+    setFilters(ASSET_DEFAULT_FILTERS);
+    setAssetSort(ASSET_DEFAULT_SORT);
+    setActiveViewId("");
+    setViewName("");
+    runBusy("assets", () => requestAssets(ASSET_DEFAULT_FILTERS, ASSET_DEFAULT_SORT));
+  };
+
+  const directionLabels = assetSort.key === "severity"
+    ? [["asc", "Сначала критические"], ["desc", "Сначала низкие"]]
+    : assetSort.key === "created_at"
+      ? [["desc", "Сначала новые"], ["asc", "Сначала старые"]]
+      : [["asc", "По возрастанию"], ["desc", "По убыванию"]];
   const cards = [
     ["Активы", summary?.assets],
     ["ПО", summary?.software],
@@ -3445,29 +3541,54 @@ function AssetsPanel({ summary, rows, total, refreshAssets, busy, runBusy, showA
           </div>
         ))}
       </div>
-      <div className="filters">
-        <input value={filters.q} onChange={(event) => setFilters((value) => ({ ...value, q: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && applyFilters()} placeholder="Поиск по IP, FQDN, ПО, CVE, уязвимости" />
-        <select value={filters.severity} onChange={(event) => setFilters((value) => ({ ...value, severity: event.target.value }))}>
-          <option value="">Все критичности</option>
-          <option value="critical">critical</option>
-          <option value="high">high</option>
-          <option value="medium">medium</option>
-          <option value="low">low</option>
-          <option value="none">none</option>
-        </select>
-        <Button variant="secondary" busy={busy.assets} onClick={applyFilters}>Применить</Button>
-      </div>
-      <div className="saved-view-row">
-        <select value="" onChange={(event) => {
-          const view = savedViews.find((item) => String(item.id) === event.target.value);
-          if (view) setFilters({ q: "", severity: "", ...view.filters });
-        }}>
-          <option value="">Сохранённые представления</option>
-          {savedViews.map((view) => <option value={view.id} key={view.id}>{view.name}</option>)}
-        </select>
-        <input value={viewName} onChange={(event) => setViewName(event.target.value)} placeholder="Название текущего фильтра" />
-        <Button variant="secondary" busy={busy.saveAssetView} onClick={saveAssetView}>Сохранить</Button>
-      </div>
+      <section className="asset-filter-card" aria-label="Фильтры и сортировка активов">
+        <div className="asset-filter-card__header">
+          <div><strong>Фильтры и сортировка</strong><span>Изменение сортировки применяется сразу</span></div>
+          <Button variant="ghost" onClick={resetAssets}>Сбросить</Button>
+        </div>
+        <div className="asset-filter-grid">
+          <Field label="Поиск">
+            <input value={filters.q} onChange={(event) => updateFilters({ q: event.target.value })} onKeyDown={(event) => event.key === "Enter" && applyFilters()} placeholder="IP, FQDN, ПО, CVE или уязвимость" />
+          </Field>
+          <Field label="Критичность">
+            <select value={filters.severity} onChange={(event) => updateFilters({ severity: event.target.value })}>
+              <option value="">Любая</option>
+              <option value="critical">Критическая</option>
+              <option value="high">Высокая</option>
+              <option value="medium">Средняя</option>
+              <option value="low">Низкая</option>
+              <option value="none">Не указана</option>
+            </select>
+          </Field>
+          <Field label="Сортировать по">
+            <select value={assetSort.key} onChange={(event) => changeSortField(event.target.value)}>
+              {ASSET_SORT_OPTIONS.map(([key, label]) => <option value={key} key={key}>{label}</option>)}
+            </select>
+          </Field>
+          <Field label="Порядок">
+            <select value={assetSort.direction} onChange={(event) => applySort({ ...assetSort, direction: event.target.value })}>
+              {directionLabels.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+            </select>
+          </Field>
+          <Button variant="secondary" busy={busy.assets} onClick={applyFilters}>Применить фильтры</Button>
+        </div>
+      </section>
+
+      <section className="asset-view-bar" aria-label="Сохранённые выборки активов">
+        <Field label="Сохранённая выборка">
+          <select value={activeViewId} onChange={(event) => applyAssetView(event.target.value)}>
+            <option value="">Текущие настройки</option>
+            {savedViews.map((view) => <option value={view.id} key={view.id}>{view.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Название выборки">
+          <input value={viewName} onChange={(event) => setViewName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && saveAssetView()} placeholder="Например: Критические Windows-серверы" />
+        </Field>
+        <div className="asset-view-bar__actions">
+          <Button variant="secondary" busy={busy.saveAssetView} onClick={saveAssetView}>{activeViewId ? "Обновить" : "Сохранить выборку"}</Button>
+          {activeViewId ? <Button variant="ghost" busy={busy.deleteAssetView} onClick={deleteAssetView}>Удалить</Button> : null}
+        </div>
+      </section>
       <div className="table-shell">
         <table>
           <thead>

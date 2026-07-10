@@ -137,6 +137,61 @@ class DefinitionTests(unittest.TestCase):
         self.assertTrue(result["destructive_approved"])
         self.assertEqual(result["definition_hash"], AutomationService.definition_hash(result["definition"]))
 
+    def test_pdql_export_without_delete_flag_is_normalized_to_safe_default(self):
+        definition = AutomationService.validate_definition(
+            {"steps": [{"step_id": "export", "type": "pdql_export", "config": {}}]}
+        )
+
+        self.assertIs(definition["steps"][0]["config"]["delete_assets_after_export"], False)
+        self.assertFalse(AutomationService.is_destructive(definition))
+
+        destructive = AutomationService.validate_definition(
+            {
+                "steps": [
+                    {
+                        "step_id": "export",
+                        "type": "pdql_export",
+                        "config": {"delete_assets_after_export": True},
+                    }
+                ]
+            }
+        )
+        self.assertTrue(AutomationService.is_destructive(destructive))
+
+    def test_legacy_pdql_export_without_delete_flag_executes_safely(self):
+        repository = FakeRepository()
+        repository.run = {
+            "run_id": "run-1",
+            "runbook_id": "runbook-1",
+            "dry_run": False,
+            "cancel_requested": False,
+            "definition": {
+                "steps": [
+                    {
+                        "step_id": "export",
+                        "type": "pdql_export",
+                        "config": {},
+                        "on_error": "stop",
+                        "max_retries": 0,
+                    }
+                ]
+            },
+            "steps": [{"step_index": 0, "step_id": "export", "status": "pending", "output": {}}],
+        }
+        received_configs = []
+        automation = AutomationService(
+            repository,
+            OperationRunner({"automation-run": 1}),
+            Settings(_env_file=None),
+            lambda _step_type, config, *_args: received_configs.append(config) or {},
+            lambda: False,
+        )
+
+        with patch("app.automations.service.db.register_operation"):
+            automation.execute_run("run-1")
+
+        self.assertEqual(received_configs, [{"delete_assets_after_export": False}])
+
     def test_conditions_read_previous_step_output(self):
         context = {"steps": {"scan": {"failed_count": 2}}}
         self.assertTrue(

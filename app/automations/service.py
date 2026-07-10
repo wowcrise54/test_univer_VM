@@ -48,6 +48,13 @@ class AutomationService:
         self._scheduler_future: Future[Any] | None = None
 
     @staticmethod
+    def normalize_step_config(step_type: str, config: dict[str, Any] | None) -> dict[str, Any]:
+        normalized = dict(config or {})
+        if step_type == "pdql_export":
+            normalized.setdefault("delete_assets_after_export", False)
+        return normalized
+
+    @staticmethod
     def validate_definition(definition: dict[str, Any]) -> dict[str, Any]:
         steps = definition.get("steps")
         if not isinstance(steps, list) or not steps:
@@ -72,7 +79,10 @@ class AutomationService:
             on_error = raw.get("on_error") or "stop"
             if on_error not in {"stop", "continue"}:
                 raise ValueError("on_error must be stop or continue.")
-            config = raw.get("config") if isinstance(raw.get("config"), dict) else {}
+            config = AutomationService.normalize_step_config(
+                step_type,
+                raw.get("config") if isinstance(raw.get("config"), dict) else {},
+            )
             forbidden = AutomationService._forbidden_config_keys(config)
             if forbidden:
                 raise ValueError(f"Runbook config cannot store credentials or secrets: {', '.join(sorted(forbidden))}")
@@ -229,24 +239,32 @@ class AutomationService:
                     continue
                 attempts = 0
                 last_error = None
+                step_config = self.normalize_step_config(
+                    str(step.get("type") or ""),
+                    step.get("config") if isinstance(step.get("config"), dict) else {},
+                )
                 while attempts <= int(step.get("max_retries") or 0):
                     attempts += 1
                     self.repository.set_run_status(run_id, "running", current_step=index)
                     self.repository.set_step_status(run_id, index, "running", attempts=attempts)
                     try:
                         if run["dry_run"]:
-                            output = {"dry_run": True, "planned_config": step.get("config") or {}}
+                            output = {"dry_run": True, "planned_config": step_config}
                         elif step["type"] == "notification":
                             output = self._notification_step(step, run)
                         else:
-                            output = self.step_handler(step["type"], step.get("config") or {}, context, run_id, index)
+                            output = self.step_handler(step["type"], step_config, context, run_id, index)
                         self.repository.set_step_status(
                             run_id,
                             index,
                             "completed",
                             attempts=attempts,
                             output=output,
-                            child_operation_id=output.get("operation_id") if isinstance(output, dict) else None,
+                            child_operation_id=(
+                                str(output.get("operation_id"))
+                                if isinstance(output, dict) and output.get("operation_id") is not None
+                                else None
+                            ),
                         )
                         context["steps"][step["step_id"]] = output
                         last_error = None

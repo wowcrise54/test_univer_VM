@@ -1,24 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, createIdempotencyKey } from "../api/client.js";
-import { Button, Field, Panel, Toggle } from "../shared/ui.jsx";
-
-const STEP_TYPES = [
-  ["scanner_task_start", "Запуск задачи сканирования"],
-  ["pdql_export", "PDQL экспорт"],
-  ["passport_sync", "Синхронизация паспортов"],
-  ["asset_card_build", "Карточка актива"],
-  ["asset_query", "Выборка активов"],
-  ["notification", "Уведомление"],
-];
-
-const EMPTY_STEP = () => ({
-  step_id: `step-${Date.now()}`,
-  type: "scanner_task_start",
-  configText: "{}",
-  on_error: "stop",
-  max_retries: 0,
-  conditionText: "",
-});
+import {
+  AutomationStepEditor,
+  automationStepFromApi,
+  automationStepToApi,
+  createAutomationStep,
+  validateAutomationSteps,
+} from "../features/automations/StepEditor.jsx";
+import { Button, ConfirmDialog, Field, Panel, Toggle } from "../shared/ui.jsx";
 
 export function AutomationsPage({ showAlert }) {
   const [tab, setTab] = useState("runbooks");
@@ -27,12 +16,15 @@ export function AutomationsPage({ showAlert }) {
   const [runs, setRuns] = useState([]);
   const [notifications, setNotifications] = useState({ rows: [], unread: 0 });
   const [templates, setTemplates] = useState([]);
+  const [scannerTasks, setScannerTasks] = useState([]);
+  const [fieldCatalog, setFieldCatalog] = useState([]);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [publishTarget, setPublishTarget] = useState(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
-    steps: [EMPTY_STEP()],
+    steps: [createAutomationStep()],
   });
   const [scheduleForm, setScheduleForm] = useState({
     runbook_id: "",
@@ -44,19 +36,34 @@ export function AutomationsPage({ showAlert }) {
   const [selectedRun, setSelectedRun] = useState(null);
 
   const load = useCallback(async () => {
-    const [runbookData, scheduleData, runData, notificationData, templateData] =
-      await Promise.all([
-        api("/api/automations/runbooks"),
-        api("/api/automations/schedules"),
-        api("/api/automations/runs"),
-        api("/api/notifications"),
-        api("/api/automations/templates"),
-      ]);
+    const [
+      runbookData,
+      scheduleData,
+      runData,
+      notificationData,
+      templateData,
+      scannerTaskData,
+      fieldData,
+    ] = await Promise.all([
+      api("/api/automations/runbooks"),
+      api("/api/automations/schedules"),
+      api("/api/automations/runs"),
+      api("/api/notifications"),
+      api("/api/automations/templates"),
+      api("/api/scanner-tasks").catch(() => []),
+      api("/api/asset-card-query/fields?limit=500").catch(() => ({ rows: [] })),
+    ]);
     setRunbooks(runbookData.rows || []);
     setSchedules(scheduleData.rows || []);
     setRuns(runData.rows || []);
     setNotifications(notificationData);
     setTemplates(templateData.rows || []);
+    setScannerTasks(
+      Array.isArray(scannerTaskData)
+        ? scannerTaskData
+        : scannerTaskData.rows || [],
+    );
+    setFieldCatalog(fieldData.rows || []);
   }, []);
 
   useEffect(() => {
@@ -69,28 +76,32 @@ export function AutomationsPage({ showAlert }) {
       await action();
       await load();
       if (success) showAlert(success, "success");
+      return true;
     } catch (error) {
       showAlert(error.message, "error");
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
   const payload = () => ({
-    name: form.name,
-    description: form.description,
-    steps: form.steps.map((step) => ({
-      step_id: step.step_id,
-      type: step.type,
-      config: JSON.parse(step.configText || "{}"),
-      on_error: step.on_error,
-      max_retries: Number(step.max_retries || 0),
-      condition: step.conditionText ? JSON.parse(step.conditionText) : null,
-    })),
+    name: form.name.trim(),
+    description: form.description.trim(),
+    steps: form.steps.map(automationStepToApi),
   });
 
-  const save = () =>
-    perform(
+  const save = async () => {
+    if (!form.name.trim()) {
+      showAlert("Введите название сценария.", "error");
+      return;
+    }
+    const validationError = validateAutomationSteps(form.steps);
+    if (validationError) {
+      showAlert(validationError, "error");
+      return;
+    }
+    const saved = await perform(
       () =>
         api(
           editingId
@@ -101,28 +112,24 @@ export function AutomationsPage({ showAlert }) {
             body: JSON.stringify(payload()),
           },
         ),
-      editingId ? "Runbook обновлён." : "Runbook создан.",
-    ).then(() => resetForm());
+      editingId ? "Сценарий обновлён." : "Сценарий создан.",
+    );
+    if (saved) resetForm();
+  };
 
   const edit = (runbook) => {
     setEditingId(runbook.runbook_id);
     setForm({
       name: runbook.name,
       description: runbook.description || "",
-      steps: (runbook.draft?.steps || []).map((step) => ({
-        ...step,
-        configText: JSON.stringify(step.config || {}, null, 2),
-        conditionText: step.condition
-          ? JSON.stringify(step.condition, null, 2)
-          : "",
-      })),
+      steps: (runbook.draft?.steps || []).map(automationStepFromApi),
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const resetForm = () => {
     setEditingId(null);
-    setForm({ name: "", description: "", steps: [EMPTY_STEP()] });
+    setForm({ name: "", description: "", steps: [createAutomationStep()] });
   };
 
   const publish = (runbook) => {
@@ -130,12 +137,14 @@ export function AutomationsPage({ showAlert }) {
       (step) =>
         step.type === "pdql_export" && step.config?.delete_assets_after_export,
     );
-    const confirmName = destructive
-      ? window.prompt(
-          `Введите имя runbook для допуска опасных шагов:\n${runbook.name}`,
-        )
-      : null;
-    if (destructive && confirmName !== runbook.name) return;
+    if (destructive) {
+      setPublishTarget(runbook);
+      return;
+    }
+    publishConfirmed(runbook, null);
+  };
+
+  const publishConfirmed = (runbook, confirmName) => {
     perform(
       () =>
         api(`/api/automations/runbooks/${runbook.runbook_id}/publish`, {
@@ -143,7 +152,7 @@ export function AutomationsPage({ showAlert }) {
           body: JSON.stringify({ confirm_name: confirmName }),
         }),
       "Версия опубликована.",
-    );
+    ).then((published) => published && setPublishTarget(null));
   };
 
   const startRun = (runbook, dryRun) =>
@@ -154,7 +163,7 @@ export function AutomationsPage({ showAlert }) {
           headers: { "X-Idempotency-Key": createIdempotencyKey("runbook") },
           body: JSON.stringify({ dry_run: dryRun }),
         }),
-      dryRun ? "Dry-run запущен." : "Runbook запущен.",
+      dryRun ? "Проверочный запуск начат." : "Сценарий запущен.",
     );
 
   const applyTemplate = (template) => {
@@ -162,11 +171,7 @@ export function AutomationsPage({ showAlert }) {
     setForm({
       name: template.name,
       description: template.description,
-      steps: template.steps.map((step) => ({
-        ...step,
-        configText: JSON.stringify(step.config || {}, null, 2),
-        conditionText: "",
-      })),
+      steps: template.steps.map(automationStepFromApi),
     });
   };
 
@@ -195,7 +200,7 @@ export function AutomationsPage({ showAlert }) {
     <>
       <div className="automation-tabs">
         {[
-          ["runbooks", "Runbooks"],
+          ["runbooks", "Сценарии"],
           ["schedules", "Расписания"],
           ["runs", "Запуски"],
           ["notifications", `Уведомления · ${notifications.unread || 0}`],
@@ -213,8 +218,8 @@ export function AutomationsPage({ showAlert }) {
       {tab === "runbooks" && (
         <>
           <Panel
-            title={editingId ? "Редактирование runbook" : "Новый runbook"}
-            description="Шаги выполняются последовательно; опубликованная версия остаётся неизменной."
+            title={editingId ? "Редактирование сценария" : "Новый сценарий"}
+            description="Добавьте действия в нужном порядке. Опубликованная версия остаётся неизменной."
           >
             <div className="form-grid form-grid--two">
               <Field label="Название">
@@ -236,91 +241,24 @@ export function AutomationsPage({ showAlert }) {
             </div>
             <div className="automation-steps">
               {form.steps.map((step, index) => (
-                <div
-                  className="automation-step"
+                <AutomationStepEditor
                   key={`${step.step_id}-${index}`}
-                >
-                  <strong>{index + 1}</strong>
-                  <Field label="ID">
-                    <input
-                      value={step.step_id}
-                      onChange={(event) =>
-                        updateStep(index, { step_id: event.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="Тип">
-                    <select
-                      value={step.type}
-                      onChange={(event) =>
-                        updateStep(index, { type: event.target.value })
-                      }
-                    >
-                      {STEP_TYPES.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Config JSON">
-                    <textarea
-                      rows="4"
-                      value={step.configText}
-                      onChange={(event) =>
-                        updateStep(index, { configText: event.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="Условие JSON">
-                    <textarea
-                      rows="4"
-                      placeholder='{"step_id":"scan","field":"failed_count","operator":"gt","value":0}'
-                      value={step.conditionText || ""}
-                      onChange={(event) =>
-                        updateStep(index, { conditionText: event.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="При ошибке">
-                    <select
-                      value={step.on_error}
-                      onChange={(event) =>
-                        updateStep(index, { on_error: event.target.value })
-                      }
-                    >
-                      <option value="stop">Остановить</option>
-                      <option value="continue">Продолжить</option>
-                    </select>
-                  </Field>
-                  <Field label="Повторы">
-                    <input
-                      type="number"
-                      min="0"
-                      max="3"
-                      value={step.max_retries}
-                      onChange={(event) =>
-                        updateStep(index, { max_retries: event.target.value })
-                      }
-                    />
-                  </Field>
-                  <div className="automation-step__actions">
-                    <button onClick={() => moveStep(index, -1)}>↑</button>
-                    <button onClick={() => moveStep(index, 1)}>↓</button>
-                    <button
-                      onClick={() =>
-                        setForm((current) => ({
-                          ...current,
-                          steps: current.steps.filter(
-                            (_, position) => position !== index,
-                          ),
-                        }))
-                      }
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
+                  step={step}
+                  index={index}
+                  steps={form.steps}
+                  scannerTasks={scannerTasks}
+                  fieldCatalog={fieldCatalog}
+                  onChange={(next) => updateStep(index, next)}
+                  onMove={(delta) => moveStep(index, delta)}
+                  onRemove={() =>
+                    setForm((current) => ({
+                      ...current,
+                      steps: current.steps.filter(
+                        (_, position) => position !== index,
+                      ),
+                    }))
+                  }
+                />
               ))}
             </div>
             <div className="action-row">
@@ -329,7 +267,7 @@ export function AutomationsPage({ showAlert }) {
                 onClick={() =>
                   setForm((current) => ({
                     ...current,
-                    steps: [...current.steps, EMPTY_STEP()],
+                    steps: [...current.steps, createAutomationStep()],
                   }))
                 }
               >
@@ -356,8 +294,8 @@ export function AutomationsPage({ showAlert }) {
             </div>
           </Panel>
           <Panel
-            title="Runbooks"
-            description="Публикация фиксирует версию; редактирование создаёт новый draft."
+            title="Сценарии"
+            description="Публикация фиксирует версию, а дальнейшие изменения сохраняются в новом черновике."
           >
             <div className="table-shell">
               <table>
@@ -377,7 +315,7 @@ export function AutomationsPage({ showAlert }) {
                         <strong>{item.name}</strong>
                         <small>{item.description}</small>
                       </td>
-                      <td>{item.published_version || "draft"}</td>
+                      <td>{item.published_version || "Черновик"}</td>
                       <td>{item.draft?.steps?.length || 0}</td>
                       <td>
                         {item.allow_destructive
@@ -397,7 +335,7 @@ export function AutomationsPage({ showAlert }) {
                             disabled={!item.published_version}
                             onClick={() => startRun(item, true)}
                           >
-                            Dry-run
+                            Проверить
                           </Button>
                           <Button
                             variant="tiny"
@@ -413,7 +351,7 @@ export function AutomationsPage({ showAlert }) {
                   {!runbooks.length && (
                     <tr>
                       <td colSpan="5" className="empty-cell">
-                        Runbooks ещё не созданы.
+                        Сценарии ещё не созданы.
                       </td>
                     </tr>
                   )}
@@ -430,7 +368,7 @@ export function AutomationsPage({ showAlert }) {
           description="Cron вычисляется в выбранной timezone; пропуски не догоняются."
         >
           <div className="form-grid form-grid--four">
-            <Field label="Runbook">
+            <Field label="Сценарий">
               <select
                 value={scheduleForm.runbook_id}
                 onChange={(event) =>
@@ -508,7 +446,7 @@ export function AutomationsPage({ showAlert }) {
               <thead>
                 <tr>
                   <th>Название</th>
-                  <th>Runbook</th>
+                  <th>Сценарий</th>
                   <th>Cron</th>
                   <th>Следующий запуск</th>
                   <th>Статус</th>
@@ -591,7 +529,7 @@ export function AutomationsPage({ showAlert }) {
               <table>
                 <thead>
                   <tr>
-                    <th>Runbook</th>
+                    <th>Сценарий</th>
                     <th>Триггер</th>
                     <th>Статус</th>
                     <th>Шаг</th>
@@ -732,6 +670,22 @@ export function AutomationsPage({ showAlert }) {
           </div>
         </Panel>
       )}
+
+      <ConfirmDialog
+        open={Boolean(publishTarget)}
+        title="Разрешить удаление активов?"
+        description="В сценарии включён шаг, который после успешного экспорта удаляет активы из MP VM. Опубликуйте его только если это ожидаемое поведение."
+        impact={[
+          "Сначала результат будет сохранён в локальной базе.",
+          "После этого выбранные активы будут удалены из MP VM.",
+          "Опубликованная версия останется неизменной до следующей публикации.",
+        ]}
+        requireText={publishTarget?.name || ""}
+        confirmLabel="Опубликовать с удалением"
+        busy={busy}
+        onClose={() => setPublishTarget(null)}
+        onConfirm={() => publishConfirmed(publishTarget, publishTarget.name)}
+      />
     </>
   );
 }
