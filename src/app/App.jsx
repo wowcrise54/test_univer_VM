@@ -7,7 +7,7 @@ import { PassportsPage } from "../pages/PassportsPage.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
-import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
+import { AlertStack, Sidebar, SystemBanner, Topbar, WorkflowRail } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
 
@@ -39,7 +39,8 @@ function AppShell({ navigate, path, route }) {
         onNavigate={navigate}
       />
       <main className="workspace">
-        <Topbar session={appData.session} route={route} />
+        <Topbar session={appData.session} route={route} onNavigate={navigate} />
+        <WorkflowRail activeRouteId={route?.id} onNavigate={navigate} />
         <SystemBanner
           status={appData.systemStatus}
           stale={appData.operationsStale}

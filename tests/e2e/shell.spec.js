@@ -55,6 +55,6 @@ test("application shell keeps stable routes and navigation", async ({
     page.getByRole("heading", { level: 1, name: "Автоматизация" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Новый runbook" }),
+    page.getByRole("heading", { name: "Новый сценарий" }),
   ).toBeVisible();
 });

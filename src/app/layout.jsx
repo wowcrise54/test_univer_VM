@@ -1,4 +1,4 @@
-import { routes } from "./navigation.js";
+import { navigationGroups, routes, workflowSteps } from "./navigation.js";
 
 export function Sidebar({ session, systemStatus, activeOperations = 0, activePath, onNavigate }) {
   return (
@@ -11,21 +11,34 @@ export function Sidebar({ session, systemStatus, activeOperations = 0, activePat
         </div>
       </div>
       <nav className="nav" aria-label="Основная навигация">
-        {routes.map((route) => (
-          <a
-            href={route.path}
-            className={activePath === route.path ? "is-active" : ""}
-            aria-current={activePath === route.path ? "page" : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigate(route.path);
-            }}
-            key={route.id}
-          >
-            <span>{route.label}</span>
-            {route.id === "operations" && activeOperations ? <em className="nav-badge">{activeOperations}</em> : null}
-          </a>
-        ))}
+        {navigationGroups.map((group) => {
+          const groupRoutes = routes.filter((route) => route.group === group.id);
+          return (
+            <section className="nav-group" aria-labelledby={`nav-group-${group.id}`} key={group.id}>
+              <h2 id={`nav-group-${group.id}`}>{group.label}</h2>
+              <div className="nav-group__items">
+                {groupRoutes.map((route) => (
+                  <a
+                    href={route.path}
+                    title={route.label}
+                    aria-label={route.id === "operations" && activeOperations ? `Операции — активных: ${activeOperations}` : undefined}
+                    className={activePath === route.path ? "is-active" : ""}
+                    aria-current={activePath === route.path ? "page" : undefined}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onNavigate(route.path);
+                    }}
+                    key={route.id}
+                  >
+                    <span className="nav-icon" aria-hidden="true">{route.icon}</span>
+                    <span className="nav-label">{route.label}</span>
+                    {route.id === "operations" && activeOperations ? <em className="nav-badge" aria-hidden="true">{activeOperations}</em> : null}
+                  </a>
+                ))}
+              </div>
+            </section>
+          );
+        })}
       </nav>
       <div className="sidebar-card">
         <span className={session.connected ? "pulse pulse--ok" : "pulse"} />
@@ -62,18 +75,71 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
   );
 }
 
-export function Topbar({ session, route }) {
+const routeNextActions = {
+  connection: { connectedLabel: "Перейти к задачам", label: "Настроить подключение", path: "/tasks" },
+  tasks: { label: "Открыть операции", path: "/operations" },
+  operations: { label: "Смотреть результаты", path: "/asset-cards" },
+  "asset-cards": { label: "Сформировать отчёт", path: "/export" },
+  assets: { label: "Сформировать отчёт", path: "/export" },
+  passports: { label: "Открыть карточки", path: "/asset-cards" },
+  "asset-query": { label: "Открыть карточки", path: "/asset-cards" },
+  export: { label: "Настроить автоматизацию", path: "/automations" },
+  automations: { label: "Открыть операции", path: "/operations" },
+};
+
+export function Topbar({ session, route, onNavigate }) {
+  const action = routeNextActions[route?.id];
+  const needsConnection = !session.connected && route?.id !== "connection";
+  const actionPath = route?.id === "connection" && !session.connected
+    ? null
+    : needsConnection
+      ? "/connection"
+      : action?.path;
+  const actionLabel = needsConnection
+    ? "Настроить подключение"
+    : route?.id === "connection" && session.connected
+      ? action?.connectedLabel
+      : action?.label;
   return (
     <header className="topbar">
-      <div>
+      <div className="topbar__copy">
+        <span className="topbar__eyebrow">MP VM · рабочее пространство</span>
         <h1>{route?.title || "MP VM REST Client"}</h1>
         <p>{route?.description || "Единый клиент для задач сканирования, PDQL-экспорта и локального анализа уязвимостей."}</p>
       </div>
-      <div className={session.connected ? "status-chip status-chip--ok" : "status-chip"}>
-        <span />
-        {session.connected ? "Подключено" : "Не подключено"}
+      <div className="topbar__actions">
+        <div className={session.connected ? "status-chip status-chip--ok" : "status-chip"}>
+          <span />
+          {session.connected ? "MP VM подключён" : "MP VM не подключён"}
+        </div>
+        {actionPath && actionLabel ? (
+          <button className="topbar__next" onClick={() => onNavigate(actionPath)}>
+            <span>{actionLabel}</span>
+            <strong aria-hidden="true">→</strong>
+          </button>
+        ) : null}
       </div>
     </header>
+  );
+}
+
+export function WorkflowRail({ activeRouteId, onNavigate }) {
+  const activeIndex = Math.max(0, workflowSteps.findIndex((step) => step.routes.includes(activeRouteId)));
+  return (
+    <nav className="workflow-rail" aria-label="Этапы рабочего процесса">
+      {workflowSteps.map((step, index) => {
+        const state = index < activeIndex ? "complete" : index === activeIndex ? "active" : "upcoming";
+        return (
+          <button className={`workflow-step workflow-step--${state}`} onClick={() => onNavigate(step.path)} key={step.id}>
+            <span className="workflow-step__number">{index < activeIndex ? "✓" : index + 1}</span>
+            <span className="workflow-step__copy">
+              <strong>{step.label}</strong>
+              <small>{step.hint}</small>
+            </span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 

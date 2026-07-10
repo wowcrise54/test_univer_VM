@@ -1,8 +1,23 @@
 export const defaultRoutePath = "/connection";
 
+export const navigationGroups = [
+  { id: "work", label: "Рабочий процесс" },
+  { id: "data", label: "Данные и анализ" },
+  { id: "manage", label: "Управление" },
+];
+
+export const workflowSteps = [
+  { id: "connect", label: "Подключение", hint: "Доступ к MP VM", path: "/connection", routes: ["connection"] },
+  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["tasks", "operations"] },
+  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/asset-cards", routes: ["asset-cards", "assets", "passports", "asset-query"] },
+  { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
+];
+
 export const routes = [
   {
     id: "connection",
+    group: "work",
+    icon: "⌁",
     path: "/connection",
     label: "Подключение",
     title: "Подключение к MP VM",
@@ -11,6 +26,8 @@ export const routes = [
   },
   {
     id: "tasks",
+    group: "work",
+    icon: "◎",
     path: "/tasks",
     label: "Задачи",
     title: "Задачи сканирования",
@@ -18,6 +35,8 @@ export const routes = [
   },
   {
     id: "operations",
+    group: "work",
+    icon: "◔",
     path: "/operations",
     label: "Операции",
     title: "Центр операций",
@@ -26,6 +45,8 @@ export const routes = [
   },
   {
     id: "export",
+    group: "manage",
+    icon: "⇩",
     path: "/export",
     label: "PDQL экспорт",
     title: "PDQL экспорт",
@@ -34,6 +55,8 @@ export const routes = [
   },
   {
     id: "asset-cards",
+    group: "data",
+    icon: "▦",
     path: "/asset-cards",
     label: "Карточки активов",
     title: "Карточки активов",
@@ -42,6 +65,8 @@ export const routes = [
   },
   {
     id: "automations",
+    group: "manage",
+    icon: "⎇",
     path: "/automations",
     label: "Автоматизация",
     title: "Автоматизация",
@@ -50,6 +75,8 @@ export const routes = [
   },
   {
     id: "asset-query",
+    group: "data",
+    icon: "⌕",
     path: "/asset-query",
     label: "Выборки активов",
     title: "Выборки по карточкам активов",
@@ -58,6 +85,8 @@ export const routes = [
   },
   {
     id: "passports",
+    group: "data",
+    icon: "◇",
     path: "/passports",
     label: "Паспорта",
     title: "Паспорта уязвимостей",
@@ -66,6 +95,8 @@ export const routes = [
   },
   {
     id: "assets",
+    group: "data",
+    icon: "◫",
     path: "/assets",
     label: "Активы",
     title: "Активы и уязвимости",
