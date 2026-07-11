@@ -591,6 +591,10 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_group_order ON asset_card_vulnerabilities(group_id, cve_name, name, id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_vulnerability_id ON asset_card_vulnerabilities(vulnerability_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_vulnerability_id ON asset_card_vulnerabilities(asset_id, vulnerability_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_cve_upper ON asset_card_vulnerabilities((UPPER(TRIM(cve_name))))",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_severity_lower ON asset_card_vulnerabilities((CASE WHEN LOWER(TRIM(COALESCE(severity, ''))) IN ('critical', 'high', 'medium', 'low') THEN LOWER(TRIM(severity)) ELSE 'unknown' END))",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_source ON asset_card_vulnerability_groups(source_type)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_cards_last_seen ON asset_cards(last_seen DESC)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
     ]
 

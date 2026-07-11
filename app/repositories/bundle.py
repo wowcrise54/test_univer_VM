@@ -4,6 +4,7 @@ import builtins
 from typing import Any
 
 from .. import db
+from .vulnerabilities import VulnerabilityAnalyticsRepository
 
 
 class OperationsRepository:
@@ -73,3 +74,4 @@ class RepositoryBundle:
         self.passports = PassportsRepository()
         self.imports = ImportsRepository()
         self.asset_query = AssetQueryRepository()
+        self.vulnerabilities = VulnerabilityAnalyticsRepository()

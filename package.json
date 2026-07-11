@@ -15,7 +15,7 @@
     "test:e2e": "playwright test",
     "coverage:check": "python scripts/check_coverage_ratchet.py --python output/coverage-python.json --frontend output/coverage-js/coverage-summary.json",
     "lint": "eslint .",
-    "format:check": "prettier --check src/app/App.jsx src/app/AppDataContext.jsx src/app/providers.jsx src/app/useAppData.js src/pages/AutomationsPage.jsx src/styles/*.css tests/e2e/*.js *.config.js package.json",
+    "format:check": "prettier --check src/app/App.jsx src/app/AppDataContext.jsx src/app/providers.jsx src/app/useAppData.js src/pages/AutomationsPage.jsx src/pages/VulnerabilitiesPage.jsx src/features/vulnerabilities/*.js src/features/vulnerabilities/*.jsx src/test/vulnerabilities-dashboard.test.jsx src/styles/*.css tests/e2e/*.js *.config.js package.json",
     "quality": "npm run lint && npm test && npm run build"
   },
   "dependencies": {

@@ -9,7 +9,7 @@ export const navigationGroups = [
 export const workflowSteps = [
   { id: "connect", label: "Подключение", hint: "Доступ к MP VM", path: "/connection", routes: ["connection"] },
   { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["tasks", "operations"] },
-  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/asset-cards", routes: ["asset-cards", "assets", "passports", "asset-query"] },
+  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "assets", "passports", "asset-query"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
 ];
 
@@ -52,6 +52,16 @@ export const routes = [
     title: "PDQL экспорт",
     description:
       "Выгрузка и сохранение результатов PDQL-запросов в локальную БД.",
+  },
+  {
+    id: "vulnerabilities",
+    group: "data",
+    icon: "◈",
+    path: "/vulnerabilities",
+    label: "Уязвимости",
+    title: "Обзор уязвимостей",
+    description:
+      "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
   },
   {
     id: "asset-cards",

@@ -18,6 +18,7 @@ describe("guided application shell", () => {
     expect(screen.getByRole("heading", { name: "Рабочий процесс" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Данные и анализ" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Управление" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Уязвимости" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();
   });

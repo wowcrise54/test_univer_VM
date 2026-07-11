@@ -7,7 +7,14 @@ import { PassportsPage } from "../pages/PassportsPage.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
-import { AlertStack, Sidebar, SystemBanner, Topbar, WorkflowRail } from "./layout.jsx";
+import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
+import {
+  AlertStack,
+  Sidebar,
+  SystemBanner,
+  Topbar,
+  WorkflowRail,
+} from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
 
@@ -105,6 +112,9 @@ function ActivePage({ routeId, ...props }) {
   }
   if (routeId === "automations") {
     return <AutomationsPage showAlert={props.showAlert} />;
+  }
+  if (routeId === "vulnerabilities") {
+    return <VulnerabilitiesPage />;
   }
   if (routeId === "export") {
     return (

@@ -4,6 +4,7 @@ import builtins
 from typing import Any
 
 from ..repositories import RepositoryBundle
+from .vulnerabilities import VulnerabilityAnalyticsService
 
 
 class OperationsService:
@@ -74,3 +75,4 @@ class ServiceBundle:
         self.asset_cards = AssetCardsService(repositories)
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)
+        self.vulnerabilities = VulnerabilityAnalyticsService(repositories.vulnerabilities)

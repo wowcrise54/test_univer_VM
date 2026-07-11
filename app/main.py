@@ -419,6 +419,7 @@ def shutdown() -> None:
 
 
 app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan)
+app.state.container = CONTAINER
 
 
 @app.middleware("http")

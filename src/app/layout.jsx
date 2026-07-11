@@ -78,7 +78,8 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
 const routeNextActions = {
   connection: { connectedLabel: "Перейти к задачам", label: "Настроить подключение", path: "/tasks" },
   tasks: { label: "Открыть операции", path: "/operations" },
-  operations: { label: "Смотреть результаты", path: "/asset-cards" },
+  operations: { label: "Смотреть результаты", path: "/vulnerabilities" },
+  vulnerabilities: { label: "Открыть карточки", path: "/asset-cards" },
   "asset-cards": { label: "Сформировать отчёт", path: "/export" },
   assets: { label: "Сформировать отчёт", path: "/export" },
   passports: { label: "Открыть карточки", path: "/asset-cards" },

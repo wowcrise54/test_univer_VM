@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from .vulnerabilities import router as vulnerabilities_router
+
 system_router = APIRouter(tags=["system"])
 session_router = APIRouter(tags=["session"])
 tasks_router = APIRouter(tags=["scanner-tasks"])
@@ -27,4 +29,5 @@ API_ROUTERS = (
     diagnostics_router,
     automations_router,
     notifications_router,
+    vulnerabilities_router,
 )
