@@ -81,8 +81,64 @@ const HOST = {
   last_seen: "2026-07-11T08:00:00Z",
 };
 
+const TRENDS = {
+  scope: "all_asset_cards",
+  from: "2026-06-12T00:00:00Z",
+  to: "2026-07-12T00:00:00Z",
+  bucket: "day",
+  retention_days: 90,
+  rows: [
+    {
+      bucket_start: "2026-07-10T00:00:00Z",
+      snapshot_at: "2026-07-10T08:00:00Z",
+      carried_forward: false,
+      totals: {
+        hosts_total: 200,
+        affected_hosts: 138,
+        findings: 4100,
+        unique_vulnerabilities: 800,
+        unique_cves: 630,
+        high_risk_hosts: 54,
+        unrated_vulnerabilities: 8,
+      },
+      by_severity: {
+        critical: {
+          findings: 120,
+          affected_hosts: 20,
+          unique_vulnerabilities: 30,
+        },
+        high: { findings: 240, affected_hosts: 42, unique_vulnerabilities: 80 },
+      },
+      coverage: {
+        cards_total: 200,
+        cards_with_findings: 180,
+        truncated_groups: 0,
+        complete: true,
+      },
+    },
+    {
+      bucket_start: "2026-07-11T00:00:00Z",
+      snapshot_at: "2026-07-11T08:00:00Z",
+      carried_forward: false,
+      totals: SUMMARY.totals,
+      by_severity: {
+        critical: {
+          findings: 128,
+          affected_hosts: 22,
+          unique_vulnerabilities: 31,
+        },
+        high: { findings: 250, affected_hosts: 45, unique_vulnerabilities: 84 },
+      },
+      coverage: SUMMARY.coverage,
+    },
+  ],
+};
+
 function responseFor(path, { total = 75, empty = false } = {}) {
   const url = new URL(path, "http://localhost");
+  if (url.pathname === "/api/vulnerabilities/trends") {
+    return empty ? { ...TRENDS, rows: [] } : TRENDS;
+  }
   if (url.pathname === "/api/vulnerabilities/summary") return SUMMARY;
   if (url.pathname === "/api/vulnerabilities/hosts") {
     return {
@@ -154,6 +210,59 @@ describe("vulnerability dashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     await waitFor(() => expect(selectors[0]).toHaveFocus());
+  });
+
+  it("renders historical risk deltas and switches the aggregation period", async () => {
+    renderDashboard();
+
+    const heading = await screen.findByRole("heading", {
+      name: "Динамика риска",
+    });
+    const section = heading.closest("section");
+    expect(
+      await within(section).findByText("+5 к прошлой точке"),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByText("Критичность последнего снимка"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole("button", { name: "90 дней" }));
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) => {
+          const url = new URL(path, "http://localhost");
+          return (
+            url.pathname === "/api/vulnerabilities/trends" &&
+            url.searchParams.get("bucket") === "week"
+          );
+        }),
+      ).toBe(true),
+    );
+  });
+
+  it("shows explicit empty and retryable error states for risk history", async () => {
+    let trendsFail = true;
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/vulnerabilities/trends") {
+        if (trendsFail)
+          return Promise.reject(new Error("История временно недоступна"));
+        return Promise.resolve({ ...TRENDS, rows: [] });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    expect(
+      await screen.findByText("История временно недоступна"),
+    ).toBeInTheDocument();
+    trendsFail = false;
+    fireEvent.click(
+      screen.getByRole("button", { name: "Повторить загрузку истории" }),
+    );
+    expect(
+      await screen.findByText(/История начнёт формироваться/),
+    ).toBeInTheDocument();
   });
 
   it("applies global filters and keeps sorting and pagination server-side", async () => {

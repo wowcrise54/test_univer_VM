@@ -614,6 +614,7 @@ def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 ACTIVE_OPERATION_STATUSES = {"queued", "running", "cancelling", "recovering"}
+ATTENTION_OPERATION_STATUSES = {"failed", "interrupted", "completed_with_errors"}
 RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync", "automation_run"}
 
 
@@ -872,9 +873,14 @@ def list_operations(
         clauses.append("kind = %s")
         params.append(kind)
     if q:
-        clauses.append("(LOWER(COALESCE(subject_label, '')) LIKE %s OR LOWER(COALESCE(subject_id, '')) LIKE %s OR LOWER(COALESCE(message, '')) LIKE %s)")
+        clauses.append(
+            "(LOWER(COALESCE(operation_id, '')) LIKE %s "
+            "OR LOWER(COALESCE(subject_label, '')) LIKE %s "
+            "OR LOWER(COALESCE(subject_id, '')) LIKE %s "
+            "OR LOWER(COALESCE(message, '')) LIKE %s)"
+        )
         needle = f"%{q.strip().lower()}%"
-        params.extend([needle, needle, needle])
+        params.extend([needle, needle, needle, needle])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     limit = max(1, min(200, int(limit)))
     offset = max(0, int(offset))
@@ -893,6 +899,36 @@ def list_operations(
             [*params, limit, offset],
         ).fetchall()
     return {"total": int(total), "rows": [decode_operation(dict(row)) for row in rows], "limit": limit, "offset": offset}
+
+
+def get_operations_summary() -> dict[str, Any]:
+    """Return unfiltered operation counters for navigation and overview widgets."""
+    with connect() as conn:
+        totals = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status = ANY(%s)) AS active,
+                COUNT(*) FILTER (WHERE status = ANY(%s)) AS attention,
+                MAX(updated_at) AS updated_at
+            FROM operations
+            """,
+            (sorted(ACTIVE_OPERATION_STATUSES), sorted(ATTENTION_OPERATION_STATUSES)),
+        ).fetchone()
+        status_rows = conn.execute(
+            "SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status"
+        ).fetchall()
+        kind_rows = conn.execute(
+            "SELECT kind, COUNT(*) AS count FROM operations GROUP BY kind ORDER BY kind"
+        ).fetchall()
+    return {
+        "total": int(totals["total"] or 0),
+        "active": int(totals["active"] or 0),
+        "attention": int(totals["attention"] or 0),
+        "by_status": {str(row["status"]): int(row["count"] or 0) for row in status_rows},
+        "by_kind": {str(row["kind"]): int(row["count"] or 0) for row in kind_rows},
+        "updated_at": totals.get("updated_at"),
+    }
 
 
 def get_operation(operation_id: str, *, include_events: bool = True, sync_sources: bool = False) -> dict[str, Any] | None:

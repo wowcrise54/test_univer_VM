@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client.js";
 
 const EMPTY_LOOKUPS = {
@@ -76,10 +76,26 @@ function assetsQuery(filters) {
   }));
 }
 
-function operationsQuery(sorting) {
-  const params = new URLSearchParams({ limit: "100" });
-  if (sorting.sort_by) params.set("sort_by", sorting.sort_by);
-  if (sorting.sort_dir) params.set("sort_dir", sorting.sort_dir);
+const DEFAULT_OPERATION_QUERY = {
+  limit: 50,
+  offset: 0,
+  q: "",
+  status: "",
+  kind: "",
+  sort_by: "created_at",
+  sort_dir: "desc",
+};
+
+function operationsQuery(query) {
+  const params = new URLSearchParams({
+    limit: String(query.limit || DEFAULT_OPERATION_QUERY.limit),
+    offset: String(query.offset || 0),
+  });
+  if (query.q) params.set("q", query.q);
+  if (query.status) params.set("status", query.status);
+  if (query.kind) params.set("kind", query.kind);
+  if (query.sort_by) params.set("sort_by", query.sort_by);
+  if (query.sort_dir) params.set("sort_dir", query.sort_dir);
   return api(`/api/operations?${params}`);
 }
 
@@ -94,7 +110,14 @@ export function useAppData(routeId) {
   const [alerts, setAlerts] = useState([]);
   const [busy, setBusy] = useState({});
   const [assetFilters, setAssetFilters] = useState({});
-  const [operationSorting, setOperationSorting] = useState({});
+  const [operationQuery, setOperationQuery] = useState(DEFAULT_OPERATION_QUERY);
+  const operationQueryRef = useRef(operationQuery);
+  const busyCountsRef = useRef(new Map());
+  const busyPromisesRef = useRef(new Map());
+
+  useEffect(() => {
+    operationQueryRef.current = operationQuery;
+  }, [operationQuery]);
 
   const defaultsQuery = useQuery({
     queryKey: ["defaults"],
@@ -122,15 +145,22 @@ export function useAppData(routeId) {
     systemStatus?.components?.database?.state !== "down";
 
   const operationsQueryResult = useQuery({
-    queryKey: ["operations", operationSorting],
-    queryFn: () => operationsQuery(operationSorting),
-    enabled: databaseAvailable,
+    queryKey: ["operations", operationQuery],
+    queryFn: () => operationsQuery(operationQuery),
+    enabled: routeId === "operations" && databaseAvailable,
     refetchInterval: (query) => {
       const rows = query.state.data?.rows || [];
       return rows.some((item) => ACTIVE_OPERATION_STATUSES.has(item.status))
         ? 2000
         : 15000;
     },
+  });
+  const operationSummaryQueryResult = useQuery({
+    queryKey: ["operations-summary"],
+    queryFn: () => api("/api/operations/summary"),
+    enabled: databaseAvailable,
+    refetchInterval: (query) =>
+      Number(query.state.data?.active || 0) > 0 ? 2000 : 15000,
   });
   const tasksQueryResult = useQuery({
     queryKey: ["scanner-tasks"],
@@ -183,16 +213,30 @@ export function useAppData(routeId) {
   }, []);
 
   const runBusy = useCallback(
-    async (key, fn) => {
-      setBusy((value) => ({ ...value, [key]: true }));
-      try {
-        return await fn();
-      } catch (error) {
-        showAlert(error.message || String(error), "error");
-        return null;
-      } finally {
-        setBusy((value) => ({ ...value, [key]: false }));
+    (key, fn, options = {}) => {
+      const count = busyCountsRef.current.get(key) || 0;
+      if (count && !options.allowConcurrent) {
+        return busyPromisesRef.current.get(key) || Promise.resolve(null);
       }
+      busyCountsRef.current.set(key, count + 1);
+      setBusy((value) => ({ ...value, [key]: true }));
+      const pending = Promise.resolve()
+        .then(fn)
+        .catch((error) => {
+          showAlert(error.message || String(error), "error");
+          return null;
+        })
+        .finally(() => {
+          const remaining = (busyCountsRef.current.get(key) || 1) - 1;
+          if (remaining > 0) busyCountsRef.current.set(key, remaining);
+          else {
+            busyCountsRef.current.delete(key);
+            busyPromisesRef.current.delete(key);
+            setBusy((value) => ({ ...value, [key]: false }));
+          }
+        });
+      busyPromisesRef.current.set(key, pending);
+      return pending;
     },
     [showAlert],
   );
@@ -200,6 +244,7 @@ export function useAppData(routeId) {
   const setSession = useCallback(
     (value) => {
       setSessionState(value);
+      if (!value?.connected) setLookups(EMPTY_LOOKUPS);
       queryClient.setQueryData(["session"], value);
     },
     [queryClient],
@@ -227,18 +272,28 @@ export function useAppData(routeId) {
   );
 
   const refreshOperations = useCallback(
-    async (sorting = {}) => {
-      setOperationSorting(sorting);
-      try {
-        return await queryClient.fetchQuery({
-          queryKey: ["operations", sorting],
-          queryFn: () => operationsQuery(sorting),
-          staleTime: 0,
-        });
-      } catch (_error) {
-        return null;
-      }
+    async (nextQuery) => {
+      const query = nextQuery
+        ? { ...DEFAULT_OPERATION_QUERY, ...nextQuery }
+        : operationQueryRef.current;
+      operationQueryRef.current = query;
+      setOperationQuery(query);
+      return queryClient.fetchQuery({
+        queryKey: ["operations", query],
+        queryFn: () => operationsQuery(query),
+        staleTime: 0,
+      });
     },
+    [queryClient],
+  );
+
+  const refreshOperationSummary = useCallback(
+    () =>
+      queryClient.fetchQuery({
+        queryKey: ["operations-summary"],
+        queryFn: () => api("/api/operations/summary"),
+        staleTime: 0,
+      }),
     [queryClient],
   );
 
@@ -266,13 +321,23 @@ export function useAppData(routeId) {
     defaults: defaultsQuery.data || null,
     lookups,
     operations,
-    operationsStale: !databaseAvailable || operationsQueryResult.isError,
+    operationSummary: operationSummaryQueryResult.data || null,
+    operationSummaryError: operationSummaryQueryResult.error || null,
+    operationsStale:
+      !databaseAvailable ||
+      operationsQueryResult.isError ||
+      operationSummaryQueryResult.isError,
+    operationsError: operationsQueryResult.error || null,
+    operationsLoading:
+      operationsQueryResult.isPending ||
+      (operationsQueryResult.isFetching && !operationsQueryResult.data),
     operationsTotal: operationsQueryResult.data?.total || 0,
     operationsUpdatedAt: operationsQueryResult.dataUpdatedAt
       ? new Date(operationsQueryResult.dataUpdatedAt).toISOString()
       : null,
     refreshAssets,
     refreshOperations,
+    refreshOperationSummary,
     refreshSystemStatus,
     refreshTasks,
     runBusy,
@@ -285,7 +350,15 @@ export function useAppData(routeId) {
     setSession,
     showAlert,
     summary: assetsData.summary || null,
+    assetsError: assetsQueryResult.error || null,
+    assetsLoading:
+      assetsQueryResult.isPending ||
+      (assetsQueryResult.isFetching && !assetsQueryResult.data),
     systemStatus,
     tasks,
+    tasksError: tasksQueryResult.error || null,
+    tasksLoading:
+      tasksQueryResult.isPending ||
+      (tasksQueryResult.isFetching && !tasksQueryResult.data),
   };
 }

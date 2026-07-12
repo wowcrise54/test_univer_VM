@@ -233,10 +233,9 @@
 }
 .automation-query-rule {
   display: grid;
-  grid-template-columns: minmax(240px, 2fr) minmax(160px, 1fr) minmax(
-      180px,
-      1fr
-    ) auto;
+  grid-template-columns:
+    minmax(240px, 2fr) minmax(160px, 1fr) minmax(180px, 1fr)
+    auto;
   gap: 10px;
   align-items: end;
   padding: 12px;

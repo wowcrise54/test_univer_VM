@@ -450,6 +450,7 @@ class AssetCardJobApiTests(unittest.TestCase):
             patch.object(main.db, "upsert_asset_card", return_value={"asset_id": "asset-1"}),
             patch.object(main.db, "finish_asset_card_build_job") as finish,
             patch.object(main, "build_asset_card", side_effect=build_fixture),
+            patch.object(main, "capture_vulnerability_snapshot") as capture_snapshot,
         ):
             main.run_asset_card_build_job(
                 job_id="job-progress",
@@ -462,6 +463,7 @@ class AssetCardJobApiTests(unittest.TestCase):
         self.assertEqual(progress_values, sorted(progress_values))
         self.assertEqual(progress_values[-1], 100)
         self.assertEqual(finish.call_args.kwargs["status"], "completed")
+        capture_snapshot.assert_called_once_with("asset_card_build", "job-progress")
 
 
 class AssetCardDatabaseTests(unittest.TestCase):

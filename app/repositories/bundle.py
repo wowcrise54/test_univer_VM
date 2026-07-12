@@ -11,6 +11,9 @@ class OperationsRepository:
     def list(self, **filters: Any) -> dict[str, Any]:
         return db.list_operations(**filters)
 
+    def summary(self) -> dict[str, Any]:
+        return db.get_operations_summary()
+
     def get(self, operation_id: str) -> dict[str, Any] | None:
         return db.get_operation(operation_id)
 

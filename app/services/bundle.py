@@ -14,6 +14,9 @@ class OperationsService:
     def list(self, **filters: Any) -> dict[str, Any]:
         return self._repository.list(**filters)
 
+    def summary(self) -> dict[str, Any]:
+        return self._repository.summary()
+
 
 class AssetsService:
     def __init__(self, repositories: RepositoryBundle) -> None:

@@ -8,6 +8,9 @@
   --muted: #64748b;
   --line: #d9e4f0;
   --line-strong: #c7d5e6;
+  --border: var(--line);
+  --ink: var(--text);
+  --accent: var(--blue);
   --navy: #0b1f35;
   --navy-2: #12304d;
   --blue: #2563eb;

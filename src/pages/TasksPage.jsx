@@ -3,6 +3,8 @@ import { TaskBuilderPanel, TaskListPanel } from "../features/tasks/index.jsx";
 export function TasksPage({
   busy,
   defaults,
+  error,
+  loading,
   lookups,
   refreshTasks,
   runBusy,
@@ -18,6 +20,8 @@ export function TasksPage({
     <>
       <TaskListPanel
         tasks={tasks}
+        loading={loading}
+        error={error}
         lookups={lookups}
         selectedTaskId={selectedTaskId}
         setSelectedTaskId={setSelectedTaskId}

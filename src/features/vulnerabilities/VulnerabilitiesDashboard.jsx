@@ -13,6 +13,14 @@ const DEFAULT_VULNERABILITY_SORT = {
   direction: "desc",
 };
 const DEFAULT_HOST_SORT = { key: "severity", direction: "asc" };
+const TREND_PERIODS = [7, 30, 90];
+const TREND_METRICS = [
+  { key: "affected_hosts", label: "Затронутые хосты" },
+  { key: "findings", label: "Findings" },
+  { key: "unique_vulnerabilities", label: "Уникальные уязвимости" },
+  { key: "high_risk_hosts", label: "Хосты высокого риска" },
+];
+const TREND_SEVERITIES = ["critical", "high", "medium", "low", "unknown"];
 
 const SEVERITY_LABELS = {
   critical: "Критическая",
@@ -35,6 +43,7 @@ const SOURCE_LABELS = {
 export function VulnerabilitiesDashboard() {
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [trendDays, setTrendDays] = useState(30);
   const [vulnerabilityOffset, setVulnerabilityOffset] = useState(0);
   const [vulnerabilitySort, setVulnerabilitySort] = useState(
     DEFAULT_VULNERABILITY_SORT,
@@ -45,9 +54,10 @@ export function VulnerabilitiesDashboard() {
   const hostHeadingRef = useRef(null);
   const drilldownTriggerRef = useRef(null);
   const restoreDrilldownFocusRef = useRef(false);
-  const { summaryQuery, vulnerabilitiesQuery, hostsQuery } =
+  const { trendsQuery, summaryQuery, vulnerabilitiesQuery, hostsQuery } =
     useVulnerabilityDashboard({
       filters,
+      trendDays,
       vulnerabilityOffset,
       vulnerabilitySort,
       selectedSelector: selected?.selector || "",
@@ -110,6 +120,7 @@ export function VulnerabilitiesDashboard() {
   };
 
   const refresh = () => {
+    trendsQuery.refetch();
     summaryQuery.refetch();
     vulnerabilitiesQuery.refetch();
     if (selected?.selector) hostsQuery.refetch();
@@ -129,6 +140,7 @@ export function VulnerabilitiesDashboard() {
   const hostRows = resultRows(hostsQuery.data);
   const hostTotal = resultTotal(hostsQuery.data, hostRows);
   const refreshing =
+    trendsQuery.isFetching ||
     summaryQuery.isFetching ||
     vulnerabilitiesQuery.isFetching ||
     hostsQuery.isFetching;
@@ -152,6 +164,12 @@ export function VulnerabilitiesDashboard() {
         onSubmit={submitFilters}
         onReset={() => applyFilters(EMPTY_FILTERS)}
         busy={refreshing}
+      />
+
+      <RiskTrendSection
+        query={trendsQuery}
+        periodDays={trendDays}
+        onPeriodChange={setTrendDays}
       />
 
       {summaryQuery.isPending ? (
@@ -286,6 +304,353 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
       </div>
     </form>
   );
+}
+
+function RiskTrendSection({ query, periodDays, onPeriodChange }) {
+  const [metric, setMetric] = useState("affected_hosts");
+  const rows = trendRows(query.data);
+  const latest = rows.at(-1) || null;
+  const previous = rows.length > 1 ? rows.at(-2) : null;
+  const incomplete = rows.some((row) => !trendCoverageComplete(row));
+
+  return (
+    <section className="risk-trend" aria-labelledby="risk-trend-title">
+      <header className="risk-trend__header">
+        <div>
+          <span className="vulnerability-section-heading__eyebrow">
+            История локального среза
+          </span>
+          <h3 id="risk-trend-title">Динамика риска</h3>
+          <p>
+            Агрегаты по всем сохранённым карточкам. Фильтры текущего среза ниже
+            не изменяют исторический график.
+          </p>
+        </div>
+        <div
+          className="risk-trend__periods"
+          role="group"
+          aria-label="Период истории рисков"
+        >
+          {TREND_PERIODS.map((days) => (
+            <button
+              type="button"
+              className={periodDays === days ? "is-active" : ""}
+              aria-pressed={periodDays === days}
+              onClick={() => onPeriodChange(days)}
+              key={days}
+            >
+              {days} дней
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {query.isPending ? (
+        <LoadingState label="Загружаю историю риска…" />
+      ) : query.isError ? (
+        <QueryError
+          title="Не удалось загрузить историю риска"
+          error={query.error}
+          retryLabel="Повторить загрузку истории"
+          onRetry={query.refetch}
+        />
+      ) : !rows.length ? (
+        <EmptyState>
+          История начнёт формироваться после первого успешного обновления
+          карточек активов.
+        </EmptyState>
+      ) : (
+        <>
+          <TrendDeltaGrid latest={latest} previous={previous} />
+          {incomplete ? (
+            <div className="risk-trend__warning" role="note">
+              Часть исторических точек построена по усечённым данным и отмечена
+              как нижняя оценка.
+            </div>
+          ) : null}
+          <div className="risk-trend__content">
+            <article className="risk-trend__card risk-trend__chart-card">
+              <header>
+                <div>
+                  <h4>Изменение показателя</h4>
+                  <p>
+                    {query.data?.bucket === "week"
+                      ? "Последняя точка каждой недели"
+                      : "Последняя точка каждого дня"}
+                  </p>
+                </div>
+                <label>
+                  <span>Показатель</span>
+                  <select
+                    value={metric}
+                    onChange={(event) => setMetric(event.target.value)}
+                  >
+                    {TREND_METRICS.map((item) => (
+                      <option value={item.key} key={item.key}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </header>
+              <TrendLineChart rows={rows} metric={metric} />
+            </article>
+            <SeveritySnapshot point={latest} />
+          </div>
+          <TrendTable rows={rows} />
+        </>
+      )}
+    </section>
+  );
+}
+
+function TrendDeltaGrid({ latest, previous }) {
+  return (
+    <div className="risk-trend__deltas" aria-label="Последние изменения риска">
+      {TREND_METRICS.map((item) => {
+        const current = trendMetric(latest, item.key);
+        const before = previous ? trendMetric(previous, item.key) : null;
+        const delta = before === null ? null : current - before;
+        const tone = delta > 0 ? "danger" : delta < 0 ? "success" : "neutral";
+        return (
+          <article
+            className={`risk-trend__delta risk-trend__delta--${tone}`}
+            key={item.key}
+          >
+            <span>{item.label}</span>
+            <strong>{formatCount(current)}</strong>
+            <small>{formatTrendDelta(delta)}</small>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function TrendLineChart({ rows, metric }) {
+  const width = 960;
+  const height = 260;
+  const left = 58;
+  const right = 20;
+  const top = 22;
+  const bottom = 42;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const values = rows.map((row) => trendMetric(row, metric));
+  const maximum = Math.max(1, ...values);
+  const points = rows.map((row, index) => {
+    const x =
+      rows.length === 1
+        ? left + plotWidth / 2
+        : left + (index / (rows.length - 1)) * plotWidth;
+    const y =
+      top + plotHeight - (trendMetric(row, metric) / maximum) * plotHeight;
+    return { row, x, y, value: trendMetric(row, metric) };
+  });
+  const metricLabel =
+    TREND_METRICS.find((item) => item.key === metric)?.label || metric;
+
+  return (
+    <svg
+      className="risk-trend__chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={`${metricLabel}: ${formatCount(values.at(-1))}, точек: ${rows.length}`}
+    >
+      {[0, 0.5, 1].map((fraction) => {
+        const y = top + plotHeight - fraction * plotHeight;
+        return (
+          <g key={fraction}>
+            <line
+              className="risk-trend__grid-line"
+              x1={left}
+              x2={width - right}
+              y1={y}
+              y2={y}
+            />
+            <text
+              className="risk-trend__axis-label"
+              x={left - 10}
+              y={y + 4}
+              textAnchor="end"
+            >
+              {formatCount(Math.round(maximum * fraction))}
+            </text>
+          </g>
+        );
+      })}
+      <polyline
+        className="risk-trend__line"
+        points={points.map(({ x, y }) => `${x},${y}`).join(" ")}
+      />
+      {points.map(({ row, x, y, value }) => (
+        <g key={`${row.bucket_start}-${row.snapshot_at}`}>
+          <circle
+            className={`risk-trend__point ${trendCoverageComplete(row) ? "" : "risk-trend__point--warning"}`}
+            cx={x}
+            cy={y}
+            r="6"
+          >
+            <title>
+              {formatTrendDate(row.bucket_start)}: {formatCount(value)}
+              {row.carried_forward ? " · без нового снимка" : ""}
+            </title>
+          </circle>
+        </g>
+      ))}
+      <text className="risk-trend__axis-label" x={left} y={height - 12}>
+        {formatTrendDate(rows[0]?.bucket_start)}
+      </text>
+      <text
+        className="risk-trend__axis-label"
+        x={width - right}
+        y={height - 12}
+        textAnchor="end"
+      >
+        {formatTrendDate(rows.at(-1)?.bucket_start)}
+      </text>
+    </svg>
+  );
+}
+
+function SeveritySnapshot({ point }) {
+  const severityRows = TREND_SEVERITIES.map((severity) => ({
+    severity,
+    ...trendSeverity(point, severity),
+  }));
+  const total = severityRows.reduce(
+    (sum, row) => sum + Number(row.findings || 0),
+    0,
+  );
+  return (
+    <article className="risk-trend__card risk-trend__severity-card">
+      <header>
+        <div>
+          <h4>Критичность последнего снимка</h4>
+          <p>{formatDate(point?.snapshot_at)}</p>
+        </div>
+      </header>
+      {total ? (
+        <>
+          <div className="risk-trend__severity-stack" aria-hidden="true">
+            {severityRows.map((row) => (
+              <span
+                className={`risk-trend__severity-segment risk-trend__severity-segment--${severityClass(row.severity)}`}
+                style={{
+                  width: `${(Number(row.findings || 0) / total) * 100}%`,
+                }}
+                key={row.severity}
+              />
+            ))}
+          </div>
+          <ul className="risk-trend__severity-list">
+            {severityRows.map((row) => (
+              <li key={row.severity}>
+                <span
+                  className={`risk-trend__severity-dot risk-trend__severity-dot--${severityClass(row.severity)}`}
+                />
+                <strong>{severityLabel(row.severity)}</strong>
+                <span>{formatCount(row.findings)} findings</span>
+                <small>{formatCount(row.affected_hosts)} хостов</small>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <EmptyState>В последнем снимке нет findings.</EmptyState>
+      )}
+    </article>
+  );
+}
+
+function TrendTable({ rows }) {
+  return (
+    <details className="risk-trend__details">
+      <summary>Табличные данные истории</summary>
+      <div className="table-shell risk-trend__table-shell">
+        <table>
+          <caption className="vulnerability-sr-only">
+            Исторические агрегаты уязвимостей
+          </caption>
+          <thead>
+            <tr>
+              <th>Период</th>
+              <th>Хосты</th>
+              <th>Findings</th>
+              <th>Уязвимости</th>
+              <th>Critical</th>
+              <th>High</th>
+              <th>Полнота</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${row.bucket_start}-${row.snapshot_at}`}>
+                <td>
+                  <strong>{formatTrendDate(row.bucket_start)}</strong>
+                  {row.carried_forward ? (
+                    <small>Без нового снимка</small>
+                  ) : null}
+                </td>
+                <td>{formatCount(trendMetric(row, "affected_hosts"))}</td>
+                <td>{formatCount(trendMetric(row, "findings"))}</td>
+                <td>
+                  {formatCount(trendMetric(row, "unique_vulnerabilities"))}
+                </td>
+                <td>{formatCount(trendSeverity(row, "critical").findings)}</td>
+                <td>{formatCount(trendSeverity(row, "high").findings)}</td>
+                <td>
+                  {trendCoverageComplete(row)
+                    ? "Полные данные"
+                    : "Нижняя оценка"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function trendRows(data) {
+  return Array.isArray(data?.rows)
+    ? [...data.rows].sort((left, right) =>
+        String(left.bucket_start || "").localeCompare(
+          String(right.bucket_start || ""),
+        ),
+      )
+    : [];
+}
+
+function trendMetric(point, key) {
+  return Number(point?.totals?.[key] || 0);
+}
+
+function trendSeverity(point, severity) {
+  const collection = point?.by_severity;
+  if (Array.isArray(collection)) {
+    return collection.find((item) => item.severity === severity) || {};
+  }
+  return collection?.[severity] || {};
+}
+
+function trendCoverageComplete(point) {
+  return point?.coverage?.complete !== false;
+}
+
+function formatTrendDelta(delta) {
+  if (delta === null) return "Нет предыдущей точки";
+  if (!delta) return "Без изменений";
+  return `${delta > 0 ? "+" : "−"}${formatCount(Math.abs(delta))} к прошлой точке`;
+}
+
+function formatTrendDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : date.toLocaleDateString("ru-RU", { day: "2-digit", month: "short" });
 }
 
 function DashboardContext({ summary }) {

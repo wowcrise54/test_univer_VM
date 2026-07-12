@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -20,6 +21,7 @@ SeverityFilter = Literal[
 ]
 SourceFilter = Literal["os", "software"]
 SortDirection = Literal["asc", "desc"]
+TrendBucket = Literal["day", "week"]
 
 
 def _service(request: Request) -> VulnerabilityAnalyticsService:
@@ -35,6 +37,22 @@ def vulnerability_summary(
     source: SourceFilter | None = None,
 ) -> dict:
     return _service(request).summary(q=q, host_q=host_q, severity=severity, source=source)
+
+
+@router.get("/trends")
+def vulnerability_trends(
+    request: Request,
+    from_at: Annotated[datetime | None, Query(alias="from")] = None,
+    to_at: Annotated[datetime | None, Query(alias="to")] = None,
+    bucket: TrendBucket = "day",
+) -> dict:
+    try:
+        return _service(request).trends(from_at=from_at, to_at=to_at, bucket=bucket)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_RANGE", "message": str(exc)},
+        ) from exc
 
 
 @router.get("/hosts")

@@ -569,6 +569,8 @@ def error_component(path: str) -> str:
         return "asset_cards"
     if path.startswith("/api/vulnerability-passports"):
         return "vulnerability_passports"
+    if path.startswith("/api/vulnerabilities"):
+        return "vulnerabilities"
     if path.startswith("/api/scanner-tasks"):
         return "scanner_tasks"
     if path.startswith("/api/operations"):
@@ -629,6 +631,42 @@ def structured_validation_error(request: Request, exc: RequestValidationError) -
     )
 
 
+def capture_vulnerability_snapshot(trigger_kind: str, trigger_id: str) -> dict[str, Any] | None:
+    """Persist best-effort vulnerability history without failing the primary operation."""
+    try:
+        snapshot = CONTAINER.services.vulnerabilities.capture_snapshot(
+            trigger_kind=trigger_kind,
+            trigger_id=trigger_id,
+        )
+        log_event(
+            "vulnerabilities",
+            "snapshot.capture.completed",
+            trigger_kind=trigger_kind,
+            trigger_id=trigger_id,
+            snapshot_id=(snapshot.get("snapshot") or {}).get("id")
+            if isinstance(snapshot, dict)
+            else None,
+            created=snapshot.get("created") if isinstance(snapshot, dict) else None,
+        )
+        return snapshot
+    except Exception:
+        log_exception(
+            "vulnerabilities",
+            "snapshot.capture.failed",
+            trigger_kind=trigger_kind,
+            trigger_id=trigger_id,
+        )
+        return None
+
+
+def ensure_vulnerability_snapshot_baseline() -> dict[str, Any] | None:
+    try:
+        return CONTAINER.services.vulnerabilities.ensure_baseline()
+    except Exception:
+        log_exception("vulnerabilities", "snapshot.baseline.failed")
+        return None
+
+
 def startup() -> None:
     global DATABASE_STARTUP_ERROR
     CONTAINER.start()
@@ -639,6 +677,7 @@ def startup() -> None:
         db.interrupt_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
         db.sync_operations_from_sources()
+        ensure_vulnerability_snapshot_baseline()
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
@@ -783,6 +822,11 @@ def operations(
         return CONTAINER.services.operations.list(status=status, kind=kind, q=q, limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
+
+
+@operations_router.get("/api/operations/summary")
+def operations_summary() -> dict[str, Any]:
+    return CONTAINER.services.operations.summary()
 
 
 @operations_router.get("/api/operations/{operation_id}")
@@ -1357,6 +1401,11 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
         raise http_error(exc) from exc
 
     saved_card = db.upsert_asset_card(card) if payload.save_to_db else None
+    if saved_card is not None:
+        capture_vulnerability_snapshot(
+            "asset_card_build",
+            current_trace_id() or str(uuid.uuid4()),
+        )
     return {
         "asset_id": asset_id,
         "card": sanitize_asset_card_for_response(card),
@@ -1822,6 +1871,8 @@ def _run_asset_card_build_job(
             message="Asset card build completed.",
             stats=card.get("stats") if isinstance(card.get("stats"), dict) else {},
         )
+        if not request.get("parent_operation_id"):
+            capture_vulnerability_snapshot("asset_card_build", job_id)
         log_event(
             "asset-card-build",
             "build.completed",
@@ -2048,6 +2099,10 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
     saved_card = db.upsert_asset_card(card)
     if not saved_card:
         raise HTTPException(status_code=500, detail="Updated asset card could not be saved.")
+    capture_vulnerability_snapshot(
+        "asset_card_update",
+        current_trace_id() or str(uuid.uuid4()),
+    )
     return {
         "asset_id": asset_id,
         "card": sanitize_asset_card_for_response(card),
@@ -2060,6 +2115,10 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
 def delete_local_asset_card(asset_id: str) -> dict[str, Any]:
     if not db.delete_asset_card(asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
+    capture_vulnerability_snapshot(
+        "asset_card_delete",
+        current_trace_id() or str(uuid.uuid4()),
+    )
     return {"asset_id": asset_id, "deleted": True}
 
 
@@ -2743,6 +2802,8 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 if final_status == "completed":
                     final_status = "completed_with_errors"
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
+        if completed_count:
+            capture_vulnerability_snapshot("scan_postprocess", run_id)
         scan_log(
             logging.INFO if final_status == "completed" else logging.ERROR,
             "run_finished",
@@ -3372,7 +3433,13 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
     try:
         if not removal_operation_id:
             scan_log(logging.INFO, "asset_card_build_starting", **context)
-            build_job_id = build_scanned_asset_card(item_id=item_id, asset_id=asset_id, auth=auth, token=token)
+            build_job_id = build_scanned_asset_card(
+                item_id=item_id,
+                asset_id=asset_id,
+                auth=auth,
+                token=token,
+                parent_operation_id=str(item.get("postprocess_run_id") or ""),
+            )
             item = db.update_scan_postprocess_item(
                 item_id,
                 status="card_saved",
@@ -3472,13 +3539,21 @@ def process_scanned_asset_item_with_progress(
     db.refresh_scan_postprocess_counts(postprocess_run_id)
 
 
-def build_scanned_asset_card(*, item_id: int, asset_id: str, auth: AuthConfig, token: str) -> str:
+def build_scanned_asset_card(
+    *,
+    item_id: int,
+    asset_id: str,
+    auth: AuthConfig,
+    token: str,
+    parent_operation_id: str,
+) -> str:
     request = {
         "asset_id": asset_id,
         "timeline_timestamp": None,
         "limit_per_collection": 5000,
         "max_items_per_collection": 5000,
         "max_depth": 8,
+        "parent_operation_id": parent_operation_id,
     }
     logged_active_job_id: str | None = None
     while True:

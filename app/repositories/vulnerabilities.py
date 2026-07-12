@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .. import db
 
 VulnerabilitySource = Literal["os", "software"]
+VULNERABILITY_SEVERITIES = ("critical", "high", "medium", "low", "unknown")
+VULNERABILITY_TRENDS_SCOPE = "all_asset_cards"
+VULNERABILITY_TRENDS_RETENTION_DAYS = 90
+_RETENTION_ADVISORY_LOCK_KEY = 530_951_729_318_346
 
 
 def _normalized_severity(expression: str) -> str:
@@ -34,6 +39,136 @@ CASE
             || '|object:' || LOWER(REGEXP_REPLACE(TRIM(COALESCE(vulnerability_group.name, '')), '\\s+', ' ', 'g'))
     ELSE 'instance:' || TRIM(finding.vulnerability_instance_id)
 END
+""".strip()
+
+
+CAPTURE_SNAPSHOT_SQL = f"""
+WITH findings AS (
+    SELECT
+        {VULNERABILITY_SELECTOR_SQL} AS selector,
+        finding.asset_id,
+        finding.cve_name AS cve,
+        {_normalized_severity("finding.severity")} AS severity,
+        {_severity_rank("finding.severity")} AS severity_rank
+    FROM asset_card_vulnerabilities AS finding
+    JOIN asset_card_vulnerability_groups AS vulnerability_group
+        ON vulnerability_group.id = finding.group_id
+    JOIN asset_cards AS card
+        ON card.asset_id = finding.asset_id
+    WHERE COALESCE(
+        NULLIF(TRIM(finding.vulnerability_id), ''),
+        NULLIF(TRIM(finding.cve_name), ''),
+        NULLIF(TRIM(finding.name), ''),
+        NULLIF(TRIM(finding.vulnerability_instance_id), '')
+    ) IS NOT NULL
+),
+coverage AS (
+    SELECT
+        COUNT(DISTINCT card.asset_id) AS cards_total,
+        (SELECT COUNT(DISTINCT asset_id) FROM findings) AS cards_with_findings,
+        COUNT(DISTINCT vulnerability_group.id)
+            FILTER (WHERE vulnerability_group.truncated) AS truncated_groups,
+        MIN(card.last_seen) AS oldest_at,
+        MAX(card.last_seen) AS freshest_at
+    FROM asset_cards AS card
+    LEFT JOIN asset_card_vulnerability_groups AS vulnerability_group
+        ON vulnerability_group.asset_id = card.asset_id
+),
+vulnerability_rollup AS (
+    SELECT selector, MIN(severity_rank) AS severity_rank
+    FROM findings
+    GROUP BY selector
+),
+totals AS (
+    SELECT
+        COUNT(DISTINCT asset_id) AS affected_hosts,
+        COUNT(*) AS findings,
+        COUNT(DISTINCT selector) AS unique_vulnerabilities,
+        COUNT(DISTINCT UPPER(TRIM(cve)))
+            FILTER (WHERE NULLIF(TRIM(cve), '') IS NOT NULL) AS unique_cves,
+        COUNT(DISTINCT asset_id) FILTER (WHERE severity_rank <= 2) AS high_risk_hosts,
+        (SELECT COUNT(*) FROM vulnerability_rollup WHERE severity_rank = 5)
+            AS unrated_vulnerabilities
+    FROM findings
+),
+severity_names(severity, severity_rank) AS (
+    VALUES ('critical', 1), ('high', 2), ('medium', 3), ('low', 4), ('unknown', 5)
+),
+severity_rollup AS (
+    SELECT
+        severity,
+        COUNT(*) AS findings,
+        COUNT(DISTINCT asset_id) AS affected_hosts,
+        COUNT(DISTINCT selector) AS unique_vulnerabilities
+    FROM findings
+    GROUP BY severity
+),
+inserted_snapshot AS (
+    INSERT INTO vulnerability_aggregate_snapshots (
+        scope, trigger_kind, trigger_id, captured_at,
+        hosts_total, affected_hosts, findings, unique_vulnerabilities,
+        unique_cves, high_risk_hosts, unrated_vulnerabilities,
+        coverage_cards_total, coverage_cards_with_findings,
+        coverage_truncated_groups, coverage_complete,
+        coverage_oldest_at, coverage_freshest_at
+    )
+    SELECT
+        %s, %s, %s, %s,
+        coverage.cards_total, totals.affected_hosts, totals.findings,
+        totals.unique_vulnerabilities, totals.unique_cves,
+        totals.high_risk_hosts, totals.unrated_vulnerabilities,
+        coverage.cards_total, coverage.cards_with_findings,
+        coverage.truncated_groups, coverage.truncated_groups = 0,
+        coverage.oldest_at, coverage.freshest_at
+    FROM coverage CROSS JOIN totals
+    ON CONFLICT (trigger_kind, trigger_id) DO NOTHING
+    RETURNING *
+),
+inserted_severity AS (
+    INSERT INTO vulnerability_aggregate_snapshot_severity (
+        snapshot_id, severity, findings, affected_hosts, unique_vulnerabilities
+    )
+    SELECT
+        inserted_snapshot.id,
+        severity_names.severity,
+        COALESCE(severity_rollup.findings, 0),
+        COALESCE(severity_rollup.affected_hosts, 0),
+        COALESCE(severity_rollup.unique_vulnerabilities, 0)
+    FROM inserted_snapshot
+    CROSS JOIN severity_names
+    LEFT JOIN severity_rollup USING (severity)
+    ON CONFLICT (snapshot_id, severity) DO NOTHING
+    RETURNING snapshot_id
+)
+SELECT inserted_snapshot.*,
+       (SELECT COUNT(*) FROM inserted_severity) AS inserted_severity_count
+FROM inserted_snapshot
+"""
+
+
+SNAPSHOT_SELECT_COLUMNS = """
+snapshot.id,
+snapshot.scope,
+snapshot.trigger_kind,
+snapshot.trigger_id,
+snapshot.captured_at,
+snapshot.hosts_total,
+snapshot.affected_hosts,
+snapshot.findings,
+snapshot.unique_vulnerabilities,
+snapshot.unique_cves,
+snapshot.high_risk_hosts,
+snapshot.unrated_vulnerabilities,
+snapshot.coverage_cards_total,
+snapshot.coverage_cards_with_findings,
+snapshot.coverage_truncated_groups,
+snapshot.coverage_complete,
+snapshot.coverage_oldest_at,
+snapshot.coverage_freshest_at,
+severity.severity,
+severity.findings AS severity_findings,
+severity.affected_hosts AS severity_affected_hosts,
+severity.unique_vulnerabilities AS severity_unique_vulnerabilities
 """.strip()
 
 
@@ -178,8 +313,225 @@ def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _decode_snapshot_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    snapshots: dict[int, dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        snapshot_id = int(row["id"])
+        snapshot = snapshots.get(snapshot_id)
+        if snapshot is None:
+            snapshot = {
+                "id": snapshot_id,
+                "scope": row.get("scope") or VULNERABILITY_TRENDS_SCOPE,
+                "trigger_kind": row.get("trigger_kind"),
+                "trigger_id": row.get("trigger_id"),
+                "captured_at": row.get("captured_at"),
+                "totals": {
+                    "hosts_total": int(row.get("hosts_total") or 0),
+                    "affected_hosts": int(row.get("affected_hosts") or 0),
+                    "findings": int(row.get("findings") or 0),
+                    "unique_vulnerabilities": int(row.get("unique_vulnerabilities") or 0),
+                    "unique_cves": int(row.get("unique_cves") or 0),
+                    "high_risk_hosts": int(row.get("high_risk_hosts") or 0),
+                    "unrated_vulnerabilities": int(row.get("unrated_vulnerabilities") or 0),
+                },
+                "by_severity": {
+                    severity: {
+                        "findings": 0,
+                        "affected_hosts": 0,
+                        "unique_vulnerabilities": 0,
+                    }
+                    for severity in VULNERABILITY_SEVERITIES
+                },
+                "coverage": {
+                    "cards_total": int(row.get("coverage_cards_total") or 0),
+                    "cards_with_findings": int(row.get("coverage_cards_with_findings") or 0),
+                    "truncated_groups": int(row.get("coverage_truncated_groups") or 0),
+                    "complete": bool(row.get("coverage_complete")),
+                    "oldest_at": row.get("coverage_oldest_at"),
+                    "freshest_at": row.get("coverage_freshest_at"),
+                },
+            }
+            snapshots[snapshot_id] = snapshot
+
+        severity = row.get("severity")
+        if severity in VULNERABILITY_SEVERITIES:
+            snapshot["by_severity"][severity] = {
+                "findings": int(row.get("severity_findings") or 0),
+                "affected_hosts": int(row.get("severity_affected_hosts") or 0),
+                "unique_vulnerabilities": int(row.get("severity_unique_vulnerabilities") or 0),
+            }
+    return list(snapshots.values())
+
+
 class VulnerabilityAnalyticsRepository:
-    """Read-only analytics over the latest normalized asset-card snapshot."""
+    """Analytics over the latest asset cards and their retained aggregates."""
+
+    def capture_snapshot(
+        self,
+        *,
+        trigger_kind: str,
+        trigger_id: str,
+        captured_at: datetime | None = None,
+        scope: str = VULNERABILITY_TRENDS_SCOPE,
+        retention_days: int = VULNERABILITY_TRENDS_RETENTION_DAYS,
+    ) -> dict[str, Any]:
+        clean_kind = trigger_kind.strip()
+        clean_id = trigger_id.strip()
+        clean_scope = scope.strip()
+        if not clean_kind or not clean_id:
+            raise ValueError("trigger_kind and trigger_id must not be empty")
+        if not clean_scope:
+            raise ValueError("scope must not be empty")
+        if retention_days < 1:
+            raise ValueError("retention_days must be positive")
+
+        capture_time = captured_at or datetime.now(UTC)
+        if capture_time.tzinfo is None:
+            capture_time = capture_time.replace(tzinfo=UTC)
+        else:
+            capture_time = capture_time.astimezone(UTC)
+
+        db.init_db()
+        with db.connect() as conn:
+            inserted = conn.execute(
+                CAPTURE_SNAPSHOT_SQL,
+                (clean_scope, clean_kind, clean_id, capture_time),
+            ).fetchone()
+            created = inserted is not None
+            if inserted is not None:
+                self._prune_retained_snapshots(
+                    conn,
+                    snapshot_id=int(inserted["id"]),
+                    captured_at=capture_time,
+                    retention_days=retention_days,
+                    scope=clean_scope,
+                )
+            snapshot = self._snapshot_by_trigger(conn, clean_kind, clean_id)
+
+        if snapshot is None:
+            raise RuntimeError("Snapshot insert did not return or persist a row")
+        return {"created": created, "snapshot": snapshot}
+
+    def ensure_baseline(
+        self,
+        *,
+        captured_at: datetime | None = None,
+        trigger_id: str = "vulnerability-trends-v1",
+    ) -> dict[str, Any]:
+        return self.capture_snapshot(
+            trigger_kind="baseline",
+            trigger_id=trigger_id,
+            captured_at=captured_at,
+        )
+
+    def trend_snapshots(
+        self,
+        *,
+        from_at: datetime,
+        to_at: datetime,
+        scope: str = VULNERABILITY_TRENDS_SCOPE,
+    ) -> list[dict[str, Any]]:
+        db.init_db()
+        with db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                WITH range_snapshots AS (
+                    SELECT source.*
+                    FROM vulnerability_aggregate_snapshots AS source
+                    WHERE source.scope = %s
+                      AND source.captured_at >= %s
+                      AND source.captured_at <= %s
+                ),
+                predecessor AS (
+                    SELECT source.*
+                    FROM vulnerability_aggregate_snapshots AS source
+                    WHERE source.scope = %s
+                      AND source.captured_at < %s
+                    ORDER BY source.captured_at DESC, source.id DESC
+                    LIMIT 1
+                ),
+                selected_snapshots AS (
+                    SELECT * FROM range_snapshots
+                    UNION ALL
+                    SELECT * FROM predecessor
+                )
+                SELECT {SNAPSHOT_SELECT_COLUMNS}
+                FROM selected_snapshots AS snapshot
+                LEFT JOIN vulnerability_aggregate_snapshot_severity AS severity
+                    ON severity.snapshot_id = snapshot.id
+                ORDER BY
+                    snapshot.captured_at ASC,
+                    snapshot.id ASC,
+                    CASE severity.severity
+                        WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
+                        WHEN 'low' THEN 4 ELSE 5
+                    END
+                """,
+                (scope, from_at, to_at, scope, from_at),
+            ).fetchall()
+        return _decode_snapshot_rows(rows)
+
+    def _snapshot_by_trigger(
+        self,
+        conn: Any,
+        trigger_kind: str,
+        trigger_id: str,
+    ) -> dict[str, Any] | None:
+        rows = conn.execute(
+            f"""
+            SELECT {SNAPSHOT_SELECT_COLUMNS}
+            FROM vulnerability_aggregate_snapshots AS snapshot
+            LEFT JOIN vulnerability_aggregate_snapshot_severity AS severity
+                ON severity.snapshot_id = snapshot.id
+            WHERE snapshot.trigger_kind = %s AND snapshot.trigger_id = %s
+            ORDER BY CASE severity.severity
+                WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
+                WHEN 'low' THEN 4 ELSE 5
+            END
+            """,
+            (trigger_kind, trigger_id),
+        ).fetchall()
+        decoded = _decode_snapshot_rows(rows)
+        return decoded[0] if decoded else None
+
+    def _prune_retained_snapshots(
+        self,
+        conn: Any,
+        *,
+        snapshot_id: int,
+        captured_at: datetime,
+        retention_days: int,
+        scope: str,
+    ) -> None:
+        lock_row = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
+            (_RETENTION_ADVISORY_LOCK_KEY,),
+        ).fetchone()
+        if not lock_row or not bool(lock_row.get("acquired")):
+            return
+        due_row = conn.execute(
+            """
+            SELECT NOT EXISTS (
+                SELECT 1
+                FROM vulnerability_aggregate_snapshots
+                WHERE scope = %s
+                  AND id <> %s
+                  AND captured_at >= date_trunc('day', %s::timestamptz)
+                  AND captured_at < date_trunc('day', %s::timestamptz) + INTERVAL '1 day'
+            ) AS due
+            """,
+            (scope, snapshot_id, captured_at, captured_at),
+        ).fetchone()
+        if due_row and bool(due_row.get("due")):
+            conn.execute(
+                """
+                DELETE FROM vulnerability_aggregate_snapshots
+                WHERE scope = %s
+                  AND captured_at < %s::timestamptz - make_interval(days => %s)
+                """,
+                (scope, captured_at, retention_days),
+            )
 
     def summary(
         self,
@@ -216,6 +568,7 @@ class VulnerabilityAnalyticsRepository:
                         ON finding.group_id = vulnerability_group.id
                     """
                 ).fetchone()
+                or {}
             )
             totals_row = dict(
                 conn.execute(
@@ -239,6 +592,7 @@ class VulnerabilityAnalyticsRepository:
                     """,
                     params,
                 ).fetchone()
+                or {}
             )
             severity_rows = conn.execute(
                 cte
@@ -394,11 +748,12 @@ class VulnerabilityAnalyticsRepository:
         with db.connect() as conn:
             total = 0
             if include_total:
+                count_row = conn.execute(
+                    cte + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
+                    params,
+                ).fetchone()
                 total = int(
-                    conn.execute(
-                        cte + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
-                        params,
-                    ).fetchone()["count"]
+                    (count_row or {}).get("count")
                     or 0
                 )
             rows = conn.execute(
@@ -506,12 +861,10 @@ class VulnerabilityAnalyticsRepository:
                 """,
                 params,
             ).fetchone()
-            total = int(
-                conn.execute(
-                    cte + "SELECT COUNT(DISTINCT asset_id) AS count FROM filtered_findings", params
-                ).fetchone()["count"]
-                or 0
-            )
+            count_row = conn.execute(
+                cte + "SELECT COUNT(DISTINCT asset_id) AS count FROM filtered_findings", params
+            ).fetchone()
+            total = int((count_row or {}).get("count") or 0)
             rows = conn.execute(
                 cte
                 + aggregate

@@ -36,6 +36,7 @@ function AppShell({ navigate, path, route }) {
         session={appData.session}
         systemStatus={appData.systemStatus}
         activeOperations={
+          appData.operationSummary?.active ??
           appData.operations.filter((item) =>
             ["queued", "running", "cancelling", "recovering"].includes(
               item.status,
@@ -84,6 +85,8 @@ function ActivePage({ routeId, ...props }) {
         defaults={props.defaults}
         lookups={props.lookups}
         tasks={props.tasks}
+        loading={props.tasksLoading}
+        error={props.tasksError}
         selectedTask={props.selectedTask}
         selectedTaskId={props.selectedTaskId}
         setSelectedTaskId={props.setSelectedTaskId}
@@ -103,7 +106,11 @@ function ActivePage({ routeId, ...props }) {
         total={props.operationsTotal}
         updatedAt={props.operationsUpdatedAt}
         stale={props.operationsStale}
+        loading={props.operationsLoading}
+        error={props.operationsError}
+        summary={props.operationSummary}
         refreshOperations={props.refreshOperations}
+        refreshOperationSummary={props.refreshOperationSummary}
         runBusy={props.runBusy}
         busy={props.busy}
         showAlert={props.showAlert}
@@ -162,6 +169,8 @@ function ActivePage({ routeId, ...props }) {
         summary={props.summary}
         rows={props.assetRows}
         total={props.assetTotal}
+        loading={props.assetsLoading}
+        error={props.assetsError}
         refreshAssets={props.refreshAssets}
         busy={props.busy}
         runBusy={props.runBusy}

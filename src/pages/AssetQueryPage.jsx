@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client.js";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
 import { Button, Panel } from "../shared/ui.jsx";
@@ -33,6 +33,16 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     DEFAULT_SORT.direction,
   );
   const [savedViews, setSavedViews] = useState([]);
+  const [catalogState, setCatalogState] = useState({
+    loading: true,
+    error: null,
+  });
+  const [viewsState, setViewsState] = useState({ loading: true, error: null });
+  const [resultState, setResultState] = useState({
+    status: "idle",
+    error: null,
+  });
+  const requestSequenceRef = useRef(0);
   const [activeViewId, setActiveViewId] = useState("");
   const [viewName, setViewName] = useState("");
   const [columns, setColumns] = useState(RESULT_COLUMNS.map(([key]) => key));
@@ -52,19 +62,45 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
   );
 
   useEffect(() => {
-    Promise.all([
-      api("/api/asset-card-query/fields?limit=500"),
-      api("/api/saved-views?route=asset-query"),
-    ])
-      .then(([fields, views]) => {
+    let active = true;
+    api("/api/asset-card-query/fields?limit=500")
+      .then((fields) => {
+        if (!active) return;
         setCatalog(fields.rows || []);
         setCoverage(fields);
-        setSavedViews(views.rows || []);
+        setCatalogState({ loading: false, error: null });
       })
-      .catch(() => null);
-  }, []);
+      .catch((error) => {
+        if (!active) return;
+        setCatalogState({ loading: false, error });
+        showAlert(
+          `Не удалось загрузить поля карточек: ${error.message || String(error)}`,
+          "error",
+        );
+      });
+    api("/api/saved-views?route=asset-query")
+      .then((views) => {
+        if (!active) return;
+        setSavedViews(views.rows || []);
+        setViewsState({ loading: false, error: null });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setViewsState({ loading: false, error });
+        showAlert(
+          `Не удалось загрузить сохранённые выборки: ${error.message || String(error)}`,
+          "error",
+        );
+      });
+    return () => {
+      active = false;
+      requestSequenceRef.current += 1;
+    };
+  }, [showAlert]);
 
   const execute = async (offset = 0, nextSort = sort, nextQuery = query) => {
+    const request = ++requestSequenceRef.current;
+    setResultState({ status: "loading", error: null });
     const payload = {
       query: nextQuery,
       sort_by: nextSort.key,
@@ -72,18 +108,35 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
       limit: PAGE_SIZE,
       offset,
     };
-    const response = await api("/api/asset-card-query", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    setResult(response);
-    setCoverage(response);
-    return response;
+    try {
+      const response = await api("/api/asset-card-query", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (request === requestSequenceRef.current) {
+        setResult(response);
+        setCoverage(response);
+        setResultState({ status: "success", error: null });
+      }
+      return response;
+    } catch (error) {
+      if (request === requestSequenceRef.current) {
+        setResultState({ status: "error", error });
+      }
+      throw error;
+    }
   };
 
+  const runQuery = (offset = 0, nextSort = sort, nextQuery = query) =>
+    runBusy("assetQuery", () => execute(offset, nextSort, nextQuery), {
+      allowConcurrent: true,
+    });
+
   const changeQuery = (nextQuery) => {
+    requestSequenceRef.current += 1;
     setQuery(nextQuery);
     setResult({ rows: [], total: 0, offset: 0 });
+    setResultState({ status: "idle", error: null });
   };
 
   const changeSort = (key, initialDirection = "asc") => {
@@ -97,16 +150,18 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
           : initialDirection,
     };
     toggleSort(key, initialDirection);
-    runBusy("assetQuery", () => execute(0, next));
+    runQuery(0, next);
   };
 
   const startNewView = () => {
+    requestSequenceRef.current += 1;
     setActiveViewId("");
     setViewName("");
     setQuery(EMPTY_GROUP());
     setSort(DEFAULT_SORT);
     setColumns(RESULT_COLUMNS.map(([key]) => key));
     setResult({ rows: [], total: 0, offset: 0 });
+    setResultState({ status: "idle", error: null });
   };
 
   const applyView = (id) => {
@@ -121,7 +176,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     setSort(nextSort);
     setColumns(nextColumns);
     setResult({ rows: [], total: 0, offset: 0 });
-    runBusy("assetQuery", () => execute(0, nextSort, nextQuery));
+    runQuery(0, nextSort, nextQuery);
   };
 
   const saveView = () =>
@@ -195,10 +250,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
       title="Выборки по карточкам активов"
       description="Задайте понятные условия по данным локальных карточек. Запросы к MP VM при поиске не выполняются."
       action={
-        <Button
-          busy={busy.assetQuery}
-          onClick={() => runBusy("assetQuery", () => execute(0))}
-        >
+        <Button busy={busy.assetQuery} onClick={() => runQuery(0)}>
           Показать активы
         </Button>
       }
@@ -221,6 +273,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
           <label>
             <span>Сохранённая выборка</span>
             <select
+              aria-busy={viewsState.loading ? "true" : undefined}
               value={activeViewId}
               onChange={(event) => applyView(event.target.value)}
             >
@@ -233,6 +286,12 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
                 </option>
               ))}
             </select>
+            {viewsState.loading ? (
+              <small role="status">Загрузка выборок…</small>
+            ) : null}
+            {viewsState.error ? (
+              <small role="alert">Сохранённые выборки недоступны.</small>
+            ) : null}
           </label>
           <div className="asset-query-view__actions">
             <Button variant="secondary" onClick={startNewView}>
@@ -283,6 +342,17 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         onChange={changeQuery}
         fieldMap={fieldMap}
       />
+      {catalogState.loading ? (
+        <div className="query-state" role="status">
+          Загрузка каталога полей…
+        </div>
+      ) : null}
+      {catalogState.error ? (
+        <div className="query-state query-state--error" role="alert">
+          Каталог полей недоступен. Можно повторить попытку, перезагрузив
+          страницу.
+        </div>
+      ) : null}
       <datalist id="asset-query-fields">
         {catalog.map((item) => (
           <option
@@ -380,7 +450,34 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
             </tr>
           </thead>
           <tbody>
-            {result.rows?.length ? (
+            {resultState.status === "loading" ? (
+              <tr>
+                <td
+                  colSpan={columns.length + 1}
+                  className="empty-cell"
+                  role="status"
+                >
+                  Загрузка активов…
+                </td>
+              </tr>
+            ) : resultState.status === "error" ? (
+              <tr>
+                <td colSpan={columns.length + 1} className="empty-cell">
+                  <div className="query-state query-state--error" role="alert">
+                    <span>
+                      Не удалось выполнить выборку:{" "}
+                      {resultState.error?.message || "сервис недоступен"}
+                    </span>
+                    <Button
+                      variant="tiny"
+                      onClick={() => runQuery(result.offset || 0)}
+                    >
+                      Повторить
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ) : result.rows?.length ? (
               result.rows.map((row) => (
                 <tr key={row.asset_id}>
                   {columns.includes("display_name") ? (
@@ -409,7 +506,9 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
             ) : (
               <tr>
                 <td colSpan={columns.length + 1} className="empty-cell">
-                  Задайте условия и нажмите «Показать активы».
+                  {resultState.status === "success"
+                    ? "Активы с такими условиями не найдены."
+                    : "Задайте условия и нажмите «Показать активы»."}
                 </td>
               </tr>
             )}
@@ -420,11 +519,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         <Button
           variant="secondary"
           disabled={!result.offset}
-          onClick={() =>
-            runBusy("assetQuery", () =>
-              execute(Math.max(0, result.offset - PAGE_SIZE)),
-            )
-          }
+          onClick={() => runQuery(Math.max(0, result.offset - PAGE_SIZE))}
         >
           Назад
         </Button>
@@ -436,9 +531,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         <Button
           variant="secondary"
           disabled={result.offset + PAGE_SIZE >= result.total}
-          onClick={() =>
-            runBusy("assetQuery", () => execute(result.offset + PAGE_SIZE))
-          }
+          onClick={() => runQuery(result.offset + PAGE_SIZE)}
         >
           Далее
         </Button>

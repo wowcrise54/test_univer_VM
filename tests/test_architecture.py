@@ -15,6 +15,7 @@ EXPECTED_API_PATHS = {
     "/api/session/connect",
     "/api/scanner-tasks",
     "/api/operations",
+    "/api/operations/summary",
     "/api/exports/pdql",
     "/api/reports/vulnerabilities/{report_type}/csv",
     "/api/assets",

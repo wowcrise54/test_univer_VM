@@ -371,11 +371,13 @@ class StartScannerTaskApiTests(unittest.TestCase):
             patch.object(main.db, "update_scan_postprocess_run"),
             patch.object(main.db, "finish_scan_postprocess_run") as finish_run,
             patch.object(main.db, "update_scan_task_status"),
+            patch.object(main, "capture_vulnerability_snapshot") as capture_snapshot,
         ):
             response = TestClient(main.app).post("/api/scanner-tasks/task-full/start", json={})
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(finish_run.call_args.kwargs["status"], "completed")
+        capture_snapshot.assert_called_once_with("scan_postprocess", "post-full")
 
 
 class AssetCardRefreshScanTests(unittest.TestCase):
@@ -542,10 +544,11 @@ class AssetCardRefreshScanTests(unittest.TestCase):
             patch.object(main.db, "update_scan_task_status", side_effect=lambda *_args, **_kwargs: events.append("task_status")),
             patch.object(main, "cleanup_auto_created_refresh_task", side_effect=lambda **_kwargs: events.append("task_deleted") or True),
             patch.object(main.db, "finish_scan_postprocess_run", side_effect=lambda *_args, **_kwargs: events.append("terminal")),
+            patch.object(main, "capture_vulnerability_snapshot", side_effect=lambda *_args, **_kwargs: events.append("snapshot")),
         ):
             main.run_scan_postprocess(run_id="refresh-run-1", auth=SimpleNamespace(), token="token")
 
-        self.assertEqual(events, ["card_actions", "task_status", "task_deleted", "terminal"])
+        self.assertEqual(events, ["card_actions", "task_status", "task_deleted", "terminal", "snapshot"])
 
 
 class ScanJobLiveMonitoringTests(unittest.TestCase):

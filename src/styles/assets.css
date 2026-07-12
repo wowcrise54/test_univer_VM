@@ -27,10 +27,9 @@
 
 .asset-filter-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 2fr) minmax(150px, 0.8fr) minmax(
-      180px,
-      1fr
-    ) minmax(170px, 1fr) auto;
+  grid-template-columns:
+    minmax(260px, 2fr) minmax(150px, 0.8fr) minmax(180px, 1fr)
+    minmax(170px, 1fr) auto;
   gap: 10px;
   align-items: end;
 }

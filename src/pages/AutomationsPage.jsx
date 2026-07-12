@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import { api, createIdempotencyKey } from "../api/client.js";
 import {
   AutomationStepEditor,
@@ -11,14 +12,8 @@ import { Button, ConfirmDialog, Field, Panel, Toggle } from "../shared/ui.jsx";
 
 export function AutomationsPage({ showAlert }) {
   const [tab, setTab] = useState("runbooks");
-  const [runbooks, setRunbooks] = useState([]);
-  const [schedules, setSchedules] = useState([]);
-  const [runs, setRuns] = useState([]);
-  const [notifications, setNotifications] = useState({ rows: [], unread: 0 });
-  const [templates, setTemplates] = useState([]);
-  const [scannerTasks, setScannerTasks] = useState([]);
-  const [fieldCatalog, setFieldCatalog] = useState([]);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState({});
+  const busyRef = useRef(new Set());
   const [editingId, setEditingId] = useState(null);
   const [publishTarget, setPublishTarget] = useState(null);
   const [form, setForm] = useState({
@@ -35,53 +30,78 @@ export function AutomationsPage({ showAlert }) {
   });
   const [selectedRun, setSelectedRun] = useState(null);
 
-  const load = useCallback(async () => {
-    const [
-      runbookData,
-      scheduleData,
-      runData,
-      notificationData,
-      templateData,
-      scannerTaskData,
-      fieldData,
-    ] = await Promise.all([
-      api("/api/automations/runbooks"),
-      api("/api/automations/schedules"),
-      api("/api/automations/runs"),
-      api("/api/notifications"),
-      api("/api/automations/templates"),
-      api("/api/scanner-tasks").catch(() => []),
-      api("/api/asset-card-query/fields?limit=500").catch(() => ({ rows: [] })),
-    ]);
-    setRunbooks(runbookData.rows || []);
-    setSchedules(scheduleData.rows || []);
-    setRuns(runData.rows || []);
-    setNotifications(notificationData);
-    setTemplates(templateData.rows || []);
-    setScannerTasks(
-      Array.isArray(scannerTaskData)
-        ? scannerTaskData
-        : scannerTaskData.rows || [],
-    );
-    setFieldCatalog(fieldData.rows || []);
-  }, []);
+  const runbooksQuery = useQuery({
+    queryKey: ["automations", "runbooks"],
+    queryFn: () => api("/api/automations/runbooks"),
+  });
+  const schedulesQuery = useQuery({
+    queryKey: ["automations", "schedules"],
+    queryFn: () => api("/api/automations/schedules"),
+  });
+  const runsQuery = useQuery({
+    queryKey: ["automations", "runs"],
+    queryFn: () => api("/api/automations/runs"),
+    refetchInterval: (query) =>
+      (query.state.data?.rows || []).some((item) =>
+        ["queued", "running", "cancelling"].includes(item.status),
+      )
+        ? 2000
+        : false,
+  });
+  const notificationsQuery = useQuery({
+    queryKey: ["automations", "notifications"],
+    queryFn: () => api("/api/notifications"),
+  });
+  const templatesQuery = useQuery({
+    queryKey: ["automations", "templates"],
+    queryFn: () => api("/api/automations/templates"),
+  });
+  const scannerTasksQuery = useQuery({
+    queryKey: ["automations", "scanner-tasks"],
+    queryFn: () => api("/api/scanner-tasks"),
+  });
+  const fieldCatalogQuery = useQuery({
+    queryKey: ["automations", "field-catalog"],
+    queryFn: () => api("/api/asset-card-query/fields?limit=500"),
+  });
 
-  useEffect(() => {
-    load().catch((error) => showAlert(error.message, "error"));
-  }, [load, showAlert]);
+  const runbooks = runbooksQuery.data?.rows || [];
+  const schedules = schedulesQuery.data?.rows || [];
+  const runs = runsQuery.data?.rows || [];
+  const notifications = notificationsQuery.data || { rows: [], unread: 0 };
+  const templates = templatesQuery.data?.rows || [];
+  const scannerTaskData = scannerTasksQuery.data;
+  const scannerTasks = Array.isArray(scannerTaskData)
+    ? scannerTaskData
+    : scannerTaskData?.rows || [];
+  const fieldCatalog = fieldCatalogQuery.data?.rows || [];
+  const queries = [
+    runbooksQuery,
+    schedulesQuery,
+    runsQuery,
+    notificationsQuery,
+    templatesQuery,
+    scannerTasksQuery,
+    fieldCatalogQuery,
+  ];
+  const refreshAll = () =>
+    Promise.allSettled(queries.map((query) => query.refetch()));
 
-  const perform = async (action, success) => {
-    setBusy(true);
+  const perform = async (key, action, success) => {
+    if (busyRef.current.has(key)) return false;
+    busyRef.current.add(key);
+    setBusy((current) => ({ ...current, [key]: true }));
     try {
       await action();
-      await load();
+      await refreshAll();
       if (success) showAlert(success, "success");
       return true;
     } catch (error) {
       showAlert(error.message, "error");
       return false;
     } finally {
-      setBusy(false);
+      busyRef.current.delete(key);
+      setBusy((current) => ({ ...current, [key]: false }));
     }
   };
 
@@ -102,6 +122,7 @@ export function AutomationsPage({ showAlert }) {
       return;
     }
     const saved = await perform(
+      "runbook:save",
       () =>
         api(
           editingId
@@ -146,6 +167,7 @@ export function AutomationsPage({ showAlert }) {
 
   const publishConfirmed = (runbook, confirmName) => {
     perform(
+      `runbook:publish:${runbook.runbook_id}`,
       () =>
         api(`/api/automations/runbooks/${runbook.runbook_id}/publish`, {
           method: "POST",
@@ -157,6 +179,7 @@ export function AutomationsPage({ showAlert }) {
 
   const startRun = (runbook, dryRun) =>
     perform(
+      `runbook:run:${runbook.runbook_id}:${dryRun ? "dry" : "live"}`,
       () =>
         api(`/api/automations/runbooks/${runbook.runbook_id}/run`, {
           method: "POST",
@@ -191,24 +214,54 @@ export function AutomationsPage({ showAlert }) {
       return { ...current, steps };
     });
 
-  const publishedRunbooks = useMemo(
-    () => runbooks.filter((item) => item.published_version),
-    [runbooks],
-  );
+  const publishedRunbooks = runbooks.filter((item) => item.published_version);
+  const automationTabs = [
+    ["runbooks", "Сценарии"],
+    ["schedules", "Расписания"],
+    ["runs", "Запуски"],
+    ["notifications", `Уведомления · ${notifications.unread || 0}`],
+  ];
 
   return (
     <>
-      <div className="automation-tabs">
-        {[
-          ["runbooks", "Сценарии"],
-          ["schedules", "Расписания"],
-          ["runs", "Запуски"],
-          ["notifications", `Уведомления · ${notifications.unread || 0}`],
-        ].map(([id, label]) => (
+      <div
+        className="automation-tabs"
+        role="tablist"
+        aria-label="Разделы автоматизации"
+      >
+        {automationTabs.map(([id, label], index) => (
           <button
+            type="button"
+            role="tab"
+            id={`automation-tab-${id}`}
+            aria-controls={`automation-panel-${id}`}
+            aria-selected={tab === id}
+            tabIndex={tab === id ? 0 : -1}
             key={id}
             className={tab === id ? "is-active" : ""}
             onClick={() => setTab(id)}
+            onKeyDown={(event) => {
+              if (
+                !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+              )
+                return;
+              event.preventDefault();
+              const nextIndex =
+                event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? automationTabs.length - 1
+                    : (index +
+                        (event.key === "ArrowRight" ? 1 : -1) +
+                        automationTabs.length) %
+                      automationTabs.length;
+              setTab(automationTabs[nextIndex][0]);
+              const tabButtons =
+                event.currentTarget.parentElement?.querySelectorAll(
+                  '[role="tab"]',
+                );
+              tabButtons?.[nextIndex]?.focus();
+            }}
           >
             {label}
           </button>
@@ -216,7 +269,11 @@ export function AutomationsPage({ showAlert }) {
       </div>
 
       {tab === "runbooks" && (
-        <>
+        <div
+          id="automation-panel-runbooks"
+          role="tabpanel"
+          aria-labelledby="automation-tab-runbooks"
+        >
           <Panel
             title={editingId ? "Редактирование сценария" : "Новый сценарий"}
             description="Добавьте действия в нужном порядке. Опубликованная версия остаётся неизменной."
@@ -240,6 +297,17 @@ export function AutomationsPage({ showAlert }) {
               </Field>
             </div>
             <div className="automation-steps">
+              {scannerTasksQuery.isPending || fieldCatalogQuery.isPending ? (
+                <div className="query-state" role="status">
+                  Загрузка справочников редактора…
+                </div>
+              ) : null}
+              {scannerTasksQuery.isError || fieldCatalogQuery.isError ? (
+                <div className="query-state query-state--error" role="alert">
+                  Не все справочники редактора доступны. Существующие значения
+                  сохранены; повторите загрузку перед публикацией.
+                </div>
+              ) : null}
               {form.steps.map((step, index) => (
                 <AutomationStepEditor
                   key={`${step.step_id}-${index}`}
@@ -273,7 +341,7 @@ export function AutomationsPage({ showAlert }) {
               >
                 Добавить шаг
               </Button>
-              <Button busy={busy} onClick={save}>
+              <Button busy={busy["runbook:save"]} onClick={save}>
                 {editingId ? "Сохранить" : "Создать"}
               </Button>
               {editingId && (
@@ -283,6 +351,12 @@ export function AutomationsPage({ showAlert }) {
               )}
             </div>
             <div className="automation-templates">
+              {templatesQuery.isPending ? (
+                <span role="status">Загрузка шаблонов…</span>
+              ) : null}
+              {templatesQuery.isError ? (
+                <span role="alert">Не удалось загрузить шаблоны.</span>
+              ) : null}
               {templates.map((template) => (
                 <button
                   key={template.template_id}
@@ -309,61 +383,89 @@ export function AutomationsPage({ showAlert }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {runbooks.map((item) => (
-                    <tr key={item.runbook_id}>
-                      <td>
-                        <strong>{item.name}</strong>
-                        <small>{item.description}</small>
-                      </td>
-                      <td>{item.published_version || "Черновик"}</td>
-                      <td>{item.draft?.steps?.length || 0}</td>
-                      <td>
-                        {item.allow_destructive
-                          ? "опасные разрешены"
-                          : "безопасный"}
-                      </td>
-                      <td>
-                        <div className="row-actions">
-                          <Button variant="tiny" onClick={() => edit(item)}>
-                            Изменить
-                          </Button>
-                          <Button variant="tiny" onClick={() => publish(item)}>
-                            Опубликовать
-                          </Button>
-                          <Button
-                            variant="tiny"
-                            disabled={!item.published_version}
-                            onClick={() => startRun(item, true)}
-                          >
-                            Проверить
-                          </Button>
-                          <Button
-                            variant="tiny"
-                            disabled={!item.published_version}
-                            onClick={() => startRun(item, false)}
-                          >
-                            Запустить
-                          </Button>
-                        </div>
+                  {runbooksQuery.isPending ? (
+                    <tr>
+                      <td colSpan="5" className="empty-cell" role="status">
+                        Загрузка сценариев…
                       </td>
                     </tr>
-                  ))}
-                  {!runbooks.length && (
+                  ) : runbooksQuery.isError ? (
                     <tr>
                       <td colSpan="5" className="empty-cell">
-                        Сценарии ещё не созданы.
+                        <AutomationQueryError
+                          label="сценарии"
+                          query={runbooksQuery}
+                        />
                       </td>
                     </tr>
+                  ) : (
+                    runbooks.map((item) => (
+                      <tr key={item.runbook_id}>
+                        <td>
+                          <strong>{item.name}</strong>
+                          <small>{item.description}</small>
+                        </td>
+                        <td>{item.published_version || "Черновик"}</td>
+                        <td>{item.draft?.steps?.length || 0}</td>
+                        <td>
+                          {item.allow_destructive
+                            ? "опасные разрешены"
+                            : "безопасный"}
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <Button variant="tiny" onClick={() => edit(item)}>
+                              Изменить
+                            </Button>
+                            <Button
+                              variant="tiny"
+                              busy={busy[`runbook:publish:${item.runbook_id}`]}
+                              onClick={() => publish(item)}
+                            >
+                              Опубликовать
+                            </Button>
+                            <Button
+                              variant="tiny"
+                              disabled={!item.published_version}
+                              busy={busy[`runbook:run:${item.runbook_id}:dry`]}
+                              onClick={() => startRun(item, true)}
+                            >
+                              Проверить
+                            </Button>
+                            <Button
+                              variant="tiny"
+                              disabled={!item.published_version}
+                              busy={busy[`runbook:run:${item.runbook_id}:live`]}
+                              onClick={() => startRun(item, false)}
+                            >
+                              Запустить
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
                   )}
+                  {!runbooksQuery.isPending &&
+                    !runbooksQuery.isError &&
+                    !runbooks.length && (
+                      <tr>
+                        <td colSpan="5" className="empty-cell">
+                          Сценарии ещё не созданы.
+                        </td>
+                      </tr>
+                    )}
                 </tbody>
               </table>
             </div>
           </Panel>
-        </>
+        </div>
       )}
 
       {tab === "schedules" && (
         <Panel
+          id="automation-panel-schedules"
+          role="tabpanel"
+          aria-labelledby="automation-tab-schedules"
           title="Расписания"
           description="Cron вычисляется в выбранной timezone; пропуски не догоняются."
         >
@@ -426,9 +528,10 @@ export function AutomationsPage({ showAlert }) {
               }
             />
             <Button
-              busy={busy}
+              busy={busy["schedule:create"]}
               onClick={() =>
                 perform(
+                  "schedule:create",
                   () =>
                     api("/api/automations/schedules", {
                       method: "POST",
@@ -454,61 +557,89 @@ export function AutomationsPage({ showAlert }) {
                 </tr>
               </thead>
               <tbody>
-                {schedules.map((item) => (
-                  <tr key={item.schedule_id}>
-                    <td>{item.name}</td>
-                    <td>{item.runbook_name}</td>
-                    <td>
-                      <code>{item.cron_expression}</code>
-                      <small>{item.timezone}</small>
-                    </td>
-                    <td>{formatDate(item.next_run_at)}</td>
-                    <td>
-                      {item.enabled ? item.last_status || "активно" : "пауза"}
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <Button
-                          variant="tiny"
-                          onClick={() =>
-                            perform(() =>
-                              api(
-                                `/api/automations/schedules/${item.schedule_id}`,
-                                {
-                                  method: "PUT",
-                                  body: JSON.stringify({
-                                    runbook_id: item.runbook_id,
-                                    name: item.name,
-                                    cron_expression: item.cron_expression,
-                                    timezone: item.timezone,
-                                    enabled: !item.enabled,
-                                  }),
-                                },
-                              ),
-                            )
-                          }
-                        >
-                          {item.enabled ? "Пауза" : "Включить"}
-                        </Button>
-                        <Button
-                          variant="tiny-danger"
-                          onClick={() =>
-                            perform(
-                              () =>
-                                api(
-                                  `/api/automations/schedules/${item.schedule_id}`,
-                                  { method: "DELETE" },
-                                ),
-                              "Расписание удалено.",
-                            )
-                          }
-                        >
-                          Удалить
-                        </Button>
-                      </div>
+                {schedulesQuery.isPending ? (
+                  <tr>
+                    <td colSpan="6" className="empty-cell" role="status">
+                      Загрузка расписаний…
                     </td>
                   </tr>
-                ))}
+                ) : schedulesQuery.isError ? (
+                  <tr>
+                    <td colSpan="6" className="empty-cell">
+                      <AutomationQueryError
+                        label="расписания"
+                        query={schedulesQuery}
+                      />
+                    </td>
+                  </tr>
+                ) : schedules.length ? (
+                  schedules.map((item) => (
+                    <tr key={item.schedule_id}>
+                      <td>{item.name}</td>
+                      <td>{item.runbook_name}</td>
+                      <td>
+                        <code>{item.cron_expression}</code>
+                        <small>{item.timezone}</small>
+                      </td>
+                      <td>{formatDate(item.next_run_at)}</td>
+                      <td>
+                        {item.enabled ? item.last_status || "активно" : "пауза"}
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <Button
+                            variant="tiny"
+                            onClick={() =>
+                              perform(
+                                `schedule:toggle:${item.schedule_id}`,
+                                () =>
+                                  api(
+                                    `/api/automations/schedules/${item.schedule_id}`,
+                                    {
+                                      method: "PUT",
+                                      body: JSON.stringify({
+                                        runbook_id: item.runbook_id,
+                                        name: item.name,
+                                        cron_expression: item.cron_expression,
+                                        timezone: item.timezone,
+                                        enabled: !item.enabled,
+                                      }),
+                                    },
+                                  ),
+                              )
+                            }
+                            busy={busy[`schedule:toggle:${item.schedule_id}`]}
+                          >
+                            {item.enabled ? "Пауза" : "Включить"}
+                          </Button>
+                          <Button
+                            variant="tiny-danger"
+                            onClick={() =>
+                              perform(
+                                `schedule:delete:${item.schedule_id}`,
+                                () =>
+                                  api(
+                                    `/api/automations/schedules/${item.schedule_id}`,
+                                    { method: "DELETE" },
+                                  ),
+                                "Расписание удалено.",
+                              )
+                            }
+                            busy={busy[`schedule:delete:${item.schedule_id}`]}
+                          >
+                            Удалить
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="6" className="empty-cell">
+                      Расписания ещё не созданы.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -516,11 +647,19 @@ export function AutomationsPage({ showAlert }) {
       )}
 
       {tab === "runs" && (
-        <>
+        <div
+          id="automation-panel-runs"
+          role="tabpanel"
+          aria-labelledby="automation-tab-runs"
+        >
           <Panel
             title="История запусков"
             action={
-              <Button variant="secondary" onClick={load}>
+              <Button
+                variant="secondary"
+                busy={busy["refresh:all"]}
+                onClick={() => perform("refresh:all", () => Promise.resolve())}
+              >
                 Обновить
               </Button>
             }
@@ -538,60 +677,88 @@ export function AutomationsPage({ showAlert }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.map((item) => (
-                    <tr key={item.run_id}>
-                      <td>{item.runbook_name || item.runbook_id}</td>
-                      <td>
-                        {item.trigger_type}
-                        {item.dry_run ? " · dry-run" : ""}
-                      </td>
-                      <td>
-                        <span
-                          className={`operation-status operation-status--${item.status}`}
-                        >
-                          {item.status}
-                        </span>
-                      </td>
-                      <td>{item.current_step + 1}</td>
-                      <td>{formatDate(item.created_at)}</td>
-                      <td>
-                        <div className="row-actions">
-                          <Button
-                            variant="tiny"
-                            onClick={() =>
-                              api(`/api/automations/runs/${item.run_id}`)
-                                .then(setSelectedRun)
-                                .catch((error) =>
-                                  showAlert(error.message, "error"),
-                                )
-                            }
-                          >
-                            Шаги
-                          </Button>
-                          <Button
-                            variant="tiny"
-                            disabled={
-                              !["queued", "running", "cancelling"].includes(
-                                item.status,
-                              )
-                            }
-                            onClick={() =>
-                              perform(
-                                () =>
-                                  api(
-                                    `/api/automations/runs/${item.run_id}/cancel`,
-                                    { method: "POST" },
-                                  ),
-                                "Отмена запрошена.",
-                              )
-                            }
-                          >
-                            Отменить
-                          </Button>
-                        </div>
+                  {runsQuery.isPending ? (
+                    <tr>
+                      <td colSpan="6" className="empty-cell" role="status">
+                        Загрузка запусков…
                       </td>
                     </tr>
-                  ))}
+                  ) : runsQuery.isError ? (
+                    <tr>
+                      <td colSpan="6" className="empty-cell">
+                        <AutomationQueryError
+                          label="историю запусков"
+                          query={runsQuery}
+                        />
+                      </td>
+                    </tr>
+                  ) : runs.length ? (
+                    runs.map((item) => (
+                      <tr key={item.run_id}>
+                        <td>{item.runbook_name || item.runbook_id}</td>
+                        <td>
+                          {item.trigger_type}
+                          {item.dry_run ? " · dry-run" : ""}
+                        </td>
+                        <td>
+                          <span
+                            className={`operation-status operation-status--${item.status}`}
+                          >
+                            {item.status}
+                          </span>
+                        </td>
+                        <td>{item.current_step + 1}</td>
+                        <td>{formatDate(item.created_at)}</td>
+                        <td>
+                          <div className="row-actions">
+                            <Button
+                              variant="tiny"
+                              busy={busy[`run:detail:${item.run_id}`]}
+                              onClick={() =>
+                                perform(`run:detail:${item.run_id}`, async () =>
+                                  setSelectedRun(
+                                    await api(
+                                      `/api/automations/runs/${item.run_id}`,
+                                    ),
+                                  ),
+                                )
+                              }
+                            >
+                              Шаги
+                            </Button>
+                            <Button
+                              variant="tiny"
+                              disabled={
+                                !["queued", "running", "cancelling"].includes(
+                                  item.status,
+                                )
+                              }
+                              onClick={() =>
+                                perform(
+                                  `run:cancel:${item.run_id}`,
+                                  () =>
+                                    api(
+                                      `/api/automations/runs/${item.run_id}/cancel`,
+                                      { method: "POST" },
+                                    ),
+                                  "Отмена запрошена.",
+                                )
+                              }
+                              busy={busy[`run:cancel:${item.run_id}`]}
+                            >
+                              Отменить
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="6" className="empty-cell">
+                        Запусков пока нет.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -630,43 +797,70 @@ export function AutomationsPage({ showAlert }) {
               </div>
             </Panel>
           )}
-        </>
+        </div>
       )}
 
       {tab === "notifications" && (
         <Panel
+          id="automation-panel-notifications"
+          role="tabpanel"
+          aria-labelledby="automation-tab-notifications"
           title="Центр уведомлений"
           description={`Непрочитанных: ${notifications.unread || 0}`}
         >
           <div className="automation-notifications">
-            {notifications.rows.map((item) => (
-              <article
-                key={item.notification_id}
-                className={`automation-notification automation-notification--${item.level} ${item.is_read ? "is-read" : ""}`}
-              >
-                <div>
-                  <strong>{item.title}</strong>
-                  <p>{item.message}</p>
-                  <small>
-                    {formatDate(item.created_at)} · {item.event_type}
-                  </small>
-                </div>
-                {!item.is_read && (
-                  <Button
-                    variant="tiny"
-                    onClick={() =>
-                      perform(() =>
-                        api(`/api/notifications/${item.notification_id}/read`, {
-                          method: "POST",
-                        }),
-                      )
-                    }
-                  >
-                    Прочитано
-                  </Button>
-                )}
-              </article>
-            ))}
+            {notificationsQuery.isPending ? (
+              <div className="query-state" role="status">
+                Загрузка уведомлений…
+              </div>
+            ) : null}
+            {notificationsQuery.isError ? (
+              <AutomationQueryError
+                label="уведомления"
+                query={notificationsQuery}
+              />
+            ) : null}
+            {!notificationsQuery.isPending &&
+              !notificationsQuery.isError &&
+              notifications.rows.map((item) => (
+                <article
+                  key={item.notification_id}
+                  className={`automation-notification automation-notification--${item.level} ${item.is_read ? "is-read" : ""}`}
+                >
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.message}</p>
+                    <small>
+                      {formatDate(item.created_at)} · {item.event_type}
+                    </small>
+                  </div>
+                  {!item.is_read && (
+                    <Button
+                      variant="tiny"
+                      onClick={() =>
+                        perform(
+                          `notification:read:${item.notification_id}`,
+                          () =>
+                            api(
+                              `/api/notifications/${item.notification_id}/read`,
+                              {
+                                method: "POST",
+                              },
+                            ),
+                        )
+                      }
+                      busy={busy[`notification:read:${item.notification_id}`]}
+                    >
+                      Прочитано
+                    </Button>
+                  )}
+                </article>
+              ))}
+            {!notificationsQuery.isPending &&
+            !notificationsQuery.isError &&
+            !notifications.rows.length ? (
+              <div className="query-state">Уведомлений пока нет.</div>
+            ) : null}
           </div>
         </Panel>
       )}
@@ -682,7 +876,9 @@ export function AutomationsPage({ showAlert }) {
         ]}
         requireText={publishTarget?.name || ""}
         confirmLabel="Опубликовать с удалением"
-        busy={busy}
+        busy={Boolean(
+          publishTarget && busy[`runbook:publish:${publishTarget.runbook_id}`],
+        )}
         onClose={() => setPublishTarget(null)}
         onConfirm={() => publishConfirmed(publishTarget, publishTarget.name)}
       />
@@ -694,4 +890,18 @@ function formatDate(value) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
+}
+
+function AutomationQueryError({ label, query }) {
+  return (
+    <div className="query-state query-state--error" role="alert">
+      <span>
+        Не удалось загрузить {label}:{" "}
+        {query.error?.message || "сервис недоступен"}.
+      </span>
+      <Button variant="tiny" onClick={() => query.refetch()}>
+        Повторить
+      </Button>
+    </div>
+  );
 }

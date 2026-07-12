@@ -460,12 +460,325 @@ button.ranking-row:focus-visible,
   white-space: nowrap;
 }
 
+.risk-trend {
+  margin: 4px 0 22px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 18px;
+  background: linear-gradient(180deg, #f8fbff, #fff);
+}
+
+.risk-trend__header,
+.risk-trend__card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.risk-trend__header {
+  margin-bottom: 16px;
+}
+
+.risk-trend__header h3,
+.risk-trend__card h4 {
+  margin: 0;
+  color: var(--text);
+}
+
+.risk-trend__header h3 {
+  font-size: 18px;
+}
+
+.risk-trend__header p,
+.risk-trend__card header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.risk-trend__periods {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 4px;
+  background: #fff;
+}
+
+.risk-trend__periods button {
+  border-radius: 8px;
+  padding: 8px 11px;
+  color: #475569;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.risk-trend__periods button:hover,
+.risk-trend__periods button.is-active {
+  color: #174ea6;
+  background: var(--blue-soft);
+}
+
+.risk-trend__periods button:focus-visible,
+.risk-trend__details summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.risk-trend__deltas {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.risk-trend__delta {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fff;
+}
+
+.risk-trend__delta > span,
+.risk-trend__delta strong,
+.risk-trend__delta small {
+  display: block;
+}
+
+.risk-trend__delta > span {
+  color: #52657a;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.risk-trend__delta strong {
+  margin: 7px 0 3px;
+  font-size: 24px;
+}
+
+.risk-trend__delta small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.risk-trend__delta--danger {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.risk-trend__delta--danger small {
+  color: #b91c1c;
+}
+
+.risk-trend__delta--success {
+  border-color: #bbf7d0;
+  background: #f4fff7;
+}
+
+.risk-trend__delta--success small {
+  color: #166534;
+}
+
+.risk-trend__warning {
+  margin-bottom: 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #9a3412;
+  background: #fff7ed;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.risk-trend__content {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 12px;
+}
+
+.risk-trend__card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  background: #fff;
+}
+
+.risk-trend__card h4 {
+  font-size: 14px;
+}
+
+.risk-trend__card header label {
+  display: grid;
+  gap: 4px;
+  color: #52657a;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.risk-trend__card header select {
+  min-width: 190px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 7px 30px 7px 9px;
+  color: var(--text);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.risk-trend__chart {
+  display: block;
+  width: 100%;
+  min-height: 230px;
+  margin-top: 10px;
+}
+
+.risk-trend__grid-line {
+  stroke: #dbe5f0;
+  stroke-dasharray: 4 5;
+  stroke-width: 1;
+}
+
+.risk-trend__axis-label {
+  fill: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.risk-trend__line {
+  fill: none;
+  stroke: var(--blue);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+
+.risk-trend__point {
+  fill: #fff;
+  stroke: var(--blue);
+  stroke-width: 4;
+}
+
+.risk-trend__point--warning {
+  fill: #ffedd5;
+  stroke: #c2410c;
+}
+
+.risk-trend__severity-stack {
+  display: flex;
+  overflow: hidden;
+  height: 14px;
+  margin: 20px 0 15px;
+  border-radius: 999px;
+  background: #eef2f7;
+}
+
+.risk-trend__severity-segment--critical,
+.risk-trend__severity-dot--critical {
+  background: #dc2626;
+}
+
+.risk-trend__severity-segment--high,
+.risk-trend__severity-dot--high {
+  background: #ea580c;
+}
+
+.risk-trend__severity-segment--medium,
+.risk-trend__severity-dot--medium {
+  background: #d97706;
+}
+
+.risk-trend__severity-segment--low,
+.risk-trend__severity-dot--low {
+  background: #2563eb;
+}
+
+.risk-trend__severity-segment--none,
+.risk-trend__severity-dot--none {
+  background: #64748b;
+}
+
+.risk-trend__severity-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.risk-trend__severity-list li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+  color: #475569;
+  font-size: 12px;
+}
+
+.risk-trend__severity-list small {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.risk-trend__severity-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.risk-trend__details {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.risk-trend__details summary {
+  padding: 12px 14px;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.risk-trend__table-shell {
+  margin: 0 12px 12px;
+}
+
+.risk-trend__table-shell table {
+  min-width: 780px;
+}
+
+.risk-trend__table-shell td small,
+.risk-trend__table-shell td strong {
+  display: block;
+}
+
+.risk-trend__table-shell td small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
 @media (max-width: 1540px) {
   .vulnerability-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .vulnerability-insights-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .risk-trend__deltas {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -486,14 +799,38 @@ button.ranking-row:focus-visible,
   .vulnerability-context {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .risk-trend__content {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 760px) {
   .vulnerability-filters,
   .vulnerability-context,
   .vulnerability-kpi-grid,
-  .vulnerability-insights-grid {
+  .vulnerability-insights-grid,
+  .risk-trend__deltas {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .risk-trend {
+    padding: 14px;
+  }
+
+  .risk-trend__header,
+  .risk-trend__card > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .risk-trend__periods {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .risk-trend__card header select {
+    width: 100%;
   }
 
   .vulnerability-filters__actions,
