@@ -96,8 +96,10 @@ function RiskWorkspace({ showAlert, onRefresh }) {
   const [checked, setChecked] = useState([]);
   const [context, setContext] = useState({ criticality: "medium", environment: "production", exposure: "internal" });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const load = useCallback(async () => {
     setLoading(true);
+    setError("");
     try {
       const suffix = level ? `?level=${level}` : "";
       const [queue, totals, campaignData] = await Promise.all([
@@ -105,9 +107,13 @@ function RiskWorkspace({ showAlert, onRefresh }) {
       ]);
       setData(queue); setSummary(totals); setCampaigns(campaignData.rows || []);
       setChecked((value) => value.filter((id) => (queue.rows || []).some((row) => row.case_id === id)));
-    } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
+    } catch (error) {
+      setError(error.code === "DATABASE_UNAVAILABLE"
+        ? "Модуль приоритизации ещё не подготовлен в PostgreSQL. Примените миграции и повторите загрузку."
+        : error.operatorMessage || error.message);
+    }
     finally { setLoading(false); }
-  }, [level, showAlert]);
+  }, [level]);
   useEffect(() => { load(); }, [load]);
   const createCampaign = async () => {
     const name = window.prompt("Название кампании");
@@ -136,6 +142,7 @@ function RiskWorkspace({ showAlert, onRefresh }) {
   return <section className="risk-workspace" aria-label="Приоритет риска">
     <div className="risk-workspace__header"><div><h3>Приоритетная очередь</h3><p>Локальная модель {summary.risk_model_version || "local-risk-v1"}: критичность актива, доступность, CVSS, возраст и SLA.</p></div>
       <select aria-label="Уровень риска" value={level} onChange={(event) => setLevel(event.target.value)}><option value="">Все уровни</option><option value="urgent">Срочный</option><option value="high">Высокий</option><option value="medium">Средний</option><option value="low">Низкий</option></select></div>
+    {error ? <div className="inline-error" role="alert">{error} <button onClick={load}>Повторить</button></div> : null}
     <div className="metric-grid risk-metrics"><Metric label="Срочно" value={summary.urgent} danger /><Metric label="Высокий" value={summary.high} /><Metric label="Средний" value={summary.medium} /><Metric label="Низкий" value={summary.low} /></div>
     <div className="risk-context-controls"><select aria-label="Критичность актива" value={context.criticality} onChange={(event) => setContext({...context,criticality:event.target.value})}><option value="critical">Критичный</option><option value="high">Высокий</option><option value="medium">Средний</option><option value="low">Низкий</option></select><select aria-label="Среда" value={context.environment} onChange={(event) => setContext({...context,environment:event.target.value})}><option value="production">Production</option><option value="test">Test</option><option value="development">Development</option></select><select aria-label="Доступность" value={context.exposure} onChange={(event) => setContext({...context,exposure:event.target.value})}><option value="external">Внешний</option><option value="internal">Внутренний</option><option value="isolated">Изолированный</option></select><button disabled={!checked.length} onClick={updateContext}>Применить к активам</button><label className="button button--secondary">Импорт контекста CSV<input hidden type="file" accept=".csv,text/csv" onChange={importContext} /></label></div>
     <div className="action-row"><button disabled={!checked.length} onClick={createCampaign}>Создать кампанию ({checked.length})</button><span>Найдено: {data.total || 0}</span></div>

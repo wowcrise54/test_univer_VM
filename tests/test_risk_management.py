@@ -1,4 +1,7 @@
+import inspect
+
 from app import auth
+from app.repositories.remediation import RemediationRepository
 from app.repositories.risk import MODEL_VERSION, RiskRepository, _risk_sql
 
 
@@ -28,3 +31,9 @@ def test_risk_and_context_permissions_are_separated():
     assert "risk.read" in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "risk.manage" not in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "risk.manage" in auth.BUILTIN_ROLE_PERMISSIONS["operator"]
+
+
+def test_existing_remediation_queue_does_not_require_risk_schema():
+    source = inspect.getsource(RemediationRepository.list) + inspect.getsource(RemediationRepository.get)
+    assert "asset_contexts" not in source
+    assert "remediation_campaigns" not in source

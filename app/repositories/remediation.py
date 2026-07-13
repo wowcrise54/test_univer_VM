@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .. import db
-from .risk import MODEL_VERSION, _risk_sql
 from .vulnerabilities import VULNERABILITY_SELECTOR_SQL
 
 STATUSES = {"open", "in_progress", "risk_accepted", "false_positive", "resolved"}
@@ -36,18 +35,6 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         result["cvss_score"] = float(result["cvss_score"])
     result["overdue"] = bool(result.get("overdue"))
     result["near_due"] = bool(result.get("near_due"))
-    if result.get("risk_score") is not None:
-        score = int(result["risk_score"])
-        result["risk_score"] = score
-        result["risk_level"] = (
-            "urgent" if score >= 80 else "high" if score >= 60 else "medium" if score >= 35 else "low"
-        )
-        result["risk_factors"] = [
-            f"criticality:{result.get('criticality', 'medium')}",
-            f"exposure:{result.get('exposure', 'internal')}",
-            f"severity:{result.get('severity', 'unknown')}",
-        ]
-        result["risk_model_version"] = MODEL_VERSION
     return result
 
 
@@ -171,13 +158,10 @@ class RemediationRepository:
             total_row = conn.execute(f"SELECT COUNT(*) AS count FROM remediation_cases c {where}", params).fetchone()
             rows = conn.execute(
                 f"""SELECT c.*, card.display_name, card.ip_address, card.fqdn,
-                    COALESCE(context.criticality,'medium') criticality,COALESCE(context.exposure,'internal') exposure,
-                    {_risk_sql("context")} risk_score,
                     (c.status IN ('open','in_progress') AND c.due_at < NOW()) AS overdue,
                     (c.status IN ('open','in_progress') AND c.due_at >= NOW()
                      AND c.due_at <= NOW() + (policy.near_due_days || ' days')::interval) AS near_due
                     FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id
-                    LEFT JOIN asset_contexts context ON context.asset_id=c.asset_id
                     CROSS JOIN remediation_sla_policy policy {where}
                     ORDER BY CASE WHEN c.status IN ('open','in_progress') AND c.due_at < NOW() THEN 0 ELSE 1 END,
                      CASE c.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
@@ -191,12 +175,9 @@ class RemediationRepository:
         self.expire_risk_acceptances()
         with db.connect() as conn:
             row = conn.execute(
-                f"""SELECT c.*, card.display_name, card.ip_address, card.fqdn,
-                   COALESCE(context.criticality,'medium') criticality,COALESCE(context.exposure,'internal') exposure,
-                   {_risk_sql("context")} risk_score,
+                """SELECT c.*, card.display_name, card.ip_address, card.fqdn,
                    (c.status IN ('open','in_progress') AND c.due_at < NOW()) AS overdue,
                    FALSE AS near_due FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id
-                   LEFT JOIN asset_contexts context ON context.asset_id=c.asset_id
                    WHERE c.case_id=%s""",
                 (case_id,),
             ).fetchone()
