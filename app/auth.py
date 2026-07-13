@@ -46,6 +46,8 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "remediation.read": ("Устранение", "Просмотр очереди устранения и SLA"),
     "remediation.manage": ("Устранение", "Изменение кейсов устранения"),
     "remediation.policy": ("Устранение", "Изменение глобальной SLA-политики"),
+    "risk.read": ("Риск", "Просмотр приоритетной очереди"),
+    "risk.manage": ("Риск", "Контекст активов и кампании"),
     "automations.read": ("Автоматизация", "Просмотр сценариев и запусков"),
     "automations.manage": ("Автоматизация", "Проектирование, публикация и расписания"),
     "automations.execute": ("Автоматизация", "Запуск, остановка и повтор автоматизаций"),
@@ -68,6 +70,7 @@ OPERATOR_PERMISSIONS = VIEWER_PERMISSIONS | {
     "tasks.manage", "tasks.execute", "operations.cancel", "operations.retry",
     "saved_views.manage", "asset_cards.build", "asset_cards.manage",
     "passports.manage", "imports_exports.manage", "notifications.manage",
+    "risk.manage", "remediation.manage",
 }
 BUILTIN_ROLE_PERMISSIONS = {
     "viewer": VIEWER_PERMISSIONS,
@@ -445,6 +448,8 @@ def required_permission(method:str,path:str)->str|None:
         return "tasks.read" if method in {"GET","HEAD"} else "tasks.manage"
     if path.startswith("/api/reports/") or path.startswith("/api/asset-card-query/export") or (path.startswith("/api/exports/") and method=="GET"): return "imports_exports.read"
     if path.startswith("/api/import") or path.startswith("/api/exports/pdql"): return "imports_exports.manage"
+    if path.startswith("/api/risk"): return "risk.read"
+    if path.startswith("/api/assets/context"): return "risk.read" if method in {"GET","HEAD"} else "risk.manage"
     if path.startswith("/api/assets") or path.startswith("/api/vulnerabilities") or path.startswith("/api/coverage"): return "assets.read"
     if path.startswith("/api/asset-card-query"): return "asset_cards.read"
     if path.startswith("/api/asset-cards"):

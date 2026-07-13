@@ -154,3 +154,10 @@
   .remediation-detail .form-grid { grid-template-columns: 1fr; }
   .remediation-detail .span-2 { grid-column: auto; }
 }
+.risk-workspace { margin: 18px 0 24px; padding: 18px; border: 1px solid var(--color-border, #dfe7ef); border-radius: 14px; background: #f8fbfd; }
+.risk-workspace__header { display:flex; justify-content:space-between; gap:16px; align-items:start; }
+.risk-workspace__header h3 { margin:0 0 4px; }.risk-workspace__header p { margin:0; }
+.risk-metrics { margin:14px 0; }.risk-score { display:block; font-size:22px; }.risk-score--urgent { color:#b42318; }.risk-score--high { color:#c2410c; }
+.campaign-grid { display:grid; gap:10px; margin-top:12px; }.campaign-grid article { display:grid; gap:3px; padding:12px; border:1px solid #dfe7ef; border-radius:10px; background:white; }
+.risk-context-controls { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; align-items:center; }
+@media (max-width: 760px) { .risk-workspace__header { flex-direction:column; } }

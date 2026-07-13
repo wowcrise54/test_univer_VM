@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .. import db
+from .risk import MODEL_VERSION, _risk_sql
 from .vulnerabilities import VULNERABILITY_SELECTOR_SQL
 
 STATUSES = {"open", "in_progress", "risk_accepted", "false_positive", "resolved"}
@@ -21,14 +22,32 @@ def _iso(value: Any) -> str | None:
 def _case(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     for key in (
-        "due_at", "risk_expires_at", "first_seen_at", "last_seen_at", "resolved_at",
-        "reopened_at", "created_at", "updated_at",
+        "due_at",
+        "risk_expires_at",
+        "first_seen_at",
+        "last_seen_at",
+        "resolved_at",
+        "reopened_at",
+        "created_at",
+        "updated_at",
     ):
         result[key] = _iso(result.get(key))
     if result.get("cvss_score") is not None:
         result["cvss_score"] = float(result["cvss_score"])
     result["overdue"] = bool(result.get("overdue"))
     result["near_due"] = bool(result.get("near_due"))
+    if result.get("risk_score") is not None:
+        score = int(result["risk_score"])
+        result["risk_score"] = score
+        result["risk_level"] = (
+            "urgent" if score >= 80 else "high" if score >= 60 else "medium" if score >= 35 else "low"
+        )
+        result["risk_factors"] = [
+            f"criticality:{result.get('criticality', 'medium')}",
+            f"exposure:{result.get('exposure', 'internal')}",
+            f"severity:{result.get('severity', 'unknown')}",
+        ]
+        result["risk_model_version"] = MODEL_VERSION
     return result
 
 
@@ -50,7 +69,11 @@ class RemediationRepository:
                 """INSERT INTO notifications(notification_id,level,title,message,event_type,details_json,created_at)
                    VALUES (%s,'warning','Контроль сроков устранения',%s,'remediation.daily_digest',%s,NOW())
                    ON CONFLICT(notification_id) DO NOTHING RETURNING notification_id""",
-                (notification_id, f"Открыто: {summary.get('open', 0)}, просрочено: {summary.get('overdue', 0)}, скоро срок: {summary.get('near_due', 0)}.", json.dumps(details)),
+                (
+                    notification_id,
+                    f"Открыто: {summary.get('open', 0)}, просрочено: {summary.get('overdue', 0)}, скоро срок: {summary.get('near_due', 0)}.",
+                    json.dumps(details),
+                ),
             ).fetchone()
             if row and webhook_enabled:
                 conn.execute(
@@ -148,10 +171,13 @@ class RemediationRepository:
             total_row = conn.execute(f"SELECT COUNT(*) AS count FROM remediation_cases c {where}", params).fetchone()
             rows = conn.execute(
                 f"""SELECT c.*, card.display_name, card.ip_address, card.fqdn,
+                    COALESCE(context.criticality,'medium') criticality,COALESCE(context.exposure,'internal') exposure,
+                    {_risk_sql("context")} risk_score,
                     (c.status IN ('open','in_progress') AND c.due_at < NOW()) AS overdue,
                     (c.status IN ('open','in_progress') AND c.due_at >= NOW()
                      AND c.due_at <= NOW() + (policy.near_due_days || ' days')::interval) AS near_due
                     FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id
+                    LEFT JOIN asset_contexts context ON context.asset_id=c.asset_id
                     CROSS JOIN remediation_sla_policy policy {where}
                     ORDER BY CASE WHEN c.status IN ('open','in_progress') AND c.due_at < NOW() THEN 0 ELSE 1 END,
                      CASE c.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
@@ -165,10 +191,14 @@ class RemediationRepository:
         self.expire_risk_acceptances()
         with db.connect() as conn:
             row = conn.execute(
-                """SELECT c.*, card.display_name, card.ip_address, card.fqdn,
+                f"""SELECT c.*, card.display_name, card.ip_address, card.fqdn,
+                   COALESCE(context.criticality,'medium') criticality,COALESCE(context.exposure,'internal') exposure,
+                   {_risk_sql("context")} risk_score,
                    (c.status IN ('open','in_progress') AND c.due_at < NOW()) AS overdue,
                    FALSE AS near_due FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id
-                   WHERE c.case_id=%s""", (case_id,),
+                   LEFT JOIN asset_contexts context ON context.asset_id=c.asset_id
+                   WHERE c.case_id=%s""",
+                (case_id,),
             ).fetchone()
             if not row:
                 return None
@@ -183,7 +213,9 @@ class RemediationRepository:
         ]
         return result
 
-    def update(self, case_id: str, changes: dict[str, Any], *, expected_version: int, comment: str | None) -> dict[str, Any] | None:
+    def update(
+        self, case_id: str, changes: dict[str, Any], *, expected_version: int, comment: str | None
+    ) -> dict[str, Any] | None:
         allowed = {"status", "assignee", "due_at", "risk_reason", "risk_expires_at"}
         clean = {key: value for key, value in changes.items() if key in allowed}
         assignments: list[str] = []
@@ -231,7 +263,18 @@ class RemediationRepository:
                      FILTER (WHERE resolved_at IS NOT NULL),1) AS mean_time_to_resolve_days
                    FROM remediation_cases CROSS JOIN remediation_sla_policy p GROUP BY p.near_due_days"""
             ).fetchone()
-        return dict(row) if row else {"open": 0, "overdue": 0, "near_due": 0, "risk_accepted": 0, "resolved_30d": 0, "mean_time_to_resolve_days": None}
+        return (
+            dict(row)
+            if row
+            else {
+                "open": 0,
+                "overdue": 0,
+                "near_due": 0,
+                "risk_accepted": 0,
+                "resolved_30d": 0,
+                "mean_time_to_resolve_days": None,
+            }
+        )
 
     def reconcile_asset(self, asset_id: str, *, stale_days: int) -> dict[str, int]:
         now = datetime.now(UTC)
@@ -252,7 +295,9 @@ class RemediationRepository:
                    WHERE finding.asset_id=%s ORDER BY {selector}, finding.cvss_score DESC NULLS LAST, link.passport_internal_id""",
                 (asset_id,),
             ).fetchall()
-            existing_rows = conn.execute("SELECT * FROM remediation_cases WHERE asset_id=%s FOR UPDATE", (asset_id,)).fetchall()
+            existing_rows = conn.execute(
+                "SELECT * FROM remediation_cases WHERE asset_id=%s FOR UPDATE", (asset_id,)
+            ).fetchall()
             existing = {row["vulnerability_key"]: row for row in existing_rows}
             current_keys: set[str] = set()
             created = reopened = resolved = 0
@@ -271,12 +316,26 @@ class RemediationRepository:
                              WHEN 'high' THEN (%s||' days')::interval WHEN 'medium' THEN (%s||' days')::interval
                              WHEN 'low' THEN (%s||' days')::interval END ELSE due_at END,
                            version=version+1,updated_at=NOW() WHERE case_id=%s""",
-                        (finding["title"], finding["cve"], finding["severity"], finding["cvss_score"], finding["passport_internal_id"],
-                         finding["severity"], policy["critical_days"], policy["high_days"], policy["medium_days"], policy["low_days"], old["case_id"]),
+                        (
+                            finding["title"],
+                            finding["cve"],
+                            finding["severity"],
+                            finding["cvss_score"],
+                            finding["passport_internal_id"],
+                            finding["severity"],
+                            policy["critical_days"],
+                            policy["high_days"],
+                            policy["medium_days"],
+                            policy["low_days"],
+                            old["case_id"],
+                        ),
                     )
                     if reopen:
                         reopened += 1
-                        conn.execute("INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_reappeared','resolved','open')", (old["case_id"],))
+                        conn.execute(
+                            "INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_reappeared','resolved','open')",
+                            (old["case_id"],),
+                        )
                     continue
                 severity = finding["severity"]
                 raw_days = policy.get(f"{severity}_days") if severity != "unknown" else None
@@ -284,36 +343,69 @@ class RemediationRepository:
                 due_at = now.replace(microsecond=0) if days is not None else None
                 if due_at is not None:
                     from datetime import timedelta
+
                     assert days is not None
                     due_at += timedelta(days=days)
                 case_id = __import__("hashlib").md5(f"{asset_id}\x1f{key}".encode(), usedforsecurity=False).hexdigest()
                 conn.execute(
                     """INSERT INTO remediation_cases(case_id,asset_id,vulnerability_key,title,cve,severity,cvss_score,
                        passport_internal_id,due_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (case_id, asset_id, key, finding["title"], finding["cve"], severity, finding["cvss_score"], finding["passport_internal_id"], due_at),
+                    (
+                        case_id,
+                        asset_id,
+                        key,
+                        finding["title"],
+                        finding["cve"],
+                        severity,
+                        finding["cvss_score"],
+                        finding["passport_internal_id"],
+                        due_at,
+                    ),
                 )
-                conn.execute("INSERT INTO remediation_case_events(case_id,event_type,new_status) VALUES (%s,'finding_created','open')", (case_id,))
+                conn.execute(
+                    "INSERT INTO remediation_case_events(case_id,event_type,new_status) VALUES (%s,'finding_created','open')",
+                    (case_id,),
+                )
                 created += 1
-            truncated = conn.execute("SELECT EXISTS(SELECT 1 FROM asset_card_vulnerability_groups WHERE asset_id=%s AND truncated) AS value", (asset_id,)).fetchone()
+            truncated = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM asset_card_vulnerability_groups WHERE asset_id=%s AND truncated) AS value",
+                (asset_id,),
+            ).fetchone()
             last_seen = datetime.fromisoformat(str(card["last_seen"]).replace("Z", "+00:00"))
-            complete = not bool(truncated["value"] if truncated else True) and (now - last_seen.astimezone(UTC)).days < stale_days
+            complete = (
+                not bool(truncated["value"] if truncated else True)
+                and (now - last_seen.astimezone(UTC)).days < stale_days
+            )
             if complete:
                 for key, old in existing.items():
                     if key not in current_keys and old["status"] not in {"resolved", "false_positive"}:
-                        conn.execute("UPDATE remediation_cases SET status='resolved',resolved_at=NOW(),version=version+1,updated_at=NOW() WHERE case_id=%s", (old["case_id"],))
-                        conn.execute("INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_absent',%s,'resolved')", (old["case_id"], old["status"]))
+                        conn.execute(
+                            "UPDATE remediation_cases SET status='resolved',resolved_at=NOW(),version=version+1,updated_at=NOW() WHERE case_id=%s",
+                            (old["case_id"],),
+                        )
+                        conn.execute(
+                            "INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_absent',%s,'resolved')",
+                            (old["case_id"], old["status"]),
+                        )
                         resolved += 1
         return {"created": created, "reopened": reopened, "resolved": resolved}
 
 
 class CoverageRepository:
-    def list_assets(self, *, stale_days: int, q: str | None, issue: str | None, limit: int, offset: int) -> dict[str, Any]:
+    def list_assets(
+        self, *, stale_days: int, q: str | None, issue: str | None, limit: int, offset: int
+    ) -> dict[str, Any]:
         clauses: list[str] = []
         params: list[Any] = [stale_days]
         if q:
             clauses.append("(display_name ILIKE %s OR ip_address ILIKE %s OR fqdn ILIKE %s OR asset_id ILIKE %s)")
             params.extend([f"%{q}%"] * 4)
-        issue_map = {"missing": "missing_card", "stale": "stale", "truncated": "truncated", "failed": "last_refresh_failed"}
+        issue_map = {
+            "missing": "missing_card",
+            "stale": "stale",
+            "truncated": "truncated",
+            "failed": "last_refresh_failed",
+        }
         if issue in issue_map:
             clauses.append(issue_map[issue])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
@@ -343,8 +435,16 @@ class CoverageRepository:
         result = self.list_assets(stale_days=stale_days, q=None, issue=None, limit=50000, offset=0)
         rows = result["rows"]
         total = len(rows)
-        healthy = sum(not any(row[key] for key in ("missing_card", "stale", "truncated", "last_refresh_failed")) for row in rows)
-        return {"total_assets": total, "healthy_assets": healthy, "coverage_percent": round(healthy * 100 / total, 1) if total else 100.0,
-                "missing_card": sum(bool(row["missing_card"]) for row in rows), "stale": sum(bool(row["stale"]) for row in rows),
-                "truncated": sum(bool(row["truncated"]) for row in rows), "last_refresh_failed": sum(bool(row["last_refresh_failed"]) for row in rows),
-                "stale_days": stale_days}
+        healthy = sum(
+            not any(row[key] for key in ("missing_card", "stale", "truncated", "last_refresh_failed")) for row in rows
+        )
+        return {
+            "total_assets": total,
+            "healthy_assets": healthy,
+            "coverage_percent": round(healthy * 100 / total, 1) if total else 100.0,
+            "missing_card": sum(bool(row["missing_card"]) for row in rows),
+            "stale": sum(bool(row["stale"]) for row in rows),
+            "truncated": sum(bool(row["truncated"]) for row in rows),
+            "last_refresh_failed": sum(bool(row["last_refresh_failed"]) for row in rows),
+            "stale_days": stale_days,
+        }

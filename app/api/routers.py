@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from .remediation import coverage_router
 from .remediation import router as remediation_router
 from .vulnerabilities import router as vulnerabilities_router
+from .risk import router as risk_router
 
 system_router = APIRouter(tags=["system"])
 session_router = APIRouter(tags=["session"])
@@ -36,4 +37,5 @@ API_ROUTERS = (
     vulnerabilities_router,
     remediation_router,
     coverage_router,
+    risk_router,
 )

@@ -59,6 +59,7 @@ export function RemediationPage({ showAlert, onNavigate }) {
   return <section className="panel remediation-page">
     <div className="panel__header"><div><h2>Устранение уязвимостей</h2><p>Ответственные, сроки и подтверждение устранения повторным сканированием.</p></div>
       <button className="button button--secondary" onClick={load}>Обновить</button></div>
+    <RiskWorkspace showAlert={showAlert} onRefresh={load} />
     <div className="metric-grid remediation-metrics">
       <Metric label="Открыто" value={summary.open} />
       <Metric label="Просрочено" value={summary.overdue} danger />
@@ -84,6 +85,67 @@ export function RemediationPage({ showAlert, onNavigate }) {
       </tr>) : <tr><td colSpan="7" className="empty-cell">Кейсы не найдены.</td></tr>}</tbody></table></div>
     {selected ? <CaseEditor item={selected} onClose={() => setSelected(null)} onSave={updateCase} onNavigate={onNavigate} /> : null}
     {policy ? <PolicyEditor policy={policy} setPolicy={setPolicy} onSaved={load} showAlert={showAlert} /> : null}
+  </section>;
+}
+
+function RiskWorkspace({ showAlert, onRefresh }) {
+  const [data, setData] = useState({ rows: [], total: 0 });
+  const [summary, setSummary] = useState({});
+  const [campaigns, setCampaigns] = useState([]);
+  const [level, setLevel] = useState("");
+  const [checked, setChecked] = useState([]);
+  const [context, setContext] = useState({ criticality: "medium", environment: "production", exposure: "internal" });
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const suffix = level ? `?level=${level}` : "";
+      const [queue, totals, campaignData] = await Promise.all([
+        api(`/api/risk/queue${suffix}`), api("/api/risk/summary"), api("/api/remediation/campaigns"),
+      ]);
+      setData(queue); setSummary(totals); setCampaigns(campaignData.rows || []);
+      setChecked((value) => value.filter((id) => (queue.rows || []).some((row) => row.case_id === id)));
+    } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
+    finally { setLoading(false); }
+  }, [level, showAlert]);
+  useEffect(() => { load(); }, [load]);
+  const createCampaign = async () => {
+    const name = window.prompt("Название кампании");
+    if (!name) return;
+    try {
+      await api("/api/remediation/campaigns", { method: "POST", body: JSON.stringify({ name, case_ids: checked }) });
+      setChecked([]); showAlert("Кампания создана.", "success"); await load(); await onRefresh();
+    } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
+  };
+  const updateContext = async () => {
+    const assetIds = [...new Set((data.rows || []).filter((row) => checked.includes(row.case_id)).map((row) => row.asset_id))];
+    if (!assetIds.length) return;
+    try {
+      await api("/api/assets/context", { method: "PATCH", body: JSON.stringify({ asset_ids: assetIds, values: context }) });
+      showAlert(`Контекст обновлён для активов: ${assetIds.length}.`, "success"); await load();
+    } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
+  };
+  const importContext = async (event) => {
+    const file = event.target.files?.[0]; if (!file) return;
+    try {
+      const result = await api("/api/assets/context/import", { method: "POST", body: JSON.stringify({ csv_text: await file.text() }) });
+      showAlert(`CSV обработан: сопоставлено ${result.matched}, не найдено ${result.unmatched?.length || 0}.`, result.errors?.length ? "warning" : "success"); await load();
+    } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
+    finally { event.target.value = ""; }
+  };
+  return <section className="risk-workspace" aria-label="Приоритет риска">
+    <div className="risk-workspace__header"><div><h3>Приоритетная очередь</h3><p>Локальная модель {summary.risk_model_version || "local-risk-v1"}: критичность актива, доступность, CVSS, возраст и SLA.</p></div>
+      <select aria-label="Уровень риска" value={level} onChange={(event) => setLevel(event.target.value)}><option value="">Все уровни</option><option value="urgent">Срочный</option><option value="high">Высокий</option><option value="medium">Средний</option><option value="low">Низкий</option></select></div>
+    <div className="metric-grid risk-metrics"><Metric label="Срочно" value={summary.urgent} danger /><Metric label="Высокий" value={summary.high} /><Metric label="Средний" value={summary.medium} /><Metric label="Низкий" value={summary.low} /></div>
+    <div className="risk-context-controls"><select aria-label="Критичность актива" value={context.criticality} onChange={(event) => setContext({...context,criticality:event.target.value})}><option value="critical">Критичный</option><option value="high">Высокий</option><option value="medium">Средний</option><option value="low">Низкий</option></select><select aria-label="Среда" value={context.environment} onChange={(event) => setContext({...context,environment:event.target.value})}><option value="production">Production</option><option value="test">Test</option><option value="development">Development</option></select><select aria-label="Доступность" value={context.exposure} onChange={(event) => setContext({...context,exposure:event.target.value})}><option value="external">Внешний</option><option value="internal">Внутренний</option><option value="isolated">Изолированный</option></select><button disabled={!checked.length} onClick={updateContext}>Применить к активам</button><label className="button button--secondary">Импорт контекста CSV<input hidden type="file" accept=".csv,text/csv" onChange={importContext} /></label></div>
+    <div className="action-row"><button disabled={!checked.length} onClick={createCampaign}>Создать кампанию ({checked.length})</button><span>Найдено: {data.total || 0}</span></div>
+    <div className="table-shell"><table><thead><tr><th></th><th>Риск</th><th>Уязвимость</th><th>Актив</th><th>Контекст</th><th>Почему</th></tr></thead><tbody>
+      {loading ? <tr><td colSpan="6" className="empty-cell">Расчёт приоритета…</td></tr> : (data.rows || []).map((row) => <tr key={row.case_id}>
+        <td><input type="checkbox" aria-label={`Выбрать ${row.cve || row.title}`} checked={checked.includes(row.case_id)} onChange={(event) => setChecked(event.target.checked ? [...checked,row.case_id] : checked.filter((id) => id !== row.case_id))} /></td>
+        <td><strong className={`risk-score risk-score--${row.risk_level}`}>{row.risk_score}</strong><small>{row.risk_level}</small></td><td>{row.cve || row.title}<small>{row.severity} · CVSS {row.cvss_score ?? "—"}</small></td>
+        <td>{row.display_name || row.asset_id}<small>{row.ip_address || row.fqdn}</small></td><td>{row.criticality} · {row.environment}<small>{row.exposure} · {row.owner || "владелец не указан"}</small></td><td><small>{row.risk_explanation}</small></td>
+      </tr>)}</tbody></table></div>
+    {campaigns.length ? <details className="settings-card"><summary>Кампании устранения ({campaigns.length})</summary><div className="campaign-grid">{campaigns.map((item) => <article key={item.campaign_id}><strong>{item.name}</strong><span>{item.resolved}/{item.total} подтверждено</span><small>В работе: {item.in_progress} · просрочено: {item.overdue} · риск принят: {item.risk_accepted}</small></article>)}</div></details> : null}
   </section>;
 }
 
