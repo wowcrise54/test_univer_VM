@@ -6321,6 +6321,8 @@ export {
   TaskBuilderPanel,
   TaskListPanel,
   VulnerabilityPassportsPanel,
+  PassportCard,
+  PassportModal,
   buildAssetPropertyRows,
   formatAssetCell,
 };

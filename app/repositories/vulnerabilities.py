@@ -286,6 +286,7 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
         "findings": int(row.get("findings") or 0),
         "affected_objects": int(row.get("affected_objects") or 0),
         "sources": list(row.get("sources") or []),
+        "passports": list(row.get("passports") or []),
         "last_seen": row.get("last_seen"),
     }
 
@@ -743,6 +744,57 @@ class VulnerabilityAnalyticsRepository:
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY selector
+            ), mapped_passports AS (
+                SELECT
+                    filtered_findings.selector,
+                    passport.internal_id,
+                    passport.external_id,
+                    passport.name,
+                    passport.severity,
+                    passport.score,
+                    passport.issue_time,
+                    passport.package_id,
+                    passport.package_version,
+                    COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb AS cves,
+                    BOOL_OR(passport.raw_detail_json IS NOT NULL) AS has_detail,
+                    MIN(
+                        CASE link.match_method WHEN 'vulner_id' THEN 0 ELSE 1 END
+                    ) AS match_priority
+                FROM filtered_findings
+                JOIN asset_card_vulnerability_passports AS link
+                    ON link.asset_vulnerability_id = filtered_findings.finding_id
+                JOIN vulnerability_passports AS passport
+                    ON passport.internal_id = link.passport_internal_id
+                GROUP BY
+                    filtered_findings.selector,
+                    passport.internal_id,
+                    passport.external_id,
+                    passport.name,
+                    passport.severity,
+                    passport.score,
+                    passport.issue_time,
+                    passport.package_id,
+                    passport.package_version,
+                    passport.cves_json
+            ), passport_rollup AS (
+                SELECT
+                    selector,
+                    JSONB_AGG(
+                        JSONB_BUILD_OBJECT(
+                            'internal_id', internal_id,
+                            'external_id', external_id,
+                            'name', name,
+                            'severity', severity,
+                            'score', score,
+                            'issue_time', issue_time,
+                            'package_id', package_id,
+                            'package_version', package_version,
+                            'cves', cves,
+                            'has_detail', has_detail
+                        ) ORDER BY match_priority, internal_id
+                    ) AS passports
+                FROM mapped_passports
+                GROUP BY selector
             )
         """
         with db.connect() as conn:
@@ -752,16 +804,18 @@ class VulnerabilityAnalyticsRepository:
                     cte + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
                     params,
                 ).fetchone()
-                total = int(
-                    (count_row or {}).get("count")
-                    or 0
-                )
+                total = int((count_row or {}).get("count") or 0)
             rows = conn.execute(
                 cte
                 + aggregate
                 + f"""
-                SELECT * FROM aggregated
-                ORDER BY {expression} {direction} NULLS LAST, selector ASC
+                SELECT
+                    aggregated.*,
+                    COALESCE(passport_rollup.passports, '[]'::jsonb) AS passports
+                FROM aggregated
+                LEFT JOIN passport_rollup
+                    ON passport_rollup.selector = aggregated.selector
+                ORDER BY {expression} {direction} NULLS LAST, aggregated.selector ASC
                 LIMIT %s OFFSET %s
                 """,
                 [*params, limit, offset],

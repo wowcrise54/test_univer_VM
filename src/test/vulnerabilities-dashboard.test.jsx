@@ -212,6 +212,51 @@ describe("vulnerability dashboard", () => {
     await waitFor(() => expect(selectors[0]).toHaveFocus());
   });
 
+  it("opens a mapped vulnerability passport from the vulnerability table", async () => {
+    const mapped = {
+      ...VULNERABILITY,
+      passports: [
+        {
+          internal_id: "passport-1",
+          external_id: "CVE-2026-1001",
+          name: "Mapped passport",
+          severity: "critical",
+          score: "9.8",
+        },
+      ],
+    };
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/vulnerabilities") {
+        return Promise.resolve({
+          rows: [mapped],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        });
+      }
+      if (url.pathname === "/api/vulnerability-passports/passport-1") {
+        return Promise.resolve({
+          passport: mapped.passports[0],
+          raw: { name: "Mapped passport", severity: "critical" },
+          source: "db",
+        });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    const passportButtons = await screen.findAllByRole("button", {
+      name: `Открыть паспорт уязвимости ${VULNERABILITY.name}`,
+    });
+    fireEvent.click(passportButtons.at(-1));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveTextContent("passport-1");
+    expect(screen.getByRole("dialog")).toHaveTextContent("CVE-2026-1001");
+    expect(api).toHaveBeenCalledWith("/api/vulnerability-passports/passport-1");
+  });
+
   it("renders historical risk deltas and switches the aggregation period", async () => {
     renderDashboard();
 

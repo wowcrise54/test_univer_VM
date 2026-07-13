@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../../api/client.js";
+import { PassportCard, PassportModal } from "../../panels.jsx";
 import { formatCount } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
 import { Button, Field, Panel } from "../../shared/ui.jsx";
@@ -51,6 +53,10 @@ export function VulnerabilitiesDashboard() {
   const [selected, setSelected] = useState(null);
   const [hostOffset, setHostOffset] = useState(0);
   const [hostSort, setHostSort] = useState(DEFAULT_HOST_SORT);
+  const [passport, setPassport] = useState(null);
+  const [passportDetail, setPassportDetail] = useState(null);
+  const [passportLoading, setPassportLoading] = useState(false);
+  const [passportError, setPassportError] = useState(null);
   const hostHeadingRef = useRef(null);
   const drilldownTriggerRef = useRef(null);
   const restoreDrilldownFocusRef = useRef(false);
@@ -131,6 +137,34 @@ export function VulnerabilitiesDashboard() {
     setSelected(null);
   };
 
+  const openPassport = async (row) => {
+    const mappedPassport = row?.passports?.[0];
+    if (!mappedPassport?.internal_id) {
+      return;
+    }
+    setPassport(mappedPassport);
+    setPassportDetail(mappedPassport.raw_detail || null);
+    setPassportError(null);
+    setPassportLoading(true);
+    try {
+      const result = await api(
+        `/api/vulnerability-passports/${encodeURIComponent(mappedPassport.internal_id)}`,
+      );
+      setPassport(result.passport || mappedPassport);
+      setPassportDetail(result.raw || result.passport?.raw_detail || {});
+    } catch (error) {
+      setPassportError(error);
+    } finally {
+      setPassportLoading(false);
+    }
+  };
+
+  const closePassport = () => {
+    setPassport(null);
+    setPassportDetail(null);
+    setPassportError(null);
+  };
+
   const summary = summaryQuery.data || {};
   const vulnerabilityRows = resultRows(vulnerabilitiesQuery.data);
   const vulnerabilityTotal = resultTotal(
@@ -206,6 +240,7 @@ export function VulnerabilitiesDashboard() {
               rows={summary.top_vulnerabilities || []}
               selectedSelector={selected?.selector}
               onSelect={selectVulnerability}
+              onOpenPassport={openPassport}
             />
             <TopHosts rows={summary.top_hosts || []} />
           </div>
@@ -224,6 +259,7 @@ export function VulnerabilitiesDashboard() {
         onRetry={vulnerabilitiesQuery.refetch}
         onSort={changeVulnerabilitySort}
         onSelect={selectVulnerability}
+        onOpenPassport={openPassport}
         onPage={setVulnerabilityOffset}
       />
 
@@ -243,6 +279,27 @@ export function VulnerabilitiesDashboard() {
           onPage={setHostOffset}
           onClose={closeDrilldown}
         />
+      ) : null}
+      {passport ? (
+        <PassportModal
+          title="Паспорт уязвимости"
+          className="asset-modal"
+          overlayClassName="asset-modal-overlay"
+          closeLabel="Назад"
+          onClose={closePassport}
+        >
+          {passportError ? (
+            <div className="passport-load-error" role="alert">
+              <strong>Не удалось открыть паспорт.</strong>
+              <span>{passportError.message}</span>
+            </div>
+          ) : null}
+          <PassportCard
+            row={passport}
+            detail={passportDetail}
+            loading={passportLoading}
+          />
+        </PassportModal>
       ) : null}
     </Panel>
   );
@@ -787,7 +844,12 @@ function SeverityBreakdown({ rows, selectedSeverity, onSelect }) {
   );
 }
 
-function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
+function TopVulnerabilities({
+  rows,
+  selectedSelector,
+  onSelect,
+  onOpenPassport,
+}) {
   const maximum = Math.max(
     0,
     ...rows.map((row) => Number(row.affected_hosts || 0)),
@@ -795,12 +857,13 @@ function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
   return (
     <InsightCard
       title="Наиболее распространённые"
-      description="Выберите уязвимость, чтобы увидеть хосты"
+      description="Откройте паспорт уязвимости или список затронутых хостов"
     >
       {rows.length ? (
         <ol className="vulnerability-ranking">
           {rows.map((row, index) => {
             const label = vulnerabilityLabel(row);
+            const hasPassport = Boolean(row.passports?.[0]?.internal_id);
             return (
               <li key={`${row.selector || label}-${index}`}>
                 <button
@@ -811,8 +874,16 @@ function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
                   }}
                   disabled={!row.selector}
                   aria-pressed={row.selector === selectedSelector}
-                  aria-label={`Показать хосты с уязвимостью ${label}`}
-                  onClick={(event) => onSelect(row, event.currentTarget)}
+                  aria-label={
+                    hasPassport
+                      ? `Открыть паспорт уязвимости ${label}`
+                      : `Показать хосты с уязвимостью ${label}`
+                  }
+                  onClick={(event) =>
+                    hasPassport
+                      ? onOpenPassport(row)
+                      : onSelect(row, event.currentTarget)
+                  }
                 >
                   <span className="ranking-row__track" aria-hidden="true">
                     <span />
@@ -906,6 +977,7 @@ function VulnerabilityTable({
   onRetry,
   onSort,
   onSelect,
+  onOpenPassport,
   onPage,
 }) {
   return (
@@ -988,6 +1060,7 @@ function VulnerabilityTable({
             ) : rows.length ? (
               rows.map((row, index) => {
                 const label = vulnerabilityLabel(row);
+                const hasPassport = Boolean(row.passports?.[0]?.internal_id);
                 return (
                   <tr
                     className={
@@ -1001,8 +1074,21 @@ function VulnerabilityTable({
                         className="vulnerability-row-button"
                         disabled={!row.selector}
                         aria-pressed={row.selector === selectedSelector}
-                        aria-label={`Показать хосты с уязвимостью ${label}`}
-                        onClick={(event) => onSelect(row, event.currentTarget)}
+                        aria-label={
+                          hasPassport
+                            ? `Открыть паспорт уязвимости ${label}`
+                            : `Показать хосты с уязвимостью ${label}`
+                        }
+                        title={
+                          hasPassport
+                            ? "Открыть паспорт уязвимости"
+                            : "Паспорт не сопоставлен — показать затронутые хосты"
+                        }
+                        onClick={(event) =>
+                          hasPassport
+                            ? onOpenPassport(row)
+                            : onSelect(row, event.currentTarget)
+                        }
                       >
                         {label}
                       </button>
