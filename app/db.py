@@ -481,7 +481,6 @@ def schema_statements() -> list[str]:
             username TEXT NOT NULL UNIQUE,
             display_name TEXT NOT NULL,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('admin', 'operator', 'viewer')),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -496,7 +495,69 @@ def schema_statements() -> list[str]:
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
+            elevated_until TEXT,
             revoked_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_permissions (
+            permission_key TEXT PRIMARY KEY,
+            domain TEXT NOT NULL,
+            action TEXT NOT NULL,
+            description TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_roles (
+            id BIGSERIAL PRIMARY KEY,
+            role_key TEXT UNIQUE,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            is_system BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_role_permissions (
+            role_id BIGINT NOT NULL REFERENCES app_roles(id) ON DELETE CASCADE,
+            permission_key TEXT NOT NULL REFERENCES app_permissions(permission_key) ON DELETE CASCADE,
+            PRIMARY KEY (role_id, permission_key)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_user_roles (
+            user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            role_id BIGINT NOT NULL REFERENCES app_roles(id) ON DELETE RESTRICT,
+            PRIMARY KEY (user_id, role_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_auth_identities (
+            id BIGSERIAL PRIMARY KEY,
+            provider TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            UNIQUE (provider, subject)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_auth_audit_events (
+            id BIGSERIAL PRIMARY KEY,
+            actor_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+            actor_username TEXT,
+            event_type TEXT NOT NULL,
+            permission_key TEXT,
+            decision TEXT NOT NULL CHECK (decision IN ('allow', 'deny')),
+            target_type TEXT,
+            target_id TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            trace_id TEXT,
+            request_id TEXT,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
         )
         """,
         """
@@ -586,6 +647,8 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_operation_events_operation_created ON operation_events(operation_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_app_auth_sessions_user ON app_auth_sessions(user_id, expires_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_app_auth_sessions_token ON app_auth_sessions(token_hash) WHERE revoked_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_app_auth_audit_created ON app_auth_audit_events(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_app_auth_audit_actor ON app_auth_audit_events(actor_user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_saved_views_route_name ON saved_views(route, name)",
         "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_task_created ON scan_postprocess_runs(mp_task_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_status ON scan_postprocess_runs(status, updated_at)",

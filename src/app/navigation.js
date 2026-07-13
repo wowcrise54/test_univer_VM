@@ -16,16 +16,17 @@ export const workflowSteps = [
 export const routes = [
   {
     id: "users",
+    requiredAnyPermission: ["security.users.read", "security.roles.read", "security.audit.read"],
     group: "manage",
     icon: "◎",
     path: "/users",
     label: "Пользователи",
     title: "Пользователи и роли",
     description: "Управление доступом к приложению, ролями и состоянием учётных записей.",
-    adminOnly: true,
   },
   {
     id: "connection",
+    requiredPermission: "connection.read",
     group: "work",
     icon: "⌁",
     path: "/connection",
@@ -36,6 +37,7 @@ export const routes = [
   },
   {
     id: "tasks",
+    requiredPermission: "tasks.read",
     group: "work",
     icon: "◎",
     path: "/tasks",
@@ -45,6 +47,7 @@ export const routes = [
   },
   {
     id: "operations",
+    requiredPermission: "operations.read",
     group: "work",
     icon: "◔",
     path: "/operations",
@@ -55,6 +58,7 @@ export const routes = [
   },
   {
     id: "export",
+    requiredPermission: "imports_exports.read",
     group: "manage",
     icon: "⇩",
     path: "/export",
@@ -65,6 +69,7 @@ export const routes = [
   },
   {
     id: "vulnerabilities",
+    requiredPermission: "assets.read",
     group: "data",
     icon: "◈",
     path: "/vulnerabilities",
@@ -74,15 +79,16 @@ export const routes = [
       "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
   },
   {
-    id: "remediation", group: "work", icon: "✓", path: "/remediation", label: "Устранение",
+    id: "remediation", requiredPermission: "remediation.read", group: "work", icon: "✓", path: "/remediation", label: "Устранение",
     title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
   },
   {
-    id: "coverage", group: "data", icon: "◉", path: "/coverage", label: "Покрытие",
+    id: "coverage", requiredPermission: "assets.read", group: "data", icon: "◉", path: "/coverage", label: "Покрытие",
     title: "Покрытие сканированием", description: "Свежесть и полнота карточек активов и результаты обновлений.",
   },
   {
     id: "asset-cards",
+    requiredPermission: "asset_cards.read",
     group: "data",
     icon: "▦",
     path: "/asset-cards",
@@ -93,6 +99,7 @@ export const routes = [
   },
   {
     id: "automations",
+    requiredPermission: "automations.read",
     group: "manage",
     icon: "⎇",
     path: "/automations",
@@ -103,6 +110,7 @@ export const routes = [
   },
   {
     id: "asset-query",
+    requiredPermission: "asset_cards.read",
     group: "data",
     icon: "⌕",
     path: "/asset-query",
@@ -113,6 +121,7 @@ export const routes = [
   },
   {
     id: "passports",
+    requiredPermission: "passports.read",
     group: "data",
     icon: "◇",
     path: "/passports",
@@ -123,6 +132,7 @@ export const routes = [
   },
   {
     id: "assets",
+    requiredPermission: "assets.read",
     group: "data",
     icon: "◫",
     path: "/assets",

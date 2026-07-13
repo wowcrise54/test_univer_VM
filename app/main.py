@@ -432,13 +432,9 @@ PUBLIC_API_PATHS = {
     "/api/auth/bootstrap-status",
     "/api/health",
 }
-ADMIN_API_PREFIXES = (
-    "/api/auth/users",
-    "/api/diagnostics",
-)
-ADMIN_API_PATHS = {
-    "/api/session/connect",
-    "/api/session/disconnect",
+SENSITIVE_PERMISSIONS = {
+    "security.users.manage", "security.roles.manage", "connection.manage",
+    "remediation.policy", "diagnostics.read",
 }
 
 
@@ -465,16 +461,18 @@ async def application_auth_middleware(request: Request, call_next):
     request.state.user = user
     if path in {"/api/auth/me", "/api/auth/logout"}:
         return await call_next(request)
-    admin_only = (
-        path in ADMIN_API_PATHS
-        or any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES)
-        or (path.startswith("/api/operations/") and path.endswith("/diagnostics"))
-    )
-    if admin_only and user["role"] != "admin":
-        return auth_error(403, "ADMIN_REQUIRED", "Действие доступно только администратору.")
-    if user["role"] == "viewer" and request.method not in {"GET", "HEAD"}:
-        return auth_error(403, "READ_ONLY_ROLE", "Роль наблюдателя разрешает только просмотр.")
-    return await call_next(request)
+    permission = app_auth.required_permission(request.method, path)
+    effective = set(user.get("permissions") or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ()))
+    if permission and permission not in effective:
+        app_auth.audit_event(request=request, user=user, event_type="access", decision="deny", permission_key=permission, target_type="api", target_id=path)
+        return auth_error(403, "PERMISSION_DENIED", f"Недостаточно прав: {permission}.")
+    if permission in SENSITIVE_PERMISSIONS and not app_auth.is_elevated(user):
+        app_auth.audit_event(request=request, user=user, event_type="reauth_required", decision="deny", permission_key=permission, target_type="api", target_id=path)
+        return auth_error(403, "REAUTH_REQUIRED", "Повторно подтвердите пароль для критического действия.")
+    response = await call_next(request)
+    if permission in SENSITIVE_PERMISSIONS and response.status_code < 400:
+        app_auth.audit_event(request=request, user=user, event_type="critical_action", decision="allow", permission_key=permission, target_type="api", target_id=path)
+    return response
 
 
 @app.middleware("http")
@@ -728,11 +726,13 @@ def startup() -> None:
     log_event("app", "app.startup.started", process_id=os.getpid())
     try:
         db.init_db()
+        app_auth.ensure_rbac_catalog()
         app_auth.ensure_bootstrap_admin(
             SETTINGS.bootstrap_admin_username,
             SETTINGS.bootstrap_admin_password,
             SETTINGS.bootstrap_admin_display_name,
         )
+        CONTAINER.operation_runner.submit("maintenance", app_auth.cleanup_audit_events, 365)
         db.interrupt_active_vulnerability_passport_detail_jobs()
         db.interrupt_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
@@ -821,6 +821,17 @@ def auth_logout(request: Request, response: Response) -> dict[str, Any]:
     return app_auth.logout(request, response)
 
 
+@auth_router.post("/reauth")
+def auth_reauth(payload: app_auth.ReauthRequest, request: Request) -> dict[str, Any]:
+    try:
+        result = app_auth.reauthenticate(request.cookies.get(app_auth.COOKIE_NAME), payload.password)
+    except HTTPException:
+        app_auth.audit_event(request=request, user=request.state.user, event_type="reauth", decision="deny")
+        raise
+    app_auth.audit_event(request=request, user=request.state.user, event_type="reauth", decision="allow")
+    return result
+
+
 @auth_router.get("/me")
 def auth_me(request: Request) -> dict[str, Any]:
     return {"authenticated": True, "user": request.state.user}
@@ -839,6 +850,37 @@ def auth_create_user(payload: app_auth.UserCreateRequest) -> dict[str, Any]:
 @auth_router.patch("/users/{user_id}")
 def auth_update_user(user_id: int, payload: app_auth.UserUpdateRequest, request: Request) -> dict[str, Any]:
     return app_auth.update_user(user_id, payload, actor_id=request.state.user["id"])
+
+
+@auth_router.get("/permissions")
+def auth_permissions() -> dict[str, Any]:
+    return {"rows": app_auth.list_permissions()}
+
+
+@auth_router.get("/roles")
+def auth_roles() -> dict[str, Any]:
+    return {"rows": app_auth.list_roles()}
+
+
+@auth_router.post("/roles/clone", status_code=201)
+def auth_clone_role(payload: app_auth.RoleCloneRequest) -> dict[str, Any]:
+    return app_auth.clone_role(payload)
+
+
+@auth_router.patch("/roles/{role_id}")
+def auth_update_role(role_id: int, payload: app_auth.RoleUpdateRequest) -> dict[str, Any]:
+    return app_auth.update_role(role_id, payload)
+
+
+@auth_router.delete("/roles/{role_id}", status_code=204)
+def auth_delete_role(role_id: int) -> Response:
+    app_auth.delete_role(role_id)
+    return Response(status_code=204)
+
+
+@auth_router.get("/audit")
+def auth_audit(limit: int = 200, offset: int = 0) -> dict[str, Any]:
+    return app_auth.list_audit_events(limit=limit, offset=offset)
 
 
 @system_router.get("/api/health")

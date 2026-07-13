@@ -65,7 +65,7 @@ function AppShell({ navigate, path, route, auth }) {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} {...appData} />
+        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} reauthenticate={auth.reauthenticate} {...appData} />
       </main>
     </div>
   );
@@ -73,7 +73,7 @@ function AppShell({ navigate, path, route, auth }) {
 
 function ActivePage({ routeId, ...props }) {
   if (routeId === "users") {
-    return <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />;
+    return <UsersPage currentUser={props.currentUser} reauthenticate={props.reauthenticate} showAlert={props.showAlert} />;
   }
   if (routeId === "connection") {
     return (

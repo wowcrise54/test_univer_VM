@@ -21,6 +21,7 @@ export function Sidebar({
   currentUser,
 }) {
   const navRef = useRef(null);
+  const permissions = new Set(currentUser?.permissions || []);
 
   useEffect(() => {
     if (
@@ -44,7 +45,9 @@ export function Sidebar({
       <nav ref={navRef} className="nav" aria-label="Основная навигация">
         {navigationGroups.map((group) => {
           const groupRoutes = routes.filter(
-            (route) => route.group === group.id && (!route.adminOnly || currentUser?.role === "admin"),
+            (route) => route.group === group.id &&
+              (!route.requiredPermission || permissions.has(route.requiredPermission)) &&
+              (!route.requiredAnyPermission || route.requiredAnyPermission.some((item) => permissions.has(item))),
           );
           return (
             <section

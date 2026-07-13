@@ -12,6 +12,7 @@ describe("guided application shell", () => {
         activeOperations={2}
         activePath="/tasks"
         onNavigate={vi.fn()}
+        currentUser={{ permissions: ["connection.read", "tasks.read", "operations.read", "assets.read", "imports_exports.read"] }}
       />,
     );
 
@@ -21,6 +22,13 @@ describe("guided application shell", () => {
     expect(screen.getByRole("link", { name: "Уязвимости" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();
+  });
+
+  it("hides navigation sections without effective permissions", () => {
+    render(<Sidebar session={{ connected: false }} activePath="/operations" onNavigate={vi.fn()} currentUser={{ permissions: ["operations.read"] }} />);
+    expect(screen.getByRole("link", { name: "Операции" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Задачи" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Пользователи" })).not.toBeInTheDocument();
   });
 
   it("shows the active stage and navigates directly between stages", () => {
