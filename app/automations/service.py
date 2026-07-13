@@ -30,6 +30,10 @@ SUPPORTED_STEP_TYPES = {
 }
 
 
+class AutomationStepCancelled(RuntimeError):
+    pass
+
+
 class AutomationService:
     def __init__(
         self,
@@ -255,7 +259,20 @@ class AutomationService:
                         elif step["type"] == "notification":
                             output = self._notification_step(step, run)
                         else:
-                            output = self.step_handler(step["type"], step_config, context, run_id, index)
+                            execution_context = {
+                                **context,
+                                "_register_child_operation": lambda child_id: self.repository.set_step_status(
+                                    run_id,
+                                    index,
+                                    "running",
+                                    attempts=attempts,
+                                    child_operation_id=str(child_id),
+                                ),
+                                "_is_cancel_requested": lambda: bool(
+                                    (self.repository.get_run(run_id, include_steps=False) or {}).get("cancel_requested")
+                                ),
+                            }
+                            output = self.step_handler(step["type"], step_config, execution_context, run_id, index)
                         self.repository.set_step_status(
                             run_id,
                             index,
@@ -271,6 +288,16 @@ class AutomationService:
                         context["steps"][step["step_id"]] = output
                         last_error = None
                         break
+                    except AutomationStepCancelled:
+                        self.repository.set_step_status(
+                            run_id,
+                            index,
+                            "cancelled",
+                            attempts=attempts,
+                            error="Cancelled by operator.",
+                        )
+                        self._finish_run(run_id, "cancelled", context)
+                        return
                     except Exception as exc:
                         last_error = str(exc)[:2000]
                         if attempts <= int(step.get("max_retries") or 0):

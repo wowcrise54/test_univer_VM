@@ -164,6 +164,45 @@ class OperationsApiTests(unittest.TestCase):
             ],
         )
 
+    def test_scan_postprocess_operation_is_cancellable_from_operations_center(self):
+        queued = {
+            "operation_id": "postprocess-1",
+            "source_id": "postprocess-1",
+            "kind": "scan_postprocess",
+            "status": "processing",
+            "can_cancel": True,
+        }
+        cancelling = {**queued, "status": "cancelling"}
+        with (
+            patch.object(main.db, "get_operation", side_effect=[queued, cancelling]),
+            patch.object(main, "cancel_scan_postprocess_run") as cancel,
+        ):
+            result = main.cancel_operation("postprocess-1")
+
+        self.assertEqual(result, cancelling)
+        cancel.assert_called_once_with("postprocess-1")
+
+    def test_scan_postprocess_cancel_stops_remote_scanner_task(self):
+        client = unittest.mock.MagicMock()
+        run = {
+            "run_id": "postprocess-1",
+            "mp_task_id": "refresh-task-1",
+            "status": "cancelling",
+            "cancel_requested": True,
+        }
+        with (
+            patch.object(main.db, "request_scan_postprocess_cancel", return_value=run),
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+            patch.object(main.db, "get_scan_postprocess_run", return_value=run),
+        ):
+            result = main.cancel_scan_postprocess_run("postprocess-1")
+
+        self.assertEqual(result["status"], "cancelling")
+        client.stop_scanner_task_best_effort.assert_called_once_with("token", "refresh-task-1")
+        self.assertTrue(main.SCAN_POSTPROCESS_CANCEL_EVENTS["postprocess-1"].is_set())
+        main.SCAN_POSTPROCESS_CANCEL_EVENTS.pop("postprocess-1", None)
+
     def test_cancel_of_terminal_operation_is_idempotent(self):
         operation = {
             "operation_id": "operation-1",

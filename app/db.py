@@ -352,6 +352,7 @@ def schema_statements() -> list[str]:
             message TEXT,
             error TEXT,
             worker_id TEXT,
+            cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TEXT NOT NULL,
             started_at TEXT,
             finished_at TEXT,
@@ -1244,7 +1245,7 @@ def get_active_asset_card_refresh(asset_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT * FROM scan_postprocess_runs
-            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
               AND options_json::jsonb ->> 'refresh_asset_id' = %s
             ORDER BY created_at DESC
             LIMIT 1
@@ -1254,7 +1255,7 @@ def get_active_asset_card_refresh(asset_id: str) -> dict[str, Any] | None:
     return decode_scan_postprocess_run(dict(row)) if row else None
 
 
-SCAN_POSTPROCESS_ACTIVE_STATUSES = {"monitoring", "resolving", "processing", "waiting"}
+SCAN_POSTPROCESS_ACTIVE_STATUSES = {"monitoring", "resolving", "processing", "waiting", "cancelling"}
 SCAN_POSTPROCESS_FAILED_ITEM_STATUSES = {"resolution_failed", "build_failed", "removal_failed"}
 
 
@@ -1339,7 +1340,7 @@ def list_resumable_scan_postprocess_runs() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT * FROM scan_postprocess_runs
-            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
               AND worker_id IS NULL
             ORDER BY created_at
             """
@@ -1355,7 +1356,7 @@ def list_pending_asset_refresh_task_cleanups() -> list[dict[str, Any]]:
             SELECT DISTINCT ON (run.mp_task_id) run.*
             FROM scan_postprocess_runs run
             JOIN scan_tasks task ON task.mp_task_id = run.mp_task_id
-            WHERE run.status NOT IN ('monitoring', 'resolving', 'processing', 'waiting')
+            WHERE run.status NOT IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
               AND run.options_json::jsonb ->> 'auto_created_refresh_task' = 'true'
             ORDER BY run.mp_task_id, run.updated_at DESC
             """
@@ -1372,7 +1373,7 @@ def claim_scan_postprocess_run(run_id: str, worker_id: str) -> dict[str, Any] | 
             SET worker_id = %s, started_at = COALESCE(started_at, %s), updated_at = %s
             WHERE run_id = %s
               AND worker_id IS NULL
-              AND status IN ('monitoring', 'resolving', 'processing', 'waiting')
+              AND status IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
             RETURNING *
             """,
             (worker_id, current, current, run_id),
@@ -1387,7 +1388,7 @@ def release_scan_postprocess_leases() -> None:
             """
             UPDATE scan_postprocess_runs
             SET worker_id = NULL, updated_at = %s
-            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting')
+            WHERE status IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
             """,
             (current,),
         )
@@ -1451,6 +1452,26 @@ def finish_scan_postprocess_run(
             RETURNING *
             """,
             (status, stage, message, error, current, current, run_id),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(row)) if row else None
+
+
+def request_scan_postprocess_cancel(run_id: str) -> dict[str, Any] | None:
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE scan_postprocess_runs
+            SET cancel_requested = TRUE,
+                status = 'cancelling',
+                stage = 'cancelling',
+                message = 'Cancellation requested.',
+                updated_at = %s
+            WHERE run_id = %s
+              AND status IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
+            RETURNING *
+            """,
+            (current, run_id),
         ).fetchone()
     return decode_scan_postprocess_run(dict(row)) if row else None
 
@@ -1582,6 +1603,7 @@ def decode_scan_postprocess_run(row: dict[str, Any]) -> dict[str, Any]:
         "failed_count": int(row.get("failed_count") or 0),
         "message": row.get("message"),
         "error": row.get("error"),
+        "cancel_requested": bool(row.get("cancel_requested")),
         "created_at": row.get("created_at"),
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
@@ -4767,7 +4789,12 @@ def decode_operation(row: dict[str, Any]) -> dict[str, Any]:
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
         "updated_at": row.get("updated_at"),
-        "can_cancel": status in ACTIVE_OPERATION_STATUSES and kind in {"asset_card_build", "passport_detail_sync", "automation_run"},
+        "can_cancel": status in ACTIVE_OPERATION_STATUSES and kind in {
+            "asset_card_build",
+            "passport_detail_sync",
+            "scan_postprocess",
+            "automation_run",
+        },
         "can_retry": status not in ACTIVE_OPERATION_STATUSES and kind in RETRYABLE_OPERATION_KINDS,
     }
 

@@ -5,6 +5,7 @@ import io
 import ipaddress
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -785,17 +786,24 @@ class MpVmClient:
         operation_id: str,
         timeout_seconds: float = 1800,
         poll_seconds: float = 10,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[bool, str, dict[str, Any] | None]:
         deadline = time.monotonic() + timeout_seconds
         last_data: dict[str, Any] | None = None
         last_message = f"operation {operation_id} is not finished"
         while time.monotonic() < deadline:
+            if cancel_event and cancel_event.is_set():
+                return False, "cancelled by operator", last_data
             last_data = self.get_asset_removal_operation(access_token, operation_id)
             done, ok, message = parse_asset_removal_operation(last_data)
             last_message = message
             if done:
                 return ok, message, last_data
-            time.sleep(poll_seconds)
+            if cancel_event:
+                if cancel_event.wait(poll_seconds):
+                    return False, "cancelled by operator", last_data
+            else:
+                time.sleep(poll_seconds)
         return False, f"timeout after {timeout_seconds / 60:.1f} minute(s); last status: {last_message}", last_data
 
     def get_json(self, access_token: str, path: str, params: dict[str, Any] | None = None) -> Any:

@@ -85,7 +85,7 @@ from .api.schemas import (
     AutomationRunbookRequest,
     AutomationScheduleRequest,
 )
-from .automations import AutomationRepository, AutomationService
+from .automations import AutomationRepository, AutomationService, AutomationStepCancelled
 from .core import AppContainer, get_settings
 from .factory import create_app
 from .mpvm_client import (
@@ -114,6 +114,10 @@ STATIC_DIR = APP_DIR / "static"
 EXPORTS_DIR = Path(os.getenv("MPVM_EXPORTS_DIR", "exports"))
 SAMPLE_CSV = Path("host_software_vulnerabilities_10.104.103.0_24.csv")
 SCAN_LOG = logging.getLogger("uvicorn.error")
+
+
+class ScanPostprocessCancelled(RuntimeError):
+    pass
 
 
 def scan_log(level: int, event: str, **fields: Any) -> None:
@@ -171,6 +175,7 @@ AUTOMATION_SERVICE: AutomationService | None = None
 DATABASE_STARTUP_ERROR: str | None = None
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
+SCAN_POSTPROCESS_CANCEL_EVENTS: dict[str, threading.Event] = {}
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
 ASSET_METADATA_CACHE = CONTAINER.asset_metadata_cache
 ASSET_METADATA_INFLIGHT = CONTAINER.asset_metadata_inflight
@@ -999,9 +1004,39 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
         cancel_asset_card_build_job(operation["source_id"])
     elif operation["kind"] == "passport_detail_sync":
         cancel_vulnerability_passport_detail_job(operation["source_id"])
+    elif operation["kind"] == "scan_postprocess":
+        cancel_scan_postprocess_run(operation["source_id"])
     elif operation["kind"] == "automation_run":
-        AUTOMATION_REPOSITORY.request_cancel(operation["source_id"])
+        cancel_automation_run(operation["source_id"])
     return db.get_operation(operation_id, sync_sources=True) or operation
+
+
+def cancel_scan_postprocess_run(run_id: str) -> dict[str, Any]:
+    run = db.request_scan_postprocess_cancel(run_id)
+    if not run:
+        current = db.get_scan_postprocess_run(run_id)
+        if current:
+            return current
+        raise HTTPException(status_code=404, detail="Scan post-processing run not found.")
+
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        SCAN_POSTPROCESS_CANCEL_EVENTS.setdefault(run_id, threading.Event()).set()
+
+    # Stop both the remote scan and a currently running local card build. The
+    # worker also observes the durable flag, so this remains safe across races
+    # and application restarts.
+    try:
+        client, token = require_mpvm()
+        client.stop_scanner_task_best_effort(token, str(run["mp_task_id"]))
+    except (HTTPException, MpVmApiError, requests.RequestException):
+        scan_log(logging.WARNING, "cancel_remote_stop_deferred", postprocess_run_id=run_id)
+    for item in db.list_scan_postprocess_items(run_id):
+        build_job_id = str(item.get("build_job_id") or "").strip()
+        if build_job_id:
+            build_job = db.get_asset_card_build_job(build_job_id)
+            if build_job and build_job.get("status") in {"queued", "running", "cancelling"}:
+                cancel_asset_card_build_job(build_job_id)
+    return db.get_scan_postprocess_run(run_id) or run
 
 
 @operations_router.post("/api/operations/{operation_id}/retry", status_code=202)
@@ -2834,6 +2869,7 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
         if current and not current.done():
             scan_log(logging.DEBUG, "schedule_skipped_already_running", postprocess_run_id=run_id)
             return
+        SCAN_POSTPROCESS_CANCEL_EVENTS.setdefault(run_id, threading.Event())
         future = CONTAINER.operation_runner.submit(
             "scan-postprocess",
             run_scan_postprocess,
@@ -2848,6 +2884,7 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
         with SCAN_POSTPROCESS_FUTURES_LOCK:
             if SCAN_POSTPROCESS_FUTURES.get(run_id) is _future:
                 SCAN_POSTPROCESS_FUTURES.pop(run_id, None)
+            SCAN_POSTPROCESS_CANCEL_EVENTS.pop(run_id, None)
 
     future.add_done_callback(forget)
 
@@ -2876,6 +2913,8 @@ def resume_scan_postprocess_runs() -> None:
 
 
 def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        SCAN_POSTPROCESS_CANCEL_EVENTS.setdefault(run_id, threading.Event())
     worker_id = str(uuid.uuid4())
     claimed = db.claim_scan_postprocess_run(run_id, worker_id)
     if not claimed:
@@ -2900,6 +2939,9 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         require_clean_jobs=require_clean_jobs,
     )
     try:
+        if claimed.get("cancel_requested"):
+            raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+        raise_if_scan_postprocess_cancelled(run_id)
         monitoring = monitor_successful_scan_jobs(
             client=client,
             auth=auth,
@@ -2967,6 +3009,28 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             completed_count=completed_count,
             failed_count=failed_count,
         )
+    except ScanPostprocessCancelled:
+        client.stop_scanner_task_best_effort(token, task_id)
+        cleanup_deleted = (
+            cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
+            if options.get("auto_created_refresh_task")
+            else None
+        )
+        cleanup_text = (
+            " Refresh task deleted."
+            if cleanup_deleted
+            else " Refresh task deletion is pending."
+            if cleanup_deleted is False
+            else ""
+        )
+        db.update_scan_task_status(task_id, "postprocess_cancelled", {"postprocess_run_id": run_id})
+        db.finish_scan_postprocess_run(
+            run_id,
+            status="cancelled",
+            stage="cancelled",
+            message=f"Scan post-processing cancelled.{cleanup_text}",
+        )
+        scan_log(logging.INFO, "run_cancelled", postprocess_run_id=run_id, task_id=task_id)
     except Exception as exc:
         error = str(exc)[:4000]
         SCAN_LOG.exception(
@@ -2992,6 +3056,20 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         )
     finally:
         client.session.close()
+        with SCAN_POSTPROCESS_FUTURES_LOCK:
+            SCAN_POSTPROCESS_CANCEL_EVENTS.pop(run_id, None)
+
+
+def raise_if_scan_postprocess_cancelled(run_id: str) -> None:
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        cancel_event = SCAN_POSTPROCESS_CANCEL_EVENTS.get(run_id)
+    if cancel_event and cancel_event.is_set():
+        raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+
+
+def scan_postprocess_cancel_event(run_id: str) -> threading.Event | None:
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        return SCAN_POSTPROCESS_CANCEL_EVENTS.get(run_id)
 
 
 def cleanup_auto_created_refresh_task(
@@ -3140,6 +3218,7 @@ def monitor_successful_scan_jobs(
                 )
 
         while True:
+            raise_if_scan_postprocess_cancelled(postprocess_run_id)
             runs = client.get_task_runs(token, task_id, time_from=started_from)
             if not runs and not logged_waiting_for_run:
                 logged_waiting_for_run = True
@@ -3585,6 +3664,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
         resumed_removal_operation_id=removal_operation_id,
     )
     try:
+        raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
         if not removal_operation_id:
             scan_log(logging.INFO, "asset_card_build_starting", **context)
             build_job_id = build_scanned_asset_card(
@@ -3603,6 +3683,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 error=None,
             ) or item
             card_saved = True
+            raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
             scan_log(logging.INFO, "asset_card_saved", **context, build_job_id=build_job_id)
             removal_operation_id = client.remove_assets(token, [asset_id])
             db.update_scan_postprocess_item(
@@ -3630,7 +3711,9 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             str(removal_operation_id),
             timeout_seconds=SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
             poll_seconds=SCAN_ASSET_REMOVAL_POLL_SECONDS,
+            cancel_event=scan_postprocess_cancel_event(str(item.get("postprocess_run_id") or "")),
         )
+        raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
         if not ok:
             db.update_scan_postprocess_item(
                 item_id,
@@ -3664,6 +3747,15 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             removal_operation_id=removal_operation_id,
             message=message,
         )
+    except ScanPostprocessCancelled:
+        db.update_scan_postprocess_item(
+            item_id,
+            status="cancelled",
+            stage="cancelled",
+            message="Processing cancelled by operator.",
+            finished_at=db.now_utc(),
+        )
+        raise
     except Exception as exc:
         status = "removal_failed" if card_saved else "build_failed"
         db.update_scan_postprocess_item(
@@ -3711,6 +3803,7 @@ def build_scanned_asset_card(
     }
     logged_active_job_id: str | None = None
     while True:
+        raise_if_scan_postprocess_cancelled(parent_operation_id)
         active = db.get_active_asset_card_build_job()
         if active:
             active_job_id = str(active.get("job_id") or "")
@@ -5361,12 +5454,21 @@ def run_background_tasks(background_tasks: BackgroundTasks) -> None:
         asyncio.run(background_tasks())
 
 
-def wait_for_automation_operation(operation_id: str, timeout_seconds: float) -> dict[str, Any]:
+def wait_for_automation_operation(
+    operation_id: str,
+    timeout_seconds: float,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     terminal = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
     while time.monotonic() < deadline:
+        if cancel_check and cancel_check():
+            raise AutomationStepCancelled("Automation run was cancelled.")
         operation = db.get_operation(operation_id)
         if operation and operation.get("status") in terminal:
+            if operation["status"] == "cancelled":
+                raise AutomationStepCancelled(f"Operation {operation_id} was cancelled.")
             if operation["status"] not in {"completed", "completed_with_errors"}:
                 raise RuntimeError(operation.get("message") or f"Operation {operation_id} failed.")
             return operation
@@ -5382,6 +5484,8 @@ def execute_automation_step(
     step_index: int,
 ) -> dict[str, Any]:
     idempotency_key = f"automation:{run_id}:{step_index}"
+    register_child = _context.get("_register_child_operation")
+    cancel_check = _context.get("_is_cancel_requested")
     if step_type == "scanner_task_start":
         task_id = str(config.get("task_id") or "").strip()
         if not task_id:
@@ -5391,8 +5495,14 @@ def execute_automation_step(
         result = start_scanner_task(task_id, background, options, idempotency_key=idempotency_key)
         run_background_tasks(background)
         operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+        if operation_id and callable(register_child):
+            register_child(str(operation_id))
         if operation_id and bool(config.get("wait", True)):
-            operation = wait_for_automation_operation(str(operation_id), float(config.get("timeout_seconds") or 7200))
+            operation = wait_for_automation_operation(
+                str(operation_id),
+                float(config.get("timeout_seconds") or 7200),
+                cancel_check=cancel_check if callable(cancel_check) else None,
+            )
             return {**result, "operation_id": operation_id, "operation": operation}
         return {**result, "operation_id": operation_id}
     if step_type == "pdql_export":
@@ -5404,12 +5514,31 @@ def execute_automation_step(
         operation_id = (result.get("detail_job") or {}).get("job_id")
         return {**result, "operation_id": operation_id}
     if step_type == "asset_card_build":
+        asset_id = str(config.get("asset_id") or "").strip()
+        if not asset_id:
+            raise ValueError("asset_card_build requires asset_id.")
         background = BackgroundTasks()
-        result = create_asset_card_build_job(
-            AssetCardBuildJobRequest(**config), background, idempotency_key=idempotency_key
+        start_options = config.get("start_options") if isinstance(config.get("start_options"), dict) else {}
+        result = refresh_asset_card_by_scan(
+            asset_id,
+            AssetCardRefreshScanRequest(
+                template_task_id=str(config.get("template_task_id") or "").strip() or None,
+                start_options=StartScannerTaskRequest(**start_options),
+            ),
+            background,
+            idempotency_key=idempotency_key,
         )
         run_background_tasks(background)
-        operation_id = result.get("operation_id") or (result.get("job") or {}).get("job_id")
+        operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+        if operation_id and callable(register_child):
+            register_child(str(operation_id))
+        if operation_id and bool(config.get("wait", True)):
+            operation = wait_for_automation_operation(
+                str(operation_id),
+                float(config.get("timeout_seconds") or 14400),
+                cancel_check=cancel_check if callable(cancel_check) else None,
+            )
+            return {**result, "operation_id": operation_id, "operation": operation}
         return {**result, "operation_id": operation_id}
     if step_type == "asset_query":
         return asset_card_query(AssetCardFieldQueryRequest(**config))
@@ -5432,8 +5561,8 @@ AUTOMATION_TEMPLATES = [
     {
         "template_id": "asset-card-refresh",
         "name": "Обновление карточки актива",
-        "description": "Построение и сохранение карточки выбранного актива.",
-        "steps": [{"step_id": "asset-card", "type": "asset_card_build", "config": {"asset_id": ""}, "on_error": "stop", "max_retries": 1}],
+        "description": "Сканирование актива временной задачей MP VM, перенос карточки и удаление задачи.",
+        "steps": [{"step_id": "asset-card", "type": "asset_card_build", "config": {"asset_id": "", "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
     },
     {
         "template_id": "weekly-export",

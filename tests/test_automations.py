@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.automations.service import AutomationService
+from app.automations.service import AutomationService, AutomationStepCancelled
 from app.core.config import Settings
 from app.core.runtime import OperationRunner
 
@@ -242,6 +242,44 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(len(completed), 2)
         self.assertEqual(repository.run_statuses[-1][0][1], "completed")
         self.assertEqual(repository.notifications[-1]["event_type"], "automation.completed")
+
+    def test_running_child_is_recorded_before_a_cancelled_step_finishes(self):
+        repository = FakeRepository()
+        repository.run = {
+            "run_id": "run-1",
+            "runbook_id": "runbook-1",
+            "dry_run": False,
+            "cancel_requested": False,
+            "definition": {
+                "steps": [{
+                    "step_id": "asset-card",
+                    "type": "asset_card_build",
+                    "config": {"asset_id": "asset-1"},
+                    "on_error": "stop",
+                    "max_retries": 0,
+                }]
+            },
+            "steps": [{"step_index": 0, "step_id": "asset-card", "status": "pending", "output": {}}],
+        }
+
+        def handler(_step_type, _config, context, *_args):
+            context["_register_child_operation"]("postprocess-1")
+            raise AutomationStepCancelled()
+
+        automation = AutomationService(
+            repository,
+            OperationRunner({"automation-run": 1}),
+            Settings(_env_file=None),
+            handler,
+            lambda: False,
+        )
+        with patch("app.automations.service.db.register_operation"):
+            automation.execute_run("run-1")
+
+        child_updates = [kwargs for _args, kwargs in repository.step_statuses if kwargs.get("child_operation_id")]
+        self.assertEqual(child_updates[0]["child_operation_id"], "postprocess-1")
+        self.assertTrue(any(args[2] == "cancelled" for args, _kwargs in repository.step_statuses))
+        self.assertEqual(repository.run_statuses[-1][0][1], "cancelled")
 
     def test_continue_policy_records_warning_after_retry(self):
         repository = FakeRepository()

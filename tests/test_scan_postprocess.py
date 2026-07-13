@@ -113,6 +113,29 @@ class ScanPostprocessClientTests(unittest.TestCase):
         self.assertEqual(message, "total=1, succeed=1, failed=0")
         self.assertEqual(operation["status"], "completed")
         self.assertEqual(client.get_asset_removal_operation.call_count, 2)
+
+    def test_asset_removal_wait_stops_when_parent_operation_is_cancelled(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        client.get_asset_removal_operation = MagicMock()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        ok, message, operation = client.wait_for_asset_removal(
+            "token",
+            "operation-1",
+            timeout_seconds=60,
+            cancel_event=cancel_event,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "cancelled by operator")
+        self.assertIsNone(operation)
+        client.get_asset_removal_operation.assert_not_called()
+        client.session.close()
         client.session.close()
 
     def test_resolution_pdql_supports_ip_subnet_and_fqdn(self):
@@ -383,6 +406,46 @@ class StartScannerTaskApiTests(unittest.TestCase):
 
 
 class AssetCardRefreshScanTests(unittest.TestCase):
+    def test_cancelled_child_operation_cancels_automation_step_without_retry(self):
+        with patch.object(main.db, "get_operation", return_value={"status": "cancelled"}):
+            with self.assertRaises(main.AutomationStepCancelled):
+                main.wait_for_automation_operation("refresh-run-1", 1)
+
+    def test_automation_asset_card_step_uses_refresh_scan_pipeline(self):
+        registered: list[str] = []
+        with (
+            patch.object(main, "refresh_asset_card_by_scan", return_value={
+                "postprocess_run_id": "refresh-run-1",
+                "operation_id": "refresh-run-1",
+            }) as refresh_scan,
+            patch.object(main, "run_background_tasks"),
+            patch.object(main, "wait_for_automation_operation", return_value={"status": "completed"}) as wait_operation,
+            patch.object(main, "create_asset_card_build_job") as direct_build,
+        ):
+            result = main.execute_automation_step(
+                "asset_card_build",
+                {
+                    "asset_id": "asset-old",
+                    "template_task_id": "template-task-1",
+                    "start_options": {"task_timeout_minutes": 30},
+                },
+                {
+                    "_register_child_operation": registered.append,
+                    "_is_cancel_requested": lambda: False,
+                },
+                "automation-run-1",
+                0,
+            )
+
+        self.assertEqual(result["operation_id"], "refresh-run-1")
+        self.assertEqual(registered, ["refresh-run-1"])
+        refresh_scan.assert_called_once()
+        payload = refresh_scan.call_args.args[1]
+        self.assertEqual(payload.template_task_id, "template-task-1")
+        self.assertEqual(payload.start_options.task_timeout_minutes, 30)
+        wait_operation.assert_called_once()
+        direct_build.assert_not_called()
+
     def test_refresh_task_reuses_scan_settings_and_targets_only_card_ip(self):
         template = {
             "name": "Regular audit",

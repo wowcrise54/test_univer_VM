@@ -60,13 +60,18 @@ const STEP_META = {
   },
   asset_card_build: {
     short: "Карточка актива",
-    description: "Собирает и сохраняет актуальную карточку одного актива.",
+    description:
+      "Создаёт временную задачу MP VM, сканирует актив, переносит карточку и удаляет задачу.",
     defaults: {
       asset_id: "",
-      timeline_timestamp: "",
-      limit_per_collection: 5000,
-      max_items_per_collection: 5000,
-      max_depth: 8,
+      template_task_id: "",
+      wait: true,
+      timeout_seconds: 14400,
+      start_options: {
+        precheck_enabled: false,
+        task_timeout_minutes: 120,
+        require_clean_jobs: false,
+      },
     },
   },
   asset_query: {
@@ -543,33 +548,55 @@ function StepConfigFields({ step, scannerTasks, fieldCatalog, updateConfig }) {
             placeholder="Вставьте asset ID"
           />
         </Field>
+        <Field label="Задача-шаблон MP VM (необязательно)">
+          <input
+            list="automation-scanner-tasks"
+            value={config.template_task_id || ""}
+            onChange={(event) =>
+              updateConfig("template_task_id", event.target.value)
+            }
+            placeholder="Определится по последнему сканированию актива"
+          />
+        </Field>
+        <datalist id="automation-scanner-tasks">
+          {scannerTasks.map((task) => (
+            <option key={task.mp_task_id} value={task.mp_task_id}>
+              {task.name || task.mp_task_id}
+            </option>
+          ))}
+        </datalist>
         <NumberField
-          label="Timeline timestamp (необязательно)"
-          value={config.timeline_timestamp ?? ""}
-          min={0}
-          onChange={(value) => updateConfig("timeline_timestamp", value)}
-        />
-        <NumberField
-          label="Записей за запрос"
-          value={config.limit_per_collection ?? 5000}
+          label="Ждать не более, минут"
+          value={secondsToMinutes(config.timeout_seconds)}
           min={1}
-          max={5000}
-          onChange={(value) => updateConfig("limit_per_collection", value)}
+          onChange={(value) =>
+            updateConfig("timeout_seconds", value === "" ? "" : value * 60)
+          }
         />
         <NumberField
-          label="Записей в коллекции"
-          value={config.max_items_per_collection ?? 5000}
+          label="Таймаут задачи MP VM, минут"
+          value={config.start_options?.task_timeout_minutes ?? 120}
           min={1}
-          max={50000}
-          onChange={(value) => updateConfig("max_items_per_collection", value)}
+          onChange={(value) =>
+            updateConfig("start_options.task_timeout_minutes", value)
+          }
         />
-        <NumberField
-          label="Глубина дерева"
-          value={config.max_depth ?? 8}
-          min={0}
-          max={8}
-          onChange={(value) => updateConfig("max_depth", value)}
-        />
+        <div className="automation-toggle-stack">
+          <Toggle
+            label="Сначала проверить доступность цели"
+            checked={Boolean(config.start_options?.precheck_enabled)}
+            onChange={(value) =>
+              updateConfig("start_options.precheck_enabled", value)
+            }
+          />
+          <Toggle
+            label="Считать предупреждения сканирования ошибкой"
+            checked={Boolean(config.start_options?.require_clean_jobs)}
+            onChange={(value) =>
+              updateConfig("start_options.require_clean_jobs", value)
+            }
+          />
+        </div>
       </div>
     );
   }
