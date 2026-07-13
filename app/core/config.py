@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     automation_webhook_url: str = ""
     automation_webhook_secret: str = Field(default="", repr=False)
     coverage_stale_days: int = 7
+    bootstrap_admin_username: str = "admin"
+    bootstrap_admin_password: str = Field(default="", repr=False)
+    bootstrap_admin_display_name: str = "Administrator"
+    auth_session_hours: int = 12
+    auth_cookie_secure: bool = False
 
     @field_validator(
         "timeout",
@@ -62,6 +67,7 @@ class Settings(BaseSettings):
         "scan_asset_removal_poll_seconds",
         "automation_scheduler_poll_seconds",
         "coverage_stale_days",
+        "auth_session_hours",
     )
     @classmethod
     def positive_integer(cls, value: int) -> int:
@@ -74,6 +80,13 @@ class Settings(BaseSettings):
     def non_negative_integer(cls, value: int) -> int:
         if value < 0:
             raise ValueError("must not be negative")
+        return value
+
+    @field_validator("bootstrap_admin_password")
+    @classmethod
+    def strong_bootstrap_password(cls, value: str) -> str:
+        if value and len(value) < 12:
+            raise ValueError("must contain at least 12 characters when configured")
         return value
 
     @field_validator("automation_webhook_url")

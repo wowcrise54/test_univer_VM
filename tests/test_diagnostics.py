@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from app import diagnostics
 
@@ -131,20 +132,21 @@ class DiagnosticLoggingTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         from app import main
 
-        response = TestClient(main.app).post(
-            "/api/diagnostics/frontend",
-            headers={"X-Trace-ID": "trace-client", "X-Request-ID": "request-client"},
-            json={
-                "events": [{
-                    "event": "ui.test.failed",
-                    "level": "error",
-                    "trace_id": "trace-ui",
-                    "url": "/asset-cards",
-                    "stack": "Error: fixture",
-                    "fields": {"password": "plain-password", "status": 500},
-                }],
-            },
-        )
+        with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}):
+            response = TestClient(main.app).post(
+                "/api/diagnostics/frontend",
+                headers={"X-Trace-ID": "trace-client", "X-Request-ID": "request-client"},
+                json={
+                    "events": [{
+                        "event": "ui.test.failed",
+                        "level": "error",
+                        "trace_id": "trace-ui",
+                        "url": "/asset-cards",
+                        "stack": "Error: fixture",
+                        "fields": {"password": "plain-password", "status": 500},
+                    }],
+                },
+            )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.headers["x-trace-id"], "trace-client")
         self.assertEqual(response.headers["x-request-id"], "request-client")

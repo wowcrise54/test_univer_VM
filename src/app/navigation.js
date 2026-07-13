@@ -15,6 +15,16 @@ export const workflowSteps = [
 
 export const routes = [
   {
+    id: "users",
+    group: "manage",
+    icon: "◎",
+    path: "/users",
+    label: "Пользователи",
+    title: "Пользователи и роли",
+    description: "Управление доступом к приложению, ролями и состоянием учётных записей.",
+    adminOnly: true,
+  },
+  {
     id: "connection",
     group: "work",
     icon: "⌁",

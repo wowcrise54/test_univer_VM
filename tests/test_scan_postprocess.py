@@ -322,6 +322,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
             patch.object(main.uuid, "uuid4", return_value="post-http"),
             patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess),
             patch.object(main, "schedule_scan_postprocess") as schedule,
+            patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "operator"}),
         ):
             response = TestClient(main.app).post(
                 "/api/scanner-tasks/task-http/start",
@@ -372,6 +373,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
             patch.object(main.db, "finish_scan_postprocess_run") as finish_run,
             patch.object(main.db, "update_scan_task_status"),
             patch.object(main, "capture_vulnerability_snapshot") as capture_snapshot,
+            patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "operator"}),
         ):
             response = TestClient(main.app).post("/api/scanner-tasks/task-full/start", json={})
 

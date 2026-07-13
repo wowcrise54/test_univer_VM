@@ -476,6 +476,30 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS app_users (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'operator', 'viewer')),
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_auth_sessions (
+            id UUID PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            revoked_at TEXT
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS asset_card_search_fields (
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
@@ -560,6 +584,8 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_operations_updated ON operations(updated_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_idempotency ON operations(idempotency_key) WHERE idempotency_key IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_operation_events_operation_created ON operation_events(operation_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_app_auth_sessions_user ON app_auth_sessions(user_id, expires_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_app_auth_sessions_token ON app_auth_sessions(token_hash) WHERE revoked_at IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_saved_views_route_name ON saved_views(route, name)",
         "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_task_created ON scan_postprocess_runs(mp_task_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_scan_postprocess_runs_status ON scan_postprocess_runs(status, updated_at)",

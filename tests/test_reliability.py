@@ -60,6 +60,7 @@ class SystemStatusTests(unittest.TestCase):
             patch.object(main.db, "release_scan_postprocess_leases"),
             patch.object(main.db, "sync_operations_from_sources"),
             patch.object(main, "start_asset_search_backfill"),
+            patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}),
             TestClient(main.app) as client,
         ):
             response = client.get("/api/not-found")
@@ -114,7 +115,9 @@ class OperationsApiTests(unittest.TestCase):
             "updated_at": "2026-07-12T10:00:00+00:00",
         }
         service = main.CONTAINER.services.operations
-        with patch.object(service, "summary", return_value=expected) as summary:
+        with patch.object(service, "summary", return_value=expected) as summary, patch.object(
+            main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}
+        ):
             response = TestClient(main.app).get("/api/operations/summary")
 
         self.assertEqual(response.status_code, 200)

@@ -16,9 +16,11 @@ passports_router = APIRouter(tags=["vulnerability-passports"])
 diagnostics_router = APIRouter(tags=["diagnostics"])
 automations_router = APIRouter(prefix="/api/automations", tags=["automations"])
 notifications_router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+auth_router = APIRouter(prefix="/api/auth", tags=["application-auth"])
 
 
 API_ROUTERS = (
+    auth_router,
     system_router,
     session_router,
     tasks_router,

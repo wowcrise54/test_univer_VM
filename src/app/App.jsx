@@ -19,17 +19,23 @@ import {
 } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
+import { AuthGate } from "../features/auth/AuthGate.jsx";
+import { UsersPage } from "../features/auth/UsersPage.jsx";
 
 export function App() {
+  return <AuthGate>{(auth) => <AuthenticatedApp auth={auth} />}</AuthGate>;
+}
+
+function AuthenticatedApp({ auth }) {
   const { navigate, path, route } = useRouter();
   return (
     <AppDataProvider routeId={route?.id}>
-      <AppShell navigate={navigate} path={path} route={route} />
+      <AppShell navigate={navigate} path={path} route={route} auth={auth} />
     </AppDataProvider>
   );
 }
 
-function AppShell({ navigate, path, route }) {
+function AppShell({ navigate, path, route, auth }) {
   const appData = useAppDataContext();
 
   return (
@@ -47,9 +53,10 @@ function AppShell({ navigate, path, route }) {
         }
         activePath={path}
         onNavigate={navigate}
+        currentUser={auth.user}
       />
       <main className="workspace">
-        <Topbar session={appData.session} route={route} onNavigate={navigate} />
+        <Topbar session={appData.session} route={route} onNavigate={navigate} currentUser={auth.user} onLogout={auth.logout} />
         <WorkflowRail activeRouteId={route?.id} onNavigate={navigate} />
         <SystemBanner
           status={appData.systemStatus}
@@ -58,13 +65,16 @@ function AppShell({ navigate, path, route }) {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage routeId={route?.id} onNavigate={navigate} {...appData} />
+        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} {...appData} />
       </main>
     </div>
   );
 }
 
 function ActivePage({ routeId, ...props }) {
+  if (routeId === "users") {
+    return <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />;
+  }
   if (routeId === "connection") {
     return (
       <ConnectionPage

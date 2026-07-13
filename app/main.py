@@ -46,6 +46,7 @@ from .diagnostics import (
 configure_diagnostics()
 
 from . import db
+from . import auth as app_auth
 from .api.routers import (
     API_ROUTERS,
     asset_cards_router,
@@ -60,6 +61,7 @@ from .api.routers import (
     tasks_router,
     automations_router,
     notifications_router,
+    auth_router,
 )
 from .api.schemas import (
     AssetCardAssetQueryRequest,
@@ -425,6 +427,56 @@ app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan)
 app.state.container = CONTAINER
 
 
+PUBLIC_API_PATHS = {
+    "/api/auth/login",
+    "/api/auth/bootstrap-status",
+    "/api/health",
+}
+ADMIN_API_PREFIXES = (
+    "/api/auth/users",
+    "/api/diagnostics",
+)
+ADMIN_API_PATHS = {
+    "/api/session/connect",
+    "/api/session/disconnect",
+}
+
+
+def auth_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": {"code": code, "message": message, "component": "auth", "retryable": False}},
+    )
+
+
+@app.middleware("http")
+async def application_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("sec-fetch-site") == "cross-site":
+        return auth_error(403, "CROSS_SITE_REQUEST", "Межсайтовый запрос отклонён.")
+    if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+    try:
+        user = app_auth.get_session_user(request.cookies.get(app_auth.COOKIE_NAME))
+    except psycopg.Error:
+        return auth_error(503, "AUTH_DATABASE_UNAVAILABLE", "Авторизация временно недоступна.")
+    if not user:
+        return auth_error(401, "AUTH_REQUIRED", "Войдите в приложение.")
+    request.state.user = user
+    if path in {"/api/auth/me", "/api/auth/logout"}:
+        return await call_next(request)
+    admin_only = (
+        path in ADMIN_API_PATHS
+        or any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES)
+        or (path.startswith("/api/operations/") and path.endswith("/diagnostics"))
+    )
+    if admin_only and user["role"] != "admin":
+        return auth_error(403, "ADMIN_REQUIRED", "Действие доступно только администратору.")
+    if user["role"] == "viewer" and request.method not in {"GET", "HEAD"}:
+        return auth_error(403, "READ_ONLY_ROLE", "Роль наблюдателя разрешает только просмотр.")
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def diagnostic_http_middleware(request: Request, call_next):
     trace_id = normalize_correlation_id(request.headers.get("x-trace-id")) or new_trace_id()
@@ -676,6 +728,11 @@ def startup() -> None:
     log_event("app", "app.startup.started", process_id=os.getpid())
     try:
         db.init_db()
+        app_auth.ensure_bootstrap_admin(
+            SETTINGS.bootstrap_admin_username,
+            SETTINGS.bootstrap_admin_password,
+            SETTINGS.bootstrap_admin_display_name,
+        )
         db.interrupt_active_vulnerability_passport_detail_jobs()
         db.interrupt_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
@@ -739,6 +796,49 @@ def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@auth_router.get("/bootstrap-status")
+def auth_bootstrap_status() -> dict[str, Any]:
+    with db.connect() as conn:
+        configured = int(conn.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()["count"] or 0) > 0
+    return {"configured": configured}
+
+
+@auth_router.post("/login")
+def auth_login(payload: app_auth.LoginRequest, request: Request, response: Response) -> dict[str, Any]:
+    return app_auth.login(
+        payload,
+        request,
+        response,
+        hours=SETTINGS.auth_session_hours,
+        secure=SETTINGS.auth_cookie_secure,
+    )
+
+
+@auth_router.post("/logout")
+def auth_logout(request: Request, response: Response) -> dict[str, Any]:
+    return app_auth.logout(request, response)
+
+
+@auth_router.get("/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    return {"authenticated": True, "user": request.state.user}
+
+
+@auth_router.get("/users")
+def auth_users() -> dict[str, Any]:
+    return {"rows": app_auth.list_users()}
+
+
+@auth_router.post("/users", status_code=201)
+def auth_create_user(payload: app_auth.UserCreateRequest) -> dict[str, Any]:
+    return app_auth.create_user(payload)
+
+
+@auth_router.patch("/users/{user_id}")
+def auth_update_user(user_id: int, payload: app_auth.UserUpdateRequest, request: Request) -> dict[str, Any]:
+    return app_auth.update_user(user_id, payload, actor_id=request.state.user["id"])
 
 
 @system_router.get("/api/health")

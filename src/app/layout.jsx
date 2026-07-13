@@ -18,6 +18,7 @@ export function Sidebar({
   activeOperations = 0,
   activePath,
   onNavigate,
+  currentUser,
 }) {
   const navRef = useRef(null);
 
@@ -43,7 +44,7 @@ export function Sidebar({
       <nav ref={navRef} className="nav" aria-label="Основная навигация">
         {navigationGroups.map((group) => {
           const groupRoutes = routes.filter(
-            (route) => route.group === group.id,
+            (route) => route.group === group.id && (!route.adminOnly || currentUser?.role === "admin"),
           );
           return (
             <section
@@ -173,7 +174,7 @@ const routeNextActions = {
   automations: { label: "Открыть операции", path: "/operations" },
 };
 
-export function Topbar({ session, route, onNavigate }) {
+export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
   const headingRef = useRef(null);
   useEffect(() => {
     const title = route?.title || "MP VM REST Client";
@@ -211,6 +212,10 @@ export function Topbar({ session, route, onNavigate }) {
         </p>
       </div>
       <div className="topbar__actions">
+        <div className="user-chip" title={currentUser?.username}>
+          <strong>{currentUser?.display_name || currentUser?.username}</strong>
+          <span>{roleLabel(currentUser?.role)}</span>
+        </div>
         <div
           className={
             session.connected ? "status-chip status-chip--ok" : "status-chip"
@@ -229,9 +234,14 @@ export function Topbar({ session, route, onNavigate }) {
             <strong aria-hidden="true">→</strong>
           </button>
         ) : null}
+        <button type="button" className="logout-button" onClick={onLogout}>Выйти</button>
       </div>
     </header>
   );
+}
+
+function roleLabel(role) {
+  return { admin: "Администратор", operator: "Оператор", viewer: "Наблюдатель" }[role] || role || "";
 }
 
 export function WorkflowRail({ activeRouteId, onNavigate }) {
