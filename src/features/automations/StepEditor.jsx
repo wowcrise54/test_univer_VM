@@ -61,9 +61,11 @@ const STEP_META = {
   asset_card_build: {
     short: "Карточка актива",
     description:
-      "Создаёт временную задачу MP VM, сканирует актив, переносит карточку и удаляет задачу.",
+      "Обновляет выбранную карточку или последовательно обрабатывает все устаревшие карточки.",
     defaults: {
+      selection: "asset",
       asset_id: "",
+      max_assets: "",
       template_task_id: "",
       wait: true,
       timeout_seconds: 14400,
@@ -180,7 +182,11 @@ export function validateAutomationSteps(steps) {
     ids.add(step.step_id);
     if (step.type === "scanner_task_start" && !step.config?.task_id?.trim())
       return `${label}: выберите задачу сканирования.`;
-    if (step.type === "asset_card_build" && !step.config?.asset_id?.trim())
+    if (
+      step.type === "asset_card_build" &&
+      (step.config?.selection || "asset") === "asset" &&
+      !step.config?.asset_id?.trim()
+    )
       return `${label}: укажите актив.`;
     if (step.type === "asset_query") {
       const rules = collectQueryRules(step.config?.query);
@@ -539,15 +545,35 @@ function StepConfigFields({ step, scannerTasks, fieldCatalog, updateConfig }) {
     );
   }
   if (step.type === "asset_card_build") {
+    const selection = config.selection || "asset";
     return (
       <div className="automation-config-grid automation-config-grid--two">
-        <Field label="Актив">
-          <input
-            value={config.asset_id || ""}
-            onChange={(event) => updateConfig("asset_id", event.target.value)}
-            placeholder="Вставьте asset ID"
-          />
+        <Field label="Какие карточки обновить">
+          <select
+            value={selection}
+            onChange={(event) => updateConfig("selection", event.target.value)}
+          >
+            <option value="asset">Одну выбранную карточку</option>
+            <option value="stale">Все устаревшие карточки</option>
+          </select>
         </Field>
+        {selection === "asset" ? (
+          <Field label="Актив">
+            <input
+              value={config.asset_id || ""}
+              onChange={(event) => updateConfig("asset_id", event.target.value)}
+              placeholder="Вставьте asset ID"
+            />
+          </Field>
+        ) : (
+          <NumberField
+            label="Максимум карточек за запуск (необязательно)"
+            value={config.max_assets ?? ""}
+            min={1}
+            placeholder="Без ограничения"
+            onChange={(value) => updateConfig("max_assets", value)}
+          />
+        )}
         <Field label="Задача-шаблон MP VM (необязательно)">
           <input
             list="automation-scanner-tasks"

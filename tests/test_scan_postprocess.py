@@ -446,6 +446,55 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         wait_operation.assert_called_once()
         direct_build.assert_not_called()
 
+    def test_automation_refreshes_all_stale_cards_sequentially(self):
+        coverage = main.CONTAINER.services.coverage
+        page = {
+            "rows": [
+                {"asset_id": "asset-stale-1", "stale": True},
+                {"asset_id": "asset-stale-2", "stale": True},
+            ],
+            "total": 2,
+        }
+        completed: list[str] = []
+
+        def refresh_one(**kwargs):
+            completed.append(kwargs["asset_id"])
+            return {"operation_id": f"operation-{kwargs['asset_id']}"}
+
+        with (
+            patch.object(coverage, "list_assets", return_value=page) as list_assets,
+            patch.object(main, "refresh_one_asset_card_for_automation", side_effect=refresh_one) as refresh,
+        ):
+            result = main.execute_automation_step(
+                "asset_card_build",
+                {"selection": "stale", "wait": True},
+                {"_is_cancel_requested": lambda: False},
+                "automation-run-1",
+                0,
+            )
+
+        self.assertEqual(completed, ["asset-stale-1", "asset-stale-2"])
+        self.assertEqual(result["selected_count"], 2)
+        self.assertEqual(result["completed_count"], 2)
+        self.assertEqual(result["failed_count"], 0)
+        list_assets.assert_called_once_with(q=None, issue="stale", limit=500, offset=0)
+        self.assertIn(":stale:0:asset-stale-1", refresh.call_args_list[0].kwargs["idempotency_key"])
+        self.assertIn(":stale:1:asset-stale-2", refresh.call_args_list[1].kwargs["idempotency_key"])
+
+    def test_stale_automation_completes_cleanly_when_nothing_is_outdated(self):
+        coverage = main.CONTAINER.services.coverage
+        with patch.object(coverage, "list_assets", return_value={"rows": [], "total": 0}):
+            result = main.refresh_stale_asset_cards_for_automation(
+                config={"selection": "stale"},
+                register_child=None,
+                cancel_check=None,
+                run_id="automation-run-1",
+                step_index=0,
+            )
+
+        self.assertEqual(result["selected_count"], 0)
+        self.assertEqual(result["completed_count"], 0)
+
     def test_refresh_task_reuses_scan_settings_and_targets_only_card_ip(self):
         template = {
             "name": "Regular audit",

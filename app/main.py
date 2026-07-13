@@ -5514,35 +5514,127 @@ def execute_automation_step(
         operation_id = (result.get("detail_job") or {}).get("job_id")
         return {**result, "operation_id": operation_id}
     if step_type == "asset_card_build":
+        selection = str(config.get("selection") or "asset").strip()
+        if selection not in {"asset", "stale"}:
+            raise ValueError("asset_card_build selection must be asset or stale.")
+        if selection == "stale":
+            return refresh_stale_asset_cards_for_automation(
+                config=config,
+                register_child=register_child if callable(register_child) else None,
+                cancel_check=cancel_check if callable(cancel_check) else None,
+                run_id=run_id,
+                step_index=step_index,
+            )
         asset_id = str(config.get("asset_id") or "").strip()
         if not asset_id:
-            raise ValueError("asset_card_build requires asset_id.")
-        background = BackgroundTasks()
-        start_options = config.get("start_options") if isinstance(config.get("start_options"), dict) else {}
-        result = refresh_asset_card_by_scan(
-            asset_id,
-            AssetCardRefreshScanRequest(
-                template_task_id=str(config.get("template_task_id") or "").strip() or None,
-                start_options=StartScannerTaskRequest(**start_options),
-            ),
-            background,
+            raise ValueError("asset_card_build requires asset_id when selection=asset.")
+        return refresh_one_asset_card_for_automation(
+            asset_id=asset_id,
+            config=config,
+            register_child=register_child if callable(register_child) else None,
+            cancel_check=cancel_check if callable(cancel_check) else None,
             idempotency_key=idempotency_key,
         )
-        run_background_tasks(background)
-        operation_id = result.get("operation_id") or result.get("postprocess_run_id")
-        if operation_id and callable(register_child):
-            register_child(str(operation_id))
-        if operation_id and bool(config.get("wait", True)):
-            operation = wait_for_automation_operation(
-                str(operation_id),
-                float(config.get("timeout_seconds") or 14400),
-                cancel_check=cancel_check if callable(cancel_check) else None,
-            )
-            return {**result, "operation_id": operation_id, "operation": operation}
-        return {**result, "operation_id": operation_id}
     if step_type == "asset_query":
         return asset_card_query(AssetCardFieldQueryRequest(**config))
     raise ValueError(f"Unsupported automation step: {step_type}")
+
+
+def refresh_one_asset_card_for_automation(
+    *,
+    asset_id: str,
+    config: dict[str, Any],
+    register_child: Callable[[str], Any] | None,
+    cancel_check: Callable[[], bool] | None,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    if cancel_check and cancel_check():
+        raise AutomationStepCancelled("Automation run was cancelled.")
+    background = BackgroundTasks()
+    start_options = config.get("start_options") if isinstance(config.get("start_options"), dict) else {}
+    result = refresh_asset_card_by_scan(
+        asset_id,
+        AssetCardRefreshScanRequest(
+            template_task_id=str(config.get("template_task_id") or "").strip() or None,
+            start_options=StartScannerTaskRequest(**start_options),
+        ),
+        background,
+        idempotency_key=idempotency_key,
+    )
+    run_background_tasks(background)
+    operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+    if operation_id and register_child:
+        register_child(str(operation_id))
+    if operation_id and bool(config.get("wait", True)):
+        operation = wait_for_automation_operation(
+            str(operation_id),
+            float(config.get("timeout_seconds") or 14400),
+            cancel_check=cancel_check,
+        )
+        return {**result, "operation_id": operation_id, "operation": operation}
+    return {**result, "operation_id": operation_id}
+
+
+def refresh_stale_asset_cards_for_automation(
+    *,
+    config: dict[str, Any],
+    register_child: Callable[[str], Any] | None,
+    cancel_check: Callable[[], bool] | None,
+    run_id: str,
+    step_index: int,
+) -> dict[str, Any]:
+    requested_limit = config.get("max_assets")
+    max_assets = int(requested_limit) if requested_limit not in {None, ""} else None
+    if max_assets is not None and max_assets < 1:
+        raise ValueError("max_assets must be greater than zero.")
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    page_size = 500
+    while max_assets is None or len(rows) < max_assets:
+        if cancel_check and cancel_check():
+            raise AutomationStepCancelled("Automation run was cancelled.")
+        limit = page_size if max_assets is None else min(page_size, max_assets - len(rows))
+        page = CONTAINER.services.coverage.list_assets(q=None, issue="stale", limit=limit, offset=offset)
+        page_rows = page.get("rows") if isinstance(page.get("rows"), list) else []
+        rows.extend(item for item in page_rows if item.get("asset_id"))
+        offset += len(page_rows)
+        if len(page_rows) < limit or offset >= int(page.get("total") or 0):
+            break
+
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for index, item in enumerate(rows):
+        asset_id = str(item["asset_id"])
+        try:
+            result = refresh_one_asset_card_for_automation(
+                asset_id=asset_id,
+                config=config,
+                register_child=register_child,
+                cancel_check=cancel_check,
+                idempotency_key=f"automation:{run_id}:{step_index}:stale:{index}:{asset_id}",
+            )
+            results.append({"asset_id": asset_id, "operation_id": result.get("operation_id")})
+        except AutomationStepCancelled:
+            raise
+        except Exception as exc:
+            failures.append({"asset_id": asset_id, "error": str(exc)[:1000]})
+
+    summary = {
+        "selection": "stale",
+        "stale_days": CONTAINER.services.coverage.stale_days,
+        "selected_count": len(rows),
+        "completed_count": len(results),
+        "failed_count": len(failures),
+        "results": results,
+        "failures": failures,
+    }
+    if failures:
+        raise RuntimeError(
+            f"Failed to refresh {len(failures)} of {len(rows)} stale asset card(s): "
+            + "; ".join(f"{item['asset_id']}: {item['error']}" for item in failures[:5])
+        )
+    return summary
 
 
 AUTOMATION_TEMPLATES = [
