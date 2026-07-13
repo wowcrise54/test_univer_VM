@@ -8,6 +8,8 @@ import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
 import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
+import { RemediationPage } from "../pages/RemediationPage.jsx";
+import { CoveragePage } from "../pages/CoveragePage.jsx";
 import {
   AlertStack,
   Sidebar,
@@ -56,7 +58,7 @@ function AppShell({ navigate, path, route }) {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage routeId={route?.id} {...appData} />
+        <ActivePage routeId={route?.id} onNavigate={navigate} {...appData} />
       </main>
     </div>
   );
@@ -122,6 +124,12 @@ function ActivePage({ routeId, ...props }) {
   }
   if (routeId === "vulnerabilities") {
     return <VulnerabilitiesPage />;
+  }
+  if (routeId === "remediation") {
+    return <RemediationPage showAlert={props.showAlert} onNavigate={props.onNavigate} />;
+  }
+  if (routeId === "coverage") {
+    return <CoveragePage showAlert={props.showAlert} onNavigate={props.onNavigate} />;
   }
   if (routeId === "export") {
     return (

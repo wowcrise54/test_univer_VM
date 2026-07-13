@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     automation_scheduler_poll_seconds: int = 30
     automation_webhook_url: str = ""
     automation_webhook_secret: str = Field(default="", repr=False)
+    coverage_stale_days: int = 7
 
     @field_validator(
         "timeout",
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
         "scan_asset_removal_timeout_seconds",
         "scan_asset_removal_poll_seconds",
         "automation_scheduler_poll_seconds",
+        "coverage_stale_days",
     )
     @classmethod
     def positive_integer(cls, value: int) -> int:

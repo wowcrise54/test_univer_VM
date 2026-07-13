@@ -38,12 +38,14 @@ class AutomationService:
         settings: Settings,
         step_handler: StepHandler,
         service_account_ready: Callable[[], bool],
+        housekeeping: Callable[[], None] | None = None,
     ) -> None:
         self.repository = repository
         self.runner = runner
         self.settings = settings
         self.step_handler = step_handler
         self.service_account_ready = service_account_ready
+        self.housekeeping = housekeeping
         self._scheduler_stop = threading.Event()
         self._scheduler_future: Future[Any] | None = None
 
@@ -405,6 +407,8 @@ class AutomationService:
             try:
                 self.scheduler_tick()
                 self.webhook_tick()
+                if self.housekeeping:
+                    self.housekeeping()
             except Exception:
                 continue
 

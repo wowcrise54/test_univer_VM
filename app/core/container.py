@@ -27,7 +27,11 @@ class AppContainer:
         self.settings = settings
         self.session = RuntimeSession()
         self.repositories = RepositoryBundle()
-        self.services = ServiceBundle(self.repositories)
+        self.services = ServiceBundle(
+            self.repositories,
+            coverage_stale_days=settings.coverage_stale_days,
+            automation_webhook_enabled=bool(settings.automation_webhook_url),
+        )
         self.operation_runner = OperationRunner(
             {
                 "scan-postprocess": settings.scan_postprocess_workers,

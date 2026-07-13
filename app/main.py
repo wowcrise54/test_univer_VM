@@ -407,6 +407,9 @@ def get_automation_service() -> AutomationService:
             SETTINGS,
             execute_automation_step,
             automation_service_account_ready,
+            lambda: CONTAINER.services.remediation.ensure_daily_digest(
+                webhook_enabled=bool(SETTINGS.automation_webhook_url)
+            ),
         )
     return AUTOMATION_SERVICE
 
@@ -678,6 +681,10 @@ def startup() -> None:
         db.release_scan_postprocess_leases()
         db.sync_operations_from_sources()
         ensure_vulnerability_snapshot_baseline()
+        CONTAINER.services.remediation.reconcile_all()
+        CONTAINER.services.remediation.ensure_daily_digest(
+            webhook_enabled=bool(SETTINGS.automation_webhook_url)
+        )
         DATABASE_STARTUP_ERROR = None
     except psycopg.Error as exc:
         DATABASE_STARTUP_ERROR = str(exc)
@@ -1402,6 +1409,7 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
 
     saved_card = db.upsert_asset_card(card) if payload.save_to_db else None
     if saved_card is not None:
+        CONTAINER.services.remediation.reconcile_asset(asset_id)
         capture_vulnerability_snapshot(
             "asset_card_build",
             current_trace_id() or str(uuid.uuid4()),
@@ -1863,6 +1871,7 @@ def _run_asset_card_build_job(
         saved = db.upsert_asset_card(card)
         if not saved:
             raise RuntimeError("Asset card could not be saved.")
+        CONTAINER.services.remediation.reconcile_asset(str(request["asset_id"]))
         set_stage("completed", card=card)
         db.finish_asset_card_build_job(
             job_id,
@@ -2099,6 +2108,7 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
     saved_card = db.upsert_asset_card(card)
     if not saved_card:
         raise HTTPException(status_code=500, detail="Updated asset card could not be saved.")
+    CONTAINER.services.remediation.reconcile_asset(asset_id)
     capture_vulnerability_snapshot(
         "asset_card_update",
         current_trace_id() or str(uuid.uuid4()),

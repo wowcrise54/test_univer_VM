@@ -1,0 +1,156 @@
+.remediation-page,
+.coverage-page {
+  display: grid;
+  gap: 20px;
+}
+
+.remediation-metrics,
+.coverage-page .metric-grid {
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+}
+
+.metric-card--danger {
+  border-color: color-mix(in srgb, var(--danger, #c63d4f) 45%, transparent);
+}
+
+.metric-card--danger strong,
+.danger-text {
+  color: var(--danger, #c63d4f);
+}
+
+.remediation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.remediation-toolbar input:not([type="checkbox"]),
+.remediation-toolbar select {
+  min-width: 180px;
+}
+
+.remediation-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.remediation-page td small,
+.coverage-page td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.row--danger {
+  background: color-mix(in srgb, var(--danger, #c63d4f) 7%, transparent);
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  color: var(--accent, #2864dc);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.remediation-detail {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-raised, #fff);
+}
+
+.remediation-detail header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.remediation-detail .form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.remediation-detail label,
+.policy-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.remediation-detail .span-2 {
+  grid-column: 1 / -1;
+}
+
+.remediation-detail textarea {
+  min-height: 78px;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.audit-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-list li,
+.settings-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.settings-card summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.issue-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.issue-list span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--danger, #c63d4f);
+  background: color-mix(in srgb, var(--danger, #c63d4f) 10%, transparent);
+}
+
+.issue-list .issue-ok {
+  color: var(--success, #16845b);
+  background: color-mix(in srgb, var(--success, #16845b) 10%, transparent);
+}
+
+@media (max-width: 1100px) {
+  .remediation-metrics,
+  .coverage-page .metric-grid,
+  .policy-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .remediation-metrics,
+  .coverage-page .metric-grid,
+  .policy-grid,
+  .remediation-detail .form-grid { grid-template-columns: 1fr; }
+  .remediation-detail .span-2 { grid-column: auto; }
+}

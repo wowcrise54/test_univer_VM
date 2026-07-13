@@ -30,6 +30,11 @@ EXPECTED_API_PATHS = {
     "/api/automations/schedules",
     "/api/automations/runs",
     "/api/notifications",
+    "/api/remediation/cases",
+    "/api/remediation/summary",
+    "/api/remediation/policy",
+    "/api/coverage/summary",
+    "/api/coverage/assets",
 }
 
 

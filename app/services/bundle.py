@@ -4,6 +4,7 @@ import builtins
 from typing import Any
 
 from ..repositories import RepositoryBundle
+from .remediation import CoverageService, RemediationService
 from .vulnerabilities import VulnerabilityAnalyticsService
 
 
@@ -71,7 +72,10 @@ class AssetQueryService:
 
 
 class ServiceBundle:
-    def __init__(self, repositories: RepositoryBundle) -> None:
+    def __init__(
+        self, repositories: RepositoryBundle, *, coverage_stale_days: int = 7,
+        automation_webhook_enabled: bool = False,
+    ) -> None:
         self.operations = OperationsService(repositories)
         self.assets = AssetsService(repositories)
         self.tasks = TasksService(repositories)
@@ -79,3 +83,8 @@ class ServiceBundle:
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)
         self.vulnerabilities = VulnerabilityAnalyticsService(repositories.vulnerabilities)
+        self.remediation = RemediationService(
+            repositories.remediation, stale_days=coverage_stale_days,
+            webhook_enabled=automation_webhook_enabled,
+        )
+        self.coverage = CoverageService(repositories.coverage, stale_days=coverage_stale_days)

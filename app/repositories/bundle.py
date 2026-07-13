@@ -4,6 +4,7 @@ import builtins
 from typing import Any
 
 from .. import db
+from .remediation import CoverageRepository, RemediationRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 
 
@@ -78,3 +79,5 @@ class RepositoryBundle:
         self.imports = ImportsRepository()
         self.asset_query = AssetQueryRepository()
         self.vulnerabilities = VulnerabilityAnalyticsRepository()
+        self.remediation = RemediationRepository()
+        self.coverage = CoverageRepository()

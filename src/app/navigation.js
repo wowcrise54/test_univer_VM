@@ -9,7 +9,7 @@ export const navigationGroups = [
 export const workflowSteps = [
   { id: "connect", label: "Подключение", hint: "Доступ к MP VM", path: "/connection", routes: ["connection"] },
   { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["tasks", "operations"] },
-  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "assets", "passports", "asset-query"] },
+  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/vulnerabilities", routes: ["vulnerabilities", "remediation", "coverage", "asset-cards", "assets", "passports", "asset-query"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
 ];
 
@@ -62,6 +62,14 @@ export const routes = [
     title: "Обзор уязвимостей",
     description:
       "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
+  },
+  {
+    id: "remediation", group: "work", icon: "✓", path: "/remediation", label: "Устранение",
+    title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
+  },
+  {
+    id: "coverage", group: "data", icon: "◉", path: "/coverage", label: "Покрытие",
+    title: "Покрытие сканированием", description: "Свежесть и полнота карточек активов и результаты обновлений.",
   },
   {
     id: "asset-cards",

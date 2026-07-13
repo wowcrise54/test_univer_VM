@@ -7,6 +7,8 @@ const ROUTES = [
   "/operations",
   "/export",
   "/vulnerabilities",
+  "/remediation",
+  "/coverage",
   "/asset-cards",
   "/automations",
   "/asset-query",
@@ -201,6 +203,11 @@ function defaultApiResponse(path) {
   }
   if (path === "/api/vulnerabilities") return { rows: [], total: 0 };
   if (path === "/api/vulnerabilities/hosts") return { rows: [], total: 0 };
+  if (path === "/api/remediation/cases") return { rows: [], total: 0 };
+  if (path === "/api/remediation/summary") return { open: 0, overdue: 0, near_due: 0, risk_accepted: 0, resolved_30d: 0 };
+  if (path === "/api/remediation/policy") return { critical_days: 7, high_days: 30, medium_days: 90, low_days: 180, near_due_days: 7 };
+  if (path === "/api/coverage/summary") return { total_assets: 0, healthy_assets: 0, coverage_percent: 100, missing_card: 0, stale: 0, truncated: 0, last_refresh_failed: 0, stale_days: 7 };
+  if (path === "/api/coverage/assets") return { rows: [], total: 0, stale_days: 7 };
   if (path === "/api/notifications") return { rows: [], unread: 0 };
   if (path === "/api/asset-cards/build-jobs/active") return { job: null };
   if (path === "/api/vulnerability-passports/detail-jobs/active") {
@@ -250,7 +257,7 @@ for (const viewport of [
   test.describe(`${viewport.name} route smoke`, () => {
     test.use({ viewport });
 
-    test("renders all ten application routes", async ({ page }) => {
+    test("renders all twelve application routes", async ({ page }) => {
       const pageErrors = collectPageErrors(page);
       await installApiMock(page);
       await page.goto(ROUTES[0]);
@@ -268,6 +275,52 @@ for (const viewport of [
     });
   });
 }
+
+test("remediation lifecycle reaches scan-confirmed resolution", async ({ page }) => {
+  let caseStatus = "open";
+  let assignee = null;
+  const remediationCase = () => ({
+    case_id: "case-e2e-1", version: caseStatus === "open" ? 1 : 2,
+    status: caseStatus, severity: "critical", cve: "CVE-2026-9001",
+    title: "E2E critical vulnerability", asset_id: "asset-e2e-1",
+    display_name: "server-e2e", assignee, overdue: caseStatus !== "resolved",
+    due_at: "2026-07-01T08:00:00Z", events: [],
+  });
+  await installApiMock(page, {
+    "/api/remediation/cases": (route) => route.fulfill({ json: { rows: [remediationCase()], total: 1 } }),
+    "/api/remediation/summary": (route) => route.fulfill({ json: { open: caseStatus === "resolved" ? 0 : 1, overdue: caseStatus === "resolved" ? 0 : 1, near_due: 0, risk_accepted: 0, resolved_30d: caseStatus === "resolved" ? 1 : 0 } }),
+    "/api/remediation/policy": (route) => route.fulfill({ json: { critical_days: 7, high_days: 30, medium_days: 90, low_days: 180, near_due_days: 7 } }),
+    "/api/remediation/cases/case-e2e-1": (route) => route.fulfill({ json: remediationCase() }),
+    "PATCH /api/remediation/cases/case-e2e-1": async (route) => {
+      const payload = route.request().postDataJSON();
+      expect(payload.expected_version).toBe(1);
+      caseStatus = payload.status;
+      assignee = payload.assignee;
+      await route.fulfill({ json: remediationCase() });
+    },
+    "/api/coverage/summary": (route) => route.fulfill({ json: { total_assets: 1, healthy_assets: 0, coverage_percent: 0, missing_card: 0, stale: 1, truncated: 0, last_refresh_failed: 0, stale_days: 7 } }),
+    "/api/coverage/assets": (route) => route.fulfill({ json: { rows: [{ asset_id: "asset-e2e-1", display_name: "server-e2e", stale: true, missing_card: false, truncated: false, last_refresh_failed: false }], total: 1 } }),
+    "POST /api/asset-cards/build-jobs": async (route) => {
+      caseStatus = "resolved";
+      await route.fulfill({ status: 202, json: { job: { job_id: "job-e2e-1", status: "queued" } } });
+    },
+  });
+
+  await page.goto("/remediation");
+  await expect(page.getByText("CVE-2026-9001")).toBeVisible();
+  await expect(page.getByText("Просрочено").last()).toBeVisible();
+  await page.getByRole("button", { name: "CVE-2026-9001" }).click();
+  await page.getByLabel("Ответственный").fill("Иван Петров");
+  await page.getByLabel("Статус").last().selectOption("in_progress");
+  await page.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(page.getByText("Иван Петров").first()).toBeVisible();
+
+  await page.locator('.nav a[href="/coverage"]').click();
+  await page.getByRole("button", { name: "Обновить карточку" }).click();
+  await expectRoute(page, "/operations");
+  await page.locator('.nav a[href="/remediation"]').click();
+  await expect(page.getByRole("cell", { name: "Устранена" })).toBeVisible();
+});
 
 test.describe("mobile shell", () => {
   test.use({ viewport: { width: 360, height: 800 } });
