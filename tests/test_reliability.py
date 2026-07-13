@@ -121,6 +121,46 @@ class OperationsApiTests(unittest.TestCase):
         self.assertEqual(response.json(), expected)
         summary.assert_called_once_with()
 
+    def test_operations_repository_refreshes_source_jobs_before_reads(self):
+        repository = main.CONTAINER.repositories.operations
+        with (
+            patch.object(main.db, "list_operations", return_value={"rows": [], "total": 0}) as list_operations,
+            patch.object(main.db, "get_operations_summary", return_value={"total": 0}) as summary,
+            patch.object(main.db, "get_operation", return_value=None) as get_operation,
+        ):
+            repository.list(limit=25)
+            repository.summary()
+            repository.get("operation-1")
+
+        list_operations.assert_called_once_with(limit=25, sync_sources=True)
+        summary.assert_called_once_with(sync_sources=True)
+        get_operation.assert_called_once_with("operation-1", sync_sources=True)
+
+    def test_cancel_refreshes_operation_after_source_job_changes(self):
+        queued = {
+            "operation_id": "operation-1",
+            "source_id": "job-1",
+            "kind": "asset_card_build",
+            "status": "queued",
+            "can_cancel": True,
+        }
+        cancelling = {**queued, "status": "cancelling"}
+        with (
+            patch.object(main.db, "get_operation", side_effect=[queued, cancelling]) as get_operation,
+            patch.object(main, "cancel_asset_card_build_job") as cancel,
+        ):
+            result = main.cancel_operation("operation-1")
+
+        self.assertEqual(result, cancelling)
+        cancel.assert_called_once_with("job-1")
+        self.assertEqual(
+            get_operation.call_args_list,
+            [
+                unittest.mock.call("operation-1", sync_sources=True),
+                unittest.mock.call("operation-1", sync_sources=True),
+            ],
+        )
+
     def test_cancel_of_terminal_operation_is_idempotent(self):
         operation = {
             "operation_id": "operation-1",
@@ -129,9 +169,10 @@ class OperationsApiTests(unittest.TestCase):
             "status": "completed",
             "can_cancel": False,
         }
-        with patch.object(main.db, "get_operation", return_value=operation):
+        with patch.object(main.db, "get_operation", return_value=operation) as get_operation:
             result = main.cancel_operation("operation-1")
         self.assertIs(result, operation)
+        get_operation.assert_called_once_with("operation-1", sync_sources=True)
 
     def test_retry_replays_existing_idempotency_key(self):
         existing = {"operation_id": "operation-new", "kind": "asset_card_build"}

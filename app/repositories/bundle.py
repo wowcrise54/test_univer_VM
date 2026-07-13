@@ -10,13 +10,13 @@ from .vulnerabilities import VulnerabilityAnalyticsRepository
 
 class OperationsRepository:
     def list(self, **filters: Any) -> dict[str, Any]:
-        return db.list_operations(**filters)
+        return db.list_operations(**filters, sync_sources=True)
 
     def summary(self) -> dict[str, Any]:
-        return db.get_operations_summary()
+        return db.get_operations_summary(sync_sources=True)
 
     def get(self, operation_id: str) -> dict[str, Any] | None:
-        return db.get_operation(operation_id)
+        return db.get_operation(operation_id, sync_sources=True)
 
     def saved_views(self, route: str) -> builtins.list[dict[str, Any]]:
         return db.list_saved_views(route)

@@ -901,8 +901,10 @@ def list_operations(
     return {"total": int(total), "rows": [decode_operation(dict(row)) for row in rows], "limit": limit, "offset": offset}
 
 
-def get_operations_summary() -> dict[str, Any]:
+def get_operations_summary(*, sync_sources: bool = False) -> dict[str, Any]:
     """Return unfiltered operation counters for navigation and overview widgets."""
+    if sync_sources:
+        sync_operations_from_sources()
     with connect() as conn:
         totals = conn.execute(
             """

@@ -846,7 +846,9 @@ def operation_detail(operation_id: str) -> dict[str, Any]:
 
 @operations_router.post("/api/operations/{operation_id}/cancel")
 def cancel_operation(operation_id: str) -> dict[str, Any]:
-    operation = db.get_operation(operation_id)
+    # The normalized registry is a read model. Refresh it before deciding whether
+    # the source job is still cancellable and again after requesting cancellation.
+    operation = db.get_operation(operation_id, sync_sources=True)
     if not operation:
         raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
     if not operation["can_cancel"]:
@@ -857,7 +859,7 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
         cancel_vulnerability_passport_detail_job(operation["source_id"])
     elif operation["kind"] == "automation_run":
         AUTOMATION_REPOSITORY.request_cancel(operation["source_id"])
-    return db.get_operation(operation_id) or operation
+    return db.get_operation(operation_id, sync_sources=True) or operation
 
 
 @operations_router.post("/api/operations/{operation_id}/retry", status_code=202)
