@@ -21,6 +21,7 @@ import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
 import { AuthGate } from "../features/auth/AuthGate.jsx";
 import { UsersPage } from "../features/auth/UsersPage.jsx";
+import { VmManagementPage } from "../pages/VmManagementPage.jsx";
 
 export function App() {
   return <AuthGate>{(auth) => <AuthenticatedApp auth={auth} />}</AuthGate>;
@@ -72,6 +73,9 @@ function AppShell({ navigate, path, route, auth }) {
 }
 
 function ActivePage({ routeId, ...props }) {
+  if (routeId === "vm") {
+    return <VmManagementPage session={props.session} currentUser={props.currentUser} showAlert={props.showAlert} onNavigate={props.onNavigate} />;
+  }
   if (routeId === "users") {
     return <UsersPage currentUser={props.currentUser} reauthenticate={props.reauthenticate} showAlert={props.showAlert} />;
   }
@@ -88,6 +92,7 @@ function ActivePage({ routeId, ...props }) {
         busy={props.busy}
         runBusy={props.runBusy}
         showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
       />
     );
   }

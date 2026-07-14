@@ -53,7 +53,7 @@ class RiskRepository:
                 if not conn.execute("SELECT 1 FROM asset_cards WHERE asset_id=%s", (asset_id,)).fetchone():
                     continue
                 current = conn.execute("SELECT * FROM asset_contexts WHERE asset_id=%s", (asset_id,)).fetchone()
-                merged = {
+                merged: dict[str, Any] = {
                     "criticality": "medium",
                     "environment": "production",
                     "exposure": "internal",
@@ -141,10 +141,10 @@ class RiskRepository:
         limit = min(max(int(filters.get("limit", 50)), 1), 500)
         offset = max(int(filters.get("offset", 0)), 0)
         with db.connect() as conn:
-            total = conn.execute(
+            total_row = conn.execute(
                 f"SELECT COUNT(*) count FROM remediation_cases c LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id WHERE {where}",
                 params,
-            ).fetchone()["count"]
+            ).fetchone()
             rows = conn.execute(
                 f"""SELECT c.*,card.display_name,card.ip_address,card.fqdn,
                 COALESCE(x.criticality,'medium') criticality,COALESCE(x.environment,'production') environment,
@@ -183,7 +183,7 @@ class RiskRepository:
             result.append(row)
         return {
             "rows": result,
-            "total": int(total),
+            "total": int(total_row["count"] if total_row else 0),
             "limit": limit,
             "offset": offset,
             "risk_model_version": MODEL_VERSION,
@@ -225,6 +225,7 @@ class RiskRepository:
                     FROM remediation_campaign_cases cc WHERE cc.campaign_id=%s AND cc.case_id=c.case_id""",
                     (values.get("assignee"), values.get("due_at"), values.get("due_at"), campaign_id),
                 )
+        assert row is not None
         return self.get_campaign(campaign_id) or dict(row)
 
     def list_campaigns(self) -> dict[str, Any]:
@@ -245,10 +246,27 @@ class RiskRepository:
                 if row
                 else []
             )
+            events = (
+                conn.execute(
+                    "SELECT * FROM remediation_campaign_events WHERE campaign_id=%s ORDER BY created_at DESC,event_id DESC",
+                    (campaign_id,),
+                ).fetchall()
+                if row else []
+            )
         if not row:
             return None
         result = self._campaign(dict(row))
-        result["cases"] = [dict(v) for v in cases]
+        result["cases"] = [
+            {**dict(value), **{key: value[key].isoformat() for key in (
+                "due_at", "first_seen_at", "last_seen_at", "resolved_at", "created_at", "updated_at"
+            ) if hasattr(value.get(key), "isoformat")}}
+            for value in cases
+        ]
+        result["events"] = [
+            {**dict(value), "created_at": value["created_at"].isoformat() if hasattr(value.get("created_at"), "isoformat") else value.get("created_at"),
+             "changes": value.get("changes_json") or {}}
+            for value in events
+        ]
         return result
 
     def update_campaign(self, campaign_id: str, values: dict[str, Any], actor: str | None) -> dict[str, Any] | None:

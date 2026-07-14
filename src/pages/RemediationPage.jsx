@@ -6,7 +6,7 @@ const statusLabels = {
   false_positive: "Ложное срабатывание", resolved: "Устранена",
 };
 
-export function RemediationPage({ showAlert, onNavigate }) {
+export function RemediationPage({ showAlert }) {
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState({});
   const [policy, setPolicy] = useState(null);
@@ -36,6 +36,13 @@ export function RemediationPage({ showAlert, onNavigate }) {
     try { setSelected(await api(`/api/remediation/cases/${caseId}`)); }
     catch (nextError) { showAlert(nextError.operatorMessage || nextError.message, "error"); }
   };
+
+  useEffect(() => {
+    const caseId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("case");
+    if (!caseId) return;
+    api(`/api/remediation/cases/${encodeURIComponent(caseId)}`).then(setSelected).catch((nextError) =>
+      showAlert(nextError.operatorMessage || nextError.message, "error"));
+  }, [showAlert]);
 
   const updateCase = async (values) => {
     try {
@@ -83,7 +90,7 @@ export function RemediationPage({ showAlert, onNavigate }) {
         <td>{item.display_name || item.asset_id}<small>{item.ip_address || item.fqdn}</small></td><td><span className={`severity severity--${item.severity}`}>{item.severity}</span></td>
         <td>{statusLabels[item.status]}</td><td>{item.assignee || "—"}</td><td>{formatDate(item.due_at)}{item.overdue ? <small className="danger-text">Просрочено</small> : null}</td>
       </tr>) : <tr><td colSpan="7" className="empty-cell">Кейсы не найдены.</td></tr>}</tbody></table></div>
-    {selected ? <CaseEditor item={selected} onClose={() => setSelected(null)} onSave={updateCase} onNavigate={onNavigate} /> : null}
+    {selected ? <CaseEditor item={selected} onClose={() => setSelected(null)} onSave={updateCase} /> : null}
     {policy ? <PolicyEditor policy={policy} setPolicy={setPolicy} onSaved={load} showAlert={showAlert} /> : null}
   </section>;
 }
@@ -158,16 +165,16 @@ function RiskWorkspace({ showAlert, onRefresh }) {
 
 function Metric({ label, value, danger }) { return <article className={`metric-card${danger ? " metric-card--danger" : ""}`}><span>{label}</span><strong>{value ?? 0}</strong></article>; }
 
-function CaseEditor({ item, onClose, onSave, onNavigate }) {
-  const [draft, setDraft] = useState({ status: item.status, assignee: item.assignee || "", due_at: toInputDate(item.due_at), risk_reason: item.risk_reason || "", risk_expires_at: toInputDate(item.risk_expires_at), comment: "" });
+function CaseEditor({ item, onClose, onSave }) {
+  const [draft, setDraft] = useState({ status: item.status, assignee: item.assignee || "", due_at: toInputDate(item.due_at), exception_reason: item.exception_reason || item.risk_reason || "", exception_expires_at: toInputDate(item.exception_expires_at || item.risk_expires_at), comment: "" });
   return <div className="detail-card remediation-detail"><header><div><h3>{item.cve || item.title}</h3><p>{item.display_name || item.asset_id}</p></div><button onClick={onClose}>Закрыть</button></header>
     <div className="form-grid"><label>Статус<select value={draft.status} onChange={(e) => setDraft({...draft,status:e.target.value})}>{Object.entries(statusLabels).filter(([value]) => value !== "resolved").map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label>Ответственный<input value={draft.assignee} onChange={(e) => setDraft({...draft,assignee:e.target.value})} /></label>
       <label>Срок<input type="datetime-local" value={draft.due_at} onChange={(e) => setDraft({...draft,due_at:e.target.value})} /></label>
-      {draft.status === "risk_accepted" ? <><label>Риск принят до<input required type="datetime-local" value={draft.risk_expires_at} onChange={(e) => setDraft({...draft,risk_expires_at:e.target.value})} /></label><label className="span-2">Обоснование<textarea required value={draft.risk_reason} onChange={(e) => setDraft({...draft,risk_reason:e.target.value})} /></label></> : null}
+      {["risk_accepted", "false_positive"].includes(draft.status) ? <><label>Исключение действует до<input required type="datetime-local" value={draft.exception_expires_at} onChange={(e) => setDraft({...draft,exception_expires_at:e.target.value})} /></label><label className="span-2">Обоснование исключения<textarea required value={draft.exception_reason} onChange={(e) => setDraft({...draft,exception_reason:e.target.value})} /></label></> : null}
       <label className="span-2">Комментарий<textarea value={draft.comment} onChange={(e) => setDraft({...draft,comment:e.target.value})} /></label></div>
     <div className="action-row"><button className="button button--primary" onClick={() => onSave(Object.fromEntries(Object.entries(draft).map(([key,value]) => [key,value || null])))}>Сохранить</button>
-      <button onClick={() => onNavigate("/asset-cards")}>Карточка актива</button>{item.passport_internal_id ? <button onClick={() => onNavigate("/passports")}>Паспорт</button> : null}</div>
+      <a className="button secondary" href={`/asset-cards?asset=${encodeURIComponent(item.asset_id)}`}>Карточка актива</a>{item.passport_internal_id ? <a className="button secondary" href={`/passports?passport=${encodeURIComponent(item.passport_internal_id)}`}>Паспорт</a> : null}{item.verification_workflow_id ? <a className="button secondary" href={`/vm?workflow=${encodeURIComponent(item.verification_workflow_id)}`}>Проверка</a> : null}</div>
     <h4>История</h4><ul className="audit-list">{(item.events || []).map((event) => <li key={event.event_id}><strong>{event.event_type}</strong> · {formatDate(event.created_at)}{event.comment ? <p>{event.comment}</p> : null}</li>)}</ul>
   </div>;
 }

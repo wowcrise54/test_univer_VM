@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import builtins
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..repositories import RepositoryBundle
 from .remediation import CoverageService, RemediationService
 from .risk import RiskService
+from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
+
+if TYPE_CHECKING:
+    from ..core.runtime import OperationRunner
 
 
 class OperationsService:
@@ -77,6 +81,7 @@ class ServiceBundle:
         self,
         repositories: RepositoryBundle,
         *,
+        operation_runner: OperationRunner,
         coverage_stale_days: int = 7,
         automation_webhook_enabled: bool = False,
     ) -> None:
@@ -94,3 +99,7 @@ class ServiceBundle:
         )
         self.coverage = CoverageService(repositories.coverage, stale_days=coverage_stale_days)
         self.risk = RiskService(repositories.risk)
+        self.vm_workflows = VmWorkflowService(
+            repositories.vm_workflows, operation_runner, self.remediation,
+            coverage=self.coverage, risk=self.risk,
+        )

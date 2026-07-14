@@ -161,10 +161,11 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
 }
 
 const routeNextActions = {
+  vm: { label: "Запустить сканирование", path: "/tasks" },
   connection: {
-    connectedLabel: "Перейти к задачам",
+    connectedLabel: "Открыть VM Management",
     label: "Настроить подключение",
-    path: "/tasks",
+    path: "/vm",
   },
   tasks: { label: "Открыть операции", path: "/operations" },
   operations: { label: "Смотреть результаты", path: "/vulnerabilities" },

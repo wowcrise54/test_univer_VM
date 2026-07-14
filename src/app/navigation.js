@@ -1,23 +1,32 @@
 export const defaultRoutePath = "/connection";
 
 export const navigationGroups = [
-  { id: "work", label: "Рабочий процесс" },
-  { id: "data", label: "Данные и анализ" },
-  { id: "manage", label: "Управление" },
+  { id: "overview", label: "Обзор" },
+  { id: "scan", label: "Сканирования" },
+  { id: "findings", label: "Находки" },
+  { id: "remediation", label: "Устранение" },
+  { id: "report", label: "Отчётность" },
+  { id: "admin", label: "Администрирование" },
 ];
 
 export const workflowSteps = [
-  { id: "connect", label: "Подключение", hint: "Доступ к MP VM", path: "/connection", routes: ["connection"] },
-  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["tasks", "operations"] },
-  { id: "review", label: "Результаты", hint: "Карточки и уязвимости", path: "/vulnerabilities", routes: ["vulnerabilities", "remediation", "coverage", "asset-cards", "assets", "passports", "asset-query"] },
+  { id: "overview", label: "Обзор", hint: "VM-контур", path: "/vm", routes: ["vm"] },
+  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "operations"] },
+  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "coverage", "asset-cards", "assets", "passports", "asset-query"] },
+  { id: "fix", label: "Устранение", hint: "SLA и проверка", path: "/remediation", routes: ["remediation"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
 ];
 
 export const routes = [
   {
+    id: "vm", requiredPermission: "operations.read", group: "overview", icon: "◆", path: "/vm",
+    label: "VM Management", title: "VM Management",
+    description: "Единый цикл сканирования, приоритизации, устранения и подтверждения результата.",
+  },
+  {
     id: "users",
     requiredAnyPermission: ["security.users.read", "security.roles.read", "security.audit.read"],
-    group: "manage",
+    group: "admin",
     icon: "◎",
     path: "/users",
     label: "Пользователи",
@@ -27,7 +36,7 @@ export const routes = [
   {
     id: "connection",
     requiredPermission: "connection.read",
-    group: "work",
+    group: "scan",
     icon: "⌁",
     path: "/connection",
     label: "Подключение",
@@ -38,7 +47,7 @@ export const routes = [
   {
     id: "tasks",
     requiredPermission: "tasks.read",
-    group: "work",
+    group: "scan",
     icon: "◎",
     path: "/tasks",
     label: "Задачи",
@@ -48,7 +57,7 @@ export const routes = [
   {
     id: "operations",
     requiredPermission: "operations.read",
-    group: "work",
+    group: "scan",
     icon: "◔",
     path: "/operations",
     label: "Операции",
@@ -59,7 +68,7 @@ export const routes = [
   {
     id: "export",
     requiredPermission: "imports_exports.read",
-    group: "manage",
+    group: "report",
     icon: "⇩",
     path: "/export",
     label: "PDQL экспорт",
@@ -70,7 +79,7 @@ export const routes = [
   {
     id: "vulnerabilities",
     requiredPermission: "assets.read",
-    group: "data",
+    group: "findings",
     icon: "◈",
     path: "/vulnerabilities",
     label: "Уязвимости",
@@ -79,17 +88,17 @@ export const routes = [
       "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
   },
   {
-    id: "remediation", requiredPermission: "remediation.read", group: "work", icon: "✓", path: "/remediation", label: "Устранение",
+    id: "remediation", requiredPermission: "remediation.read", group: "remediation", icon: "✓", path: "/remediation", label: "Устранение",
     title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
   },
   {
-    id: "coverage", requiredPermission: "assets.read", group: "data", icon: "◉", path: "/coverage", label: "Покрытие",
+    id: "coverage", requiredPermission: "assets.read", group: "findings", icon: "◉", path: "/coverage", label: "Покрытие",
     title: "Покрытие сканированием", description: "Свежесть и полнота карточек активов и результаты обновлений.",
   },
   {
     id: "asset-cards",
     requiredPermission: "asset_cards.read",
-    group: "data",
+    group: "findings",
     icon: "▦",
     path: "/asset-cards",
     label: "Карточки активов",
@@ -100,7 +109,7 @@ export const routes = [
   {
     id: "automations",
     requiredPermission: "automations.read",
-    group: "manage",
+    group: "report",
     icon: "⎇",
     path: "/automations",
     label: "Автоматизация",
@@ -111,7 +120,7 @@ export const routes = [
   {
     id: "asset-query",
     requiredPermission: "asset_cards.read",
-    group: "data",
+    group: "findings",
     icon: "⌕",
     path: "/asset-query",
     label: "Выборки активов",
@@ -122,7 +131,7 @@ export const routes = [
   {
     id: "passports",
     requiredPermission: "passports.read",
-    group: "data",
+    group: "findings",
     icon: "◇",
     path: "/passports",
     label: "Паспорта",
@@ -133,7 +142,7 @@ export const routes = [
   {
     id: "assets",
     requiredPermission: "assets.read",
-    group: "data",
+    group: "findings",
     icon: "◫",
     path: "/assets",
     label: "Активы",

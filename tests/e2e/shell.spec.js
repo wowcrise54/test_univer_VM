@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 const API_ROUTE = /^https?:\/\/[^/]+\/api(?:\/|$)/;
 const ROUTES = [
   "/connection",
+  "/vm",
   "/tasks",
   "/operations",
   "/export",
@@ -139,6 +140,17 @@ async function installApiMock(page, overrides = {}) {
 }
 
 function defaultApiResponse(path) {
+  if (path === "/api/auth/me") {
+    return { user: { id: 1, username: "e2e", display_name: "E2E Operator", role: "admin", permissions: [
+      "system.read", "connection.read", "connection.manage", "tasks.read", "tasks.manage", "tasks.execute",
+      "operations.read", "operations.cancel", "operations.retry", "assets.read", "asset_cards.read", "asset_cards.build",
+      "asset_cards.manage", "passports.read", "passports.manage", "imports_exports.read", "imports_exports.manage",
+      "remediation.read", "remediation.manage", "remediation.policy", "risk.read", "risk.manage", "automations.read",
+      "automations.manage", "automations.execute", "notifications.read", "notifications.manage", "saved_views.read",
+      "saved_views.manage", "diagnostics.write", "security.users.read", "security.roles.read", "security.audit.read",
+    ] } };
+  }
+  if (path === "/api/auth/bootstrap-status") return { configured: true };
   if (path === "/api/session") {
     return {
       connected: true,
@@ -179,6 +191,9 @@ function defaultApiResponse(path) {
     };
   }
   if (path === "/api/operations") return { rows: [], total: 0 };
+  if (path === "/api/vm/overview") return { active_workflows: 0, active_operations: 0, open_cases: 0, overdue_cases: 0, awaiting_verification: 0, asset_count: 0, attention: [], recent_workflows: [] };
+  if (path === "/api/vm/workflows") return { rows: [], total: 0 };
+  if (path === "/api/remediation/campaigns") return { rows: [], total: 0 };
   if (path === "/api/scanner-tasks") return [];
   if (path === "/api/assets/summary") {
     return { assets: 0, software: 0, findings: 0, cve_rows: 0 };
@@ -257,7 +272,7 @@ for (const viewport of [
   test.describe(`${viewport.name} route smoke`, () => {
     test.use({ viewport });
 
-    test("renders all twelve application routes", async ({ page }) => {
+    test("renders all application routes", async ({ page }) => {
       const pageErrors = collectPageErrors(page);
       await installApiMock(page);
       await page.goto(ROUTES[0]);
@@ -275,6 +290,31 @@ for (const viewport of [
     });
   });
 }
+
+test("VM Management launches and tracks a controlled scan workflow", async ({ page }) => {
+  const workflow = {
+    workflow_id: "workflow-e2e-1", kind: "scan", status: "running", stage: "postprocess",
+    progress_percent: 48, can_cancel: true, can_retry: false,
+    steps: [
+      { position: 1, step_key: "validation", status: "completed", progress_percent: 100 },
+      { position: 2, step_key: "scan", status: "completed", progress_percent: 100 },
+      { position: 3, step_key: "postprocess", status: "running", progress_percent: 24, message: "Загрузка карточек" },
+      { position: 4, step_key: "reconcile", status: "pending", progress_percent: 0 },
+    ],
+  };
+  await installApiMock(page, {
+    "/api/scanner-tasks": (route) => route.fulfill({ json: [{ mp_task_id: "task-e2e-1", payload: { name: "Production perimeter" } }] }),
+    "POST /api/vm/workflows/scan": (route) => route.fulfill({ status: 202, json: { workflow_id: workflow.workflow_id, status: "queued", workflow: { ...workflow, status: "queued" } } }),
+    "/api/vm/workflows/workflow-e2e-1": (route) => route.fulfill({ json: workflow }),
+  });
+  await page.goto("/vm");
+  await page.getByLabel("Задача MP VM").selectOption("task-e2e-1");
+  await page.getByRole("button", { name: "Запустить конвейер" }).click();
+  const dialog = page.getByRole("dialog", { name: "Полное сканирование" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Загрузка карточек")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Остановить" })).toBeVisible();
+});
 
 test("remediation lifecycle reaches scan-confirmed resolution", async ({ page }) => {
   let caseStatus = "open";

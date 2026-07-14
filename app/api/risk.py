@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["risk"])
@@ -123,8 +123,22 @@ def update_campaign(request: Request, campaign_id: str, payload: CampaignUpdate)
 
 
 @router.post("/api/remediation/campaigns/{campaign_id}/verify", status_code=202)
-def verify_campaign(request: Request, campaign_id: str) -> dict:
-    result = service(request).verification_targets(campaign_id, actor(request))
-    if not result:
+def verify_campaign(
+    request: Request, campaign_id: str,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict:
+    permissions = set(getattr(request.state, "user", {}).get("permissions") or [])
+    required = {"risk.manage", "remediation.manage", "tasks.execute"}
+    missing = sorted(required - permissions)
+    if missing:
+        raise HTTPException(403, detail={"code": "PERMISSION_DENIED", "message": f"Missing permissions: {', '.join(missing)}"})
+    workflow, replay, asset_ids = request.app.state.container.services.vm_workflows.start_verification(
+        campaign_id=campaign_id, options={}, actor=actor(request), idempotency_key=idempotency_key,
+    )
+    if not workflow:
         raise HTTPException(404, detail={"code": "CAMPAIGN_NOT_FOUND", "message": "Campaign not found."})
-    return result
+    return {
+        "campaign_id": campaign_id, "asset_ids": asset_ids, "workflow_id": workflow["workflow_id"],
+        "operation_id": workflow.get("operation_id"), "status": workflow["status"],
+        "workflow": workflow, "idempotent_replay": replay,
+    }

@@ -83,6 +83,13 @@ export function OperationsPage({
   }, [showAlert]);
 
   useEffect(() => {
+    const operationId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("operation");
+    if (!operationId) return;
+    api(`/api/operations/${encodeURIComponent(operationId)}`).then(setSelected).catch((loadError) =>
+      showAlert?.(`Не удалось открыть операцию: ${loadError.message || String(loadError)}`, "error"));
+  }, [showAlert]);
+
+  useEffect(() => {
     if (offset && offset >= total) {
       setOffset(
         Math.max(0, Math.floor(Math.max(0, total - 1) / PAGE_SIZE) * PAGE_SIZE),

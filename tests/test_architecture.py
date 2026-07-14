@@ -35,6 +35,9 @@ EXPECTED_API_PATHS = {
     "/api/remediation/policy",
     "/api/coverage/summary",
     "/api/coverage/assets",
+    "/api/vm/overview",
+    "/api/vm/workflows",
+    "/api/vm/workflows/scan",
 }
 
 

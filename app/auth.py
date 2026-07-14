@@ -168,12 +168,15 @@ def ensure_rbac_catalog() -> None:
                 VALUES(%s,%s,%s,TRUE,%s,%s) ON CONFLICT(role_key) DO UPDATE SET
                 name=EXCLUDED.name, description=EXCLUDED.description, is_system=TRUE, updated_at=EXCLUDED.updated_at RETURNING id""",
                 (key, BUILTIN_ROLE_NAMES[key], f"Системная роль {BUILTIN_ROLE_NAMES[key].lower()}", current, current)).fetchone()
+            assert row is not None
             role_ids[key] = int(row["id"])
             conn.execute("DELETE FROM app_role_permissions WHERE role_id=%s", (row["id"],))
             for permission in sorted(BUILTIN_ROLE_PERMISSIONS[key]):
                 conn.execute("INSERT INTO app_role_permissions(role_id,permission_key) VALUES(%s,%s) ON CONFLICT DO NOTHING", (row["id"], permission))
-        legacy = conn.execute("""SELECT EXISTS(SELECT 1 FROM information_schema.columns
-            WHERE table_name='app_users' AND column_name='role') AS present""").fetchone()["present"]
+        legacy_row = conn.execute("""SELECT EXISTS(SELECT 1 FROM information_schema.columns
+            WHERE table_name='app_users' AND column_name='role') AS present""").fetchone()
+        assert legacy_row is not None
+        legacy = legacy_row["present"]
         if legacy:
             conn.execute("""INSERT INTO app_user_roles(user_id,role_id)
                 SELECT users.id, roles.id FROM app_users users JOIN app_roles roles ON roles.role_key=users.role
@@ -205,11 +208,14 @@ def public_user(row: dict[str, Any], *, roles: list[dict[str, Any]] | None = Non
 
 def ensure_bootstrap_admin(username: str, password: str, display_name: str) -> bool:
     with db.connect() as conn:
-        if int(conn.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()["count"] or 0) or not password: return False
+        count_row = conn.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()
+        assert count_row is not None
+        if int(count_row["count"] or 0) or not password: return False
         current = db.now_utc()
         row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
             VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING id""", (username.strip().lower(), display_name.strip() or username, hash_password(password), current, current)).fetchone()
         role = conn.execute("SELECT id FROM app_roles WHERE role_key='admin'").fetchone()
+        assert row is not None and role is not None
         conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role["id"]))
     return True
 
@@ -295,6 +301,7 @@ def create_user(payload: UserCreateRequest) -> dict[str, Any]:
             role_ids = _resolve_role_ids(conn,payload.role_ids,payload.role)
             row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
                 VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING *""", (payload.username.strip().lower(),payload.display_name.strip(),hash_password(payload.password),current,current)).fetchone()
+            assert row is not None
             _replace_user_roles(conn,row["id"],role_ids)
             return public_user(dict(row),roles=_roles_for_user(conn,row["id"]),permissions=_permissions_for_user(conn,row["id"]))
     except Exception as exc:
@@ -309,9 +316,12 @@ def update_user(user_id: int, payload: UserUpdateRequest, *, actor_id: int) -> d
         existing=conn.execute("SELECT * FROM app_users WHERE id=%s FOR UPDATE",(user_id,)).fetchone()
         if not existing: raise HTTPException(404,detail={"code":"USER_NOT_FOUND","message":"Пользователь не найден."})
         old_roles=_roles_for_user(conn,user_id); requested=_resolve_role_ids(conn,role_ids or [],legacy_role) if role_ids is not None or legacy_role else None
-        removes_admin=any(r["key"]=="admin" for r in old_roles) and (changes.get("is_active") is False or (requested is not None and not conn.execute("SELECT EXISTS(SELECT 1 FROM app_roles WHERE id=ANY(%s) AND role_key='admin') AS yes",(requested,)).fetchone()["yes"]))
+        admin_row = conn.execute("SELECT EXISTS(SELECT 1 FROM app_roles WHERE id=ANY(%s) AND role_key='admin') AS yes",(requested,)).fetchone() if requested is not None else None
+        removes_admin=any(r["key"]=="admin" for r in old_roles) and (changes.get("is_active") is False or (requested is not None and not bool(admin_row and admin_row["yes"])))
         if user_id==actor_id and requested is not None and removes_admin: raise HTTPException(409,detail={"code":"SELF_DEMOTE","message":"Нельзя снять с себя роль администратора."})
-        if removes_admin and int(conn.execute("""SELECT COUNT(DISTINCT ur.user_id) AS count FROM app_user_roles ur JOIN app_users u ON u.id=ur.user_id JOIN app_roles r ON r.id=ur.role_id WHERE r.role_key='admin' AND u.is_active=TRUE""").fetchone()["count"] or 0)<=1:
+        admin_count = conn.execute("""SELECT COUNT(DISTINCT ur.user_id) AS count FROM app_user_roles ur JOIN app_users u ON u.id=ur.user_id JOIN app_roles r ON r.id=ur.role_id WHERE r.role_key='admin' AND u.is_active=TRUE""").fetchone()
+        assert admin_count is not None
+        if removes_admin and int(admin_count["count"] or 0)<=1:
             raise HTTPException(409,detail={"code":"LAST_ADMIN","message":"Должен остаться активный администратор."})
         if "password" in changes: changes["password_hash"]=hash_password(changes.pop("password"))
         if changes:
@@ -320,6 +330,7 @@ def update_user(user_id: int, payload: UserUpdateRequest, *, actor_id: int) -> d
         if requested is not None: _replace_user_roles(conn,user_id,requested)
         if changes.get("is_active") is False or "password_hash" in changes or requested is not None:
             conn.execute("UPDATE app_auth_sessions SET revoked_at=%s,elevated_until=NULL WHERE user_id=%s AND revoked_at IS NULL",(db.now_utc(),user_id))
+        assert row is not None
         return public_user(dict(row),roles=_roles_for_user(conn,user_id),permissions=_permissions_for_user(conn,user_id))
 
 
@@ -346,6 +357,7 @@ def clone_role(payload: RoleCloneRequest) -> dict[str,Any]:
         except Exception as exc:
             if exc.__class__.__name__=="UniqueViolation": raise HTTPException(409,detail={"code":"ROLE_EXISTS","message":"Роль с таким именем уже существует."}) from exc
             raise
+        assert row is not None
         conn.execute("INSERT INTO app_role_permissions(role_id,permission_key) SELECT %s,permission_key FROM app_role_permissions WHERE role_id=%s",(row["id"],source["id"]))
     return next(role for role in list_roles() if role["id"]==row["id"])
 
@@ -371,7 +383,9 @@ def delete_role(role_id:int)->None:
         role=conn.execute("SELECT * FROM app_roles WHERE id=%s FOR UPDATE",(role_id,)).fetchone()
         if not role: raise HTTPException(404,detail={"code":"ROLE_NOT_FOUND","message":"Роль не найдена."})
         if role["is_system"]: raise HTTPException(409,detail={"code":"SYSTEM_ROLE_IMMUTABLE","message":"Системную роль нельзя удалить."})
-        if conn.execute("SELECT EXISTS(SELECT 1 FROM app_user_roles WHERE role_id=%s) AS assigned",(role_id,)).fetchone()["assigned"]: raise HTTPException(409,detail={"code":"ROLE_ASSIGNED","message":"Сначала снимите роль со всех пользователей."})
+        assigned = conn.execute("SELECT EXISTS(SELECT 1 FROM app_user_roles WHERE role_id=%s) AS assigned",(role_id,)).fetchone()
+        assert assigned is not None
+        if assigned["assigned"]: raise HTTPException(409,detail={"code":"ROLE_ASSIGNED","message":"Сначала снимите роль со всех пользователей."})
         conn.execute("DELETE FROM app_roles WHERE id=%s",(role_id,))
 
 
@@ -385,7 +399,9 @@ def audit_event(*,request:Request|None,user:dict[str,Any]|None,event_type:str,de
 def list_audit_events(limit:int=200,offset:int=0)->dict[str,Any]:
     limit=max(1,min(500,limit)); offset=max(0,offset)
     with db.connect() as conn:
-        total=conn.execute("SELECT COUNT(*) AS count FROM app_auth_audit_events").fetchone()["count"]
+        total_row=conn.execute("SELECT COUNT(*) AS count FROM app_auth_audit_events").fetchone()
+        assert total_row is not None
+        total=total_row["count"]
         rows=conn.execute("SELECT * FROM app_auth_audit_events ORDER BY id DESC LIMIT %s OFFSET %s",(limit,offset)).fetchall()
     return {"total":int(total),"rows":[{**dict(row),"details":json.loads(row.get("details_json") or "{}") } for row in rows],"limit":limit,"offset":offset}
 
@@ -397,7 +413,11 @@ def cleanup_audit_events(retention_days:int=365)->int:
 
 
 class LoginLimiter:
-    def __init__(self,attempts:int=8,window_seconds:int=300): self.attempts,self.window_seconds,self._entries,self._lock=attempts,window_seconds,defaultdict(deque),threading.Lock()
+    def __init__(self,attempts:int=8,window_seconds:int=300):
+        self.attempts = attempts
+        self.window_seconds = window_seconds
+        self._entries: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
     def check(self,key:str)->None:
         now=time.monotonic()
         with self._lock:
@@ -430,6 +450,10 @@ _UUID_PATH = re.compile(r"/[0-9a-fA-F-]{16,}")
 def required_permission(method:str,path:str)->str|None:
     """Declarative policy map for every API domain; unknown writes are denied."""
     method=method.upper()
+    if path.startswith("/api/vm/workflows/") and path.endswith("/cancel"): return "operations.cancel"
+    if path.startswith("/api/vm/workflows/") and path.endswith("/retry"): return "operations.retry"
+    if path=="/api/vm/workflows/scan": return "tasks.execute"
+    if path.startswith("/api/vm"): return "operations.read"
     if path.startswith("/api/auth/users"): return "security.users.read" if method in {"GET","HEAD"} else "security.users.manage"
     if path.startswith("/api/auth/roles") or path=="/api/auth/permissions": return "security.roles.read" if method in {"GET","HEAD"} else "security.roles.manage"
     if path.startswith("/api/auth/audit"): return "security.audit.read"

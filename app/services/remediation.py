@@ -26,15 +26,28 @@ class RemediationService:
             raise ValueError("Resolved status is assigned only after a complete refresh confirms absence.")
         if status and status not in STATUSES:
             raise ValueError("Unsupported remediation status.")
-        if status == "risk_accepted":
-            if not str(payload.get("risk_reason") or "").strip() or not payload.get("risk_expires_at"):
-                raise ValueError("Risk acceptance requires a reason and expiration date.")
-            expires = datetime.fromisoformat(str(payload["risk_expires_at"]).replace("Z", "+00:00"))
+        if status in {"risk_accepted", "false_positive"}:
+            reason = payload.get("exception_reason", payload.get("risk_reason"))
+            expiration = payload.get("exception_expires_at", payload.get("risk_expires_at"))
+            if not str(reason or "").strip() or not expiration:
+                raise ValueError("Each risk acceptance or false-positive exception requires a reason and expiration date.")
+            expires = datetime.fromisoformat(str(expiration).replace("Z", "+00:00"))
             if expires.astimezone(UTC) <= datetime.now(UTC):
-                raise ValueError("Risk acceptance expiration must be in the future.")
+                raise ValueError("Exception expiration must be in the future.")
+            payload = {
+                **payload,
+                "exception_reason": reason,
+                "exception_expires_at": expiration,
+                "risk_reason": reason if status == "risk_accepted" else None,
+                "risk_expires_at": expiration if status == "risk_accepted" else None,
+            }
         elif status:
-            payload = {**payload, "risk_reason": None, "risk_expires_at": None}
-        changes = {key: payload.get(key) for key in ("status", "assignee", "due_at", "risk_reason", "risk_expires_at") if key in payload}
+            payload = {**payload, "risk_reason": None, "risk_expires_at": None,
+                       "exception_reason": None, "exception_expires_at": None}
+        changes = {key: payload.get(key) for key in (
+            "status", "assignee", "due_at", "risk_reason", "risk_expires_at",
+            "exception_reason", "exception_expires_at",
+        ) if key in payload}
         return self.repository.update(
             case_id, changes, expected_version=int(payload["expected_version"]), comment=payload.get("comment")
         )

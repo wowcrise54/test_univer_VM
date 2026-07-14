@@ -60,6 +60,7 @@ function ConnectionPanel({
   busy,
   runBusy,
   showAlert,
+  onNavigate,
 }) {
   const lookupRequestRef = useRef(0);
 
@@ -89,6 +90,7 @@ function ConnectionPanel({
       }));
       showAlert("Подключение к MP VM установлено.", "success");
       void loadLookups();
+      onNavigate?.("/vm");
     });
 
   const disconnect = () =>
@@ -1797,6 +1799,15 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     setAssetWindowOpen(true);
   };
 
+  useEffect(() => {
+    const assetId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("asset");
+    if (!assetId) return;
+    api(`/api/asset-cards/${encodeURIComponent(assetId)}/summary`).then((card) => {
+      setSelectedCard(card);
+      setAssetWindowOpen(true);
+    }).catch((error) => showAlert(error.operatorMessage || error.message, "error"));
+  }, [showAlert]);
+
   const updateLocalCard = (row) =>
     runBusy(`assetCardUpdate:${row.asset_id}`, async () => {
       const result = await api(
@@ -2677,6 +2688,17 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       setSelected(nextRow);
       setDetail(result.raw || nextRow.raw_detail || {});
     });
+
+  useEffect(() => {
+    const passportId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("passport");
+    if (!passportId) return;
+    api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`).then((result) => {
+      const row = result.passport || { internal_id: passportId, raw_detail: result.raw || null };
+      setSelected(row);
+      setDetail(result.raw || row.raw_detail || {});
+      setPassportWindowOpen(true);
+    }).catch((error) => showAlert(error.operatorMessage || error.message, "error"));
+  }, [showAlert]);
 
   const updatePassport = (row) =>
     runBusy(`passportUpdate:${row.internal_id}`, async () => {

@@ -762,6 +762,8 @@ def startup() -> None:
         except psycopg.Error:
             log_exception("app", "automation.startup.failed", database=db.database_label())
     resume_scan_postprocess_runs()
+    if DATABASE_STARTUP_ERROR is None:
+        CONTAINER.services.vm_workflows.resume()
     scan_log(
         logging.INFO,
         "worker_limits",
@@ -1183,7 +1185,7 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
     SESSION.verify_tls = payload.verify_tls
     # Returning the authenticated session must not wait for stale scan recovery.
     # Recovery is queued after the HTTP response and uses its own bounded executor.
-    background_tasks.add_task(resume_scan_postprocess_runs)
+    background_tasks.add_task(resume_connected_workflows)
     return {
         "connected": True,
         "api_url": api_url,
@@ -1292,17 +1294,40 @@ def start_scanner_task(
     idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
 ) -> dict[str, Any]:
     clean_idempotency_key = idempotency_key if isinstance(idempotency_key, str) else None
+    result = _start_scanner_task_request(
+        task_id, payload or StartScannerTaskRequest(), clean_idempotency_key, background_tasks=background_tasks,
+    )
+    operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+    if operation_id:
+        try:
+            workflow = CONTAINER.services.vm_workflows.track_scan(
+                task_id=task_id, operation_id=str(operation_id), options=(payload or StartScannerTaskRequest()).model_dump(),
+                actor=None, idempotency_key=clean_idempotency_key,
+            )
+            result["workflow_id"] = workflow["workflow_id"]
+            result["workflow"] = workflow
+        except psycopg.Error:
+            log_exception("vm-workflow", "legacy_scan.workflow_tracking_failed", operation_id=operation_id)
+    return result
+
+
+def _start_scanner_task_request(
+    task_id: str, options: StartScannerTaskRequest, clean_idempotency_key: str | None,
+    *, background_tasks: BackgroundTasks | None = None,
+) -> dict[str, Any]:
     replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
     if replay and replay.get("kind") == "scan_postprocess":
+        workflow = CONTAINER.repositories.vm_workflows.by_operation(replay["operation_id"])
         return {
             "status": "started",
             "postprocess_run_id": replay["source_id"],
             "postprocess": db.get_scan_postprocess_run(replay["source_id"], include_items=True),
             "operation": replay,
+            "operation_id": replay["operation_id"],
+            "workflow_id": workflow.get("workflow_id") if workflow else None,
             "idempotent_replay": True,
         }
     client, token = require_mpvm()
-    options = payload or StartScannerTaskRequest()
     try:
         result = start_scanner_task_impl(client=client, token=token, task_id=task_id, options=options)
         if result.get("status") != "started":
@@ -1315,7 +1340,10 @@ def start_scanner_task(
             options=options.model_dump(),
             idempotency_key=clean_idempotency_key,
         )
-        background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
+        if background_tasks is None:
+            schedule_scan_postprocess(postprocess_run_id, client.auth, token)
+        else:
+            background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
         return {
             **result,
             "postprocess_run_id": postprocess_run_id,
@@ -1801,6 +1829,11 @@ def refresh_asset_card_by_scan(
         "postprocess": postprocess,
         "operation_id": postprocess_run_id,
     }
+
+
+def resume_connected_workflows() -> None:
+    resume_scan_postprocess_runs()
+    CONTAINER.services.vm_workflows.resume()
 
 
 VULNERABILITY_REPORT_HEADERS = {
@@ -5835,6 +5868,41 @@ def mark_notification_read(notification_id: str) -> dict[str, Any]:
     if not AUTOMATION_REPOSITORY.mark_notification_read(notification_id):
         raise HTTPException(status_code=404, detail="Notification not found.")
     return {"notification_id": notification_id, "is_read": True}
+
+
+def start_vm_scan_child(task_id: str, options: dict[str, Any], workflow_id: str) -> dict[str, Any]:
+    payload = StartScannerTaskRequest(**options)
+    return _start_scanner_task_request(task_id, payload, f"vm-workflow:{workflow_id}:scan")
+
+
+def start_vm_verification_children(
+    workflow_id: str, asset_ids: list[str], options: dict[str, Any],
+) -> dict[str, Any]:
+    operation_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+    payload = AssetCardRefreshScanRequest(**options)
+    for asset_id in asset_ids:
+        tasks = BackgroundTasks()
+        try:
+            result = refresh_asset_card_by_scan(
+                asset_id, payload, tasks, idempotency_key=f"vm-workflow:{workflow_id}:asset:{asset_id}",
+            )
+            operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+            if operation_id:
+                operation_ids.append(str(operation_id))
+            for task in tasks.tasks:
+                task.func(*task.args, **task.kwargs)
+        except Exception as exc:
+            errors.append({"asset_id": asset_id, "message": str(exc)})
+    return {"operation_ids": operation_ids, "errors": errors}
+
+
+CONTAINER.services.vm_workflows.configure(
+    scan_starter=start_vm_scan_child,
+    verification_starter=start_vm_verification_children,
+    operation_canceller=cancel_operation,
+    status_provider=system_status,
+)
 
 
 for api_router in API_ROUTERS:

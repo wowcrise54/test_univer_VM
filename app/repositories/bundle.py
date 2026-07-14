@@ -6,6 +6,7 @@ from typing import Any
 from .. import db
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
+from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 
 
@@ -83,3 +84,4 @@ class RepositoryBundle:
         self.remediation = RemediationRepository()
         self.coverage = CoverageRepository()
         self.risk = RiskRepository()
+        self.vm_workflows = VmWorkflowRepository()

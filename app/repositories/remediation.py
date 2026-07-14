@@ -29,12 +29,16 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "reopened_at",
         "created_at",
         "updated_at",
+        "exception_expires_at",
     ):
         result[key] = _iso(result.get(key))
     if result.get("cvss_score") is not None:
         result["cvss_score"] = float(result["cvss_score"])
     result["overdue"] = bool(result.get("overdue"))
     result["near_due"] = bool(result.get("near_due"))
+    if result.get("status") == "risk_accepted":
+        result["risk_reason"] = result.get("exception_reason") or result.get("risk_reason")
+        result["risk_expires_at"] = result.get("exception_expires_at") or result.get("risk_expires_at")
     return result
 
 
@@ -112,6 +116,7 @@ class RemediationRepository:
         with db.connect() as conn:
             rows = conn.execute(
                 """UPDATE remediation_cases c SET status='open', risk_reason=NULL, risk_expires_at=NULL,
+                   exception_reason=NULL, exception_expires_at=NULL,
                    reopened_at=NOW(), resolved_at=NULL, due_at=NOW() + CASE c.severity
                      WHEN 'critical' THEN (p.critical_days || ' days')::interval
                      WHEN 'high' THEN (p.high_days || ' days')::interval
@@ -119,14 +124,15 @@ class RemediationRepository:
                      WHEN 'low' THEN (p.low_days || ' days')::interval END,
                    manual_due=FALSE, version=version+1, updated_at=NOW()
                    FROM remediation_sla_policy p
-                   WHERE p.policy_id=1 AND c.status='risk_accepted' AND c.risk_expires_at <= NOW()
+                   WHERE p.policy_id=1 AND c.status IN ('risk_accepted','false_positive')
+                     AND COALESCE(c.exception_expires_at,c.risk_expires_at) <= NOW()
                    RETURNING c.case_id"""
             ).fetchall()
             for item in rows:
                 conn.execute(
                     """INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status,changes_json)
-                       VALUES (%s,'risk_expired','risk_accepted','open','{}')""",
-                    (item["case_id"],),
+                       VALUES (%s,'exception_expired',%s,'open','{}')""",
+                    (item["case_id"], "exception"),
                 )
         return len(rows)
 
@@ -197,7 +203,8 @@ class RemediationRepository:
     def update(
         self, case_id: str, changes: dict[str, Any], *, expected_version: int, comment: str | None
     ) -> dict[str, Any] | None:
-        allowed = {"status", "assignee", "due_at", "risk_reason", "risk_expires_at"}
+        allowed = {"status", "assignee", "due_at", "risk_reason", "risk_expires_at",
+                   "exception_reason", "exception_expires_at"}
         clean = {key: value for key, value in changes.items() if key in allowed}
         assignments: list[str] = []
         params: list[Any] = []

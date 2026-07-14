@@ -20,6 +20,8 @@ class CaseUpdate(BaseModel):
     due_at: datetime | None = None
     risk_reason: str | None = Field(default=None, max_length=4000)
     risk_expires_at: datetime | None = None
+    exception_reason: str | None = Field(default=None, max_length=4000)
+    exception_expires_at: datetime | None = None
     comment: str | None = Field(default=None, max_length=4000)
 
 
@@ -30,6 +32,8 @@ class BulkCaseUpdate(BaseModel):
     due_at: datetime | None = None
     risk_reason: str | None = Field(default=None, max_length=4000)
     risk_expires_at: datetime | None = None
+    exception_reason: str | None = Field(default=None, max_length=4000)
+    exception_expires_at: datetime | None = None
     comment: str | None = Field(default=None, max_length=4000)
 
 

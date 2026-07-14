@@ -27,17 +27,19 @@ class AppContainer:
         self.settings = settings
         self.session = RuntimeSession()
         self.repositories = RepositoryBundle()
+        self.operation_runner = OperationRunner(
+            {
+                "scan-postprocess": settings.scan_postprocess_workers,
+                "vm-workflow": 4,
+                "automation-run": 2,
+                "automation-scheduler": 1,
+            }
+        )
         self.services = ServiceBundle(
             self.repositories,
             coverage_stale_days=settings.coverage_stale_days,
             automation_webhook_enabled=bool(settings.automation_webhook_url),
-        )
-        self.operation_runner = OperationRunner(
-            {
-                "scan-postprocess": settings.scan_postprocess_workers,
-                "automation-run": 2,
-                "automation-scheduler": 1,
-            }
+            operation_runner=self.operation_runner,
         )
         self.background_request_semaphore = threading.BoundedSemaphore(settings.background_request_limit)
         self.asset_metadata_cache: dict[tuple[str, str], tuple[float, dict]] = {}

@@ -16,9 +16,9 @@ describe("guided application shell", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Рабочий процесс" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Данные и анализ" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Управление" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Обзор" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Сканирования" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Находки" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Уязвимости" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();
@@ -36,7 +36,7 @@ describe("guided application shell", () => {
     render(<WorkflowRail activeRouteId="tasks" onNavigate={navigate} />);
 
     expect(screen.getByRole("button", { name: /Сканирование/ })).toHaveClass("workflow-step--active");
-    expect(screen.getByRole("button", { name: /Подключение/ })).toHaveClass("workflow-step--complete");
+    expect(screen.getByRole("button", { name: /Обзор/ })).toHaveClass("workflow-step--complete");
     fireEvent.click(screen.getByRole("button", { name: /Отчётность/ }));
     expect(navigate).toHaveBeenCalledWith("/export");
   });
