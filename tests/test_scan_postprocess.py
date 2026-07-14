@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import threading
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
-from app import main
-from app import mpvm_client
+from app import main, mpvm_client
 
 
 class FakeSession:
@@ -147,7 +146,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
 
 class ScanAssetResolutionTests(unittest.TestCase):
     def test_old_asset_in_successful_subnet_is_rejected(self):
-        started = datetime.now(timezone.utc).replace(microsecond=0)
+        started = datetime.now(UTC).replace(microsecond=0)
         old = {
             "IpAddress": "10.20.30.5",
             "UpdateTime": (started - timedelta(minutes=5)).isoformat(),
@@ -366,14 +365,6 @@ class StartScannerTaskApiTests(unittest.TestCase):
             "started_from": "2026-01-01T00:00:00+00:00",
             "options": {"task_timeout_minutes": 1, "task_poll_seconds": 1},
         }
-        item = {
-            "id": 1,
-            "postprocess_run_id": "post-full",
-            "item_key": "asset:asset-1",
-            "asset_id": "asset-1",
-            "status": "queued",
-        }
-
         class OrchestratorClient:
             def __init__(self, _auth) -> None:
                 self.session = FakeSession()
@@ -663,6 +654,55 @@ class AssetCardRefreshScanTests(unittest.TestCase):
             main.run_scan_postprocess(run_id="refresh-run-1", auth=SimpleNamespace(), token="token")
 
         self.assertEqual(events, ["card_actions", "task_status", "task_deleted", "terminal", "snapshot"])
+
+    def test_no_successful_jobs_finishes_with_errors_instead_of_failed(self):
+        claimed = {
+            "run_id": "post-1",
+            "mp_task_id": "task-1",
+            "started_from": "2026-01-01T00:00:00+00:00",
+            "options": {"task_timeout_minutes": 1, "task_poll_seconds": 1},
+        }
+
+        class ScanClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+        with (
+            patch.object(main, "MpVmClient", ScanClient),
+            patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
+            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 0, "total_job_count": 2}),
+            patch.object(main.db, "update_scan_task_status") as update_task,
+            patch.object(main.db, "finish_scan_postprocess_run") as finish,
+        ):
+            main.run_scan_postprocess(run_id="post-1", auth=SimpleNamespace(), token="token")
+
+        self.assertEqual(update_task.call_args.args[1], "postprocess_completed_with_errors")
+        self.assertEqual(finish.call_args.kwargs["status"], "completed_with_errors")
+
+    def test_all_asset_errors_finish_with_errors_instead_of_failed(self):
+        claimed = {
+            "run_id": "post-1",
+            "mp_task_id": "task-1",
+            "started_from": "2026-01-01T00:00:00+00:00",
+            "options": {"task_timeout_minutes": 1, "task_poll_seconds": 1},
+        }
+
+        class ScanClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+        with (
+            patch.object(main, "MpVmClient", ScanClient),
+            patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
+            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 2, "total_job_count": 2}),
+            patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 0, "failed_count": 2}),
+            patch.object(main.db, "update_scan_task_status") as update_task,
+            patch.object(main.db, "finish_scan_postprocess_run") as finish,
+        ):
+            main.run_scan_postprocess(run_id="post-1", auth=SimpleNamespace(), token="token")
+
+        self.assertEqual(update_task.call_args.args[1], "postprocess_completed_with_errors")
+        self.assertEqual(finish.call_args.kwargs["status"], "completed_with_errors")
 
 
 class ScanJobLiveMonitoringTests(unittest.TestCase):

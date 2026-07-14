@@ -214,6 +214,12 @@ class VmWorkflowService:
             operation_ids = self._operation_ids(workflow)
             if not monitor_only and not operation_ids:
                 operation_ids = self._start(workflow_id, workflow)
+            if not operation_ids:
+                no_operation_workflow = self.repository.get(workflow_id) or workflow
+                start_errors = (no_operation_workflow.get("result") or {}).get("start_errors") or []
+                if no_operation_workflow.get("kind") == "verification" and start_errors:
+                    self._complete_without_operations(workflow_id, no_operation_workflow, start_errors)
+                    return
             self._monitor(workflow_id, operation_ids, token)
         except Exception as exc:
             current = self.repository.get(workflow_id)
@@ -260,16 +266,41 @@ class VmWorkflowService:
         result = self.verification_starter(workflow_id, assets, request.get("options") or {})
         operation_ids = [str(value) for value in result.get("operation_ids") or [] if value]
         errors = result.get("errors") or []
-        if not operation_ids and errors:
-            raise RuntimeError("; ".join(str(item.get("message") or item) for item in errors))
-        self.repository.update_step(workflow_id, "scan", status="completed", progress_percent=100, result=result)
-        self.repository.update_step(workflow_id, "postprocess", status="running", message="Ожидание обновления карточек.")
+        self.repository.update_step(
+            workflow_id, "scan", status="completed" if operation_ids else "failed", progress_percent=100,
+            result=result, error={"start_errors": errors} if errors else {},
+        )
+        self.repository.update_step(
+            workflow_id, "postprocess", status="running" if operation_ids else "pending",
+            message="Ожидание обновления карточек." if operation_ids else "Дочерние операции не были запущены.",
+        )
         self.repository.update_run(
             workflow_id, stage="postprocess", progress_percent=35,
             operation_id=operation_ids[0] if len(operation_ids) == 1 else None,
             result={"operation_ids": operation_ids, "start_errors": errors},
         )
         return operation_ids
+
+    def _complete_without_operations(
+        self, workflow_id: str, workflow: dict[str, Any], start_errors: builtins.list[dict[str, Any]],
+    ) -> None:
+        failed_assets = [str(item.get("asset_id") or "") for item in start_errors]
+        self.repository.update_step(
+            workflow_id, "postprocess", status="skipped", progress_percent=100,
+            message="Нет запущенных дочерних операций; ошибки сохранены в результате.",
+        )
+        self.repository.update_step(
+            workflow_id, "reconcile", status="skipped", progress_percent=100,
+            message="Сверка пропущена: свежие карточки не получены.",
+        )
+        if workflow.get("campaign_id"):
+            self.repository.finalize_campaign_verification(
+                workflow["campaign_id"], workflow_id, [value for value in failed_assets if value],
+            )
+        self.repository.update_run(
+            workflow_id, status="completed_with_errors", stage="completed", progress_percent=100,
+            result={"operation_ids": [], "start_errors": start_errors, "failed_assets": failed_assets},
+        )
 
     def _monitor(self, workflow_id: str, operation_ids: builtins.list[str], token: threading.Event) -> None:
         if not operation_ids:
@@ -304,25 +335,36 @@ class VmWorkflowService:
         self.repository.update_step(workflow_id, "reconcile", status="running", message="Сверка находок и пересчёт состояния.")
         request = workflow.get("request") or {}
         assets = builtins.list(dict.fromkeys(request.get("asset_ids") or []))
+        reconciliation_errors: builtins.list[dict[str, str]] = []
         if assets:
             totals = {"created": 0, "reopened": 0, "resolved": 0}
             for asset_id in assets:
-                result = self.remediation.reconcile_asset(asset_id)
+                try:
+                    result = self.remediation.reconcile_asset(asset_id)
+                except Exception as exc:
+                    reconciliation_errors.append({"asset_id": asset_id, "message": str(exc)[:1000]})
+                    continue
                 for key in totals:
                     totals[key] += int(result.get(key) or 0)
         else:
             totals = self.remediation.reconcile_all()
-        self.repository.update_step(workflow_id, "reconcile", status="completed", progress_percent=100, result=totals)
+        self.repository.update_step(
+            workflow_id, "reconcile", status="failed" if reconciliation_errors else "completed", progress_percent=100,
+            result={**totals, "errors": reconciliation_errors},
+            error={"assets": reconciliation_errors} if reconciliation_errors else {},
+        )
         start_errors = (workflow.get("result") or {}).get("start_errors") or []
         failed_assets = [str(item.get("subject", {}).get("id") or "") for item in failed]
         failed_assets.extend(str(item.get("asset_id") or "") for item in start_errors)
+        failed_assets.extend(item["asset_id"] for item in reconciliation_errors)
         if workflow.get("campaign_id"):
             self.repository.finalize_campaign_verification(workflow["campaign_id"], workflow_id, [value for value in failed_assets if value])
-        status = "completed_with_errors" if failed or start_errors else "completed"
+        status = "completed_with_errors" if failed or start_errors or reconciliation_errors else "completed"
         self.repository.update_run(
             workflow_id, status=status, stage="completed", progress_percent=100,
             result={"operation_ids": [item["operation_id"] for item in operations], "reconciliation": totals,
-                    "failed_operation_ids": [item["operation_id"] for item in failed], "start_errors": start_errors},
+                    "failed_operation_ids": [item["operation_id"] for item in failed], "start_errors": start_errors,
+                    "reconciliation_errors": reconciliation_errors},
         )
 
     def _finish_cancelled(self, workflow: dict[str, Any]) -> None:

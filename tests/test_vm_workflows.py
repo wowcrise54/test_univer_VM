@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 from app import auth
 from app.services.vm_workflows import VmWorkflowService
@@ -60,3 +61,25 @@ def test_vm_migration_is_additive_and_links_verification():
     assert "CREATE TABLE IF NOT EXISTS vm_workflow_steps" in source
     assert "ADD COLUMN IF NOT EXISTS verification_status" in source
     assert "DROP TABLE" not in source.split("def upgrade()", 1)[1].split("def downgrade()", 1)[0]
+
+
+def test_reconciliation_error_is_isolated_and_workflow_completes_with_errors():
+    repository = MagicMock()
+    runner = MagicMock()
+    remediation = MagicMock()
+    remediation.reconcile_asset.side_effect = [RuntimeError("asset unavailable"), {"created": 1, "reopened": 0, "resolved": 0}]
+    service = VmWorkflowService(repository, runner, remediation=remediation)
+    workflow = {
+        "workflow_id": "wf-1",
+        "kind": "verification",
+        "campaign_id": None,
+        "request": {"asset_ids": ["asset-1", "asset-2"]},
+        "result": {},
+    }
+
+    service._reconcile("wf-1", workflow, [], [])
+
+    run_update = repository.update_run.call_args.kwargs
+    assert run_update["status"] == "completed_with_errors"
+    assert run_update["result"]["reconciliation"]["created"] == 1
+    assert run_update["result"]["reconciliation_errors"][0]["asset_id"] == "asset-1"

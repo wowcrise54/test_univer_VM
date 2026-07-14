@@ -2994,7 +2994,11 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 task_id=task_id,
                 total_job_count=monitoring["total_job_count"],
             )
-            db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "reason": "no successful targets"})
+            db.update_scan_task_status(
+                task_id,
+                "postprocess_completed_with_errors",
+                {"postprocess_run_id": run_id, "reason": "no successful targets"},
+            )
             cleanup_deleted = (
                 cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
                 if options.get("auto_created_refresh_task")
@@ -3003,8 +3007,8 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
             db.finish_scan_postprocess_run(
                 run_id,
-                status="failed",
-                stage="failed",
+                status="completed_with_errors",
+                stage="completed_with_errors",
                 message=f"The scanner run has no jobs with errorStatus=success.{cleanup_text}",
             )
             return
@@ -3013,13 +3017,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         failed_count = int(summary.get("failed_count") or 0)
         completed_count = int(summary.get("completed_count") or 0)
         refresh_result = finalize_asset_card_refresh(run_id, options) if completed_count else None
-        final_status = "failed" if failed_count and not completed_count else "completed_with_errors" if failed_count else "completed"
+        final_status = "completed_with_errors" if failed_count else "completed"
         message = f"Completed {completed_count} asset(s); failures: {failed_count}."
         if refresh_result:
             message += f" Asset card refreshed as {refresh_result['asset_id']}."
         db.update_scan_task_status(
             task_id,
-            "postprocess_failed" if final_status == "failed" else "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
+            "postprocess_completed_with_errors" if failed_count else "postprocess_completed",
             {"postprocess_run_id": run_id, "completed_count": completed_count, "failed_count": failed_count},
         )
         if options.get("auto_created_refresh_task"):
@@ -3073,7 +3077,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             type(exc).__name__,
             error,
         )
-        db.update_scan_task_status(task_id, "postprocess_failed", {"postprocess_run_id": run_id, "error": error})
+        try:
+            partial_items = db.list_scan_postprocess_items(run_id)
+        except Exception:
+            partial_items = []
+        final_status = "completed_with_errors" if partial_items else "failed"
+        task_status = "postprocess_completed_with_errors" if partial_items else "postprocess_failed"
+        db.update_scan_task_status(task_id, task_status, {"postprocess_run_id": run_id, "error": error})
         cleanup_deleted = (
             cleanup_auto_created_refresh_task(client=client, token=token, run_id=run_id, task_id=task_id)
             if options.get("auto_created_refresh_task")
@@ -3082,9 +3092,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
         db.finish_scan_postprocess_run(
             run_id,
-            status="failed",
-            stage="failed",
-            message=f"Scan post-processing failed.{cleanup_text}",
+            status=final_status,
+            stage=final_status,
+            message=(
+                f"Scan post-processing completed with individual errors.{cleanup_text}"
+                if partial_items
+                else f"Scan post-processing failed before any result was saved.{cleanup_text}"
+            ),
             error=error,
         )
     finally:

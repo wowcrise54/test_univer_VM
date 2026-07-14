@@ -20,14 +20,16 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:18-alpine
+    # The persistent project volume was initialized by PostgreSQL 16.
+    # A major-version upgrade requires pg_upgrade and must not happen implicitly.
+    image: postgres:16-alpine
     ports:
       - "55432:5432"
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-mpvm}"
       POSTGRES_USER: "${POSTGRES_USER:-mpvm}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-mpvm}"
-      PGDATA: /var/lib/postgresql/18/docker
+      PGDATA: /var/lib/postgresql
     volumes:
       - mpvm_postgres:/var/lib/postgresql
     healthcheck:
