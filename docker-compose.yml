@@ -29,9 +29,9 @@ services:
       POSTGRES_DB: "${POSTGRES_DB:-mpvm}"
       POSTGRES_USER: "${POSTGRES_USER:-mpvm}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-mpvm}"
-      PGDATA: /var/lib/postgresql
+      PGDATA: /var/lib/postgresql/data
     volumes:
-      - mpvm_postgres:/var/lib/postgresql
+      - mpvm_postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
