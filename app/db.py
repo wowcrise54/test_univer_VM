@@ -3022,29 +3022,38 @@ def replace_asset_card_cache(
         for row in stored_groups
     }
     finding_rows: list[tuple[Any, ...]] = []
-    for group in vulnerability_groups:
+    unique_findings, duplicate_finding_count = deduplicate_asset_card_vulnerability_findings(
+        vulnerability_groups
+    )
+    for group, finding in unique_findings:
         group_id = group_ids.get((group["source"], group["collection_type"], group["collection_id"]))
         if group_id is None:
             continue
-        for finding in group.get("items") or []:
-            if not isinstance(finding, dict):
-                continue
-            finding_rows.append(
-                (
-                    asset_id,
-                    group_id,
-                    clean_value(finding.get("vulnerability_instance_id")),
-                    clean_value(finding.get("vulnerability_id")),
-                    clean_value(finding.get("object_id")),
-                    clean_value(finding.get("cve_name")),
-                    clean_value(finding.get("name")),
-                    clean_value(finding.get("level")),
-                    safe_decimal(finding.get("cvss_score")),
-                    clean_value(finding.get("description_key")),
-                    json.dumps(strip_asset_card_raw(finding), ensure_ascii=False),
-                    updated_at,
-                )
+        finding_rows.append(
+            (
+                asset_id,
+                group_id,
+                clean_value(finding.get("vulnerability_instance_id")),
+                clean_value(finding.get("vulnerability_id")),
+                clean_value(finding.get("object_id")),
+                clean_value(finding.get("cve_name")),
+                clean_value(finding.get("name")),
+                clean_value(finding.get("level")),
+                safe_decimal(finding.get("cvss_score")),
+                clean_value(finding.get("description_key")),
+                json.dumps(strip_asset_card_raw(finding), ensure_ascii=False),
+                updated_at,
             )
+        )
+    if duplicate_finding_count:
+        log_event(
+            "database",
+            "asset_card.vulnerabilities.deduplicated",
+            level=30,
+            asset_id=asset_id,
+            duplicate_count=duplicate_finding_count,
+            retained_count=len(finding_rows),
+        )
     with conn.cursor() as cur:
         copy_rows(
             cur,
@@ -3224,6 +3233,28 @@ def iter_asset_card_vulnerability_groups(vulnerabilities: Any) -> list[dict[str,
                 "collection_id": collection_id,
             })
     return groups
+
+
+def deduplicate_asset_card_vulnerability_findings(
+    vulnerability_groups: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], int]:
+    """Keep the first occurrence of each non-empty instance id for one asset."""
+
+    findings: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    seen_instance_ids: set[str] = set()
+    duplicate_count = 0
+    for group in vulnerability_groups:
+        for finding in group.get("items") or []:
+            if not isinstance(finding, dict):
+                continue
+            instance_id = clean_value(finding.get("vulnerability_instance_id"))
+            if instance_id:
+                if instance_id in seen_instance_ids:
+                    duplicate_count += 1
+                    continue
+                seen_instance_ids.add(instance_id)
+            findings.append((group, finding))
+    return findings, duplicate_count
 
 
 def reconcile_asset_card_vulnerability_passport_links(

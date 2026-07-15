@@ -200,11 +200,7 @@ export function VulnerabilitiesDashboard() {
         busy={refreshing}
       />
 
-      <RiskTrendSection
-        query={trendsQuery}
-        periodDays={trendDays}
-        onPeriodChange={setTrendDays}
-      />
+      <MetricGlossary />
 
       {summaryQuery.isPending ? (
         <LoadingState label="Загружаю сводку по уязвимостям…" />
@@ -240,7 +236,6 @@ export function VulnerabilitiesDashboard() {
               rows={summary.top_vulnerabilities || []}
               selectedSelector={selected?.selector}
               onSelect={selectVulnerability}
-              onOpenPassport={openPassport}
             />
             <TopHosts rows={summary.top_hosts || []} />
           </div>
@@ -278,8 +273,14 @@ export function VulnerabilitiesDashboard() {
           onSort={changeHostSort}
           onPage={setHostOffset}
           onClose={closeDrilldown}
+          onOpenPassport={openPassport}
         />
       ) : null}
+      <RiskTrendSection
+        query={trendsQuery}
+        periodDays={trendDays}
+        onPeriodChange={setTrendDays}
+      />
       {passport ? (
         <PassportModal
           title="Паспорт уязвимости"
@@ -360,6 +361,45 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
         </Button>
       </div>
     </form>
+  );
+}
+
+function MetricGlossary() {
+  return (
+    <details className="vulnerability-glossary">
+      <summary>Как читать показатели: уязвимости, findings и хосты</summary>
+      <div className="vulnerability-glossary__grid">
+        <article>
+          <strong>Уязвимость</strong>
+          <p>
+            Уникальный тип проблемы, объединённый по идентификатору, CVE или
+            названию. Одна уязвимость может встречаться на многих хостах.
+          </p>
+        </article>
+        <article>
+          <strong>Finding</strong>
+          <p>
+            Конкретное обнаружение уязвимости на хосте и объекте — например, в
+            пакете или компоненте. На одном хосте может быть несколько findings
+            одной уязвимости.
+          </p>
+        </article>
+        <article>
+          <strong>Затронутый хост</strong>
+          <p>
+            Уникальный актив, где есть хотя бы один finding выбранной
+            уязвимости. Поэтому хостов обычно не больше, чем findings.
+          </p>
+        </article>
+        <article>
+          <strong>Паспорт</strong>
+          <p>
+            Справочная карточка с описанием, критичностью, CVSS, CVE и способом
+            устранения. Паспорт дополняет finding, но не заменяет список хостов.
+          </p>
+        </article>
+      </div>
+    </details>
   );
 }
 
@@ -848,7 +888,6 @@ function TopVulnerabilities({
   rows,
   selectedSelector,
   onSelect,
-  onOpenPassport,
 }) {
   const maximum = Math.max(
     0,
@@ -857,13 +896,12 @@ function TopVulnerabilities({
   return (
     <InsightCard
       title="Наиболее распространённые"
-      description="Откройте паспорт уязвимости или список затронутых хостов"
+      description="Выберите уязвимость, чтобы увидеть затронутые хосты"
     >
       {rows.length ? (
         <ol className="vulnerability-ranking">
           {rows.map((row, index) => {
             const label = vulnerabilityLabel(row);
-            const hasPassport = Boolean(row.passports?.[0]?.internal_id);
             return (
               <li key={`${row.selector || label}-${index}`}>
                 <button
@@ -874,16 +912,8 @@ function TopVulnerabilities({
                   }}
                   disabled={!row.selector}
                   aria-pressed={row.selector === selectedSelector}
-                  aria-label={
-                    hasPassport
-                      ? `Открыть паспорт уязвимости ${label}`
-                      : `Показать хосты с уязвимостью ${label}`
-                  }
-                  onClick={(event) =>
-                    hasPassport
-                      ? onOpenPassport(row)
-                      : onSelect(row, event.currentTarget)
-                  }
+                  aria-label={`Показать хосты с уязвимостью ${label}`}
+                  onClick={(event) => onSelect(row, event.currentTarget)}
                 >
                   <span className="ranking-row__track" aria-hidden="true">
                     <span />
@@ -897,6 +927,7 @@ function TopVulnerabilities({
                     <small>
                       {formatCount(row.affected_hosts)} хостов ·{" "}
                       {formatCount(row.findings)} findings
+                      {row.passports?.length ? " · есть паспорт" : ""}
                     </small>
                   </span>
                 </button>
@@ -1040,6 +1071,7 @@ function VulnerabilityTable({
               </SortableHeader>
               <th>Объекты</th>
               <th>Источники</th>
+              <th>Паспорт</th>
               <SortableHeader
                 column="last_seen"
                 sort={sort}
@@ -1053,7 +1085,7 @@ function VulnerabilityTable({
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={9} className="empty-cell">
+                <td colSpan={10} className="empty-cell">
                   Загружаю уязвимости…
                 </td>
               </tr>
@@ -1074,20 +1106,10 @@ function VulnerabilityTable({
                         className="vulnerability-row-button"
                         disabled={!row.selector}
                         aria-pressed={row.selector === selectedSelector}
-                        aria-label={
-                          hasPassport
-                            ? `Открыть паспорт уязвимости ${label}`
-                            : `Показать хосты с уязвимостью ${label}`
-                        }
-                        title={
-                          hasPassport
-                            ? "Открыть паспорт уязвимости"
-                            : "Паспорт не сопоставлен — показать затронутые хосты"
-                        }
+                        aria-label={`Показать хосты с уязвимостью ${label}`}
+                        title="Показать затронутые хосты"
                         onClick={(event) =>
-                          hasPassport
-                            ? onOpenPassport(row)
-                            : onSelect(row, event.currentTarget)
+                          onSelect(row, event.currentTarget)
                         }
                       >
                         {label}
@@ -1105,13 +1127,26 @@ function VulnerabilityTable({
                     <td>{formatCount(row.findings)}</td>
                     <td>{formatList(row.affected_objects)}</td>
                     <td>{formatSources(row.sources)}</td>
+                    <td>
+                      {hasPassport ? (
+                        <Button
+                          variant="tiny"
+                          aria-label={`Открыть паспорт уязвимости ${label}`}
+                          onClick={() => onOpenPassport(row)}
+                        >
+                          Открыть
+                        </Button>
+                      ) : (
+                        <span className="muted-text">Не сопоставлен</span>
+                      )}
+                    </td>
                     <td>{formatDate(row.last_seen)}</td>
                   </tr>
                 );
               })
             ) : (
               <tr>
-                <td colSpan={9} className="empty-cell">
+                <td colSpan={10} className="empty-cell">
                   Уязвимости с такими фильтрами не найдены.
                 </td>
               </tr>
@@ -1144,8 +1179,10 @@ function HostDrilldown({
   onSort,
   onPage,
   onClose,
+  onOpenPassport,
 }) {
   const label = vulnerabilityLabel(selected);
+  const hasPassport = Boolean(selected.passports?.[0]?.internal_id);
   return (
     <section className="host-drilldown" aria-labelledby="host-drilldown-title">
       <div className="vulnerability-section-heading">
@@ -1162,9 +1199,38 @@ function HostDrilldown({
               .join(" · ")}
           </p>
         </div>
-        <Button variant="ghost" onClick={onClose}>
-          Закрыть
-        </Button>
+        <div className="host-drilldown__actions">
+          {hasPassport ? (
+            <Button variant="secondary" onClick={() => onOpenPassport(selected)}>
+              Открыть паспорт
+            </Button>
+          ) : null}
+          <Button variant="ghost" onClick={onClose}>
+            Закрыть
+          </Button>
+        </div>
+      </div>
+      <div className="host-drilldown__summary">
+        <article>
+          <span>Идентификатор</span>
+          <strong>{selected.vulnerability_id || selected.cve || "—"}</strong>
+        </article>
+        <article>
+          <span>Критичность</span>
+          <SeverityBadge value={selected.severity} />
+        </article>
+        <article>
+          <span>Затронуто хостов</span>
+          <strong>{formatCount(selected.affected_hosts ?? total)}</strong>
+        </article>
+        <article>
+          <span>Findings</span>
+          <strong>{formatCount(selected.findings)}</strong>
+        </article>
+        <article>
+          <span>Паспорт</span>
+          <strong>{hasPassport ? "Сопоставлен" : "Не сопоставлен"}</strong>
+        </article>
       </div>
       {error ? (
         <QueryError

@@ -185,6 +185,8 @@ describe("vulnerability dashboard", () => {
     expect(affectedHosts.closest("article")).toHaveTextContent("143");
     expect(screen.getByText("Карточки активов")).toBeInTheDocument();
     expect(screen.getByText("184 из 201 · 92%")).toBeInTheDocument();
+    expect(screen.getByText("Как читать показатели: уязвимости, findings и хосты"))
+      .toBeInTheDocument();
 
     const selectors = await screen.findAllByRole("button", {
       name: "Показать хосты с уязвимостью Удалённое выполнение кода",
@@ -245,6 +247,17 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard();
+
+    const hostButtons = await screen.findAllByRole("button", {
+      name: `Показать хосты с уязвимостью ${VULNERABILITY.name}`,
+    });
+    fireEvent.click(hostButtons.at(-1));
+    expect(
+      await screen.findByRole("heading", {
+        name: `Хосты с уязвимостью «${VULNERABILITY.name}»`,
+      }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("server-01.example.test")).toBeInTheDocument();
 
     const passportButtons = await screen.findAllByRole("button", {
       name: `Открыть паспорт уязвимости ${VULNERABILITY.name}`,

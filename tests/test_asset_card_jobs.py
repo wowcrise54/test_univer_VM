@@ -467,6 +467,37 @@ class AssetCardJobApiTests(unittest.TestCase):
 
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def test_duplicate_vulnerability_instance_ids_are_removed_before_copy(self):
+        first_group = {
+            "source": "os",
+            "collection_type": "HostOSVulnerabilities",
+            "collection_id": "group-1",
+            "items": [
+                {"vulnerability_instance_id": "instance-1", "name": "first"},
+                {"vulnerability_instance_id": None, "name": "without-id-1"},
+            ],
+        }
+        second_group = {
+            "source": "software",
+            "collection_type": "HostSoftVulnerabilities",
+            "collection_id": "group-2",
+            "items": [
+                {"vulnerability_instance_id": "instance-1", "name": "duplicate"},
+                {"vulnerability_instance_id": None, "name": "without-id-2"},
+            ],
+        }
+
+        findings, duplicate_count = db.deduplicate_asset_card_vulnerability_findings(
+            [first_group, second_group]
+        )
+
+        self.assertEqual(duplicate_count, 1)
+        self.assertEqual([finding["name"] for _, finding in findings], [
+            "first",
+            "without-id-1",
+            "without-id-2",
+        ])
+
     def asset_card_row(self):
         return {
             "id": 1,
