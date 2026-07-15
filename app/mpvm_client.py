@@ -865,6 +865,7 @@ def build_scanner_task_payload(
     exclude_targets: list[str] | None = None,
     agent_ids: list[str] | None = None,
     credential_id: str | None = None,
+    credential_transport: str = "windows",
     host_discovery_enabled: bool = False,
     host_discovery_profile_id: str | None = None,
     time_zone: str = "+00:00",
@@ -879,7 +880,7 @@ def build_scanner_task_payload(
         "description": description or "",
         "scope": scope_id,
         "profile": profile_id,
-        "overrides": build_windows_credential_overrides(credential_id),
+        "overrides": build_credential_overrides(credential_id, credential_transport),
         "include": {
             "assets": [],
             "targets": include_targets,
@@ -905,8 +906,30 @@ def build_scanner_task_payload(
 
 
 def build_windows_credential_overrides(credential_id: str | None) -> dict[str, Any]:
+    return build_credential_overrides(credential_id, "windows")
+
+
+def build_credential_overrides(credential_id: str | None, transport: str) -> dict[str, Any]:
     if not credential_id:
         return {}
+    if transport == "ssh":
+        return {
+            "transports": {
+                "terminal": {
+                    "ssh": {
+                        "connection": {
+                            "auth": {
+                                "ref_value": credential_id,
+                                "ref_type": "credential",
+                            },
+                            "privilege_elevation": {"sudo": {}},
+                        }
+                    }
+                }
+            }
+        }
+    if transport != "windows":
+        raise ValueError(f"Unsupported credential transport: {transport}")
     return {
         "transports": {
             "windows": {

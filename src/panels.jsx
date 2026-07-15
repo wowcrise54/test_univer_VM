@@ -301,6 +301,7 @@ function TaskBuilderPanel({
       scope_id: "",
       profile_id: "",
       credential_id: "",
+      credential_transport: "windows",
       host_discovery_profile_id: "",
       include_targets: "",
       exclude_targets: "",
@@ -367,7 +368,16 @@ function TaskBuilderPanel({
       description: payload.description || "",
       scope_id: payload.scope || "",
       profile_id: payload.profile || "",
-      credential_id: selectedTask.credential_id || "",
+      credential_id:
+        selectedTask.credential_id ||
+        payload.overrides?.transports?.terminal?.ssh?.connection?.auth
+          ?.ref_value ||
+        payload.overrides?.transports?.windows?.wmi_and_rpc_and_re?.connection
+          ?.auth?.ref_value ||
+        "",
+      credential_transport: payload.overrides?.transports?.terminal?.ssh
+        ? "ssh"
+        : "windows",
       host_discovery_profile_id: payload.hostDiscovery?.profile || "",
       include_targets: (payload.include?.targets || []).join("\n"),
       exclude_targets: (payload.exclude?.targets || []).join("\n"),
@@ -395,6 +405,7 @@ function TaskBuilderPanel({
     scope_id: form.scope_id,
     profile_id: form.profile_id,
     credential_id: form.credential_id || null,
+    credential_transport: form.credential_transport,
     host_discovery_profile_id: form.host_discovery_profile_id || null,
     include_targets: splitTokens(form.include_targets),
     exclude_targets: splitTokens(form.exclude_targets),
@@ -533,12 +544,37 @@ function TaskBuilderPanel({
         <Field label="Профиль сканирования">
           <ProfileSelect
             value={form.profile_id}
-            onChange={(value) => update("profile_id", value)}
+            onChange={(value) => {
+              const profile = lookups.scanner_profiles.find(
+                (item) => String(item.id || "") === String(value || ""),
+              );
+              const profileText = JSON.stringify(profile || {}).toLowerCase();
+              setForm((current) => ({
+                ...current,
+                profile_id: value,
+                credential_transport: /linux|unix|ssh/.test(profileText)
+                  ? "ssh"
+                  : /windows|wmi/.test(profileText)
+                    ? "windows"
+                    : current.credential_transport,
+              }));
+            }}
             profiles={lookups.scanner_profiles}
             emptyLabel="Выберите профиль"
           />
         </Field>
-        <Field label="Учётная запись Windows">
+        <Field label="Тип подключения">
+          <select
+            value={form.credential_transport}
+            onChange={(event) =>
+              update("credential_transport", event.target.value)
+            }
+          >
+            <option value="windows">Windows (WMI/RPC)</option>
+            <option value="ssh">Linux/Unix (SSH + sudo)</option>
+          </select>
+        </Field>
+        <Field label="Учётная запись">
           <select
             value={form.credential_id}
             onChange={(event) => update("credential_id", event.target.value)}

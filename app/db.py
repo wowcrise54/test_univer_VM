@@ -5009,7 +5009,14 @@ def _decode_scan_task(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _credential_id_from_payload(payload: dict[str, Any]) -> str | None:
-    try:
-        return payload["overrides"]["transports"]["windows"]["wmi_and_rpc_and_re"]["connection"]["auth"]["ref_value"]
-    except (KeyError, TypeError):
-        return None
+    transports = payload.get("overrides", {}).get("transports", {})
+    credential_paths = (
+        ("windows", "wmi_and_rpc_and_re"),
+        ("terminal", "ssh"),
+    )
+    for transport, protocol in credential_paths:
+        try:
+            return transports[transport][protocol]["connection"]["auth"]["ref_value"]
+        except (KeyError, TypeError):
+            continue
+    return None

@@ -29,6 +29,7 @@ class ScannerTaskRequest(BaseModel):
     exclude_targets: list[str] = Field(default_factory=list)
     agent_ids: list[str] = Field(default_factory=list)
     credential_id: str | None = None
+    credential_transport: Literal["windows", "ssh"] = "windows"
     host_discovery_enabled: bool = False
     host_discovery_profile_id: str | None = None
     time_zone: str = "+05:00"

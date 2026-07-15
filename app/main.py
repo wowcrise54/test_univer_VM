@@ -2738,6 +2738,7 @@ def scanner_task_payload(payload: ScannerTaskRequest) -> dict[str, Any]:
         exclude_targets=[item.strip() for item in payload.exclude_targets if item.strip()],
         agent_ids=[item.strip() for item in payload.agent_ids if item.strip()],
         credential_id=payload.credential_id,
+        credential_transport=payload.credential_transport,
         host_discovery_enabled=payload.host_discovery_enabled or bool(payload.host_discovery_profile_id),
         host_discovery_profile_id=payload.host_discovery_profile_id,
         time_zone=payload.time_zone,
