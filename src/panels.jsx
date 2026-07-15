@@ -3271,6 +3271,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
       </div>
       {activeTab === "summary" ? (
         <div
+          className="asset-tabpanel"
           role="tabpanel"
           id={`${tabIdPrefix}-panel-summary`}
           aria-labelledby={`${tabIdPrefix}-tab-summary`}
@@ -3290,6 +3291,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
       ) : null}
       {activeTab === "vulnerabilities" ? (
         <div
+          className="asset-tabpanel"
           role="tabpanel"
           id={`${tabIdPrefix}-panel-vulnerabilities`}
           aria-labelledby={`${tabIdPrefix}-tab-vulnerabilities`}
@@ -3306,6 +3308,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
       ) : null}
       {activeTab === "configuration" ? (
         <div
+          className="asset-tabpanel"
           role="tabpanel"
           id={`${tabIdPrefix}-panel-configuration`}
           aria-labelledby={`${tabIdPrefix}-tab-configuration`}

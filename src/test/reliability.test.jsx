@@ -285,6 +285,10 @@ describe("reliability UI", () => {
     const tabButtons = document.querySelectorAll(".asset-tabs button");
 
     fireEvent.click(tabButtons[2]);
+    expect(screen.getByRole("tabpanel")).toHaveClass("asset-tabpanel");
+    expect(
+      screen.getByRole("tabpanel").querySelector(".asset-config-layout"),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
         expect.stringContaining("/api/asset-cards/asset-1/configuration/tree?"),
@@ -305,6 +309,10 @@ describe("reliability UI", () => {
     );
 
     fireEvent.click(tabButtons[1]);
+    expect(screen.getByRole("tabpanel")).toHaveClass("asset-tabpanel");
+    expect(
+      screen.getByRole("tabpanel").querySelector(".asset-vulnerability-pane"),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
         expect.stringContaining(

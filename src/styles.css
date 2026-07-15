@@ -1974,6 +1974,26 @@ td code {
   border-color: #0f8db7;
 }
 
+/* The tab panel must participate in the console's flex layout. Without this
+   bounded middle layer, its scrolling children grow past the viewport while
+   the full-screen modal clips them with overflow: hidden. */
+.asset-tabpanel {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.asset-tabpanel > .asset-summary-grid,
+.asset-tabpanel > .asset-vulnerability-pane,
+.asset-tabpanel > .asset-config-layout,
+.asset-tabpanel > .passport-placeholder {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 .asset-config-layout {
   position: relative;
   display: grid;
@@ -2012,6 +2032,9 @@ td code {
   overflow: auto;
   height: 100%;
   padding: 2px 0 14px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-x pan-y;
 }
 
 .asset-tree-row {
@@ -2135,6 +2158,9 @@ td code {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-x pan-y;
   background: #fff;
 }
 
