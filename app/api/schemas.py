@@ -4,7 +4,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..mpvm_client import ASSET_CARD_PDQL, SOFTWARE_VULN_PDQL, VULNER_PASSPORT_PDQL
+from ..mpvm_client import (
+    ASSET_CARD_PDQL,
+    DOCKER_VULNERABILITY_PDQL,
+    SOFTWARE_VULN_PDQL,
+    VULNER_PASSPORT_PDQL,
+)
 
 
 class ConnectionRequest(BaseModel):
@@ -135,6 +140,7 @@ class AssetCardBuildRequest(BaseModel):
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
     max_depth: int = Field(default=8, ge=0, le=8)
+    docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
     save_to_db: bool = True
 
 
@@ -144,6 +150,7 @@ class AssetCardBuildJobRequest(BaseModel):
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
     max_depth: int = Field(default=8, ge=0, le=8)
+    docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
 
 
 class AssetCardUpdateRequest(BaseModel):
@@ -151,6 +158,7 @@ class AssetCardUpdateRequest(BaseModel):
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
     max_depth: int = Field(default=8, ge=0, le=8)
+    docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
 
 
 class FrontendDiagnosticEvent(BaseModel):

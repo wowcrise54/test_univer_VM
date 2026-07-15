@@ -19,7 +19,7 @@ SeverityFilter = Literal[
     "empty",
     "unrated",
 ]
-SourceFilter = Literal["os", "software"]
+SourceFilter = Literal["os", "software", "docker"]
 SortDirection = Literal["asc", "desc"]
 TrendBucket = Literal["day", "week"]
 

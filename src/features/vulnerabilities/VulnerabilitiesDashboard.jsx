@@ -40,6 +40,7 @@ const SOURCE_LABELS = {
   asset_cards: "Карточки активов",
   os: "Операционная система",
   software: "Установленное ПО",
+  docker: "Docker-образы",
 };
 
 export function VulnerabilitiesDashboard() {
@@ -350,6 +351,7 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
           <option value="">Все источники</option>
           <option value="os">Операционная система</option>
           <option value="software">Установленное ПО</option>
+          <option value="docker">Docker-образы</option>
         </select>
       </Field>
       <div className="vulnerability-filters__actions">

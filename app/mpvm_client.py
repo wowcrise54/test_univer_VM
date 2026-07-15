@@ -4,6 +4,7 @@ import csv
 import io
 import ipaddress
 import json
+import os
 import re
 import threading
 import time
@@ -62,6 +63,31 @@ VulnerPassport.PackageVersion, VulnerPassport.Metrics)
 | limit(0)"""
 
 ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTime) | sort(@Host ASC)"
+
+# MaxPatrol 27.6 exposes container findings through ImageSet assets. Deployments
+# can override this query because installations may carry custom asset-model
+# aliases; the output aliases below are the stable contract used by this app.
+DOCKER_VULNERABILITY_PDQL = os.getenv("MPVM_DOCKER_VULNERABILITY_PDQL") or """filter(${ASSET_SELECTOR})
+| select(
+  Host.@Id as AssetId,
+  ImageSet.@Id as ImageKey,
+  @ImageSet as ImageName,
+  ImageSet.Registry as Registry,
+  ImageSet.Repository as Repository,
+  ImageSet.Tag as Tag,
+  ImageSet.Digest as Digest,
+  ImageSet.OsName as ImageOsName,
+  ImageSet.OsVersion as ImageOsVersion,
+  ImageSet.Packages.Name as PackageName,
+  ImageSet.Packages.Version as PackageVersion,
+  ImageSet.Packages.FixedVersion as FixedVersion,
+  ImageSet.Packages.@Vulners.@Id as VulnerabilityInstanceId,
+  ImageSet.Packages.@Vulners as VulnerabilityId,
+  ImageSet.Packages.@Vulners.CVEs as CVE,
+  ImageSet.Packages.@Vulners.SeverityRating as Severity,
+  ImageSet.Packages.@Vulners.Score as CvssScore,
+  ImageSet.Packages.@Vulners.Status as Status
+)"""
 
 ASSET_ID_PDQL = "select(Host.@Id as AssetId, @Host as HostName, Host.IpAddress as IpAddress)"
 ASSET_RESOLUTION_PDQL = (

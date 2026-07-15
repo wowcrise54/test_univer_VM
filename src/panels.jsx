@@ -1536,6 +1536,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     limit_per_collection: "5000",
     max_items_per_collection: "5000",
     max_depth: "8",
+    docker_vulnerability_pdql: "",
     save_to_db: true,
   });
   const [candidates, setCandidates] = useState([]);
@@ -1575,6 +1576,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     setForm((value) => ({
       ...value,
       pdql: value.pdql || defaults.asset_card_pdql || "",
+      docker_vulnerability_pdql:
+        value.docker_vulnerability_pdql ||
+        defaults.docker_vulnerability_pdql ||
+        "",
       utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
     }));
   }, [defaults]);
@@ -1790,6 +1795,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           50000,
         ),
         max_depth: clampNumber(form.max_depth, 8, 0, 8),
+        docker_vulnerability_pdql: form.docker_vulnerability_pdql,
       };
       if (form.save_to_db) {
         const result = await api("/api/asset-cards/build-jobs", {
@@ -2025,6 +2031,16 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
 
       <div className="asset-card-builder">
+        <Field label="PDQL уязвимостей Docker-образов">
+          <textarea
+            className="code-input"
+            rows={8}
+            value={form.docker_vulnerability_pdql}
+            onChange={(event) =>
+              update("docker_vulnerability_pdql", event.target.value)
+            }
+          />
+        </Field>
         <div className="form-grid form-grid--two">
           <Field label="Выбранный asset_id">
             <input
@@ -3548,7 +3564,11 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
       <div className="asset-vulnerability-toolbar">
         {sources.map((source) => (
           <span key={source.source || source.collection_type}>
-            {source.source === "os" ? "Уязвимости ОС" : "Уязвимости ПО"}:{" "}
+            {source.source === "os"
+              ? "Уязвимости ОС"
+              : source.source === "docker"
+                ? "Docker-образы"
+                : "Уязвимости ПО"}:{" "}
             <strong>{formatCount(sourceCount(source))}</strong>
           </span>
         ))}
@@ -3770,6 +3790,27 @@ function assetGroupKey(source, group, index) {
   return `${source?.source || group?.source || "source"}:${group?.collection_id || index}`;
 }
 
+function dockerPackageSections(rows) {
+  const sections = new Map();
+  rows.forEach((finding) => {
+    const packageName = finding.package_name || "Пакет не определён";
+    const packageVersion = finding.package_version || "";
+    const fixedVersion = finding.fixed_version || "";
+    const key = `${packageName}\u0000${packageVersion}\u0000${fixedVersion}`;
+    if (!sections.has(key)) {
+      sections.set(key, {
+        key,
+        package_name: packageName,
+        package_version: packageVersion,
+        fixed_version: fixedVersion,
+        rows: [],
+      });
+    }
+    sections.get(key).rows.push(finding);
+  });
+  return Array.from(sections.values());
+}
+
 function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
   const [snapshot, setSnapshot] = useState({ header: {}, sources: [] });
   const [loadingGroups, setLoadingGroups] = useState(false);
@@ -3779,7 +3820,18 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
   const [findingsByGroup, setFindingsByGroup] = useState({});
   const [loadingFindings, setLoadingFindings] = useState({});
   const [tableSort, toggleTableSort] = useTableSort();
-  const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+  const [vulnerabilityView, setVulnerabilityView] = useState("regular");
+  const allSources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+  const dockerSource = allSources.find((source) => source.source === "docker");
+  const dockerCount = (dockerSource?.groups || []).reduce(
+    (total, group) => total + (Number(group.vulnerabilities_count) || 0),
+    0,
+  );
+  const sources = allSources.filter((source) =>
+    vulnerabilityView === "docker"
+      ? source.source === "docker"
+      : source.source !== "docker",
+  );
   const header = snapshot.header || {};
   const collapsedSourceSet = useMemo(
     () => new Set(collapsedSources),
@@ -3790,8 +3842,16 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
     [expandedGroups],
   );
   const sourceKeys = useMemo(() => sources.map(assetSourceKey), [sources]);
-  const loadedFindingCount = Object.values(findingsByGroup).reduce(
-    (total, page) => total + (page?.rows?.length || 0),
+  const loadedFindingCount = sources.reduce(
+    (total, source) =>
+      total +
+      (source.groups || []).reduce(
+        (groupTotal, group, groupIndex) =>
+          groupTotal +
+          (findingsByGroup[assetGroupKey(source, group, groupIndex)]?.rows
+            ?.length || 0),
+        0,
+      ),
     0,
   );
   const sourceCount = (source) =>
@@ -3808,6 +3868,7 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
     setFindingsByGroup({});
     setLoadingFindings({});
     setError("");
+    setVulnerabilityView("regular");
     if (!assetId) return undefined;
     setLoadingGroups(true);
     api(
@@ -3896,30 +3957,64 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       className="asset-vulnerability-pane"
       aria-label="Уязвимости актива"
     >
+      <div className="asset-vulnerability-subtabs" role="tablist" aria-label="Тип уязвимостей">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={vulnerabilityView === "regular"}
+          className={vulnerabilityView === "regular" ? "is-active" : ""}
+          onClick={() => setVulnerabilityView("regular")}
+        >
+          ОС и ПО
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={vulnerabilityView === "docker"}
+          className={vulnerabilityView === "docker" ? "is-active" : ""}
+          onClick={() => setVulnerabilityView("docker")}
+        >
+          Docker-образы · {formatCount(dockerCount)}
+        </button>
+      </div>
       <div className="asset-vulnerability-toolbar">
         {sources.map((source, index) => (
           <span key={assetSourceKey(source, index)}>
-            {source.source === "os" ? "Уязвимости ОС" : "Уязвимости ПО"}:{" "}
+            {source.source === "os"
+              ? "Уязвимости ОС"
+              : source.source === "docker"
+                ? "Docker-образы"
+                : "Уязвимости ПО"}:{" "}
             <strong>{formatCount(sourceCount(source))}</strong>
           </span>
         ))}
-        <span>
-          Сетевые сервисы:{" "}
-          <strong>
-            {formatCount(header.network_services_vulnerabilities_count || 0)}
-          </strong>
-        </span>
+        {vulnerabilityView === "regular" ? (
+          <span>
+            Сетевые сервисы:{" "}
+            <strong>
+              {formatCount(header.network_services_vulnerabilities_count || 0)}
+            </strong>
+          </span>
+        ) : null}
       </div>
       <div className="asset-vulnerability-heading">
         <div>
-          <strong>Уязвимости</strong>
+          <strong>{vulnerabilityView === "docker" ? "Уязвимости Docker-образов" : "Уязвимости"}</strong>
           <span>
             Загружено {formatCount(loadedFindingCount)} из{" "}
             {formatCount(
-              header.os_soft_vulnerabilities_count || loadedFindingCount,
+              vulnerabilityView === "docker"
+                ? dockerCount
+                : header.os_soft_vulnerabilities_count || loadedFindingCount,
             )}{" "}
             уязвимостей.
           </span>
+          {vulnerabilityView === "docker" &&
+          dockerSource?.status === "fallback" ? (
+            <span className="asset-docker-source-status">
+              Docker-PDQL недоступен — использованы структурированные данные карточки.
+            </span>
+          ) : null}
         </div>
         {sourceKeys.length ? (
           <div className="asset-vulnerability-controls">
@@ -3997,7 +4092,9 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                           {source.title ||
                             (source.source === "os"
                               ? "Уязвимости ОС"
-                              : "Уязвимости программного обеспечения")}{" "}
+                              : source.source === "docker"
+                                ? "Docker-образы"
+                                : "Уязвимости программного обеспечения")}{" "}
                           ({formatCount(sourceCount(source))})
                         </span>
                       </button>
@@ -4015,6 +4112,13 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                         const rows = sortRows(page.rows || [], tableSort, {
                           name: (finding) => finding.name || finding.cve_name,
                         });
+                        const displayedRows =
+                          source.source === "docker"
+                            ? dockerPackageSections(rows).flatMap((section) => [
+                                { ...section, __dockerPackage: true },
+                                ...section.rows,
+                              ])
+                            : rows;
                         return (
                           <React.Fragment key={key}>
                             <tr className="asset-vulnerability-group">
@@ -4048,6 +4152,14 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                   {group.truncated ? (
                                     <small>Показана неполная коллекция</small>
                                   ) : null}
+                                  {source.source === "docker" ? (
+                                    <small className="asset-docker-image-meta">
+                                      {[group.image_os_name, group.image_os_version]
+                                        .filter(Boolean)
+                                        .join(" ") || "ОС образа не определена"}
+                                      {group.digest ? ` · ${group.digest}` : ""}
+                                    </small>
+                                  ) : null}
                                 </button>
                               </td>
                               <td>
@@ -4056,13 +4168,41 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                               <td />
                             </tr>
                             {expanded
-                              ? rows.map((finding, findingIndex) => {
+                              ? displayedRows.map((finding, findingIndex) => {
+                                  if (finding.__dockerPackage) {
+                                    return (
+                                      <tr
+                                        className="asset-docker-package"
+                                        key={`package-${finding.key}`}
+                                      >
+                                        <td colSpan={3}>
+                                          <span className="asset-vulnerability-leaf">
+                                            ›
+                                          </span>
+                                          <strong>{finding.package_name}</strong>
+                                          {finding.package_version
+                                            ? ` ${finding.package_version}`
+                                            : ""}
+                                          {finding.fixed_version
+                                            ? ` → ${finding.fixed_version}`
+                                            : ""}
+                                          <small>
+                                            {formatCount(finding.rows.length)}
+                                          </small>
+                                        </td>
+                                      </tr>
+                                    );
+                                  }
                                   const passports =
                                     assetFindingPassports(finding);
                                   const passport = passports[0];
                                   return (
                                     <tr
-                                      className="asset-vulnerability-finding"
+                                      className={
+                                        source.source === "docker"
+                                          ? "asset-vulnerability-finding asset-docker-finding"
+                                          : "asset-vulnerability-finding"
+                                      }
                                       key={
                                         finding.vulnerability_instance_id ||
                                         `${group.collection_id}-${findingIndex}`
@@ -4153,7 +4293,11 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
             !sources.some((source) => (source.groups || []).length) ? (
               <tr>
                 <td colSpan={3} className="empty-cell">
-                  Уязвимостей в сохранённом снимке нет.
+                  {vulnerabilityView === "docker"
+                    ? dockerSource?.status === "unavailable"
+                      ? "Docker-PDQL недоступен, структурированные данные об образах не найдены."
+                      : "Уязвимости Docker-образов для этого актива не найдены."
+                    : "Уязвимостей в сохранённом снимке нет."}
                 </td>
               </tr>
             ) : null}

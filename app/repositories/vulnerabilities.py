@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from .. import db
 
-VulnerabilitySource = Literal["os", "software"]
+VulnerabilitySource = Literal["os", "software", "docker"]
 VULNERABILITY_SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 VULNERABILITY_TRENDS_SCOPE = "all_asset_cards"
 VULNERABILITY_TRENDS_RETENTION_DAYS = 90

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import psycopg
 from fastapi import BackgroundTasks
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app import db
 from app import main
@@ -467,6 +468,139 @@ class AssetCardJobApiTests(unittest.TestCase):
 
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def test_build_job_rejects_invalid_docker_pdql_with_api_error_code(self):
+        with patch.object(
+            main.app_auth, "get_session_user", return_value={"id": 1, "role": "operator"}
+        ):
+            response = TestClient(main.app).post(
+                "/api/asset-cards/build-jobs",
+                json={
+                    "asset_id": "asset-1",
+                    "docker_vulnerability_pdql": "select(@ImageSet as ImageName)",
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"]["code"], "INVALID_DOCKER_PDQL")
+
+    def test_docker_pdql_contract_requires_placeholder_and_aliases(self):
+        valid = main.validate_docker_vulnerability_pdql(main.DOCKER_VULNERABILITY_PDQL)
+        self.assertIn("${ASSET_SELECTOR}", valid)
+
+        with self.assertRaises(HTTPException) as caught:
+            main.validate_docker_vulnerability_pdql("select(@ImageSet as ImageName)")
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["code"], "INVALID_DOCKER_PDQL")
+        self.assertIn("ImageKey", caught.exception.detail["required_aliases"])
+
+    def test_docker_imageset_records_win_over_structured_software_fallback(self):
+        sources = [{
+            "source": "software",
+            "groups": [{
+                "collection_id": "software",
+                "items": [{
+                    "vulnerability_instance_id": "finding-1",
+                    "vulnerability_id": "vuln-1",
+                    "cve_name": "CVE-2026-1",
+                    "package_name": "fallback-package",
+                    "docker_image": {"image_key": "image-1", "repository": "team/api", "tag": "1"},
+                }],
+            }],
+        }]
+        records = [{
+            "AssetId": "asset-1",
+            "ImageKey": "image-1",
+            "ImageName": "api",
+            "Repository": "team/api",
+            "Tag": "1",
+            "VulnerabilityInstanceId": "finding-1",
+            "VulnerabilityId": "vuln-1",
+            "CVE": "CVE-2026-1",
+            "Severity": "high",
+            "CvssScore": 8.2,
+            "PackageName": "primary-package",
+            "PackageVersion": "1.0",
+        }]
+
+        def remote_call(_operation, label):
+            return "pdql-token" if label == "docker_pdql_token" else {"records": records}
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token",
+            asset_id="asset-1",
+            asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL,
+            max_items=100,
+            sources=sources,
+            remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(source["status"], "imageset")
+        self.assertEqual(source["vulnerabilities_count"], 1)
+        self.assertEqual(source["groups"][0]["items"][0]["package_name"], "primary-package")
+        self.assertEqual(sources[0]["groups"], [])
+
+    def test_docker_dedupe_uses_vulnerability_and_package_when_instance_is_missing(self):
+        sources = [{
+            "source": "software",
+            "groups": [{
+                "collection_id": "soft-1",
+                "items": [{
+                    "vulnerability_id": "vuln-1",
+                    "cve_name": "CVE-2026-1",
+                    "package_name": "openssl",
+                    "package_version": "1.0",
+                    "docker_image": {"image_key": "image-1", "repository": "team/api", "tag": "1"},
+                }],
+            }],
+        }]
+        records = [{
+            "AssetId": "asset-1", "ImageKey": "image-1", "ImageName": "api",
+            "VulnerabilityInstanceId": None, "VulnerabilityId": "vuln-1",
+            "CVE": None, "Severity": "high", "CvssScore": 8.1,
+            "Repository": "team/api", "Tag": "1", "PackageName": "openssl",
+            "PackageVersion": "1.0",
+        }]
+
+        def remote_call(_operation, label):
+            return "pdql-token" if label == "docker_pdql_token" else {"records": records}
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id="asset-1", asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=100,
+            sources=sources, remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(source["vulnerabilities_count"], 1)
+        finding = source["groups"][0]["items"][0]
+        self.assertTrue(finding["vulnerability_instance_id"].startswith("docker:"))
+
+    def test_docker_fallback_is_used_without_breaking_the_card(self):
+        normalized = main.normalize_asset_vulnerability_item({
+            "id": "finding-2",
+            "cveName": "CVE-2026-2",
+            "image": {"id": "image-2", "repository": "team/worker", "tag": "latest"},
+            "package": {"name": "openssl", "version": "3.0"},
+        })
+        sources = [{"source": "software", "groups": [{"collection_id": "soft", "items": [normalized]}]}]
+
+        def unavailable(_operation, _label):
+            raise RuntimeError("not supported")
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id="asset-1", asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=100,
+            sources=sources, remote_call=unavailable,
+        )
+
+        self.assertEqual(source["status"], "fallback")
+        self.assertTrue(source["fallback_used"])
+        self.assertEqual(source["groups"][0]["name"], "team/worker:latest")
+        self.assertIn("not supported", warning)
+
     def test_duplicate_vulnerability_instance_ids_are_removed_before_copy(self):
         first_group = {
             "source": "os",
@@ -818,6 +952,8 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertIn("PARTITION BY finding_id", ranking_sql)
         self.assertIn("passport.os_family = finding.os_family", ranking_sql)
         self.assertIn("cve_os_version", ranking_sql)
+        self.assertIn("image_os_name", ranking_sql)
+        self.assertIn("image_os_version", ranking_sql)
 
     def test_restart_interrupts_all_active_asset_card_jobs(self):
         connection = MagicMock()

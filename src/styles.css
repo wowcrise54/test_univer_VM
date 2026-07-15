@@ -2324,6 +2324,33 @@ td code {
   background: #fff;
 }
 
+.asset-vulnerability-subtabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  border-bottom: 1px solid #dfe8ef;
+  padding: 7px 14px;
+  background: #f7fafc;
+}
+
+.asset-vulnerability-subtabs button {
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 11px;
+  color: #52637a;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.asset-vulnerability-subtabs button.is-active {
+  border-color: #b9d7e5;
+  color: #176b90;
+  background: #e8f4fa;
+}
+
 .asset-vulnerability-toolbar {
   display: flex;
   flex: 0 0 auto;
@@ -2495,9 +2522,52 @@ td code {
   font-size: 10px;
 }
 
+.asset-vulnerability-group .asset-docker-image-meta {
+  display: block;
+  overflow: hidden;
+  max-width: min(720px, 70vw);
+  margin: 3px 0 0 15px;
+  color: #738394;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-docker-package-meta {
+  display: block;
+  margin: 2px 0 0 15px;
+  color: #718294;
+  font-size: 10px;
+  font-weight: 560;
+}
+
+.asset-docker-source-status {
+  color: #9b6200;
+  font-weight: 650;
+}
+
+.asset-docker-package td {
+  padding-left: 46px;
+  color: #465a70;
+  background: #f8fafc;
+}
+
+.asset-docker-package strong {
+  font-weight: 720;
+}
+
+.asset-docker-package small {
+  margin-left: 8px;
+  color: #78899a;
+}
+
 .asset-vulnerability-finding td:first-child {
   padding-left: 48px;
   color: #287aa3;
+}
+
+.asset-docker-finding td:first-child {
+  padding-left: 62px;
 }
 
 .asset-vulnerability-finding:hover td {

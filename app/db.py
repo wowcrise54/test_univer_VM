@@ -3284,10 +3284,20 @@ def reconcile_asset_card_vulnerability_passport_links(
                 finding.id AS finding_id,
                 NULLIF(TRIM(finding.vulnerability_id), '') AS vulnerability_id,
                 UPPER(NULLIF(TRIM(finding.cve_name), '')) AS cve_name,
-                LOWER(COALESCE(card.os_name, '')) AS os_name,
-                LOWER(COALESCE(card.os_version, '')) AS os_version
+                LOWER(COALESCE(
+                    NULLIF((vulnerability_group.group_json::jsonb ->> 'image_os_name'), ''),
+                    card.os_name,
+                    ''
+                )) AS os_name,
+                LOWER(COALESCE(
+                    NULLIF((vulnerability_group.group_json::jsonb ->> 'image_os_version'), ''),
+                    card.os_version,
+                    ''
+                )) AS os_version
             FROM asset_card_vulnerabilities AS finding
             JOIN asset_cards AS card ON card.asset_id = finding.asset_id
+            JOIN asset_card_vulnerability_groups AS vulnerability_group
+              ON vulnerability_group.id = finding.group_id
             WHERE (%s::text IS NULL OR finding.asset_id = %s)
         ), finding_context AS (
             SELECT finding_base.*,
@@ -3473,7 +3483,11 @@ def load_asset_card_vulnerabilities(
             source = {
                 "source": source_type,
                 "collection_type": group_row.get("collection_type"),
-                "title": "Уязвимости ОС" if source_type == "os" else "Уязвимости программного обеспечения",
+                "title": (
+                    "Уязвимости ОС" if source_type == "os"
+                    else "Docker-образы" if source_type == "docker"
+                    else "Уязвимости программного обеспечения"
+                ),
                 "groups": [],
             }
             source_by_kind[source_type] = source
@@ -4235,7 +4249,11 @@ def list_asset_card_vulnerability_groups(asset_id: str) -> dict[str, Any] | None
             source = {
                 "source": source_type,
                 "collection_type": row.get("collection_type"),
-                "title": "OS vulnerabilities" if source_type == "os" else "Software vulnerabilities",
+                "title": (
+                    "OS vulnerabilities" if source_type == "os"
+                    else "Docker images" if source_type == "docker"
+                    else "Software vulnerabilities"
+                ),
                 "groups": [],
             }
             source_by_kind[source_type] = source

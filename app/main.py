@@ -90,6 +90,7 @@ from .core import AppContainer, get_settings
 from .factory import create_app
 from .mpvm_client import (
     ASSET_CARD_PDQL,
+    DOCKER_VULNERABILITY_PDQL,
     SOFTWARE_VULN_PDQL,
     VULNER_PASSPORT_PDQL,
     AuthConfig,
@@ -1151,6 +1152,7 @@ def defaults() -> dict[str, Any]:
         "software_vuln_pdql": SOFTWARE_VULN_PDQL,
         "vulnerability_passport_pdql": VULNER_PASSPORT_PDQL,
         "asset_card_pdql": ASSET_CARD_PDQL,
+        "docker_vulnerability_pdql": DOCKER_VULNERABILITY_PDQL,
         "sample_csv_exists": SAMPLE_CSV.exists(),
     }
 
@@ -1600,6 +1602,7 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
     asset_id = payload.asset_id.strip()
     if not asset_id:
         raise HTTPException(status_code=422, detail="asset_id is required")
+    docker_pdql = validate_docker_vulnerability_pdql(payload.docker_vulnerability_pdql)
 
     try:
         card = build_asset_card(
@@ -1610,6 +1613,7 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
             limit_per_collection=payload.limit_per_collection,
             max_items_per_collection=payload.max_items_per_collection,
             max_depth=payload.max_depth,
+            docker_vulnerability_pdql=docker_pdql,
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
@@ -1643,6 +1647,7 @@ def create_asset_card_build_job(
     asset_id = payload.asset_id.strip()
     if not asset_id:
         raise HTTPException(status_code=422, detail="asset_id is required")
+    docker_pdql = validate_docker_vulnerability_pdql(payload.docker_vulnerability_pdql)
     active_job = db.get_active_asset_card_build_job()
     if active_job:
         raise HTTPException(
@@ -1652,6 +1657,7 @@ def create_asset_card_build_job(
     client, token = require_mpvm()
     request = payload.model_dump()
     request["asset_id"] = asset_id
+    request["docker_vulnerability_pdql"] = docker_pdql
     job_id = str(uuid.uuid4())
     trace_id = current_trace_id() or new_trace_id()
     try:
@@ -1829,6 +1835,48 @@ def refresh_asset_card_by_scan(
         "postprocess": postprocess,
         "operation_id": postprocess_run_id,
     }
+
+
+DOCKER_PDQL_REQUIRED_ALIASES = (
+    "AssetId",
+    "ImageKey",
+    "ImageName",
+    "VulnerabilityInstanceId",
+    "VulnerabilityId",
+    "CVE",
+    "Severity",
+    "CvssScore",
+)
+
+
+def validate_docker_vulnerability_pdql(pdql: str) -> str:
+    value = str(pdql or "").strip()
+    aliases = {
+        match.group(1).lower()
+        for match in re.finditer(r"\bas\s+[\"']?([A-Za-z][A-Za-z0-9_]*)[\"']?", value, re.IGNORECASE)
+    }
+    missing = [alias for alias in DOCKER_PDQL_REQUIRED_ALIASES if alias.lower() not in aliases]
+    problems: list[str] = []
+    if "${ASSET_SELECTOR}" not in value:
+        problems.append("placeholder ${ASSET_SELECTOR} is required")
+    if missing:
+        problems.append(f"missing aliases: {', '.join(missing)}")
+    if problems:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_DOCKER_PDQL",
+                "message": "; ".join(problems),
+                "required_aliases": list(DOCKER_PDQL_REQUIRED_ALIASES),
+            },
+        )
+    return value
+
+
+def render_docker_vulnerability_pdql(template: str, asset_id: str, asset_type: str | None) -> str:
+    asset_alias = "ImageSet" if str(asset_type or "").lower() == "imageset" else "Host"
+    selector = f"{asset_alias}.@Id = {json.dumps(str(asset_id), ensure_ascii=False)}"
+    return template.replace("${ASSET_SELECTOR}", selector)
 
 
 def resume_connected_workflows() -> None:
@@ -2074,6 +2122,9 @@ def _run_asset_card_build_job(
             limit_per_collection=int(request.get("limit_per_collection") or 5000),
             max_items_per_collection=int(request.get("max_items_per_collection") or 5000),
             max_depth=int(request.get("max_depth") or 8),
+            docker_vulnerability_pdql=validate_docker_vulnerability_pdql(
+                str(request.get("docker_vulnerability_pdql") or DOCKER_VULNERABILITY_PDQL)
+            ),
             request_executor=executor,
             stage_callback=set_stage,
         )
@@ -2304,6 +2355,7 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
 
     client, token = require_mpvm()
+    docker_pdql = validate_docker_vulnerability_pdql(payload.docker_vulnerability_pdql)
     try:
         card = build_asset_card(
             client=client,
@@ -2313,6 +2365,7 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
             limit_per_collection=payload.limit_per_collection,
             max_items_per_collection=payload.max_items_per_collection,
             max_depth=payload.max_depth,
+            docker_vulnerability_pdql=docker_pdql,
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
@@ -4179,6 +4232,7 @@ def build_asset_card(
     limit_per_collection: int,
     max_items_per_collection: int,
     max_depth: int,
+    docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL,
     request_executor: AssetCardRequestExecutor | None = None,
     stage_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -4790,6 +4844,9 @@ def build_asset_card(
         "max_items_per_collection": max_items_per_collection,
         "stats": stats,
         "request_executor": request_executor,
+        "asset_id": root_asset_id,
+        "asset_type": clean_text(root.get("type")),
+        "docker_vulnerability_pdql": docker_vulnerability_pdql,
     }
     phase_duration_ms: dict[str, float] = {}
 
@@ -4906,6 +4963,9 @@ def build_asset_vulnerability_snapshot(
     max_items_per_collection: int,
     stats: dict[str, Any],
     request_executor: AssetCardRequestExecutor | None = None,
+    asset_id: str,
+    asset_type: str | None,
+    docker_vulnerability_pdql: str,
 ) -> dict[str, Any]:
     """Load the two widget trees and expand every software/OS vulnerability collection.
 
@@ -5095,6 +5155,27 @@ def build_asset_vulnerability_snapshot(
                 f"{reported_count or 'unknown'} vulnerability item(s)"
             )
 
+    def docker_remote_call(operation: Callable[[MpVmClient], Any], label: str) -> Any:
+        if request_executor:
+            return request_executor.call(operation, label=label)
+        if client is None:
+            raise RuntimeError("A direct MP VM client is required for Docker vulnerability queries.")
+        return operation(client)
+
+    docker_source, docker_warning = build_docker_vulnerability_source(
+        token=token,
+        asset_id=asset_id,
+        asset_type=asset_type,
+        pdql_template=docker_vulnerability_pdql,
+        max_items=max_items,
+        sources=snapshot["sources"],
+        remote_call=docker_remote_call,
+    )
+    snapshot["sources"].append(docker_source)
+    snapshot["header"]["docker_vulnerabilities_count"] = docker_source["vulnerabilities_count"]
+    if docker_warning:
+        warn(docker_warning)
+
     snapshot["stats"]["groups"] = sum(len(source["groups"]) for source in snapshot["sources"])
     snapshot["stats"]["findings"] = sum(
         len(group["items"])
@@ -5118,7 +5199,22 @@ def vulnerability_collection_id(item: dict[str, Any]) -> str:
 
 def normalize_asset_vulnerability_item(item: dict[str, Any]) -> dict[str, Any]:
     description = item.get("description") if isinstance(item.get("description"), dict) else {}
-    return {
+    image = next(
+        (value for value in (item.get("image"), item.get("imageSet"), item.get("containerImage")) if isinstance(value, dict)),
+        {},
+    )
+    package = item.get("package") if isinstance(item.get("package"), dict) else {}
+    docker_image = {
+        "image_key": clean_text(first_present(item.get("imageKey"), item.get("imageSetId"), item.get("imageId"), image.get("key"), image.get("id"), image.get("objectId"))),
+        "image_name": clean_text(first_present(item.get("imageName"), item.get("imageSetName"), image.get("name"), image.get("displayName"))),
+        "registry": clean_text(first_present(item.get("registry"), image.get("registry"))),
+        "repository": clean_text(first_present(item.get("repository"), image.get("repository"))),
+        "tag": clean_text(first_present(item.get("tag"), image.get("tag"))),
+        "digest": clean_text(first_present(item.get("digest"), item.get("imageDigest"), image.get("digest"))),
+        "image_os_name": clean_text(first_present(item.get("imageOsName"), image.get("osName"))),
+        "image_os_version": clean_text(first_present(item.get("imageOsVersion"), image.get("osVersion"))),
+    }
+    normalized = {
         "level": item.get("level"),
         "name": clean_text(item.get("name")),
         "cve_name": clean_text(first_present(item.get("cveName"), item.get("cve"))),
@@ -5127,7 +5223,211 @@ def normalize_asset_vulnerability_item(item: dict[str, Any]) -> dict[str, Any]:
         "object_id": clean_text(item.get("objectId")),
         "vulnerability_id": clean_text(first_present(item.get("vulnerId"), item.get("vulnerabilityId"))),
         "vulnerability_instance_id": clean_text(first_present(item.get("vulnerabilityInstanceId"), item.get("id"))),
+        "package_name": clean_text(first_present(item.get("packageName"), package.get("name"))),
+        "package_version": clean_text(first_present(item.get("packageVersion"), package.get("version"))),
+        "fixed_version": clean_text(first_present(item.get("fixedVersion"), package.get("fixedVersion"))),
+        "status": clean_text(item.get("status")),
     }
+    if any(docker_image.values()):
+        normalized["docker_image"] = docker_image
+    return normalized
+
+
+def _docker_record_value(record: dict[str, Any], alias: str) -> Any:
+    normalized_alias = re.sub(r"[^a-z0-9]", "", alias.lower())
+    for key, value in record.items():
+        if re.sub(r"[^a-z0-9]", "", str(key).lower()) != normalized_alias:
+            continue
+        if isinstance(value, dict):
+            return first_present(value.get("value"), value.get("displayName"), value.get("name"), value.get("id"), value.get("key"))
+        if isinstance(value, list):
+            return first_present(*value)
+        return value
+    return None
+
+
+def normalize_docker_vulnerability_record(record: dict[str, Any]) -> dict[str, Any]:
+    image = {
+        "image_key": clean_text(_docker_record_value(record, "ImageKey")),
+        "image_name": clean_text(_docker_record_value(record, "ImageName")),
+        "registry": clean_text(_docker_record_value(record, "Registry")),
+        "repository": clean_text(_docker_record_value(record, "Repository")),
+        "tag": clean_text(_docker_record_value(record, "Tag")),
+        "digest": clean_text(_docker_record_value(record, "Digest")),
+        "image_os_name": clean_text(_docker_record_value(record, "ImageOsName")),
+        "image_os_version": clean_text(_docker_record_value(record, "ImageOsVersion")),
+    }
+    repository = "/".join(filter(None, (image["registry"], image["repository"])))
+    image["image_key"] = clean_text(first_present(
+        image["image_key"], image["digest"], repository + (f":{image['tag']}" if image["tag"] else ""),
+    ))
+    package_name = clean_text(_docker_record_value(record, "PackageName"))
+    package_version = clean_text(_docker_record_value(record, "PackageVersion"))
+    cve_name = clean_text(_docker_record_value(record, "CVE"))
+    vulnerability_id = clean_text(_docker_record_value(record, "VulnerabilityId"))
+    instance_id = clean_text(_docker_record_value(record, "VulnerabilityInstanceId"))
+    return {
+        "asset_id": clean_text(_docker_record_value(record, "AssetId")),
+        "level": clean_text(_docker_record_value(record, "Severity")),
+        "name": clean_text(first_present(vulnerability_id, cve_name, package_name)),
+        "cve_name": cve_name,
+        "cvss_score": number_or_none(_docker_record_value(record, "CvssScore")),
+        "vulnerability_id": vulnerability_id,
+        "vulnerability_instance_id": instance_id,
+        "package_name": package_name,
+        "package_version": package_version,
+        "fixed_version": clean_text(_docker_record_value(record, "FixedVersion")),
+        "status": clean_text(_docker_record_value(record, "Status")),
+        "docker_image": image,
+    }
+
+
+def _docker_image_label(image: dict[str, Any]) -> str:
+    repository = "/".join(filter(None, (image.get("registry"), image.get("repository"))))
+    if repository:
+        return repository + (f":{image.get('tag')}" if image.get("tag") else "")
+    return clean_text(first_present(image.get("image_name"), image.get("digest"), image.get("image_key"), "Docker image"))
+
+
+def _docker_finding_key(finding: dict[str, Any]) -> str:
+    instance_id = clean_text(finding.get("vulnerability_instance_id"))
+    if instance_id:
+        return f"instance:{instance_id}"
+    vulnerability_id = clean_text(finding.get("vulnerability_id"))
+    package_name = clean_text(finding.get("package_name"))
+    if vulnerability_id:
+        return f"vulnerability:{vulnerability_id}|package:{package_name}"
+    return "|".join((
+        f"cve:{clean_text(finding.get('cve_name'))}",
+        f"package:{package_name}",
+        f"version:{clean_text(finding.get('package_version'))}",
+    ))
+
+
+def _docker_finding_candidate_keys(finding: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    instance_id = clean_text(finding.get("vulnerability_instance_id"))
+    vulnerability_id = clean_text(finding.get("vulnerability_id"))
+    cve_name = clean_text(finding.get("cve_name"))
+    package_name = clean_text(finding.get("package_name"))
+    package_version = clean_text(finding.get("package_version"))
+    if instance_id:
+        keys.add(f"instance:{instance_id}")
+    if vulnerability_id:
+        keys.add(f"vulnerability:{vulnerability_id}|package:{package_name}")
+    if cve_name:
+        keys.add(f"cve:{cve_name}|package:{package_name}|version:{package_version}")
+    return keys or {_docker_finding_key(finding)}
+
+
+def _docker_groups(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    seen: dict[str, set[str]] = {}
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    for finding in findings:
+        image = finding.get("docker_image") if isinstance(finding.get("docker_image"), dict) else {}
+        key = clean_text(first_present(image.get("image_key"), image.get("digest"), _docker_image_label(image)))
+        if not key:
+            continue
+        group = groups.setdefault(key, {
+            "source": "docker", "collection_type": "ImageSetVulnerabilities", "collection_id": key,
+            "name": _docker_image_label(image), "level": None, "vulnerabilities_count": 0,
+            "cvss_score": None, "order": len(groups), "truncated": False, **image, "items": [],
+        })
+        finding_key = _docker_finding_key(finding)
+        if finding_key and finding_key in seen.setdefault(key, set()):
+            continue
+        if finding_key:
+            seen[key].add(finding_key)
+        group["items"].append(finding)
+        level = clean_text(finding.get("level")).lower()
+        if severity_rank.get(level, 0) > severity_rank.get(clean_text(group.get("level")).lower(), 0):
+            group["level"] = level
+        score = number_or_none(finding.get("cvss_score"))
+        if score is not None and (group["cvss_score"] is None or score > group["cvss_score"]):
+            group["cvss_score"] = score
+    for group in groups.values():
+        group["vulnerabilities_count"] = len(group["items"])
+    return list(groups.values())
+
+
+def _extract_docker_fallback(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for source in sources:
+        if source.get("source") != "software":
+            continue
+        retained_groups: list[dict[str, Any]] = []
+        for group in source.get("groups") or []:
+            original_items = group.get("items") or []
+            retained: list[dict[str, Any]] = []
+            for finding in original_items:
+                image = finding.get("docker_image") if isinstance(finding, dict) else None
+                if image and any(image.get(key) for key in ("image_key", "digest", "repository")):
+                    findings.append(finding)
+                else:
+                    retained.append(finding)
+            group["items"] = retained
+            if original_items:
+                group["vulnerabilities_count"] = len(retained)
+            if retained or not original_items:
+                retained_groups.append(group)
+        source["groups"] = retained_groups
+        source["vulnerabilities_count"] = sum(
+            int(group.get("vulnerabilities_count") or 0) for group in retained_groups
+        )
+    return findings
+
+
+def build_docker_vulnerability_source(
+    *, token: str, asset_id: str, asset_type: str | None, pdql_template: str,
+    max_items: int, sources: list[dict[str, Any]],
+    remote_call: Callable[[Callable[[MpVmClient], Any], str], Any],
+) -> tuple[dict[str, Any], str | None]:
+    fallback = _extract_docker_fallback(sources)
+    primary: list[dict[str, Any]] = []
+    warning: str | None = None
+    try:
+        pdql = render_docker_vulnerability_pdql(pdql_template, asset_id, asset_type)
+        pdql_token = remote_call(lambda remote: remote.create_pdql_token(token, pdql), "docker_pdql_token")
+        offset = 0
+        while offset < max_items:
+            page_limit = min(1000, max_items - offset)
+            response = remote_call(
+                lambda remote, offset=offset, page_limit=page_limit: remote.fetch_asset_grid_data(
+                    token, pdql_token, limit=page_limit, offset=offset
+                ),
+                "docker_pdql_page",
+            )
+            rows = extract_asset_grid_records(response)
+            primary.extend(normalize_docker_vulnerability_record(row) for row in rows)
+            if len(rows) < page_limit:
+                break
+            offset += len(rows)
+    except Exception as exc:
+        warning = f"Docker ImageSet PDQL is unavailable: {exc}"
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for finding in [*primary, *fallback]:
+        image = finding.get("docker_image") if isinstance(finding.get("docker_image"), dict) else {}
+        image_key = clean_text(first_present(
+            image.get("image_key"), image.get("digest"), _docker_image_label(image)
+        ))
+        candidate_keys = {f"{image_key}|{key}" for key in _docker_finding_candidate_keys(finding)}
+        if seen.intersection(candidate_keys):
+            continue
+        seen.update(candidate_keys)
+        if not clean_text(finding.get("vulnerability_instance_id")):
+            identity = f"{image_key}|{_docker_finding_key(finding)}"
+            finding["vulnerability_instance_id"] = f"docker:{uuid.uuid5(uuid.NAMESPACE_URL, identity).hex}"
+        merged.append(finding)
+    groups = _docker_groups(merged)
+    mode = "imageset" if primary else "fallback" if fallback else "unavailable" if warning else "empty"
+    return ({
+        "source": "docker", "collection_type": "ImageSetVulnerabilities", "title": "Docker images",
+        "status": mode, "fallback_used": bool(fallback and not primary),
+        "vulnerabilities_count": sum(len(group["items"]) for group in groups), "groups": groups,
+    }, warning)
 
 
 def number_or_none(value: Any) -> int | float | None:

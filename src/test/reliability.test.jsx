@@ -234,11 +234,46 @@ describe("reliability UI", () => {
                   },
                 ],
               },
+              {
+                source: "docker",
+                title: "Docker images",
+                status: "imageset",
+                groups: [
+                  {
+                    source: "docker",
+                    collection_id: "image-1",
+                    name: "registry.local/team/api:1.0",
+                    image_os_name: "Ubuntu",
+                    image_os_version: "22.04",
+                    digest: "sha256:abc",
+                    vulnerabilities_count: 1,
+                  },
+                ],
+              },
             ],
           },
         });
       }
       if (path.includes("/vulnerabilities/findings")) {
+        if (path.includes("source=docker")) {
+          return Promise.resolve({
+            rows: [
+              {
+                vulnerability_instance_id: "docker-finding-1",
+                name: "Docker finding",
+                cve_name: "CVE-DOCKER-1",
+                package_name: "openssl",
+                package_version: "3.0",
+                fixed_version: "3.0.1",
+                passports: [],
+              },
+            ],
+            total: 1,
+            limit: 100,
+            offset: 0,
+            has_more: false,
+          });
+        }
         return Promise.resolve({
           rows: [
             {
@@ -333,6 +368,27 @@ describe("reliability UI", () => {
     expect(onOpenPassport).toHaveBeenCalledWith(
       expect.objectContaining({ internal_id: "os-passport" }),
     );
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Docker-образы · 1" }),
+    );
+    fireEvent.click(
+      (await screen.findByText(/registry.local\/team\/api:1.0/)).closest(
+        "button",
+      ),
+    );
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        expect.stringContaining("source=docker"),
+      ),
+    );
+    expect(
+      await screen.findByText(
+        (_content, node) =>
+          node?.classList?.contains("asset-docker-package") &&
+          node.textContent.includes("openssl 3.0 → 3.0.1"),
+      ),
+    ).toBeInTheDocument();
 
     const paths = api.mock.calls.map(([path]) => path);
     expect(
