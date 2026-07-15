@@ -796,7 +796,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertIsNone(job)
         self.assertIn("ON CONFLICT DO NOTHING", connection.execute.call_args.args[0])
 
-    def test_passport_link_reconciliation_uses_two_set_based_statements(self):
+    def test_passport_link_reconciliation_ranks_one_os_aware_match(self):
         connection = MagicMock()
         connection.execute.side_effect = [
             SimpleNamespace(rowcount=3),
@@ -809,8 +809,15 @@ class AssetCardDatabaseTests(unittest.TestCase):
             asset_id="asset-1",
         )
 
-        self.assertEqual(created, 5)
+        self.assertEqual(created, 2)
         self.assertEqual(connection.execute.call_count, 2)
+        delete_sql = connection.execute.call_args_list[0].args[0]
+        ranking_sql = connection.execute.call_args_list[1].args[0]
+        self.assertIn("DELETE FROM asset_card_vulnerability_passports", delete_sql)
+        self.assertIn("ROW_NUMBER() OVER", ranking_sql)
+        self.assertIn("PARTITION BY finding_id", ranking_sql)
+        self.assertIn("passport.os_family = finding.os_family", ranking_sql)
+        self.assertIn("cve_os_version", ranking_sql)
 
     def test_restart_interrupts_all_active_asset_card_jobs(self):
         connection = MagicMock()

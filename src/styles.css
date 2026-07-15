@@ -2514,6 +2514,17 @@ td code {
   text-decoration: underline;
 }
 
+.asset-vulnerability-passport-auto {
+  display: inline-grid;
+  gap: 2px;
+}
+
+.asset-vulnerability-passport-auto small {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .asset-vulnerability-passport-picker {
   position: relative;
   min-width: 130px;

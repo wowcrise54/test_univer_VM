@@ -245,6 +245,19 @@ describe("reliability UI", () => {
               vulnerability_instance_id: "finding-1",
               name: "Finding",
               cve_name: "CVE-1",
+              passport_ids: ["generic-passport", "os-passport"],
+              passports: [
+                {
+                  internal_id: "generic-passport",
+                  name: "Generic passport",
+                  match_method: "cve_generic",
+                },
+                {
+                  internal_id: "os-passport",
+                  name: "OS passport",
+                  match_method: "cve_os",
+                },
+              ],
             },
           ],
           total: 1,
@@ -256,6 +269,7 @@ describe("reliability UI", () => {
       return Promise.resolve({});
     });
 
+    const onOpenPassport = vi.fn();
     render(
       <AssetCard
         card={{
@@ -265,6 +279,7 @@ describe("reliability UI", () => {
           stats: {},
         }}
         loading={false}
+        onOpenPassport={onOpenPassport}
       />,
     );
     const tabButtons = document.querySelectorAll(".asset-tabs button");
@@ -304,6 +319,11 @@ describe("reliability UI", () => {
           "/api/asset-cards/asset-1/vulnerabilities/findings?",
         ),
       ),
+    );
+    expect(screen.queryByText("Паспорта: 2")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "CVE-1" }));
+    expect(onOpenPassport).toHaveBeenCalledWith(
+      expect.objectContaining({ internal_id: "os-passport" }),
     );
 
     const paths = api.mock.calls.map(([path]) => path);

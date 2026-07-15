@@ -3414,7 +3414,29 @@ function assetFindingPassports(finding) {
     if (passportId && !byId.has(passportId))
       byId.set(passportId, { internal_id: passportId });
   });
-  return Array.from(byId.values());
+  const matchPriority = {
+    vulner_id: 0,
+    cve_os_version: 1,
+    cve_os: 2,
+    cve_generic: 3,
+    cve: 4,
+  };
+  return Array.from(byId.values()).sort(
+    (left, right) =>
+      (matchPriority[left.match_method] ?? 99) -
+        (matchPriority[right.match_method] ?? 99) ||
+      assetPassportLabel(left).localeCompare(assetPassportLabel(right), "ru"),
+  );
+}
+
+function assetPassportMatchLabel(passport) {
+  return {
+    vulner_id: "точное совпадение",
+    cve_os_version: "CVE, ОС и версия",
+    cve_os: "CVE и дистрибутив",
+    cve_generic: "совпадение по CVE",
+    cve: "совпадение по CVE",
+  }[passport?.match_method];
 }
 
 function assetPassportLabel(passport) {
@@ -3693,7 +3715,8 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                             {formatVulnerabilityScore(finding.cvss_score)}
                           </td>
                           <td>
-                            {passports.length === 1 ? (
+                            {passport ? (
+                              <span className="asset-vulnerability-passport-auto">
                               <button
                                 type="button"
                                 className="asset-vulnerability-passport-link"
@@ -3702,34 +3725,10 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                               >
                                 {finding.cve_name || "Открыть паспорт"}
                               </button>
-                            ) : passports.length > 1 ? (
-                              <details className="asset-vulnerability-passport-picker">
-                                <summary>
-                                  Паспорта: {formatCount(passports.length)}
-                                </summary>
-                                <div className="asset-vulnerability-passport-options">
-                                  {passports.map((item) => (
-                                    <button
-                                      type="button"
-                                      key={item.internal_id}
-                                      onClick={() => onOpenPassport?.(item)}
-                                    >
-                                      <strong>
-                                        {assetPassportLabel(item)}
-                                      </strong>
-                                      <span>
-                                        {[
-                                          item.severity,
-                                          item.external_id,
-                                          item.internal_id,
-                                        ]
-                                          .filter(Boolean)
-                                          .join(" · ")}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </details>
+                                {assetPassportMatchLabel(passport) ? (
+                                  <small>{assetPassportMatchLabel(passport)}</small>
+                                ) : null}
+                              </span>
                             ) : (
                               finding.cve_name || "—"
                             )}
@@ -4082,7 +4081,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                         )}
                                       </td>
                                       <td>
-                                        {passports.length === 1 ? (
+                                        {passport ? (
+                                          <span className="asset-vulnerability-passport-auto">
                                           <button
                                             type="button"
                                             className="asset-vulnerability-passport-link"
@@ -4094,37 +4094,10 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                             {finding.cve_name ||
                                               "Открыть паспорт"}
                                           </button>
-                                        ) : passports.length > 1 ? (
-                                          <details className="asset-vulnerability-passport-picker">
-                                            <summary>
-                                              Паспорта:{" "}
-                                              {formatCount(passports.length)}
-                                            </summary>
-                                            <div className="asset-vulnerability-passport-options">
-                                              {passports.map((item) => (
-                                                <button
-                                                  type="button"
-                                                  key={item.internal_id}
-                                                  onClick={() =>
-                                                    onOpenPassport?.(item)
-                                                  }
-                                                >
-                                                  <strong>
-                                                    {assetPassportLabel(item)}
-                                                  </strong>
-                                                  <span>
-                                                    {[
-                                                      item.severity,
-                                                      item.external_id,
-                                                      item.internal_id,
-                                                    ]
-                                                      .filter(Boolean)
-                                                      .join(" · ")}
-                                                  </span>
-                                                </button>
-                                              ))}
-                                            </div>
-                                          </details>
+                                            {assetPassportMatchLabel(passport) ? (
+                                              <small>{assetPassportMatchLabel(passport)}</small>
+                                            ) : null}
+                                          </span>
                                         ) : (
                                           finding.cve_name || "—"
                                         )}

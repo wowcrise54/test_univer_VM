@@ -3263,55 +3263,163 @@ def reconcile_asset_card_vulnerability_passport_links(
     linked_at: str,
     asset_id: str | None = None,
 ) -> int:
-    """Link findings to passports with two set-based inserts."""
+    """Choose one best passport per finding using vulnerability and host OS context."""
 
-    direct = conn.execute(
+    # A changed passport can become a better candidate than an existing link, so
+    # recompute the scoped findings against the complete local passport catalog.
+    del passport_ids
+    conn.execute(
         """
-        INSERT INTO asset_card_vulnerability_passports (
-            asset_vulnerability_id, passport_internal_id, match_method, linked_at
-        )
-        SELECT findings.id, passports.internal_id, 'vulner_id', %s
-        FROM asset_card_vulnerabilities AS findings
-        JOIN vulnerability_passports AS passports
-          ON passports.internal_id = findings.vulnerability_id
-        WHERE (%s::text IS NULL OR findings.asset_id = %s)
-          AND (%s::text[] IS NULL OR passports.internal_id = ANY(%s))
-        ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
+        DELETE FROM asset_card_vulnerability_passports AS link
+        USING asset_card_vulnerabilities AS finding
+        WHERE finding.id = link.asset_vulnerability_id
+          AND (%s::text IS NULL OR finding.asset_id = %s)
         """,
-        (linked_at, asset_id, asset_id, passport_ids, passport_ids),
+        (asset_id, asset_id),
     )
-    fallback = conn.execute(
+    inserted = conn.execute(
         """
-        WITH passport_cves AS (
-            SELECT DISTINCT
-                passports.internal_id,
+        WITH finding_base AS (
+            SELECT
+                finding.id AS finding_id,
+                NULLIF(TRIM(finding.vulnerability_id), '') AS vulnerability_id,
+                UPPER(NULLIF(TRIM(finding.cve_name), '')) AS cve_name,
+                LOWER(COALESCE(card.os_name, '')) AS os_name,
+                LOWER(COALESCE(card.os_version, '')) AS os_version
+            FROM asset_card_vulnerabilities AS finding
+            JOIN asset_cards AS card ON card.asset_id = finding.asset_id
+            WHERE (%s::text IS NULL OR finding.asset_id = %s)
+        ), finding_context AS (
+            SELECT finding_base.*,
+                SUBSTRING(
+                    os_version FROM
+                    '[0-9]+[.][0-9]+[.][0-9]+|[0-9]+[.][0-9]+|[0-9]+'
+                ) AS os_version_token,
+                CASE
+                    WHEN os_name ~ 'windows' THEN 'windows'
+                    WHEN os_name ~ 'ubuntu' THEN 'ubuntu'
+                    WHEN os_name ~ 'debian' THEN 'debian'
+                    WHEN os_name ~ 'red hat|redhat|rhel' THEN 'rhel'
+                    WHEN os_name ~ 'centos' THEN 'centos'
+                    WHEN os_name ~ 'rocky' THEN 'rocky'
+                    WHEN os_name ~ 'alma' THEN 'almalinux'
+                    WHEN os_name ~ 'oracle.*linux' THEN 'oraclelinux'
+                    WHEN os_name ~ 'astra' THEN 'astra'
+                    WHEN os_name ~ '(^|[^a-z])alt([^a-z]|$)' THEN 'altlinux'
+                    WHEN os_name ~ 'suse|sles|opensuse' THEN 'suse'
+                    ELSE NULL
+                END AS os_family
+            FROM finding_base
+        ), passport_base AS (
+            SELECT
+                passport.internal_id,
+                passport.issue_time,
+                passport.raw_detail_json IS NOT NULL AS has_detail,
+                LOWER(CONCAT_WS(
+                    ' ', passport.name, passport.external_id, passport.package_id,
+                    passport.package_version, passport.raw_record_json,
+                    passport.raw_detail_json
+                )) AS search_text,
+                LOWER(CONCAT_WS(
+                    ' ', passport.name, passport.package_id, passport.package_version
+                )) AS label_text,
                 UPPER(COALESCE(
-                    cve ->> 'display_name',
-                    cve ->> 'displayName',
-                    cve ->> 'cve',
-                    cve ->> 'name',
-                    cve ->> 'value',
+                    cve ->> 'display_name', cve ->> 'displayName', cve ->> 'cve',
+                    cve ->> 'name', cve ->> 'value',
                     CASE WHEN jsonb_typeof(cve) = 'string' THEN cve #>> '{}' END,
                     ''
                 )) AS cve_name
-            FROM vulnerability_passports AS passports
-            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(passports.cves_json, ''), '[]')::jsonb) AS cve
-            WHERE (%s::text[] IS NULL OR passports.internal_id = ANY(%s))
+            FROM vulnerability_passports AS passport
+            LEFT JOIN LATERAL jsonb_array_elements(
+                COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb
+            ) AS cve ON TRUE
+        ), passport_context AS (
+            SELECT passport_base.*,
+                CASE
+                    WHEN search_text ~ 'windows' THEN 'windows'
+                    WHEN search_text ~ 'ubuntu' THEN 'ubuntu'
+                    WHEN search_text ~ 'debian' THEN 'debian'
+                    WHEN search_text ~ 'red hat|redhat|rhel' THEN 'rhel'
+                    WHEN search_text ~ 'centos' THEN 'centos'
+                    WHEN search_text ~ 'rocky' THEN 'rocky'
+                    WHEN search_text ~ 'alma' THEN 'almalinux'
+                    WHEN search_text ~ 'oracle.*linux' THEN 'oraclelinux'
+                    WHEN search_text ~ 'astra' THEN 'astra'
+                    WHEN search_text ~ '(^|[^a-z])alt([^a-z]|$)' THEN 'altlinux'
+                    WHEN search_text ~ 'suse|sles|opensuse' THEN 'suse'
+                    ELSE NULL
+                END AS os_family
+            FROM passport_base
+        ), candidates AS (
+            SELECT
+                finding.finding_id,
+                passport.internal_id,
+                'vulner_id'::text AS match_method,
+                1000 AS match_score,
+                passport.has_detail,
+                passport.issue_time
+            FROM finding_context AS finding
+            JOIN passport_context AS passport
+              ON passport.internal_id = finding.vulnerability_id
+
+            UNION ALL
+
+            SELECT
+                finding.finding_id,
+                passport.internal_id,
+                CASE
+                    WHEN passport.os_family = finding.os_family
+                         AND finding.os_version_token IS NOT NULL
+                         AND POSITION(finding.os_version_token IN passport.label_text) > 0
+                        THEN 'cve_os_version'
+                    WHEN passport.os_family = finding.os_family THEN 'cve_os'
+                    ELSE 'cve_generic'
+                END AS match_method,
+                100
+                    + CASE WHEN passport.os_family = finding.os_family THEN 50 ELSE 0 END
+                    + CASE
+                        WHEN passport.os_family = finding.os_family
+                             AND finding.os_version_token IS NOT NULL
+                             AND POSITION(finding.os_version_token IN passport.label_text) > 0
+                            THEN 20 ELSE 0
+                      END AS match_score,
+                passport.has_detail,
+                passport.issue_time
+            FROM finding_context AS finding
+            JOIN passport_context AS passport
+              ON passport.cve_name = finding.cve_name
+            WHERE finding.cve_name IS NOT NULL
+              AND passport.cve_name <> ''
+              AND (
+                  passport.os_family IS NULL
+                  OR (
+                      finding.os_family IS NOT NULL
+                      AND passport.os_family = finding.os_family
+                  )
+              )
+        ), ranked AS (
+            SELECT candidates.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY finding_id
+                    ORDER BY match_score DESC, has_detail DESC,
+                             issue_time DESC NULLS LAST, internal_id
+                ) AS candidate_rank
+            FROM candidates
         )
         INSERT INTO asset_card_vulnerability_passports (
             asset_vulnerability_id, passport_internal_id, match_method, linked_at
         )
-        SELECT findings.id, passport_cves.internal_id, 'cve', %s
-        FROM asset_card_vulnerabilities AS findings
-        JOIN passport_cves
-          ON passport_cves.cve_name = UPPER(COALESCE(findings.cve_name, ''))
-        WHERE passport_cves.cve_name <> ''
-          AND (%s::text IS NULL OR findings.asset_id = %s)
-        ON CONFLICT(asset_vulnerability_id, passport_internal_id) DO NOTHING
+        SELECT finding_id, internal_id, match_method, %s
+        FROM ranked
+        WHERE candidate_rank = 1
+        ON CONFLICT(asset_vulnerability_id) DO UPDATE SET
+            passport_internal_id = EXCLUDED.passport_internal_id,
+            match_method = EXCLUDED.match_method,
+            linked_at = EXCLUDED.linked_at
         """,
-        (passport_ids, passport_ids, linked_at, asset_id, asset_id),
+        (asset_id, asset_id, linked_at),
     )
-    return max(direct.rowcount or 0, 0) + max(fallback.rowcount or 0, 0)
+    return max(inserted.rowcount or 0, 0)
 
 
 def load_asset_card_vulnerabilities(
