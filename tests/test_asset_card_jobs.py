@@ -494,6 +494,24 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(caught.exception.detail["code"], "INVALID_DOCKER_PDQL")
         self.assertIn("ImageKey", caught.exception.detail["required_aliases"])
 
+    def test_docker_pdql_renders_native_unquoted_uuid_selector(self):
+        asset_id = "1e5fa774-8780-0001-0000-000000000146"
+
+        host_query = main.render_docker_vulnerability_pdql(
+            main.DOCKER_VULNERABILITY_PDQL, asset_id, "Host"
+        )
+        image_query = main.render_docker_vulnerability_pdql(
+            main.DOCKER_VULNERABILITY_PDQL, asset_id, "ImageSet"
+        )
+
+        self.assertIn(f"Host.@Id = {asset_id}", host_query)
+        self.assertIn(f"ImageSet.@Id = {asset_id}", image_query)
+        self.assertNotIn(f'"{asset_id}"', host_query)
+        with self.assertRaises(ValueError):
+            main.render_docker_vulnerability_pdql(
+                main.DOCKER_VULNERABILITY_PDQL, f"{asset_id}) | limit(0)", "Host"
+            )
+
     def test_docker_imageset_records_win_over_structured_software_fallback(self):
         sources = [{
             "source": "software",
@@ -528,7 +546,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
 
         source, warning = main.build_docker_vulnerability_source(
             token="token",
-            asset_id="asset-1",
+            asset_id="1e5fa774-8780-0001-0000-000000000146",
             asset_type="Host",
             pdql_template=main.DOCKER_VULNERABILITY_PDQL,
             max_items=100,
@@ -568,7 +586,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
             return "pdql-token" if label == "docker_pdql_token" else {"records": records}
 
         source, warning = main.build_docker_vulnerability_source(
-            token="token", asset_id="asset-1", asset_type="Host",
+            token="token", asset_id="1e5fa774-8780-0001-0000-000000000146", asset_type="Host",
             pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=100,
             sources=sources, remote_call=remote_call,
         )
@@ -591,7 +609,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
             raise RuntimeError("not supported")
 
         source, warning = main.build_docker_vulnerability_source(
-            token="token", asset_id="asset-1", asset_type="Host",
+            token="token", asset_id="1e5fa774-8780-0001-0000-000000000146", asset_type="Host",
             pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=100,
             sources=sources, remote_call=unavailable,
         )

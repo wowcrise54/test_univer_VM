@@ -1875,7 +1875,13 @@ def validate_docker_vulnerability_pdql(pdql: str) -> str:
 
 def render_docker_vulnerability_pdql(template: str, asset_id: str, asset_type: str | None) -> str:
     asset_alias = "ImageSet" if str(asset_type or "").lower() == "imageset" else "Host"
-    selector = f"{asset_alias}.@Id = {json.dumps(str(asset_id), ensure_ascii=False)}"
+    try:
+        asset_uuid = str(uuid.UUID(str(asset_id).strip()))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("asset_id must be a UUID for Docker PDQL filtering") from exc
+    # UUID is a native PDQL value type and must not be quoted. Parsing it first
+    # keeps the placeholder safe while preserving the type expected by @Id.
+    selector = f"{asset_alias}.@Id = {asset_uuid}"
     return template.replace("${ASSET_SELECTOR}", selector)
 
 
