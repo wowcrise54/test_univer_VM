@@ -241,12 +241,23 @@ describe("reliability UI", () => {
                 groups: [
                   {
                     source: "docker",
-                    collection_id: "image-1",
+                    collection_id: "container-1",
                     name: "registry.local/team/api:1.0",
+                    container_name: "agent-server.EDR-Application.EDR",
+                    container_id: "container-id-1",
+                    docker_engine: "Docker Engine 28.5.2",
+                    image_id: "sha256:image-id",
+                    digest: "sha256:container-digest",
+                    vulnerabilities_count: 1,
+                  },
+                  {
+                    source: "docker",
+                    collection_id: "legacy-image-1",
+                    name: "registry.local/team/legacy:1.0",
                     image_os_name: "Ubuntu",
                     image_os_version: "22.04",
                     digest: "sha256:abc",
-                    vulnerabilities_count: 1,
+                    vulnerabilities_count: 0,
                   },
                 ],
               },
@@ -265,6 +276,8 @@ describe("reliability UI", () => {
                 package_name: "openssl",
                 package_version: "3.0",
                 fixed_version: "3.0.1",
+                status: "new",
+                how_to_fix: "Обновить пакет openssl в контейнерном образе.",
                 passports: [],
               },
             ],
@@ -370,10 +383,19 @@ describe("reliability UI", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("tab", { name: "Docker-образы · 1" }),
+      screen.getByRole("tab", { name: "Docker-контейнеры · 1" }),
     );
+    expect(
+      screen.getByText("Уязвимости Docker-контейнеров"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Docker Engine 28.5.2 · Container ID: container-id-1 · Image ID: sha256:image-id · Digest: sha256:container-digest",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ubuntu 22.04 · sha256:abc")).toBeInTheDocument();
     fireEvent.click(
-      (await screen.findByText(/registry.local\/team\/api:1.0/)).closest(
+      (await screen.findByText(/agent-server\.EDR-Application\.EDR/)).closest(
         "button",
       ),
     );
@@ -388,6 +410,11 @@ describe("reliability UI", () => {
           node?.classList?.contains("asset-docker-package") &&
           node.textContent.includes("openssl 3.0 → 3.0.1"),
       ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Статус: new")).toBeInTheDocument();
+    expect(screen.getByText("Как исправить")).toBeInTheDocument();
+    expect(
+      screen.getByText("Обновить пакет openssl в контейнерном образе."),
     ).toBeInTheDocument();
 
     const paths = api.mock.calls.map(([path]) => path);

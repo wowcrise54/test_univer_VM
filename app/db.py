@@ -3485,7 +3485,7 @@ def load_asset_card_vulnerabilities(
                 "collection_type": group_row.get("collection_type"),
                 "title": (
                     "Уязвимости ОС" if source_type == "os"
-                    else "Docker-образы" if source_type == "docker"
+                    else "Docker-контейнеры" if source_type == "docker"
                     else "Уязвимости программного обеспечения"
                 ),
                 "groups": [],
@@ -4251,7 +4251,7 @@ def list_asset_card_vulnerability_groups(asset_id: str) -> dict[str, Any] | None
                 "collection_type": row.get("collection_type"),
                 "title": (
                     "OS vulnerabilities" if source_type == "os"
-                    else "Docker images" if source_type == "docker"
+                    else "Docker containers" if source_type == "docker"
                     else "Software vulnerabilities"
                 ),
                 "groups": [],

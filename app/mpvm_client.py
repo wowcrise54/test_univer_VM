@@ -22,6 +22,7 @@ from .mpvm import build_retry_adapter, build_session, resolve_access_token
 
 ASSET_GRID_PATH = "/api/assets_temporal_readmodel/v1/assets_grid"
 ASSET_GRID_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/data"
+ASSET_GRID_GROUP_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/group/data"
 ASSET_GRID_EXPORT_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/export"
 VULNERABILITY_DETAIL_PATH = "/api/assets_temporal_readmodel/v1/vulnerabilities/{passport_id}"
 ASSET_TIMELINE_TOKEN_PATH = "/api/v1/asset/timeline/{asset_id}/token"
@@ -64,30 +65,36 @@ VulnerPassport.PackageVersion, VulnerPassport.Metrics)
 
 ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTime) | sort(@Host ASC)"
 
-# MaxPatrol 27.6 exposes container findings through ImageSet assets. Deployments
-# can override this query because installations may carry custom asset-model
-# aliases; the output aliases below are the stable contract used by this app.
-DOCKER_VULNERABILITY_PDQL = os.getenv("MPVM_DOCKER_VULNERABILITY_PDQL") or """filter(${ASSET_SELECTOR})
+# Container findings are exposed by a grouped Host -> DockerEngine -> Container
+# query. The group headers are available through assets_grid/data, while the
+# package/vulnerability rows used by the application come from
+# assets_grid/group/data. Deployments may override the template when their asset
+# model uses custom aliases, but must preserve the selected output fields.
+DOCKER_VULNERABILITY_PDQL = os.getenv("MPVM_DOCKER_VULNERABILITY_PDQL") or """filter(Host.Softs<DockerEngine>)
 | select(
-  Host.@Id as AssetId,
-  ImageSet.@Id as ImageKey,
-  @ImageSet as ImageName,
-  ImageSet.Registry as Registry,
-  ImageSet.Repository as Repository,
-  ImageSet.Tag as Tag,
-  ImageSet.Digest as Digest,
-  ImageSet.OsName as ImageOsName,
-  ImageSet.OsVersion as ImageOsVersion,
-  ImageSet.Packages.Name as PackageName,
-  ImageSet.Packages.Version as PackageVersion,
-  ImageSet.Packages.FixedVersion as FixedVersion,
-  ImageSet.Packages.@Vulners.@Id as VulnerabilityInstanceId,
-  ImageSet.Packages.@Vulners as VulnerabilityId,
-  ImageSet.Packages.@Vulners.CVEs as CVE,
-  ImageSet.Packages.@Vulners.SeverityRating as Severity,
-  ImageSet.Packages.@Vulners.Score as CvssScore,
-  ImageSet.Packages.@Vulners.Status as Status
-)"""
+  @Host,
+  Host.Softs<DockerEngine> as Docker,
+  Host.Softs<DockerEngine>.Containers as Container,
+  Host.Softs<DockerEngine>.Containers.Id as ContainerId,
+  Host.Softs<DockerEngine>.Containers.Image.ID as ImageId
+)
+| join(
+  select(
+    ImageSet.Images.Id as ImageId,
+    ImageSet.Images.Packages as Package,
+    ImageSet.Images.Packages.@Vulners as Vulner,
+    ImageSet.Images.Packages.@Vulners.Status as VulnerStatus,
+    ImageSet.Images.Packages.@Vulners.HowToFix as HowToFix
+  )
+  | filter(VulnerStatus not in ["Excluded", "Fixed"]) as Q,
+  Q.ImageId = ImageId
+)
+| filter(Q.Vulner)
+| select(@Host, Docker, Container, ContainerId, ImageId,
+  Q.Package, Q.Vulner, Q.VulnerStatus, Q.HowToFix)
+| sort(Q.Package ASC, Q.Vulner ASC)
+| group(@Host, Docker, Container)
+| sort(@Host ASC, Docker ASC, Container ASC)"""
 
 ASSET_ID_PDQL = "select(Host.@Id as AssetId, @Host as HostName, Host.IpAddress as IpAddress)"
 ASSET_RESOLUTION_PDQL = (
@@ -231,6 +238,24 @@ class MpVmClient:
             timeout=self.auth.timeout,
         )
         return self._json_response(response, "fetch asset grid data")
+
+    def fetch_asset_grid_group_data(
+        self,
+        access_token: str,
+        pdql_token: str,
+        limit: int = 1001,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit, "pdqlToken": pdql_token}
+        if offset is not None:
+            params["offset"] = offset
+        response = self.session.get(
+            self._api_url(ASSET_GRID_GROUP_DATA_PATH),
+            headers=self._bearer_headers(access_token),
+            params=params,
+            timeout=self.auth.timeout,
+        )
+        return self._json_response(response, "fetch grouped asset grid data")
 
     def export_csv_file(self, access_token: str, pdql_token: str, output_path: Path) -> None:
         response = self.session.get(

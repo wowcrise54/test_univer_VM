@@ -2031,7 +2031,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
 
       <div className="asset-card-builder">
-        <Field label="PDQL уязвимостей Docker-образов">
+        <Field label="PDQL уязвимостей Docker-контейнеров">
           <textarea
             className="code-input"
             rows={8}
@@ -3567,7 +3567,7 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
             {source.source === "os"
               ? "Уязвимости ОС"
               : source.source === "docker"
-                ? "Docker-образы"
+                ? "Docker-контейнеры"
                 : "Уязвимости ПО"}:{" "}
             <strong>{formatCount(sourceCount(source))}</strong>
           </span>
@@ -3811,6 +3811,36 @@ function dockerPackageSections(rows) {
   return Array.from(sections.values());
 }
 
+function dockerGroupMetadata(group) {
+  const containerMetadata = [
+    group.docker_engine,
+    group.container_id ? `Container ID: ${group.container_id}` : "",
+    group.image_id ? `Image ID: ${group.image_id}` : "",
+    group.digest && group.digest !== group.image_id
+      ? `Digest: ${group.digest}`
+      : "",
+  ].filter(Boolean);
+  const isContainerGroup = Boolean(
+    group.container_name ||
+      group.container_id ||
+      group.docker_engine ||
+      group.image_id,
+  );
+
+  if (isContainerGroup) {
+    return containerMetadata.join(" · ") || "Метаданные контейнера не определены";
+  }
+
+  return (
+    [
+      [group.image_os_name, group.image_os_version].filter(Boolean).join(" "),
+      group.digest,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "ОС образа не определена"
+  );
+}
+
 function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
   const [snapshot, setSnapshot] = useState({ header: {}, sources: [] });
   const [loadingGroups, setLoadingGroups] = useState(false);
@@ -3974,7 +4004,7 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
           className={vulnerabilityView === "docker" ? "is-active" : ""}
           onClick={() => setVulnerabilityView("docker")}
         >
-          Docker-образы · {formatCount(dockerCount)}
+          Docker-контейнеры · {formatCount(dockerCount)}
         </button>
       </div>
       <div className="asset-vulnerability-toolbar">
@@ -3983,7 +4013,7 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
             {source.source === "os"
               ? "Уязвимости ОС"
               : source.source === "docker"
-                ? "Docker-образы"
+                ? "Docker-контейнеры"
                 : "Уязвимости ПО"}:{" "}
             <strong>{formatCount(sourceCount(source))}</strong>
           </span>
@@ -3999,7 +4029,11 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       </div>
       <div className="asset-vulnerability-heading">
         <div>
-          <strong>{vulnerabilityView === "docker" ? "Уязвимости Docker-образов" : "Уязвимости"}</strong>
+          <strong>
+            {vulnerabilityView === "docker"
+              ? "Уязвимости Docker-контейнеров"
+              : "Уязвимости"}
+          </strong>
           <span>
             Загружено {formatCount(loadedFindingCount)} из{" "}
             {formatCount(
@@ -4089,12 +4123,12 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                           {sourceCollapsed ? "›" : "⌄"}
                         </span>
                         <span>
-                          {source.title ||
-                            (source.source === "os"
+                          {source.source === "docker"
+                            ? "Docker-контейнеры"
+                            : source.title ||
+                              (source.source === "os"
                               ? "Уязвимости ОС"
-                              : source.source === "docker"
-                                ? "Docker-образы"
-                                : "Уязвимости программного обеспечения")}{" "}
+                              : "Уязвимости программного обеспечения")}{" "}
                           ({formatCount(sourceCount(source))})
                         </span>
                       </button>
@@ -4139,7 +4173,10 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                   </span>
                                   <span>
                                     <strong>
-                                      {group.name || "Без названия"}
+                                      {group.container_name ||
+                                        group.name ||
+                                        group.container_id ||
+                                        "Без названия"}
                                     </strong>{" "}
                                     (
                                     {formatCount(
@@ -4154,10 +4191,7 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                   ) : null}
                                   {source.source === "docker" ? (
                                     <small className="asset-docker-image-meta">
-                                      {[group.image_os_name, group.image_os_version]
-                                        .filter(Boolean)
-                                        .join(" ") || "ОС образа не определена"}
-                                      {group.digest ? ` · ${group.digest}` : ""}
+                                      {dockerGroupMetadata(group)}
                                     </small>
                                   ) : null}
                                 </button>
@@ -4217,6 +4251,19 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                             finding.cve_name ||
                                             "Уязвимость без названия"}
                                         </span>
+                                        {source.source === "docker" &&
+                                        finding.status ? (
+                                          <small className="asset-docker-package-meta">
+                                            Статус: {finding.status}
+                                          </small>
+                                        ) : null}
+                                        {source.source === "docker" &&
+                                        finding.how_to_fix ? (
+                                          <details className="asset-docker-package-meta">
+                                            <summary>Как исправить</summary>
+                                            <span>{finding.how_to_fix}</span>
+                                          </details>
+                                        ) : null}
                                       </td>
                                       <td>
                                         {formatVulnerabilityScore(
@@ -4295,8 +4342,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                 <td colSpan={3} className="empty-cell">
                   {vulnerabilityView === "docker"
                     ? dockerSource?.status === "unavailable"
-                      ? "Docker-PDQL недоступен, структурированные данные об образах не найдены."
-                      : "Уязвимости Docker-образов для этого актива не найдены."
+                      ? "Docker-PDQL недоступен, структурированные данные о контейнерах не найдены."
+                      : "Уязвимости Docker-контейнеров для этого актива не найдены."
                     : "Уязвимостей в сохранённом снимке нет."}
                 </td>
               </tr>

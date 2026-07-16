@@ -20,6 +20,60 @@ class FakeSession:
         pass
 
 
+DOCKER_HOST_ID = "1e41d929-8f00-0001-0000-000000000017"
+DOCKER_IMAGE_ID = "sha256:add1c50cd8fced216ecbb1305669b1e8e24593ffd66e1b97bf7d48891891320c"
+DOCKER_VULNERABILITY_INTERNAL_ID = "1de1a79b-4181-4001-0000-0000000007fd"
+
+
+def docker_group_record(
+    *, container: str = "agent-server.EDR-Application.EDR", group_key: str = "group-1",
+) -> dict:
+    return {
+        "@Host": {
+            "name": "srv-ptedr01.utmn.ru (10.252.206.115)",
+            "id": DOCKER_HOST_ID,
+            "deviceType": "Server",
+        },
+        "Docker": "Docker Engine 28.5.2",
+        "Container": container,
+        "$assetGridGroupKey": group_key,
+    }
+
+
+def docker_detail_record(
+    *,
+    source_id: str = "source-vulnerability-1",
+    container: str = "agent-server.EDR-Application.EDR",
+    container_id: str = "3747c21b8ffdde0004bc8d8d8f2f28a75ab0c6f8b91a88de139d220ffa90dd7d",
+    image_id: str = DOCKER_IMAGE_ID,
+    package: str = "apt (3.0.3)",
+    cve: str = "CVE-2011-3374",
+    severity: str = "low",
+    internal_id: str = DOCKER_VULNERABILITY_INTERNAL_ID,
+) -> dict:
+    return {
+        "@Host": {
+            "name": "srv-ptedr01.utmn.ru (10.252.206.115)",
+            "id": DOCKER_HOST_ID,
+            "deviceType": "Server",
+        },
+        "Docker": "Docker Engine 28.5.2",
+        "Container": container,
+        "ContainerId": container_id,
+        "ImageId": image_id,
+        "Q.Package": package,
+        "Q.Vulner": {
+            "name": f"Уязвимость {cve}",
+            "id": source_id,
+            "kb": f"Debian_Project.Debian.{cve}",
+            "severityRating": severity,
+            "internalId": internal_id,
+        },
+        "Q.VulnerStatus": {"value": "new", "id": "1"},
+        "Q.HowToFix": f"Исправление для {package}: https://security-tracker.debian.org/tracker/{cve}",
+    }
+
+
 class SlowClient:
     delay = 0.1
     active = 0
@@ -483,66 +537,80 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["detail"]["code"], "INVALID_DOCKER_PDQL")
 
-    def test_docker_pdql_contract_requires_placeholder_and_aliases(self):
+    def test_docker_pdql_contract_requires_grouped_container_fields(self):
         valid = main.validate_docker_vulnerability_pdql(main.DOCKER_VULNERABILITY_PDQL)
-        self.assertIn("${ASSET_SELECTOR}", valid)
+        self.assertIn("Host.Softs<DockerEngine>.Containers", valid)
+        self.assertIn("| group(@Host, Docker, Container)", valid)
 
         with self.assertRaises(HTTPException) as caught:
             main.validate_docker_vulnerability_pdql("select(@ImageSet as ImageName)")
 
         self.assertEqual(caught.exception.status_code, 422)
         self.assertEqual(caught.exception.detail["code"], "INVALID_DOCKER_PDQL")
-        self.assertIn("ImageKey", caught.exception.detail["required_aliases"])
+        self.assertIn("ContainerId", caught.exception.detail["required_fields"])
+        self.assertIn("Q.HowToFix", caught.exception.detail["required_fields"])
 
-    def test_docker_pdql_renders_native_unquoted_uuid_selector(self):
+        lookalikes_only = (
+            "select(@Host, Value as Docker, ContainerId, ImageId, Q.Package, "
+            "Q.VulnerStatus, Q.HowToFix) | group(@Host, Docker, ContainerId)"
+        )
+        with self.assertRaises(HTTPException) as lookalike_error:
+            main.validate_docker_vulnerability_pdql(lookalikes_only)
+        self.assertIn("Container", lookalike_error.exception.detail["message"])
+        self.assertIn("Q.Vulner", lookalike_error.exception.detail["message"])
+
+        missing_from_final_select = (
+            "select(@Host, Docker, Container, ContainerId, ImageId, Q.Package, "
+            "Q.Vulner, Q.VulnerStatus, Q.HowToFix) | "
+            "select(@Host, Docker, Container, ImageId, Q.Package, Q.Vulner, "
+            "Q.VulnerStatus, Q.HowToFix) | group(@Host, Docker, Container)"
+        )
+        with self.assertRaises(HTTPException) as final_select_error:
+            main.validate_docker_vulnerability_pdql(missing_from_final_select)
+        self.assertIn("ContainerId", final_select_error.exception.detail["message"])
+
+    def test_docker_pdql_uses_asset_filter_and_still_supports_legacy_placeholder(self):
         asset_id = "1e5fa774-8780-0001-0000-000000000146"
 
-        host_query = main.render_docker_vulnerability_pdql(
+        unchanged = main.render_docker_vulnerability_pdql(
             main.DOCKER_VULNERABILITY_PDQL, asset_id, "Host"
         )
-        image_query = main.render_docker_vulnerability_pdql(
-            main.DOCKER_VULNERABILITY_PDQL, asset_id, "ImageSet"
-        )
+        host_query = main.render_docker_vulnerability_pdql("filter(${ASSET_SELECTOR})", asset_id, "Host")
 
+        self.assertEqual(unchanged, main.DOCKER_VULNERABILITY_PDQL)
         self.assertIn(f"Host.@Id = {asset_id}", host_query)
-        self.assertIn(f"ImageSet.@Id = {asset_id}", image_query)
         self.assertNotIn(f'"{asset_id}"', host_query)
         with self.assertRaises(ValueError):
             main.render_docker_vulnerability_pdql(
-                main.DOCKER_VULNERABILITY_PDQL, f"{asset_id}) | limit(0)", "Host"
+                "filter(${ASSET_SELECTOR})", f"{asset_id}) | limit(0)", "Host"
             )
 
-    def test_docker_imageset_records_win_over_structured_software_fallback(self):
+    def test_docker_container_records_win_over_structured_software_fallback(self):
+        detail = docker_detail_record()
+        expected = main.normalize_docker_vulnerability_record(detail)
+        fallback = main.normalize_asset_vulnerability_item({
+            "id": "fallback-finding-1",
+            "vulnerabilityId": expected["vulnerability_id"],
+            "cveName": expected["cve_name"],
+            "imageId": expected["image_id"],
+            "packageName": expected["package_name"],
+            "packageVersion": expected["package_version"],
+        })
         sources = [{
             "source": "software",
             "groups": [{
                 "collection_id": "software",
-                "items": [{
-                    "vulnerability_instance_id": "finding-1",
-                    "vulnerability_id": "vuln-1",
-                    "cve_name": "CVE-2026-1",
-                    "package_name": "fallback-package",
-                    "docker_image": {"image_key": "image-1", "repository": "team/api", "tag": "1"},
-                }],
+                "items": [fallback],
             }],
         }]
-        records = [{
-            "AssetId": "asset-1",
-            "ImageKey": "image-1",
-            "ImageName": "api",
-            "Repository": "team/api",
-            "Tag": "1",
-            "VulnerabilityInstanceId": "finding-1",
-            "VulnerabilityId": "vuln-1",
-            "CVE": "CVE-2026-1",
-            "Severity": "high",
-            "CvssScore": 8.2,
-            "PackageName": "primary-package",
-            "PackageVersion": "1.0",
-        }]
+        records = [detail]
 
         def remote_call(_operation, label):
-            return "pdql-token" if label == "docker_pdql_token" else {"records": records}
+            if label == "docker_pdql_token":
+                return "pdql-token"
+            if label == "docker_pdql_groups":
+                return {"records": [docker_group_record()]}
+            return {"records": records}
 
         source, warning = main.build_docker_vulnerability_source(
             token="token",
@@ -555,35 +623,28 @@ class AssetCardDatabaseTests(unittest.TestCase):
         )
 
         self.assertIsNone(warning)
-        self.assertEqual(source["status"], "imageset")
+        self.assertEqual(source["status"], "containers")
+        self.assertEqual(source["reported_container_groups"], 1)
         self.assertEqual(source["vulnerabilities_count"], 1)
-        self.assertEqual(source["groups"][0]["items"][0]["package_name"], "primary-package")
+        self.assertEqual(source["groups"][0]["items"][0]["package_name"], "apt")
+        self.assertEqual(source["groups"][0]["collection_id"], expected["container_id"])
+        self.assertNotEqual(source["groups"][0]["collection_id"], expected["image_id"])
         self.assertEqual(sources[0]["groups"], [])
 
-    def test_docker_dedupe_uses_vulnerability_and_package_when_instance_is_missing(self):
-        sources = [{
-            "source": "software",
-            "groups": [{
-                "collection_id": "soft-1",
-                "items": [{
-                    "vulnerability_id": "vuln-1",
-                    "cve_name": "CVE-2026-1",
-                    "package_name": "openssl",
-                    "package_version": "1.0",
-                    "docker_image": {"image_key": "image-1", "repository": "team/api", "tag": "1"},
-                }],
-            }],
-        }]
-        records = [{
-            "AssetId": "asset-1", "ImageKey": "image-1", "ImageName": "api",
-            "VulnerabilityInstanceId": None, "VulnerabilityId": "vuln-1",
-            "CVE": None, "Severity": "high", "CvssScore": 8.1,
-            "Repository": "team/api", "Tag": "1", "PackageName": "openssl",
-            "PackageVersion": "1.0",
-        }]
+    def test_docker_dedupe_ignores_unstable_source_vulnerability_ids(self):
+        sources = []
+        records = [
+            docker_detail_record(source_id="source-vulnerability-1"),
+            docker_detail_record(source_id="source-vulnerability-2"),
+            docker_detail_record(source_id="source-vulnerability-3"),
+        ]
 
         def remote_call(_operation, label):
-            return "pdql-token" if label == "docker_pdql_token" else {"records": records}
+            if label == "docker_pdql_token":
+                return "pdql-token"
+            if label == "docker_pdql_groups":
+                return {"records": [docker_group_record()]}
+            return {"records": records}
 
         source, warning = main.build_docker_vulnerability_source(
             token="token", asset_id="1e5fa774-8780-0001-0000-000000000146", asset_type="Host",
@@ -595,6 +656,200 @@ class AssetCardDatabaseTests(unittest.TestCase):
         self.assertEqual(source["vulnerabilities_count"], 1)
         finding = source["groups"][0]["items"][0]
         self.assertTrue(finding["vulnerability_instance_id"].startswith("docker:"))
+        self.assertEqual(finding["vulnerability_id"], DOCKER_VULNERABILITY_INTERNAL_ID)
+        self.assertEqual(finding["source_vulnerability_instance_id"], "source-vulnerability-1")
+
+    def test_docker_dedupe_keeps_two_versions_of_the_same_package(self):
+        records = [
+            docker_detail_record(source_id="source-vulnerability-1", package="apt (3.0.3)"),
+            docker_detail_record(source_id="source-vulnerability-2", package="apt (3.0.4)"),
+        ]
+
+        def remote_call(_operation, label):
+            if label == "docker_pdql_token":
+                return "pdql-token"
+            if label == "docker_pdql_groups":
+                return {"records": [docker_group_record()]}
+            return {"records": records}
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id=DOCKER_HOST_ID, asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=100,
+            sources=[], remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(source["vulnerabilities_count"], 2)
+        self.assertEqual(
+            {item["package_version"] for item in source["groups"][0]["items"]},
+            {"3.0.3", "3.0.4"},
+        )
+
+    def test_docker_group_detail_record_is_normalized_for_storage(self):
+        record = docker_detail_record()
+
+        finding = main.normalize_docker_vulnerability_record(record)
+
+        self.assertEqual(finding["asset_id"], DOCKER_HOST_ID)
+        self.assertEqual(finding["container_name"], "agent-server.EDR-Application.EDR")
+        self.assertEqual(finding["docker_engine"], "Docker Engine 28.5.2")
+        self.assertEqual(finding["image_id"], DOCKER_IMAGE_ID)
+        self.assertEqual(finding["package_name"], "apt")
+        self.assertEqual(finding["package_version"], "3.0.3")
+        self.assertEqual(finding["cve_name"], "CVE-2011-3374")
+        self.assertEqual(finding["level"], "low")
+        self.assertEqual(finding["status"], "new")
+        self.assertEqual(finding["status_id"], "1")
+        self.assertIn("security-tracker.debian.org", finding["how_to_fix"])
+        self.assertEqual(finding["vulnerability_id"], DOCKER_VULNERABILITY_INTERNAL_ID)
+
+    def test_same_image_in_two_containers_creates_two_findings_and_groups(self):
+        first = main.normalize_docker_vulnerability_record(docker_detail_record())
+        second = main.normalize_docker_vulnerability_record(docker_detail_record(
+            container="storage-minio.EDR-Application.EDR",
+            container_id="second-container-id",
+            source_id="source-vulnerability-2",
+        ))
+
+        groups = main._docker_groups([first, second])
+
+        self.assertEqual(len(groups), 2)
+        self.assertEqual({group["collection_id"] for group in groups}, {
+            first["container_id"], second["container_id"],
+        })
+        self.assertNotEqual(first["vulnerability_instance_id"], second["vulnerability_instance_id"])
+
+    def test_docker_loader_reads_group_headers_then_group_details(self):
+        labels: list[str] = []
+
+        class Remote:
+            def __init__(self) -> None:
+                self.asset_ids = None
+
+            def create_pdql_token(self, _token, pdql, *, asset_ids):
+                self.asset_ids = asset_ids
+                self.pdql = pdql
+                return "pdql-token"
+
+            def fetch_asset_grid_data(self, _token, _pdql_token, *, limit):
+                self.group_limit = limit
+                return {"records": [docker_group_record()]}
+
+            def fetch_asset_grid_group_data(self, _token, _pdql_token, *, limit, offset):
+                self.detail_request = {"limit": limit, "offset": offset}
+                return {"records": [docker_detail_record()]}
+
+        remote = Remote()
+
+        def remote_call(operation, label):
+            labels.append(label)
+            return operation(remote)
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token",
+            asset_id=DOCKER_HOST_ID,
+            asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL,
+            max_items=100,
+            sources=[],
+            remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(remote.asset_ids, [DOCKER_HOST_ID])
+        self.assertEqual(remote.pdql, main.DOCKER_VULNERABILITY_PDQL)
+        self.assertEqual(remote.group_limit, 1001)
+        self.assertEqual(remote.detail_request, {"limit": 100, "offset": None})
+        self.assertEqual(labels, [
+            "docker_pdql_token", "docker_pdql_groups", "docker_pdql_group_page",
+        ])
+        self.assertEqual(source["status"], "containers")
+        self.assertEqual(source["groups"][0]["name"], "agent-server.EDR-Application.EDR")
+
+    def test_docker_loader_continues_short_pages_when_total_has_more_rows(self):
+        first = docker_detail_record()
+        second = docker_detail_record(
+            source_id="source-vulnerability-2",
+            package="coreutils (9.7-3)",
+            cve="CVE-2017-18018",
+            internal_id="1de1a7a3-e8c1-4001-0000-0000000008cc",
+        )
+
+        class Remote:
+            def __init__(self) -> None:
+                self.offsets = []
+
+            def create_pdql_token(self, *_args, **_kwargs):
+                return "pdql-token"
+
+            def fetch_asset_grid_data(self, *_args, **_kwargs):
+                return {"records": [docker_group_record()]}
+
+            def fetch_asset_grid_group_data(self, *_args, limit, offset):
+                self.offsets.append((limit, offset))
+                rows = [first] if offset is None else [second]
+                return {"records": rows, "totalCount": 2}
+
+        remote = Remote()
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id=DOCKER_HOST_ID, asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=10, sources=[],
+            remote_call=lambda operation, _label: operation(remote),
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(remote.offsets, [(10, None), (9, 1)])
+        self.assertEqual(source["vulnerabilities_count"], 2)
+        self.assertFalse(source["groups"][0]["truncated"])
+
+    def test_docker_loader_exact_total_at_limit_is_not_truncated(self):
+        records = [
+            docker_detail_record(),
+            docker_detail_record(
+                source_id="source-vulnerability-2",
+                package="coreutils (9.7-3)",
+                cve="CVE-2017-18018",
+                internal_id="1de1a7a3-e8c1-4001-0000-0000000008cc",
+            ),
+        ]
+
+        def remote_call(_operation, label):
+            if label == "docker_pdql_token":
+                return "pdql-token"
+            if label == "docker_pdql_groups":
+                return {"records": [docker_group_record()]}
+            return {"records": records, "totalCount": 2}
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id=DOCKER_HOST_ID, asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=2, sources=[],
+            remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(source["vulnerabilities_count"], 2)
+        self.assertFalse(source["groups"][0]["truncated"])
+
+    def test_docker_loader_rejects_package_only_detail_rows(self):
+        package_only = docker_detail_record()
+        package_only["Q.Vulner"] = {}
+
+        def remote_call(_operation, label):
+            if label == "docker_pdql_token":
+                return "pdql-token"
+            if label == "docker_pdql_groups":
+                return {"records": [docker_group_record()]}
+            return {"records": [package_only]}
+
+        source, warning = main.build_docker_vulnerability_source(
+            token="token", asset_id=DOCKER_HOST_ID, asset_type="Host",
+            pdql_template=main.DOCKER_VULNERABILITY_PDQL, max_items=10, sources=[],
+            remote_call=remote_call,
+        )
+
+        self.assertIsNone(warning)
+        self.assertEqual(source["status"], "empty")
+        self.assertEqual(source["vulnerabilities_count"], 0)
 
     def test_docker_fallback_is_used_without_breaking_the_card(self):
         normalized = main.normalize_asset_vulnerability_item({

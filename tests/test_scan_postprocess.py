@@ -75,6 +75,27 @@ class ScanPostprocessClientTests(unittest.TestCase):
         response.json.assert_not_called()
         client.session.close()
 
+    def test_grouped_asset_grid_data_uses_container_detail_endpoint(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=200, content=b"{}", ok=True)
+        response.json.return_value = {"records": []}
+        client.session.get = MagicMock(return_value=response)
+
+        result = client.fetch_asset_grid_group_data("access", "pdql-token", limit=1001)
+
+        self.assertEqual(result, {"records": []})
+        client.session.get.assert_called_once_with(
+            "https://fixture/api/assets_temporal_readmodel/v1/assets_grid/group/data",
+            headers={"Authorization": "Bearer access"},
+            params={"limit": 1001, "pdqlToken": "pdql-token"},
+            timeout=120,
+        )
+        client.session.close()
+
     def test_delete_scanner_task_treats_not_found_as_already_deleted(self):
         client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
             api_url="https://fixture",
