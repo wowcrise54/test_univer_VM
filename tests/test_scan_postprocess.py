@@ -96,6 +96,71 @@ class ScanPostprocessClientTests(unittest.TestCase):
         )
         client.session.close()
 
+    def test_dynamic_asset_group_create_and_operation_status_contract(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        created = MagicMock(status_code=201, content=b"{}", ok=True)
+        created.json.return_value = {"operationId": "create-operation"}
+        client.session.post = MagicMock(return_value=created)
+
+        operation_id = client.create_dynamic_asset_group(
+            "access",
+            name="mpvm-temp-docker-test",
+            predicate="(@ImageSet)",
+            description="temporary",
+        )
+
+        self.assertEqual(operation_id, "create-operation")
+        request = client.session.post.call_args
+        self.assertEqual(request.args[0], "https://fixture/api/assets_processing/v2/groups")
+        self.assertEqual(request.kwargs["json"]["groupType"], "dynamic")
+        self.assertEqual(request.kwargs["json"]["predicate"], "(@ImageSet)")
+        self.assertEqual(
+            request.kwargs["json"]["parentId"],
+            "00000000-0000-0000-0000-000000000002",
+        )
+
+        pending = MagicMock(status_code=202, content=b"", ok=True)
+        complete = MagicMock(status_code=200, content=b'"group-id"', ok=True)
+        complete.json.return_value = "group-id"
+        client.session.get = MagicMock(side_effect=[pending, complete])
+        self.assertIsNone(client.get_asset_group_creation_result("access", operation_id))
+        self.assertEqual(client.get_asset_group_creation_result("access", operation_id), "group-id")
+        client.session.close()
+
+    def test_dynamic_asset_group_remove_is_confirmed_through_hierarchy(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        removed = MagicMock(status_code=201, content=b"{}", ok=True)
+        removed.json.return_value = {"operationId": "remove-operation"}
+        client.session.post = MagicMock(return_value=removed)
+
+        operation_id = client.remove_asset_groups("access", ["group-id"])
+
+        self.assertEqual(operation_id, "remove-operation")
+        client.session.post.assert_called_once_with(
+            "https://fixture/api/assets_processing/v2/groups/removeOperation",
+            headers={"Authorization": "Bearer access"},
+            json={"groupIds": ["group-id"]},
+            timeout=120,
+        )
+        client.get_asset_group_hierarchy = MagicMock(side_effect=[
+            [{"id": "root", "children": [{"id": "group-id", "children": []}]}],
+            [{"id": "root", "children": []}],
+        ])
+        with patch.object(mpvm_client.time, "sleep"):
+            client.wait_for_asset_group_absent(
+                "access", "group-id", timeout_seconds=1, poll_seconds=0,
+            )
+        self.assertEqual(client.get_asset_group_hierarchy.call_count, 2)
+        client.session.close()
+
     def test_delete_scanner_task_treats_not_found_as_already_deleted(self):
         client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
             api_url="https://fixture",
@@ -249,6 +314,107 @@ class ScanAssetResolutionTests(unittest.TestCase):
 
 
 class ScanAssetProcessingOrderTests(unittest.TestCase):
+    def test_temporary_docker_groups_are_deleted_between_refresh_iterations(self):
+        events: list[str] = []
+
+        class DynamicClient:
+            def get_asset_group_hierarchy(self, _token):
+                return []
+
+            def find_asset_group(self, _groups, **_kwargs):
+                return None
+
+            def create_dynamic_asset_group(self, _token, **kwargs):
+                events.append(f"create:{kwargs['predicate']}")
+                return f"create-{len(events)}"
+
+            def wait_for_asset_group_creation(self, *_args, **_kwargs):
+                group_id = f"group-{sum(event.startswith('create:') for event in events)}"
+                events.append(f"ready:{group_id}")
+                return group_id
+
+            def remove_asset_groups(self, _token, group_ids):
+                events.append(f"remove:{group_ids[0]}")
+                return f"remove-{group_ids[0]}"
+
+            def wait_for_asset_group_absent(self, _token, group_id, **_kwargs):
+                events.append(f"absent:{group_id}")
+
+        empty = ({"status": "empty", "vulnerabilities_count": 0}, None)
+        ready = ({"status": "containers", "vulnerabilities_count": 1}, None)
+        with (
+            patch.object(main, "build_docker_vulnerability_source", side_effect=[empty, ready]),
+            patch.object(main.db, "update_scan_postprocess_item"),
+        ):
+            result = main.refresh_docker_containers_for_scanned_asset(
+                client=DynamicClient(),
+                token="token",
+                asset_id="asset-12345678",
+                item_id=1,
+                parent_operation_id="post-1",
+                iterations=3,
+                settle_seconds=0,
+                timeout_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(result, {"status": "ready", "attempts": 2, "docker_ready": True})
+        self.assertEqual(events, [
+            "create:(@ImageSet)", "ready:group-1", "remove:group-1", "absent:group-1",
+            "create:(@ImageSet)", "ready:group-2", "remove:group-2", "absent:group-2",
+        ])
+
+    def test_temporary_docker_group_is_deleted_when_pdql_fails(self):
+        events: list[str] = []
+
+        class DynamicClient:
+            def get_asset_group_hierarchy(self, _token):
+                return []
+
+            def find_asset_group(self, _groups, **_kwargs):
+                return None
+
+            def create_dynamic_asset_group(self, *_args, **_kwargs):
+                events.append("create")
+                return "create-operation"
+
+            def wait_for_asset_group_creation(self, *_args, **_kwargs):
+                events.append("ready")
+                return "group-id"
+
+            def remove_asset_groups(self, _token, group_ids):
+                events.append(f"remove:{group_ids[0]}")
+                return "remove-operation"
+
+            def wait_for_asset_group_absent(self, _token, group_id, **_kwargs):
+                events.append(f"absent:{group_id}")
+
+        with (
+            patch.object(
+                main,
+                "build_docker_vulnerability_source",
+                return_value=(
+                    {"status": "unavailable", "vulnerabilities_count": 0},
+                    "Docker PDQL unavailable",
+                ),
+            ),
+            patch.object(main.db, "update_scan_postprocess_item"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Docker PDQL unavailable"):
+                main.refresh_docker_containers_for_scanned_asset(
+                    client=DynamicClient(),
+                    token="token",
+                    asset_id="asset-12345678",
+                    item_id=1,
+                    parent_operation_id="post-1",
+                    iterations=1,
+                    settle_seconds=0,
+                    timeout_seconds=1,
+                    poll_seconds=0,
+                )
+
+        self.assertEqual(events, ["create", "ready", "remove:group-id", "absent:group-id"])
+
     def test_card_is_saved_before_remote_removal_and_local_delete_is_unused(self):
         events: list[str] = []
 
@@ -272,13 +438,18 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         }
         with (
             patch.object(main, "MpVmClient", RemovalClient),
+            patch.object(
+                main,
+                "refresh_docker_containers_for_scanned_asset",
+                side_effect=lambda **_kwargs: events.append("docker_refreshed"),
+            ),
             patch.object(main, "build_scanned_asset_card", side_effect=lambda **_kwargs: events.append("card_saved") or "build-1"),
             patch.object(main.db, "update_scan_postprocess_item", return_value=item),
             patch.object(main.db, "delete_asset_card") as local_delete,
         ):
             main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
 
-        self.assertEqual(events, ["card_saved", "remove:asset-1", "removed"])
+        self.assertEqual(events, ["docker_refreshed", "card_saved", "remove:asset-1", "removed"])
         local_delete.assert_not_called()
 
     def test_build_failure_never_starts_remote_removal(self):
@@ -292,6 +463,7 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         updates: list[dict] = []
         with (
             patch.object(main, "MpVmClient", return_value=client),
+            patch.object(main, "refresh_docker_containers_for_scanned_asset"),
             patch.object(main, "build_scanned_asset_card", side_effect=RuntimeError("build failed")),
             patch.object(main.db, "update_scan_postprocess_item", side_effect=lambda _id, **kwargs: updates.append(kwargs) or item),
         ):

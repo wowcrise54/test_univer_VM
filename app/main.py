@@ -154,6 +154,12 @@ SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS = min(3600, SETTINGS.scan_asset_resolution
 SCAN_ASSET_RESOLUTION_POLL_SECONDS = min(300, SETTINGS.scan_asset_resolution_poll_seconds)
 SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS = min(7200, SETTINGS.scan_asset_removal_timeout_seconds)
 SCAN_ASSET_REMOVAL_POLL_SECONDS = min(300, SETTINGS.scan_asset_removal_poll_seconds)
+DOCKER_DYNAMIC_GROUP_ITERATIONS = min(10, SETTINGS.docker_dynamic_group_iterations)
+DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS = min(300, SETTINGS.docker_dynamic_group_settle_seconds)
+DOCKER_DYNAMIC_GROUP_TIMEOUT_SECONDS = min(900, SETTINGS.docker_dynamic_group_timeout_seconds)
+DOCKER_DYNAMIC_GROUP_POLL_SECONDS = min(60, SETTINGS.docker_dynamic_group_poll_seconds)
+DOCKER_DYNAMIC_GROUP_PARENT_ID = "00000000-0000-0000-0000-000000000002"
+DOCKER_DYNAMIC_GROUP_PREDICATE = "(@ImageSet)"
 ASSET_CARD_STAGE_PROGRESS = {
     "queued": 0,
     "starting": 5,
@@ -3764,6 +3770,176 @@ def _ip_in_network(value: Any, network: ipaddress._BaseNetwork) -> bool:
         return False
 
 
+def refresh_docker_containers_for_scanned_asset(
+    *,
+    client: MpVmClient,
+    token: str,
+    asset_id: str,
+    item_id: int,
+    parent_operation_id: str,
+    iterations: int = DOCKER_DYNAMIC_GROUP_ITERATIONS,
+    settle_seconds: float = DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS,
+    timeout_seconds: float = DOCKER_DYNAMIC_GROUP_TIMEOUT_SECONDS,
+    poll_seconds: float = DOCKER_DYNAMIC_GROUP_POLL_SECONDS,
+) -> dict[str, Any]:
+    if iterations <= 0:
+        return {"status": "disabled", "attempts": 0, "docker_ready": False}
+
+    cancel_event = scan_postprocess_cancel_event(parent_operation_id)
+    last_error: Exception | None = None
+    successful_query = False
+    for attempt in range(1, iterations + 1):
+        raise_if_scan_postprocess_cancelled(parent_operation_id)
+        run_key = re.sub(r"[^a-z0-9]", "", parent_operation_id.casefold())[:8] or "run"
+        asset_key = re.sub(r"[^a-z0-9]", "", asset_id.casefold())[:8] or str(item_id)
+        group_name = f"docker containers [mpvm temp] {run_key}-{asset_key}-{item_id}-{attempt}"
+        group_id: str | None = None
+        attempt_error: Exception | None = None
+        docker_source: dict[str, Any] | None = None
+        cleanup_error: Exception | None = None
+        db.update_scan_postprocess_item(
+            item_id,
+            status="preparing",
+            stage="refreshing_docker_containers",
+            message=f"Docker container refresh iteration {attempt} of {iterations}.",
+            error=None,
+        )
+        scan_log(
+            logging.INFO,
+            "docker_dynamic_group_iteration_started",
+            postprocess_run_id=parent_operation_id,
+            item_id=item_id,
+            asset_id=asset_id,
+            attempt=attempt,
+            iterations=iterations,
+            group_name=group_name,
+        )
+        try:
+            hierarchy = client.get_asset_group_hierarchy(token)
+            stale_group = client.find_asset_group(hierarchy, name=group_name)
+            if stale_group and stale_group.get("id"):
+                stale_group_id = str(stale_group["id"])
+                stale_removal_operation_id = client.remove_asset_groups(token, [stale_group_id])
+                client.wait_for_asset_group_absent(
+                    token,
+                    stale_group_id,
+                    timeout_seconds=timeout_seconds,
+                    poll_seconds=poll_seconds,
+                )
+                scan_log(
+                    logging.WARNING,
+                    "stale_docker_dynamic_group_removed",
+                    postprocess_run_id=parent_operation_id,
+                    item_id=item_id,
+                    asset_id=asset_id,
+                    attempt=attempt,
+                    group_id=stale_group_id,
+                    removal_operation_id=stale_removal_operation_id,
+                )
+            operation_id = client.create_dynamic_asset_group(
+                token,
+                name=group_name,
+                predicate=DOCKER_DYNAMIC_GROUP_PREDICATE,
+                parent_id=DOCKER_DYNAMIC_GROUP_PARENT_ID,
+                description=f"Temporary Docker container refresh for asset {asset_id}.",
+            )
+            group_id = client.wait_for_asset_group_creation(
+                token,
+                operation_id,
+                timeout_seconds=timeout_seconds,
+                poll_seconds=poll_seconds,
+                cancel_event=cancel_event,
+            )
+            if settle_seconds > 0:
+                if cancel_event:
+                    if cancel_event.wait(settle_seconds):
+                        raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+                else:
+                    time.sleep(settle_seconds)
+            raise_if_scan_postprocess_cancelled(parent_operation_id)
+            docker_source, warning = build_docker_vulnerability_source(
+                token=token,
+                asset_id=asset_id,
+                asset_type="Host",
+                pdql_template=DOCKER_VULNERABILITY_PDQL,
+                max_items=1,
+                sources=[],
+                remote_call=lambda operation, _label: operation(client),
+            )
+            if warning:
+                raise RuntimeError(warning)
+            successful_query = True
+        except ScanPostprocessCancelled:
+            raise
+        except Exception as exc:
+            attempt_error = exc
+            last_error = exc
+        finally:
+            if not group_id:
+                try:
+                    hierarchy = client.get_asset_group_hierarchy(token)
+                    existing = client.find_asset_group(hierarchy, name=group_name)
+                    if existing and existing.get("id"):
+                        group_id = str(existing["id"])
+                except Exception as exc:
+                    cleanup_error = exc
+            if group_id:
+                try:
+                    removal_operation_id = client.remove_asset_groups(token, [group_id])
+                    client.wait_for_asset_group_absent(
+                        token,
+                        group_id,
+                        timeout_seconds=timeout_seconds,
+                        poll_seconds=poll_seconds,
+                    )
+                    scan_log(
+                        logging.INFO,
+                        "docker_dynamic_group_removed",
+                        postprocess_run_id=parent_operation_id,
+                        item_id=item_id,
+                        asset_id=asset_id,
+                        attempt=attempt,
+                        group_id=group_id,
+                        removal_operation_id=removal_operation_id,
+                    )
+                except Exception as exc:
+                    cleanup_error = exc
+
+        if cleanup_error:
+            raise RuntimeError(
+                f"Temporary Docker group cleanup failed for {group_name}: {cleanup_error}"
+            ) from cleanup_error
+        if cancel_event and cancel_event.is_set():
+            raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+        if attempt_error:
+            scan_log(
+                logging.WARNING,
+                "docker_dynamic_group_iteration_failed",
+                postprocess_run_id=parent_operation_id,
+                item_id=item_id,
+                asset_id=asset_id,
+                attempt=attempt,
+                error=str(attempt_error),
+            )
+            continue
+
+        docker_ready = bool(
+            docker_source
+            and (
+                docker_source.get("status") == "containers"
+                or int(docker_source.get("vulnerabilities_count") or 0) > 0
+            )
+        )
+        if docker_ready:
+            return {"status": "ready", "attempts": attempt, "docker_ready": True}
+
+    if not successful_query:
+        raise RuntimeError(
+            f"Docker container refresh failed after {iterations} iteration(s): {last_error or 'PDQL unavailable'}"
+        )
+    return {"status": "completed", "attempts": iterations, "docker_ready": False}
+
+
 def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token: str) -> None:
     item_id = int(item["id"])
     asset_id = str(item["asset_id"])
@@ -3786,6 +3962,13 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
     try:
         raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
         if not removal_operation_id:
+            refresh_docker_containers_for_scanned_asset(
+                client=client,
+                token=token,
+                asset_id=asset_id,
+                item_id=item_id,
+                parent_operation_id=str(item.get("postprocess_run_id") or ""),
+            )
             scan_log(logging.INFO, "asset_card_build_starting", **context)
             build_job_id = build_scanned_asset_card(
                 item_id=item_id,

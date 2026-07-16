@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     scan_asset_resolution_poll_seconds: int = 15
     scan_asset_removal_timeout_seconds: int = 1800
     scan_asset_removal_poll_seconds: int = 10
+    docker_dynamic_group_iterations: int = 3
+    docker_dynamic_group_settle_seconds: int = 10
+    docker_dynamic_group_timeout_seconds: int = 120
+    docker_dynamic_group_poll_seconds: int = 5
     automation_scheduler_poll_seconds: int = 30
     automation_webhook_url: str = ""
     automation_webhook_secret: str = Field(default="", repr=False)
@@ -65,6 +69,8 @@ class Settings(BaseSettings):
         "scan_asset_resolution_poll_seconds",
         "scan_asset_removal_timeout_seconds",
         "scan_asset_removal_poll_seconds",
+        "docker_dynamic_group_timeout_seconds",
+        "docker_dynamic_group_poll_seconds",
         "automation_scheduler_poll_seconds",
         "coverage_stale_days",
         "auth_session_hours",
@@ -75,7 +81,12 @@ class Settings(BaseSettings):
             raise ValueError("must be greater than zero")
         return value
 
-    @field_validator("passport_detail_ttl_hours", "asset_metadata_ttl_seconds")
+    @field_validator(
+        "passport_detail_ttl_hours",
+        "asset_metadata_ttl_seconds",
+        "docker_dynamic_group_iterations",
+        "docker_dynamic_group_settle_seconds",
+    )
     @classmethod
     def non_negative_integer(cls, value: int) -> int:
         if value < 0:

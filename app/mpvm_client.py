@@ -24,6 +24,10 @@ ASSET_GRID_PATH = "/api/assets_temporal_readmodel/v1/assets_grid"
 ASSET_GRID_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/data"
 ASSET_GRID_GROUP_DATA_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/group/data"
 ASSET_GRID_EXPORT_PATH = "/api/assets_temporal_readmodel/v1/assets_grid/export"
+ASSET_GROUPS_PATH = "/api/assets_processing/v2/groups"
+ASSET_GROUP_OPERATION_PATH = "/api/assets_processing/v2/groups/operations/{operation_id}"
+ASSET_GROUP_REMOVE_OPERATION_PATH = "/api/assets_processing/v2/groups/removeOperation"
+ASSET_GROUP_HIERARCHY_PATH = "/api/assets_temporal_readmodel/v2/groups/hierarchy"
 VULNERABILITY_DETAIL_PATH = "/api/assets_temporal_readmodel/v1/vulnerabilities/{passport_id}"
 ASSET_TIMELINE_TOKEN_PATH = "/api/v1/asset/timeline/{asset_id}/token"
 ASSET_TREE_ROOT_PATH = "/api/assets/tree/root"
@@ -256,6 +260,150 @@ class MpVmClient:
             timeout=self.auth.timeout,
         )
         return self._json_response(response, "fetch grouped asset grid data")
+
+    def create_dynamic_asset_group(
+        self,
+        access_token: str,
+        *,
+        name: str,
+        predicate: str,
+        parent_id: str = "00000000-0000-0000-0000-000000000002",
+        description: str | None = None,
+    ) -> str:
+        cvss_payload = json.dumps(
+            {"td": "ND", "cr": "ND", "cdp": "ND", "ar": "ND", "ir": "ND"},
+            separators=(",", ":"),
+        )
+        response = self.session.post(
+            self._api_url(ASSET_GROUPS_PATH),
+            headers=self._bearer_headers(access_token),
+            json={
+                "name": name,
+                "parentId": parent_id,
+                "description": description,
+                "groupType": "dynamic",
+                "predicate": predicate,
+                "metadata": [{"sourceId": "UserInput", "typeId": "Cvss", "payload": cvss_payload}],
+            },
+            timeout=self.auth.timeout,
+        )
+        data = self._json_response(response, "create dynamic asset group")
+        operation_id = data.get("operationId")
+        if not operation_id:
+            raise MpVmApiError(
+                f"Dynamic asset group response does not contain operationId: {compact_json_summary(data)}"
+            )
+        return str(operation_id)
+
+    def get_asset_group_creation_result(self, access_token: str, operation_id: str) -> str | None:
+        response = self.session.get(
+            self._api_url(ASSET_GROUP_OPERATION_PATH.format(operation_id=quote(operation_id, safe=""))),
+            headers=self._bearer_headers(access_token),
+            timeout=self.auth.timeout,
+        )
+        self._raise_for_status(response, "get dynamic asset group creation operation")
+        if response.status_code == 202:
+            return None
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise MpVmApiError("Cannot parse dynamic asset group creation result.") from exc
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        if isinstance(data, dict):
+            group_id = data.get("groupId") or data.get("id") or data.get("result")
+            if group_id:
+                return str(group_id)
+        raise MpVmApiError(f"Unexpected dynamic asset group creation result: {compact_json_summary(data)}")
+
+    def wait_for_asset_group_creation(
+        self,
+        access_token: str,
+        operation_id: str,
+        *,
+        timeout_seconds: float = 120,
+        poll_seconds: float = 5,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if cancel_event and cancel_event.is_set():
+                raise MpVmApiError("Dynamic asset group creation was cancelled.")
+            group_id = self.get_asset_group_creation_result(access_token, operation_id)
+            if group_id:
+                return group_id
+            if cancel_event:
+                if cancel_event.wait(poll_seconds):
+                    raise MpVmApiError("Dynamic asset group creation was cancelled.")
+            else:
+                time.sleep(poll_seconds)
+        raise MpVmApiError(
+            f"Dynamic asset group creation timed out after {timeout_seconds:.0f} second(s); operation {operation_id}."
+        )
+
+    def remove_asset_groups(self, access_token: str, group_ids: list[str]) -> str:
+        response = self.session.post(
+            self._api_url(ASSET_GROUP_REMOVE_OPERATION_PATH),
+            headers=self._bearer_headers(access_token),
+            json={"groupIds": group_ids},
+            timeout=self.auth.timeout,
+        )
+        data = self._json_response(response, "remove asset group")
+        operation_id = data.get("operationId")
+        if not operation_id:
+            raise MpVmApiError(
+                f"Asset group removal response does not contain operationId: {compact_json_summary(data)}"
+            )
+        return str(operation_id)
+
+    def get_asset_group_hierarchy(self, access_token: str) -> list[dict[str, Any]]:
+        response = self.session.get(
+            self._api_url(ASSET_GROUP_HIERARCHY_PATH),
+            headers=self._bearer_headers(access_token),
+            timeout=self.auth.timeout,
+        )
+        self._raise_for_status(response, "get asset group hierarchy")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise MpVmApiError("Cannot parse asset group hierarchy.") from exc
+        if not isinstance(data, list):
+            raise MpVmApiError(f"Unexpected asset group hierarchy response: {compact_json_summary(data)}")
+        return [group for group in data if isinstance(group, dict)]
+
+    @staticmethod
+    def find_asset_group(
+        groups: list[dict[str, Any]], *, group_id: str | None = None, name: str | None = None,
+    ) -> dict[str, Any] | None:
+        pending = list(groups)
+        while pending:
+            group = pending.pop()
+            if group_id and str(group.get("id") or "") == group_id:
+                return group
+            if name and str(group.get("name") or "") == name:
+                return group
+            children = group.get("children")
+            if isinstance(children, list):
+                pending.extend(child for child in children if isinstance(child, dict))
+        return None
+
+    def wait_for_asset_group_absent(
+        self,
+        access_token: str,
+        group_id: str,
+        *,
+        timeout_seconds: float = 120,
+        poll_seconds: float = 5,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            hierarchy = self.get_asset_group_hierarchy(access_token)
+            if self.find_asset_group(hierarchy, group_id=group_id) is None:
+                return
+            time.sleep(poll_seconds)
+        raise MpVmApiError(
+            f"Asset group {group_id} was not removed within {timeout_seconds:.0f} second(s)."
+        )
 
     def export_csv_file(self, access_token: str, pdql_token: str, output_path: Path) -> None:
         response = self.session.get(
