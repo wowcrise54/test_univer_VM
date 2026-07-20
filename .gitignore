@@ -11,3 +11,4 @@ output/coverage-*.json
 output/playwright/
 coverage/
 .coverage
+.superdesign/tmp/

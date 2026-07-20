@@ -28,7 +28,7 @@ beforeEach(() => {
 describe("VM Management", () => {
   it("shows the cross-domain overview and starts a durable workflow", async () => {
     renderPage();
-    expect(await screen.findByText("Единый контур VM Management")).toBeInTheDocument();
+    expect(await screen.findByText("Оперативная сводка")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Просрочено").previousSibling).toHaveTextContent("2"));
     await screen.findByRole("option", { name: "Production" });
     fireEvent.click(screen.getByRole("button", { name: "Запустить конвейер" }));

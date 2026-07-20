@@ -97,32 +97,14 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
   };
 
   const data = overview.data || {};
+  const attention = data.attention || [];
+  const recentWorkflows = data.recent_workflows || [];
+  const campaignRows = campaigns.data?.rows || [];
   return <div className="vm-page">
-    <Panel id="vm-overview" eyebrow="VM" title="Единый контур VM Management"
-      description="Сканирование, приоритизация, устранение и подтверждение результата в одном рабочем процессе."
-      action={<Button variant="secondary" busy={overview.isFetching} onClick={refresh}>Обновить</Button>}>
-      {!session.connected ? <div className="vm-callout vm-callout--warning"><div><strong>MP VM не подключён</strong><span>Для запуска сканирования установите рабочую сессию.</span></div><Button onClick={() => onNavigate("/connection")}>Настроить</Button></div> : null}
-      {overview.error ? <div className="inline-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
-      <div className="vm-kpis" aria-label="Сводка VM Management">
-        <Kpi label="Активные процессы" value={data.active_workflows} tone="blue" />
-        <Kpi label="Открытые кейсы" value={data.open_cases} />
-        <Kpi label="Просрочено" value={data.overdue_cases} tone="danger" />
-        <Kpi label="Срочный риск" value={data.risk?.urgent} tone="danger" />
-        <Kpi label="Ожидают проверки" value={data.awaiting_verification} tone="warning" />
-        <Kpi label="Покрытие" value={`${data.coverage?.coverage_percent ?? 100}%`} />
-      </div>
-      <div className="vm-stage-links" aria-label="Этапы VM-процесса">
-        <Stage number="01" title="Сканирование" text="Задачи и выполнение" onClick={() => onNavigate("/tasks")} />
-        <Stage number="02" title="Находки" text="Уязвимости и покрытие" onClick={() => onNavigate("/vulnerabilities")} />
-        <Stage number="03" title="Устранение" text="SLA, риск и кампании" onClick={() => onNavigate("/remediation")} />
-        <Stage number="04" title="Проверка" text="Повторное сканирование" onClick={() => document.getElementById("vm-campaigns")?.scrollIntoView({ behavior: "smooth" })} />
-        <Stage number="05" title="Отчётность" text="CSV и автоматизации" onClick={() => onNavigate("/export")} />
-      </div>
-    </Panel>
-
-    <div className="vm-grid">
-      <section className="panel vm-launcher">
-        <div className="panel__header"><div><h2>Запустить полный цикл</h2><p>После запуска импорт, карточки и сверка выполнятся автоматически.</p></div></div>
+    <div className="vm-workspace-grid">
+      <div className="vm-control-column">
+      <Panel className="vm-launcher" title="Запустить полный цикл"
+        description="После запуска импорт, карточки и сверка выполнятся автоматически.">
         <label><span>Задача MP VM</span><select value={taskId} onChange={(event) => setTaskId(event.target.value)} disabled={!session.connected}>
           <option value="">Выберите задачу</option>{(tasks.data || []).map((task) => <option value={task.mp_task_id} key={task.mp_task_id}>{task.payload?.name || task.name || task.mp_task_id}</option>)}
         </select></label>
@@ -131,32 +113,62 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
           <label><input type="checkbox" checked={options.require_clean_jobs} onChange={(event) => setOptions({ ...options, require_clean_jobs: event.target.checked })} /> Требовать чистый результат</label>
           <label><span>Таймаут, минут</span><input type="number" min="1" max="1440" value={options.task_timeout_minutes} onChange={(event) => setOptions({ ...options, task_timeout_minutes: Number(event.target.value) })} /></label>
         </div>
-        <Button busy={starting} disabled={!taskId || !session.connected || !permissions.has("tasks.execute")} onClick={startScan}>Запустить конвейер</Button>
-        {!permissions.has("tasks.execute") ? <small>Для запуска требуется право tasks.execute.</small> : null}
-      </section>
+        <Button className="vm-launch-button" busy={starting} disabled={!taskId || !session.connected || !permissions.has("tasks.execute")} onClick={startScan}>Запустить конвейер <span aria-hidden="true">→</span></Button>
+        {!permissions.has("tasks.execute") ? <small className="vm-permission-note">Для запуска требуется право tasks.execute.</small> : null}
+      </Panel>
 
-      <section className="panel vm-attention">
-        <div className="panel__header"><div><h2>Требуют внимания</h2><p>Сначала просроченные, затем наиболее критичные находки.</p></div></div>
-        <div className="vm-attention-list">{(data.attention || []).length ? data.attention.map((item) =>
-          <a href={`/remediation?case=${encodeURIComponent(item.case_id)}`} key={item.case_id}>
-            <span className={`severity severity--${item.severity}`}>{item.severity}</span><div><strong>{item.cve || item.title}</strong><small>{item.asset_id} · {date(item.due_at)}</small></div><b aria-hidden="true">→</b>
-          </a>) : <p className="empty-cell">Срочных кейсов нет.</p>}</div>
-      </section>
+        <nav className="vm-stage-links" aria-label="Этапы VM-процесса">
+          <Stage number="01" title="Сканирование" text="Задачи и выполнение" onClick={() => onNavigate("/tasks")} />
+          <Stage number="02" title="Находки" text="Уязвимости и покрытие" onClick={() => onNavigate("/vulnerabilities")} />
+          <Stage number="03" title="Устранение" text="SLA, риск и кампании" onClick={() => onNavigate("/remediation")} />
+          <Stage number="04" title="Проверка" text="Повторное сканирование" onClick={() => document.getElementById("vm-campaigns")?.scrollIntoView({ behavior: "smooth" })} />
+          <Stage number="05" title="Отчётность" text="CSV и автоматизации" onClick={() => onNavigate("/export")} />
+        </nav>
+      </div>
+
+      <div className="vm-operations-column">
+        <Panel id="vm-overview" className="vm-overview" title="Оперативная сводка"
+          description="Основные показатели VM-контура"
+          action={<Button variant="secondary" busy={overview.isFetching} onClick={refresh}>Обновить</Button>}>
+          {!session.connected ? <div className="vm-callout vm-callout--warning"><div><strong>MP VM не подключён</strong><span>Для запуска сканирования установите рабочую сессию.</span></div><Button onClick={() => onNavigate("/connection")}>Настроить</Button></div> : null}
+          {overview.error ? <div className="inline-error vm-overview-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
+          <div className="vm-kpis" aria-label="Сводка VM Management">
+            <Kpi label="Активные процессы" value={data.active_workflows} tone="blue" />
+            <Kpi label="Открытые кейсы" value={data.open_cases} />
+            <Kpi label="Просрочено" value={data.overdue_cases} tone="danger" />
+            <Kpi label="Срочный риск" value={data.risk?.urgent} tone="danger" />
+            <Kpi label="Ожидают проверки" value={data.awaiting_verification} tone="warning" />
+            <Kpi label="Покрытие" value={`${data.coverage?.coverage_percent ?? 100}%`} />
+          </div>
+          <section className="vm-attention" aria-labelledby="vm-attention-title">
+            <div className="vm-section-heading"><div><h3 id="vm-attention-title">Требуют внимания</h3><p>Сначала просроченные, затем наиболее критичные находки.</p></div><span className="vm-attention-count">{attention.length}</span></div>
+            <div className="vm-attention-list">{attention.length ? attention.map((item) =>
+              <a href={`/remediation?case=${encodeURIComponent(item.case_id)}`} key={item.case_id}>
+                <span className={`severity severity--${item.severity}`}>{item.severity}</span>
+                <div><strong>{item.cve || item.title}</strong><small>{item.asset_id}</small></div>
+                <time dateTime={item.due_at || undefined}>{date(item.due_at)}</time>
+                <b aria-hidden="true">→</b>
+              </a>) : <p className="empty-cell">Срочных кейсов нет.</p>}</div>
+          </section>
+        </Panel>
+
+        <Panel id="vm-workflows" className="vm-workflows" title="Последние процессы"
+          description="Состояние сохраняется после обновления страницы и перезапуска приложения."
+          action={<Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button>}>
+          <div className="vm-workflow-list">{recentWorkflows.length ? recentWorkflows.map((item) => <button type="button" onClick={() => openWorkflow(item.workflow_id)} key={item.workflow_id}>
+            <Status value={item.status} /><div><strong>{item.kind === "verification" ? "Проверка кампании" : "Полное сканирование"}</strong><small>{item.task_id || item.campaign_id || item.workflow_id} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
+          </button>) : <p className="empty-cell">Процессов пока нет.</p>}</div>
+        </Panel>
+      </div>
     </div>
 
-    <section className="panel" id="vm-workflows">
-      <div className="panel__header"><div><h2>Последние процессы</h2><p>Состояние сохраняется после обновления страницы и перезапуска приложения.</p></div><Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button></div>
-      <div className="vm-workflow-list">{(data.recent_workflows || []).map((item) => <button type="button" onClick={() => openWorkflow(item.workflow_id)} key={item.workflow_id}>
-        <Status value={item.status} /><div><strong>{item.kind === "verification" ? "Проверка кампании" : "Полное сканирование"}</strong><small>{item.task_id || item.campaign_id || item.workflow_id} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
-      </button>)}</div>
-    </section>
-
-    <section className="panel" id="vm-campaigns">
-      <div className="panel__header"><div><h2>Кампании устранения</h2><p>Ответственные, сроки и проверка результата повторным сканированием.</p></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button></div>
-      <div className="vm-campaign-grid">{(campaigns.data?.rows || []).map((item) => <button type="button" onClick={() => openCampaign(item.campaign_id)} key={item.campaign_id}>
-        <span className={`campaign-state campaign-state--${item.status}`}>{campaignLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
-      </button>)}</div>
-    </section>
+    <Panel id="vm-campaigns" className="vm-campaigns" title="Кампании устранения"
+      description="Ответственные, сроки и проверка результата повторным сканированием."
+      action={<Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button>}>
+      <div className="vm-campaign-grid">{campaignRows.length ? campaignRows.map((item) => <button type="button" onClick={() => openCampaign(item.campaign_id)} key={item.campaign_id}>
+        <span className={`campaign-state campaign-state--${item.status}`}>{campaignLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span><b>{item.resolved}/{item.total}</b> подтверждено · <em>{item.overdue} просрочено</em></span>
+      </button>) : <p className="empty-cell">Кампаний пока нет.</p>}</div>
+    </Panel>
 
     {selectedWorkflowId ? <WorkflowDrawer item={workflow.data} loading={workflow.isLoading} onClose={() => { setSelectedWorkflowId(null); setQuery({}); }} onCancel={() => workflowAction("cancel")} onRetry={() => workflowAction("retry")} /> : null}
     {selectedCampaignId ? <CampaignDrawer item={campaign.data} loading={campaign.isLoading} permissions={permissions} showAlert={showAlert} onWorkflow={openWorkflow} onRefresh={refresh} onClose={() => { setSelectedCampaignId(null); setQuery({}); }} /> : null}
@@ -164,7 +176,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 }
 
 function Kpi({ label, value, tone = "neutral" }) { return <article className={`vm-kpi vm-kpi--${tone}`}><strong>{value ?? 0}</strong><span>{label}</span></article>; }
-function Stage({ number, title, text, onClick }) { return <button type="button" onClick={onClick}><span>{number}</span><strong>{title}</strong><small>{text}</small></button>; }
+function Stage({ number, title, text, onClick }) { return <button type="button" onClick={onClick}><span>{number}</span><span><strong>{title}</strong><small>{text}</small></span></button>; }
 function Status({ value }) { return <span className={`vm-status vm-status--${value}`}>{workflowStatus[value] || value}</span>; }
 function Progress({ value = 0 }) { return <span className="vm-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={value}><i style={{ width: `${value}%` }} /></span>; }
 
