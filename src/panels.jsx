@@ -46,6 +46,12 @@ const ACTIVE_SCAN_POSTPROCESS_STATUSES = new Set([
   "processing",
   "waiting",
 ]);
+const ACTIVE_BULK_REFRESH_STATUSES = new Set([
+  "queued",
+  "running",
+  "cancelling",
+  "recovering",
+]);
 const ASSET_CONFIG_TREE_LIMIT = 200;
 const ASSET_CONFIG_DETAIL_LIMIT = 200;
 const ASSET_VULNERABILITY_FINDING_LIMIT = 100;
@@ -1563,6 +1569,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
   const [assetCardJob, setAssetCardJob] = useState(null);
   const [assetRefreshRun, setAssetRefreshRun] = useState(null);
+  const [assetBulkRefreshOperation, setAssetBulkRefreshOperation] = useState(null);
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
@@ -1733,6 +1740,49 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     };
   }, [assetRefreshRun?.mp_task_id, refreshLocalCards, showAlert]);
 
+  useEffect(() => {
+    if (
+      !assetBulkRefreshOperation?.operation_id ||
+      !ACTIVE_BULK_REFRESH_STATUSES.has(assetBulkRefreshOperation.status)
+    )
+      return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      try {
+        const nextOperation = await api(
+          `/api/operations/${encodeURIComponent(assetBulkRefreshOperation.operation_id)}`,
+        );
+        if (!alive) return;
+        setAssetBulkRefreshOperation(nextOperation);
+        if (ACTIVE_BULK_REFRESH_STATUSES.has(nextOperation.status)) {
+          timerId = window.setTimeout(poll, 3000);
+          return;
+        }
+        await refreshLocalCards();
+        if (!alive) return;
+        const result = nextOperation.result || {};
+        showAlert(
+          nextOperation.message ||
+            `Массовое обновление завершено: ${formatCount(result.completed_count)} из ${formatCount(result.selected_count)}.`,
+          nextOperation.status === "completed" ? "success" : "error",
+        );
+      } catch (_error) {
+        if (alive) timerId = window.setTimeout(poll, 5000);
+      }
+    };
+    timerId = window.setTimeout(poll, 1000);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [
+    assetBulkRefreshOperation?.operation_id,
+    assetBulkRefreshOperation?.status,
+    refreshLocalCards,
+    showAlert,
+  ]);
+
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
   const filteredCandidates = useMemo(
@@ -1889,6 +1939,27 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       );
     });
 
+  const updateAllLocalCards = () =>
+    runBusy("assetCardsBulkRefresh", async () => {
+      const result = await api("/api/asset-cards/refresh-scan/bulk", {
+        method: "POST",
+        headers: {
+          "X-Idempotency-Key": createIdempotencyKey(
+            "asset-cards-bulk-refresh",
+          ),
+        },
+        body: JSON.stringify({ selection: "all" }),
+      });
+      if (!result.operation_id || !result.operation) {
+        throw new Error("Массовое обновление карточек не было поставлено в очередь.");
+      }
+      setAssetBulkRefreshOperation(result.operation);
+      showAlert(
+        "Все сохранённые карточки поставлены на последовательное обновление. Прогресс доступен в центре операций.",
+        "info",
+      );
+    });
+
   const cancelAssetCardJob = () => {
     if (!assetCardJob?.job_id) return;
     runBusy("assetCardJobCancel", async () => {
@@ -1962,6 +2033,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const assetRefreshActive = ACTIVE_SCAN_POSTPROCESS_STATUSES.has(
     assetRefreshRun?.status,
   );
+  const assetBulkRefreshActive = ACTIVE_BULK_REFRESH_STATUSES.has(
+    assetBulkRefreshOperation?.status,
+  );
 
   return (
     <Panel
@@ -1970,13 +2044,25 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       title="Карточки активов"
       description="Сборка карточки создаёт timeline token по asset_id, забирает root, metadata, вложенные узлы и коллекции asset tree, затем сохраняет полный снимок в PostgreSQL."
       action={
-        <Button
-          variant="secondary"
-          busy={busy.assetCardsLocal}
-          onClick={loadLocalCards}
-        >
-          Из БД
-        </Button>
+        <div className="action-row">
+          <Button
+            variant="secondary"
+            busy={busy.assetCardsLocal}
+            onClick={loadLocalCards}
+          >
+            Из БД
+          </Button>
+          <Button
+            variant="success"
+            busy={busy.assetCardsBulkRefresh}
+            disabled={
+              assetCardJobActive || assetRefreshActive || assetBulkRefreshActive
+            }
+            onClick={updateAllLocalCards}
+          >
+            Обновить все карточки активов
+          </Button>
+        </div>
       }
     >
       <Field label="PDQL для получения asset_id">
@@ -2189,6 +2275,38 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           </div>
           <TaskPostprocessPanel run={assetRefreshRun} />
         </div>
+      ) : null}
+
+      {assetBulkRefreshOperation ? (
+        <section className="passport-job asset-refresh-scan" aria-live="polite">
+          <div className="asset-local-header">
+            <div>
+              <strong>Массовое обновление карточек активов</strong>
+              <small>
+                {assetBulkRefreshOperation.message || "Операция поставлена в очередь."}
+              </small>
+            </div>
+            <span
+              className={`status-pill ${assetBulkRefreshActive ? "status-pill--running" : ""}`}
+            >
+              {formatCount(assetBulkRefreshOperation.progress_percent)}%
+            </span>
+          </div>
+          <div
+            className="passport-job__track"
+            role="progressbar"
+            aria-label="Прогресс массового обновления карточек"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={Number(assetBulkRefreshOperation.progress_percent) || 0}
+          >
+            <span
+              style={{
+                width: `${Math.max(0, Math.min(100, Number(assetBulkRefreshOperation.progress_percent) || 0))}%`,
+              }}
+            />
+          </div>
+        </section>
       ) : null}
 
       {candidates.length ? (

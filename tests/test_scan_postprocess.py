@@ -1084,6 +1084,67 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         self.assertEqual(result["selected_count"], 0)
         self.assertEqual(result["completed_count"], 0)
 
+    def test_bulk_refresh_all_selects_only_saved_cards_oldest_first(self):
+        cards = main.CONTAINER.services.asset_cards
+        page = {
+            "rows": [
+                {"asset_id": "asset-old", "last_seen": "2026-07-01T00:00:00Z"},
+                {"asset_id": "asset-new", "last_seen": "2026-07-19T00:00:00Z"},
+            ],
+            "total": 2,
+        }
+        completed: list[str] = []
+
+        def refresh_one(**kwargs):
+            completed.append(kwargs["asset_id"])
+            return {"operation_id": f"operation-{kwargs['asset_id']}"}
+
+        with (
+            patch.object(cards, "list", return_value=page) as list_cards,
+            patch.object(main, "refresh_one_asset_card_for_automation", side_effect=refresh_one),
+        ):
+            result = main.refresh_asset_card_batch(
+                selection="all",
+                config={"wait": True},
+                register_child=None,
+                cancel_check=None,
+                idempotency_prefix="bulk:test",
+            )
+
+        self.assertEqual(completed, ["asset-old", "asset-new"])
+        self.assertEqual(result["selected_count"], 2)
+        list_cards.assert_called_once_with(
+            q=None,
+            limit=500,
+            offset=0,
+            sort_by="last_seen",
+            sort_dir="asc",
+        )
+
+    def test_bulk_refresh_endpoint_queues_normalized_operation(self):
+        operation = {
+            "operation_id": "bulk-1",
+            "kind": "asset_card_bulk_refresh",
+            "status": "queued",
+        }
+        future = unittest.mock.MagicMock()
+        with (
+            patch.object(main.uuid, "uuid4", return_value="bulk-1"),
+            patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
+            patch.object(main.db, "register_operation", return_value=operation) as register,
+            patch.object(main.CONTAINER.operation_runner.cancellations, "register", return_value=threading.Event()),
+            patch.object(main.CONTAINER.operation_runner, "submit", return_value=future) as submit,
+        ):
+            result = main.refresh_asset_cards_bulk(
+                main.AssetCardBulkRefreshRequest(selection="all"),
+                idempotency_key="bulk-key",
+            )
+
+        self.assertEqual(result["operation_id"], "bulk-1")
+        self.assertEqual(register.call_args.kwargs["kind"], "asset_card_bulk_refresh")
+        self.assertEqual(register.call_args.kwargs["request"]["selection"], "all")
+        self.assertEqual(submit.call_args.args[:2], ("asset-card-bulk-refresh", main.run_asset_card_bulk_refresh_operation))
+
     def test_refresh_task_reuses_scan_settings_and_targets_only_card_ip(self):
         template = {
             "name": "Regular audit",

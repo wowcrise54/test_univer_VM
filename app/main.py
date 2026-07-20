@@ -67,6 +67,7 @@ from .api.schemas import (
     AssetCardAssetQueryRequest,
     AssetCardBuildJobRequest,
     AssetCardBuildRequest,
+    AssetCardBulkRefreshRequest,
     AssetCardFieldQueryRequest,
     AssetCardRefreshScanRequest,
     AssetCardUpdateRequest,
@@ -1014,6 +1015,22 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
         return operation
     if operation["kind"] == "asset_card_build":
         cancel_asset_card_build_job(operation["source_id"])
+    elif operation["kind"] == "asset_card_bulk_refresh":
+        CONTAINER.operation_runner.cancellations.cancel("asset-card-bulk-refresh", operation["source_id"])
+        child_id = str((operation.get("result") or {}).get("current_child_operation_id") or "").strip()
+        if child_id:
+            child = db.get_operation(child_id)
+            if child and child.get("can_cancel"):
+                cancel_operation(child_id)
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation["source_id"],
+            status="cancelling",
+            stage="cancelling",
+            progress_percent=operation.get("progress_percent") or 0,
+            message="Остановка массового обновления карточек запрошена.",
+        )
     elif operation["kind"] == "passport_detail_sync":
         cancel_vulnerability_passport_detail_job(operation["source_id"])
     elif operation["kind"] == "scan_postprocess":
@@ -1806,6 +1823,56 @@ def create_asset_card_build_job(
 @asset_cards_router.get("/api/asset-cards/build-jobs/active")
 def active_asset_card_build_job() -> dict[str, Any]:
     return {"job": db.get_active_asset_card_build_job()}
+
+
+@asset_cards_router.post("/api/asset-cards/refresh-scan/bulk", status_code=202)
+def refresh_asset_cards_bulk(
+    payload: AssetCardBulkRefreshRequest,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    """Queue sequential refresh scans for all saved cards or only stale cards."""
+    clean_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_key)
+    if replay:
+        if replay.get("kind") != "asset_card_bulk_refresh":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "IDEMPOTENCY_KEY_CONFLICT",
+                    "message": "Idempotency key belongs to another operation.",
+                    "component": "operations",
+                },
+            )
+        return {"operation_id": replay["operation_id"], "operation": replay, "idempotent_replay": True}
+
+    operation_id = str(uuid.uuid4())
+    request = payload.model_dump()
+    label = "Все карточки активов" if payload.selection == "all" else "Карточки старше порога свежести"
+    operation = db.register_operation(
+        operation_id,
+        kind="asset_card_bulk_refresh",
+        source_id=operation_id,
+        status="queued",
+        stage="queued",
+        progress_percent=0,
+        subject_type="asset_cards",
+        subject_label=label,
+        message="Массовое обновление карточек поставлено в очередь.",
+        request=request,
+        idempotency_key=clean_key,
+    )
+    cancel_event = CONTAINER.operation_runner.cancellations.register("asset-card-bulk-refresh", operation_id)
+    future = CONTAINER.operation_runner.submit(
+        "asset-card-bulk-refresh",
+        run_asset_card_bulk_refresh_operation,
+        operation_id=operation_id,
+        config=request,
+        cancel_event=cancel_event,
+    )
+    future.add_done_callback(
+        lambda _future: CONTAINER.operation_runner.cancellations.remove("asset-card-bulk-refresh", operation_id)
+    )
+    return {"operation_id": operation_id, "operation": operation}
 
 
 @asset_cards_router.post("/api/asset-cards/{asset_id}/refresh-scan", status_code=202)
@@ -6900,10 +6967,11 @@ def execute_automation_step(
         return {**result, "operation_id": operation_id}
     if step_type == "asset_card_build":
         selection = str(config.get("selection") or "asset").strip()
-        if selection not in {"asset", "stale"}:
-            raise ValueError("asset_card_build selection must be asset or stale.")
-        if selection == "stale":
-            return refresh_stale_asset_cards_for_automation(
+        if selection not in {"asset", "stale", "all"}:
+            raise ValueError("asset_card_build selection must be asset, stale or all.")
+        if selection in {"stale", "all"}:
+            return refresh_asset_cards_for_automation(
+                selection=selection,
                 config=config,
                 register_child=register_child if callable(register_child) else None,
                 cancel_check=cancel_check if callable(cancel_check) else None,
@@ -6960,13 +7028,14 @@ def refresh_one_asset_card_for_automation(
     return {**result, "operation_id": operation_id}
 
 
-def refresh_stale_asset_cards_for_automation(
+def refresh_asset_card_batch(
     *,
+    selection: Literal["all", "stale"],
     config: dict[str, Any],
     register_child: Callable[[str], Any] | None,
     cancel_check: Callable[[], bool] | None,
-    run_id: str,
-    step_index: int,
+    idempotency_prefix: str,
+    progress_callback: Callable[[int, int, int, str | None], Any] | None = None,
 ) -> dict[str, Any]:
     requested_limit = config.get("max_assets")
     max_assets = int(requested_limit) if requested_limit not in {None, ""} else None
@@ -6980,7 +7049,16 @@ def refresh_stale_asset_cards_for_automation(
         if cancel_check and cancel_check():
             raise AutomationStepCancelled("Automation run was cancelled.")
         limit = page_size if max_assets is None else min(page_size, max_assets - len(rows))
-        page = CONTAINER.services.coverage.list_assets(q=None, issue="stale", limit=limit, offset=offset)
+        if selection == "stale":
+            page = CONTAINER.services.coverage.list_assets(q=None, issue="stale", limit=limit, offset=offset)
+        else:
+            page = CONTAINER.services.asset_cards.list(
+                q=None,
+                limit=limit,
+                offset=offset,
+                sort_by="last_seen",
+                sort_dir="asc",
+            )
         page_rows = page.get("rows") if isinstance(page.get("rows"), list) else []
         rows.extend(item for item in page_rows if item.get("asset_id"))
         offset += len(page_rows)
@@ -6989,6 +7067,8 @@ def refresh_stale_asset_cards_for_automation(
 
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    if progress_callback:
+        progress_callback(len(rows), 0, 0, None)
     for index, item in enumerate(rows):
         asset_id = str(item["asset_id"])
         try:
@@ -6997,16 +7077,18 @@ def refresh_stale_asset_cards_for_automation(
                 config=config,
                 register_child=register_child,
                 cancel_check=cancel_check,
-                idempotency_key=f"automation:{run_id}:{step_index}:stale:{index}:{asset_id}",
+                idempotency_key=f"{idempotency_prefix}:{selection}:{index}:{asset_id}",
             )
             results.append({"asset_id": asset_id, "operation_id": result.get("operation_id")})
         except AutomationStepCancelled:
             raise
         except Exception as exc:
             failures.append({"asset_id": asset_id, "error": str(exc)[:1000]})
+        if progress_callback:
+            progress_callback(len(rows), len(results), len(failures), asset_id)
 
     summary = {
-        "selection": "stale",
+        "selection": selection,
         "stale_days": CONTAINER.services.coverage.stale_days,
         "selected_count": len(rows),
         "completed_count": len(results),
@@ -7014,12 +7096,175 @@ def refresh_stale_asset_cards_for_automation(
         "results": results,
         "failures": failures,
     }
+    return summary
+
+
+def refresh_asset_cards_for_automation(
+    *,
+    selection: Literal["all", "stale"],
+    config: dict[str, Any],
+    register_child: Callable[[str], Any] | None,
+    cancel_check: Callable[[], bool] | None,
+    run_id: str,
+    step_index: int,
+) -> dict[str, Any]:
+    summary = refresh_asset_card_batch(
+        selection=selection,
+        config=config,
+        register_child=register_child,
+        cancel_check=cancel_check,
+        idempotency_prefix=f"automation:{run_id}:{step_index}",
+    )
+    failures = summary["failures"]
     if failures:
         raise RuntimeError(
-            f"Failed to refresh {len(failures)} of {len(rows)} stale asset card(s): "
+            f"Failed to refresh {len(failures)} of {summary['selected_count']} {selection} asset card(s): "
             + "; ".join(f"{item['asset_id']}: {item['error']}" for item in failures[:5])
         )
     return summary
+
+
+def refresh_stale_asset_cards_for_automation(
+    *,
+    config: dict[str, Any],
+    register_child: Callable[[str], Any] | None,
+    cancel_check: Callable[[], bool] | None,
+    run_id: str,
+    step_index: int,
+) -> dict[str, Any]:
+    """Compatibility wrapper for callers that explicitly request stale cards."""
+    return refresh_asset_cards_for_automation(
+        selection="stale",
+        config=config,
+        register_child=register_child,
+        cancel_check=cancel_check,
+        run_id=run_id,
+        step_index=step_index,
+    )
+
+
+def run_asset_card_bulk_refresh_operation(
+    *,
+    operation_id: str,
+    config: dict[str, Any],
+    cancel_event: threading.Event,
+) -> None:
+    selection = str(config.get("selection") or "all")
+    label = "Все карточки активов" if selection == "all" else "Карточки старше порога свежести"
+    state: dict[str, Any] = {"current_child_operation_id": None}
+
+    def persist_progress(selected: int, completed: int, failed: int, asset_id: str | None) -> None:
+        processed = completed + failed
+        state.update(
+            {
+                "selected_count": selected,
+                "completed_count": completed,
+                "failed_count": failed,
+                "current_asset_id": asset_id,
+            }
+        )
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status="running",
+            stage="refreshing" if selected else "completed",
+            progress_percent=round(processed * 100 / selected) if selected else 100,
+            subject_type="asset_cards",
+            subject_label=label,
+            message=(
+                f"Обработано карточек: {processed} из {selected}; ошибок: {failed}."
+                if selected
+                else "Карточек для обновления не найдено."
+            ),
+            result=state,
+        )
+
+    def register_child(child_id: str) -> None:
+        state["current_child_operation_id"] = child_id
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status="running",
+            stage="refreshing",
+            subject_type="asset_cards",
+            subject_label=label,
+            message=f"Обновляется карточка; дочерняя операция {child_id}.",
+            result=state,
+        )
+
+    try:
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status="running",
+            stage="selecting",
+            progress_percent=0,
+            subject_type="asset_cards",
+            subject_label=label,
+            message="Формируется список карточек для обновления.",
+            started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        worker_config = {**config, "wait": True}
+        summary = refresh_asset_card_batch(
+            selection="stale" if selection == "stale" else "all",
+            config=worker_config,
+            register_child=register_child,
+            cancel_check=cancel_event.is_set,
+            idempotency_prefix=f"bulk-refresh:{operation_id}",
+            progress_callback=persist_progress,
+        )
+        state.update(summary)
+        state["current_child_operation_id"] = None
+        failed = int(summary["failed_count"])
+        terminal_status = "completed_with_errors" if failed else "completed"
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status=terminal_status,
+            stage=terminal_status,
+            progress_percent=100,
+            subject_type="asset_cards",
+            subject_label=label,
+            message=(
+                f"Обновлено карточек: {summary['completed_count']} из {summary['selected_count']}; ошибок: {failed}."
+            ),
+            result=state,
+            finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+    except AutomationStepCancelled:
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status="cancelled",
+            stage="cancelled",
+            progress_percent=0,
+            subject_type="asset_cards",
+            subject_label=label,
+            message="Массовое обновление карточек остановлено.",
+            result=state,
+            finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        log_exception("asset-card-bulk-refresh", "bulk_refresh.failed", operation_id=operation_id)
+        db.register_operation(
+            operation_id,
+            kind="asset_card_bulk_refresh",
+            source_id=operation_id,
+            status="failed",
+            stage="failed",
+            progress_percent=0,
+            subject_type="asset_cards",
+            subject_label=label,
+            message="Не удалось выполнить массовое обновление карточек.",
+            error={"message": str(exc)[:1000]},
+            result=state,
+            finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
 
 
 AUTOMATION_TEMPLATES = [
@@ -7040,6 +7285,12 @@ AUTOMATION_TEMPLATES = [
         "name": "Обновление карточки актива",
         "description": "Сканирование актива временной задачей MP VM, перенос карточки и удаление задачи.",
         "steps": [{"step_id": "asset-card", "type": "asset_card_build", "config": {"asset_id": "", "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
+    },
+    {
+        "template_id": "stale-asset-card-refresh",
+        "name": "Обновление карточек старше недели",
+        "description": "Последовательно обновляет карточки, у которых дата «Обновлено» старше порога свежести (по умолчанию 7 дней).",
+        "steps": [{"step_id": "stale-asset-cards", "type": "asset_card_build", "config": {"selection": "stale", "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
     },
     {
         "template_id": "weekly-export",

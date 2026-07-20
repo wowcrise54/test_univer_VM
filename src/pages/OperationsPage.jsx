@@ -296,6 +296,7 @@ export function OperationsPage({
             {[
               "scan_postprocess",
               "asset_card_build",
+              "asset_card_bulk_refresh",
               "asset_search_reindex",
               "passport_detail_sync",
               "pdql_export",
@@ -656,6 +657,7 @@ function kindLabel(kind) {
       automation_run: "Runbook автоматизации",
       scan_postprocess: "Постобработка сканирования",
       asset_card_build: "Карточка актива",
+      asset_card_bulk_refresh: "Массовое обновление карточек",
       asset_search_reindex: "Индексация карточек",
       passport_detail_sync: "Детали паспортов",
       pdql_export: "PDQL экспорт",

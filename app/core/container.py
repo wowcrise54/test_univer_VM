@@ -34,6 +34,7 @@ class AppContainer:
                 "vm-workflow": 4,
                 "automation-run": 2,
                 "automation-scheduler": 1,
+                "asset-card-bulk-refresh": 1,
             }
         )
         self.services = ServiceBundle(

@@ -6,6 +6,7 @@ import { Button, ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import {
   AssetCard,
+  AssetCardsPanel,
   buildAssetPropertyRows,
   formatAssetCell,
 } from "../panels.jsx";
@@ -146,6 +147,48 @@ describe("reliability UI", () => {
     expect(button).toHaveAttribute("aria-busy", "true");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues refreshes for every saved asset card from the dedicated button", async () => {
+    api.mockImplementation((path) => {
+      if (path === "/api/asset-cards/build-jobs/active") {
+        return Promise.resolve({ job: null });
+      }
+      if (path === "/api/asset-cards/refresh-scan/bulk") {
+        return Promise.resolve({
+          operation_id: "bulk-operation-1",
+          operation: {
+            operation_id: "bulk-operation-1",
+            kind: "asset_card_bulk_refresh",
+            status: "queued",
+            progress_percent: 0,
+          },
+        });
+      }
+      return Promise.resolve({ rows: [], total: 0 });
+    });
+    render(
+      <AssetCardsPanel
+        defaults={{}}
+        busy={{}}
+        runBusy={(_key, action) => action()}
+        showAlert={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Обновить все карточки активов" }),
+    );
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/asset-cards/refresh-scan/bulk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ selection: "all" }),
+        }),
+      ),
+    );
   });
 
   it("sorts typed values stably and always leaves empty cells last", () => {

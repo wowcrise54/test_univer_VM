@@ -5107,6 +5107,7 @@ def decode_operation(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": row.get("updated_at"),
         "can_cancel": status in ACTIVE_OPERATION_STATUSES and kind in {
             "asset_card_build",
+            "asset_card_bulk_refresh",
             "passport_detail_sync",
             "scan_postprocess",
             "automation_run",

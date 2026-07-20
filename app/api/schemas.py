@@ -68,6 +68,13 @@ class AssetCardRefreshScanRequest(BaseModel):
     start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
 
 
+class AssetCardBulkRefreshRequest(BaseModel):
+    selection: Literal["all", "stale"] = "all"
+    template_task_id: str | None = None
+    max_assets: int | None = Field(default=None, gt=0)
+    start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
+
+
 class PdqlExportRequest(BaseModel):
     pdql: str = SOFTWARE_VULN_PDQL
     utc_offset: str | None = "+05:00"

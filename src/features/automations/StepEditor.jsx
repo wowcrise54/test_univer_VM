@@ -555,6 +555,7 @@ function StepConfigFields({ step, scannerTasks, fieldCatalog, updateConfig }) {
           >
             <option value="asset">Одну выбранную карточку</option>
             <option value="stale">Все устаревшие карточки</option>
+            <option value="all">Все сохранённые карточки</option>
           </select>
         </Field>
         {selection === "asset" ? (
