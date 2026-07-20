@@ -569,15 +569,16 @@ class AssetCardDatabaseTests(unittest.TestCase):
             main.validate_docker_vulnerability_pdql(missing_from_final_select)
         self.assertIn("ContainerId", final_select_error.exception.detail["message"])
 
-    def test_docker_pdql_uses_asset_filter_and_still_supports_legacy_placeholder(self):
+    def test_default_docker_pdql_is_scoped_to_the_current_host(self):
         asset_id = "1e5fa774-8780-0001-0000-000000000146"
 
-        unchanged = main.render_docker_vulnerability_pdql(
+        default_query = main.render_docker_vulnerability_pdql(
             main.DOCKER_VULNERABILITY_PDQL, asset_id, "Host"
         )
         host_query = main.render_docker_vulnerability_pdql("filter(${ASSET_SELECTOR})", asset_id, "Host")
 
-        self.assertEqual(unchanged, main.DOCKER_VULNERABILITY_PDQL)
+        self.assertNotIn("${ASSET_SELECTOR}", default_query)
+        self.assertIn(f"and Host.@Id = {asset_id}", default_query)
         self.assertIn(f"Host.@Id = {asset_id}", host_query)
         self.assertNotIn(f'"{asset_id}"', host_query)
         with self.assertRaises(ValueError):
@@ -756,8 +757,9 @@ class AssetCardDatabaseTests(unittest.TestCase):
         )
 
         self.assertIsNone(warning)
-        self.assertEqual(remote.asset_ids, [DOCKER_HOST_ID])
-        self.assertEqual(remote.pdql, main.DOCKER_VULNERABILITY_PDQL)
+        self.assertEqual(remote.asset_ids, [])
+        self.assertNotIn("${ASSET_SELECTOR}", remote.pdql)
+        self.assertIn(f"Host.@Id = {DOCKER_HOST_ID}", remote.pdql)
         self.assertEqual(remote.group_limit, 1001)
         self.assertEqual(remote.detail_request, {"limit": 100, "offset": None})
         self.assertEqual(labels, [

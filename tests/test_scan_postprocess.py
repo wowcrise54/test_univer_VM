@@ -37,12 +37,12 @@ class ScanPostprocessClientTests(unittest.TestCase):
         self.assertEqual(len(jobs), 2005)
         self.assertEqual(client.offsets, [0, 1000, 2000])
 
-    def test_main_job_becomes_successful_when_error_status_is_success(self):
+    def test_main_job_becomes_successful_after_terminal_success(self):
         client = PagingClient()
         client.get_all_run_jobs = MagicMock(return_value=[
-            {"id": "ok", "status": "assigned", "errorStatus": "success", "runMode": "default", "targets": ["10.0.0.1"]},
+            {"id": "ok", "status": "finished", "errorStatus": "success", "runMode": "default", "targets": ["10.0.0.1"]},
             {"id": "failed", "status": "finished", "errorStatus": "failed", "runMode": "default", "targets": ["10.0.0.2"]},
-            {"id": "running", "status": "assigned", "errorStatus": None, "runMode": "default", "targets": ["10.0.0.3"]},
+            {"id": "running", "status": "assigned", "errorStatus": "success", "runMode": "default", "targets": ["10.0.0.3"]},
             {"id": "precheck", "status": "assigned", "errorStatus": "success", "runMode": "connectionCheck", "targets": ["10.0.0.4"]},
             {"id": "host-discovery", "status": "assigned", "errorStatus": "success", "runMode": "default", "profile": {"name": "HostDiscovery"}, "targets": ["10.0.0.5"]},
         ])
@@ -1234,12 +1234,12 @@ class AssetCardRefreshScanTests(unittest.TestCase):
 
 
 class ScanJobLiveMonitoringTests(unittest.TestCase):
-    def test_success_error_status_schedules_card_before_run_finishes(self):
+    def test_finished_host_job_schedules_card_before_whole_run_finishes(self):
         running = {"id": "run-1", "status": "running", "startedAt": "2026-01-01T00:00:00+00:00"}
         finished = {**running, "status": "finished", "finishedAt": "2026-01-01T00:01:00+00:00"}
         job = {
             "id": "job-1",
-            "status": "assigned",
+            "status": "finished",
             "errorStatus": "success",
             "runMode": "default",
             "targets": ["10.0.0.1"],

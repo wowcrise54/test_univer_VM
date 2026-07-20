@@ -74,7 +74,10 @@ ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTi
 # package/vulnerability rows used by the application come from
 # assets_grid/group/data. Deployments may override the template when their asset
 # model uses custom aliases, but must preserve the selected output fields.
-DOCKER_VULNERABILITY_PDQL = os.getenv("MPVM_DOCKER_VULNERABILITY_PDQL") or """filter(Host.Softs<DockerEngine>)
+DOCKER_VULNERABILITY_PDQL = os.getenv("MPVM_DOCKER_VULNERABILITY_PDQL") or """filter(
+  Host.Softs<DockerEngine>
+  and ${ASSET_SELECTOR}
+)
 | select(
   @Host,
   Host.Softs<DockerEngine> as Docker,
@@ -758,6 +761,8 @@ class MpVmClient:
         successful: list[dict[str, Any]] = []
         for job in tracked_jobs:
             if "connectioncheck" in status_strings(job.get("runMode")):
+                continue
+            if not is_finished(job):
                 continue
             if not has_success_status(job.get("errorStatus")):
                 continue
