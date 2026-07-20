@@ -314,40 +314,17 @@ class ScanAssetResolutionTests(unittest.TestCase):
 
 
 class ScanAssetProcessingOrderTests(unittest.TestCase):
-    def test_temporary_docker_groups_are_deleted_between_refresh_iterations(self):
-        events: list[str] = []
-
-        class DynamicClient:
-            def get_asset_group_hierarchy(self, _token):
-                return []
-
-            def find_asset_group(self, _groups, **_kwargs):
-                return None
-
-            def create_dynamic_asset_group(self, _token, **kwargs):
-                events.append(f"create:{kwargs['predicate']}")
-                return f"create-{len(events)}"
-
-            def wait_for_asset_group_creation(self, *_args, **_kwargs):
-                group_id = f"group-{sum(event.startswith('create:') for event in events)}"
-                events.append(f"ready:{group_id}")
-                return group_id
-
-            def remove_asset_groups(self, _token, group_ids):
-                events.append(f"remove:{group_ids[0]}")
-                return f"remove-{group_ids[0]}"
-
-            def wait_for_asset_group_absent(self, _token, group_id, **_kwargs):
-                events.append(f"absent:{group_id}")
+    def test_scan_owned_group_is_not_created_or_removed_during_asset_probes(self):
+        client = MagicMock()
 
         empty = ({"status": "empty", "vulnerabilities_count": 0}, None)
         ready = ({"status": "containers", "vulnerabilities_count": 1}, None)
         with (
-            patch.object(main, "build_docker_vulnerability_source", side_effect=[empty, ready]),
+            patch.object(main, "build_docker_vulnerability_source", side_effect=[empty, ready]) as docker_probe,
             patch.object(main.db, "update_scan_postprocess_item"),
         ):
             result = main.refresh_docker_containers_for_scanned_asset(
-                client=DynamicClient(),
+                client=client,
                 token="token",
                 asset_id="asset-12345678",
                 item_id=1,
@@ -359,35 +336,13 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"status": "ready", "attempts": 2, "docker_ready": True})
-        self.assertEqual(events, [
-            "create:(@ImageSet)", "ready:group-1", "remove:group-1", "absent:group-1",
-            "create:(@ImageSet)", "ready:group-2", "remove:group-2", "absent:group-2",
-        ])
+        self.assertEqual(docker_probe.call_count, 2)
+        client.create_dynamic_asset_group.assert_not_called()
+        client.remove_asset_groups.assert_not_called()
+        client.wait_for_asset_group_absent.assert_not_called()
 
-    def test_temporary_docker_group_is_deleted_when_pdql_fails(self):
-        events: list[str] = []
-
-        class DynamicClient:
-            def get_asset_group_hierarchy(self, _token):
-                return []
-
-            def find_asset_group(self, _groups, **_kwargs):
-                return None
-
-            def create_dynamic_asset_group(self, *_args, **_kwargs):
-                events.append("create")
-                return "create-operation"
-
-            def wait_for_asset_group_creation(self, *_args, **_kwargs):
-                events.append("ready")
-                return "group-id"
-
-            def remove_asset_groups(self, _token, group_ids):
-                events.append(f"remove:{group_ids[0]}")
-                return "remove-operation"
-
-            def wait_for_asset_group_absent(self, _token, group_id, **_kwargs):
-                events.append(f"absent:{group_id}")
+    def test_pdql_failure_does_not_remove_scan_owned_group(self):
+        client = MagicMock()
 
         with (
             patch.object(
@@ -402,7 +357,7 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "Docker PDQL unavailable"):
                 main.refresh_docker_containers_for_scanned_asset(
-                    client=DynamicClient(),
+                    client=client,
                     token="token",
                     asset_id="asset-12345678",
                     item_id=1,
@@ -413,7 +368,9 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
                     poll_seconds=0,
                 )
 
-        self.assertEqual(events, ["create", "ready", "remove:group-id", "absent:group-id"])
+        client.create_dynamic_asset_group.assert_not_called()
+        client.remove_asset_groups.assert_not_called()
+        client.wait_for_asset_group_absent.assert_not_called()
 
     def test_card_is_saved_before_remote_removal_and_local_delete_is_unused(self):
         events: list[str] = []
@@ -504,6 +461,55 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
 
 
 class StartScannerTaskApiTests(unittest.TestCase):
+    def test_run_scoped_docker_group_is_ready_before_remote_scan_starts(self):
+        events: list[str] = []
+
+        class LifecycleClient:
+            def validate_scanner_task_with_retry(self, *_args, **_kwargs):
+                return True, None
+
+            def get_asset_group_hierarchy(self, _token):
+                events.append("group:lookup")
+                return []
+
+            def find_asset_group(self, _groups, **_kwargs):
+                return None
+
+            def create_dynamic_asset_group(self, _token, **kwargs):
+                events.append(f"group:create:{kwargs['predicate']}")
+                self.created_name = kwargs["name"]
+                return "create-operation"
+
+            def wait_for_asset_group_creation(self, *_args, **_kwargs):
+                events.append("group:ready")
+                return "group-id"
+
+            def start_scanner_task_with_retry(self, *_args, **_kwargs):
+                events.append("scan:start")
+                return {"id": "task-1"}
+
+        client = LifecycleClient()
+        with (
+            patch.object(main, "DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS", 0),
+            patch.object(main.db, "update_scan_task_status"),
+            patch.object(main.db, "update_scan_postprocess_docker_group"),
+        ):
+            result = main.start_scanner_task_impl(
+                client=client,
+                token="token",
+                task_id="task-1",
+                options=main.StartScannerTaskRequest(),
+                docker_group_run_id="11111111-2222-3333-4444-555555555555",
+                before_remote_start=lambda _started_from: events.append("run:persisted"),
+            )
+
+        self.assertEqual(
+            events,
+            ["run:persisted", "group:lookup", "group:create:(@ImageSet)", "group:ready", "scan:start"],
+        )
+        self.assertIn("11111111-2222-3333-4444-555555555555", client.created_name)
+        self.assertEqual(result["docker_dynamic_group"]["id"], "group-id")
+
     def test_start_returns_postprocess_run_and_schedules_background_monitor(self):
         background = BackgroundTasks()
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
@@ -514,15 +520,20 @@ class StartScannerTaskApiTests(unittest.TestCase):
                 "id": "task-1",
                 "status": "started",
                 "started_from": "2026-01-01T00:00:00+00:00",
+                "docker_dynamic_group": {
+                    "id": "group-1",
+                    "name": "docker containers [mpvm scan] post-1",
+                },
             }),
             patch.object(main.uuid, "uuid4", return_value="post-1"),
-            patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess),
+            patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess) as create_run,
         ):
             result = main.start_scanner_task("task-1", background, main.StartScannerTaskRequest())
 
         self.assertEqual(result["postprocess_run_id"], "post-1")
         self.assertEqual(result["postprocess"]["status"], "monitoring")
         self.assertEqual(len(background.tasks), 1)
+        self.assertEqual(create_run.call_args.kwargs["options"]["docker_dynamic_group"]["id"], "group-1")
 
     def test_http_start_is_accepted_and_background_schedule_runs(self):
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
@@ -587,6 +598,106 @@ class StartScannerTaskApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(finish_run.call_args.kwargs["status"], "completed")
         capture_snapshot.assert_called_once_with("scan_postprocess", "post-full")
+
+
+class DockerGroupCleanupTests(unittest.TestCase):
+    def test_cleanup_deadline_is_ten_minutes_after_remote_finish(self):
+        self.assertEqual(
+            main.docker_group_cleanup_after("2026-07-17T10:00:00+00:00"),
+            "2026-07-17T10:10:00+00:00",
+        )
+
+    def test_cleanup_deadline_is_persisted_before_background_removal(self):
+        run = {
+            "run_id": "post-1",
+            "status": "processing",
+            "options": {
+                "docker_dynamic_group": {
+                    "id": "group-1",
+                    "name": "docker containers [mpvm scan] post-1",
+                }
+            },
+        }
+        future = MagicMock()
+        future.done.return_value = False
+        main.DOCKER_GROUP_CLEANUP_FUTURES.pop("post-1", None)
+        try:
+            with (
+                patch.object(main.db, "get_scan_postprocess_run", return_value=run),
+                patch.object(main.db, "update_scan_postprocess_docker_group", return_value=run) as update_group,
+                patch.object(main.CONTAINER.operation_runner.cancellations, "register", return_value=threading.Event()),
+                patch.object(main.CONTAINER.operation_runner, "submit", return_value=future) as submit,
+            ):
+                scheduled = main.schedule_scan_docker_group_cleanup(
+                    run_id="post-1",
+                    auth=SimpleNamespace(),
+                    token="token",
+                    options=run["options"],
+                    scan_finished_at="2026-07-17T10:00:00+00:00",
+                )
+        finally:
+            main.DOCKER_GROUP_CLEANUP_FUTURES.pop("post-1", None)
+
+        self.assertTrue(scheduled)
+        self.assertEqual(update_group.call_args.kwargs["cleanup_after"], "2026-07-17T10:10:00+00:00")
+        submit.assert_called_once()
+
+    def test_due_cleanup_removes_group_and_confirms_absence(self):
+        events: list[str] = []
+        run = {
+            "run_id": "post-1",
+            "status": "completed",
+            "options": {
+                "docker_dynamic_group": {
+                    "id": "group-1",
+                    "name": "docker containers [mpvm scan] post-1",
+                    "cleanup_after": "2020-01-01T00:00:00+00:00",
+                }
+            },
+        }
+
+        class CleanupClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+            def ensure_access_token(self):
+                return "fresh-token"
+
+            def get_asset_group_hierarchy(self, _token):
+                return [{"id": "group-1", "name": "docker containers [mpvm scan] post-1"}]
+
+            def find_asset_group(self, groups, *, group_id=None, name=None):
+                return next(
+                    (
+                        group
+                        for group in groups
+                        if (group_id and group["id"] == group_id) or (name and group["name"] == name)
+                    ),
+                    None,
+                )
+
+            def remove_asset_groups(self, _token, group_ids):
+                events.append(f"remove:{group_ids[0]}")
+                return "remove-operation"
+
+            def wait_for_asset_group_absent(self, _token, group_id, **_kwargs):
+                events.append(f"absent:{group_id}")
+
+        with (
+            patch.object(main, "MpVmClient", CleanupClient),
+            patch.object(main.db, "get_scan_postprocess_run", return_value=run),
+            patch.object(main.db, "update_scan_postprocess_docker_group") as update_group,
+        ):
+            main.run_scan_docker_group_cleanup(
+                run_id="post-1",
+                auth=SimpleNamespace(),
+                token="token",
+                cancel_event=threading.Event(),
+            )
+
+        self.assertEqual(events, ["remove:group-1", "absent:group-1"])
+        self.assertEqual(update_group.call_args.kwargs["removal_operation_id"], "remove-operation")
+        self.assertIsNone(update_group.call_args.kwargs["cleanup_error"])
 
 
 class AssetCardRefreshScanTests(unittest.TestCase):

@@ -1364,6 +1364,22 @@ def list_pending_asset_refresh_task_cleanups() -> list[dict[str, Any]]:
     return [decode_scan_postprocess_run(dict(row)) for row in rows]
 
 
+def list_pending_docker_group_cleanups() -> list[dict[str, Any]]:
+    """Return terminal scan runs whose managed Docker group still needs removal."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM scan_postprocess_runs
+            WHERE status NOT IN ('monitoring', 'resolving', 'processing', 'waiting', 'cancelling')
+              AND NULLIF(options_json::jsonb #>> '{docker_dynamic_group,name}', '') IS NOT NULL
+              AND NULLIF(options_json::jsonb #>> '{docker_dynamic_group,cleanup_after}', '') IS NOT NULL
+              AND NULLIF(options_json::jsonb #>> '{docker_dynamic_group,removed_at}', '') IS NULL
+            ORDER BY options_json::jsonb #>> '{docker_dynamic_group,cleanup_after}', created_at
+            """
+        ).fetchall()
+    return [decode_scan_postprocess_run(dict(row)) for row in rows]
+
+
 def claim_scan_postprocess_run(run_id: str, worker_id: str) -> dict[str, Any] | None:
     current = now_utc()
     with connect() as conn:
@@ -1454,6 +1470,36 @@ def finish_scan_postprocess_run(
             (status, stage, message, error, current, current, run_id),
         ).fetchone()
     return decode_scan_postprocess_run(dict(row)) if row else None
+
+
+def update_scan_postprocess_docker_group(run_id: str, **values: Any) -> dict[str, Any] | None:
+    """Atomically merge durable lifecycle fields into ``options.docker_dynamic_group``."""
+    current = now_utc()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT options_json FROM scan_postprocess_runs WHERE run_id = %s FOR UPDATE",
+            (run_id,),
+        ).fetchone()
+        if not row:
+            return None
+        options = json_loads(row.get("options_json"), {})
+        if not isinstance(options, dict):
+            options = {}
+        group = options.get("docker_dynamic_group")
+        if not isinstance(group, dict):
+            group = {}
+        group.update(values)
+        options["docker_dynamic_group"] = group
+        updated = conn.execute(
+            """
+            UPDATE scan_postprocess_runs
+            SET options_json = %s, updated_at = %s
+            WHERE run_id = %s
+            RETURNING *
+            """,
+            (json.dumps(options, ensure_ascii=False), current, run_id),
+        ).fetchone()
+    return decode_scan_postprocess_run(dict(updated)) if updated else None
 
 
 def request_scan_postprocess_cancel(run_id: str) -> dict[str, Any] | None:

@@ -15,7 +15,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from contextvars import copy_context
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -158,6 +158,7 @@ DOCKER_DYNAMIC_GROUP_ITERATIONS = min(10, SETTINGS.docker_dynamic_group_iteratio
 DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS = min(300, SETTINGS.docker_dynamic_group_settle_seconds)
 DOCKER_DYNAMIC_GROUP_TIMEOUT_SECONDS = min(900, SETTINGS.docker_dynamic_group_timeout_seconds)
 DOCKER_DYNAMIC_GROUP_POLL_SECONDS = min(60, SETTINGS.docker_dynamic_group_poll_seconds)
+DOCKER_DYNAMIC_GROUP_RETENTION_SECONDS = min(86400, SETTINGS.docker_dynamic_group_retention_seconds)
 DOCKER_DYNAMIC_GROUP_PARENT_ID = "00000000-0000-0000-0000-000000000002"
 DOCKER_DYNAMIC_GROUP_PREDICATE = "(@ImageSet)"
 ASSET_CARD_STAGE_PROGRESS = {
@@ -183,6 +184,8 @@ DATABASE_STARTUP_ERROR: str | None = None
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
 SCAN_POSTPROCESS_CANCEL_EVENTS: dict[str, threading.Event] = {}
+DOCKER_GROUP_CLEANUP_FUTURES: dict[str, Future[Any]] = {}
+DOCKER_GROUP_CLEANUP_FUTURES_LOCK = threading.Lock()
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
 ASSET_METADATA_CACHE = CONTAINER.asset_metadata_cache
 ASSET_METADATA_INFLIGHT = CONTAINER.asset_metadata_inflight
@@ -1336,18 +1339,44 @@ def _start_scanner_task_request(
             "idempotent_replay": True,
         }
     client, token = require_mpvm()
+    postprocess_run_id = str(uuid.uuid4())
+    run_options = options.model_dump()
+    if DOCKER_DYNAMIC_GROUP_ITERATIONS > 0:
+        run_options["docker_dynamic_group"] = {
+            "name": docker_scan_group_name(postprocess_run_id),
+            "state": "planned",
+        }
+    postprocess_holder: dict[str, dict[str, Any]] = {}
+
+    def ensure_postprocess_run(started_from: str) -> dict[str, Any]:
+        if "run" not in postprocess_holder:
+            postprocess_holder["run"] = db.create_scan_postprocess_run(
+                postprocess_run_id,
+                mp_task_id=task_id,
+                started_from=started_from,
+                options=run_options,
+                idempotency_key=clean_idempotency_key,
+            )
+        return postprocess_holder["run"]
+
     try:
-        result = start_scanner_task_impl(client=client, token=token, task_id=task_id, options=options)
+        result = start_scanner_task_impl(
+            client=client,
+            token=token,
+            task_id=task_id,
+            options=options,
+            docker_group_run_id=postprocess_run_id,
+            before_remote_start=ensure_postprocess_run,
+        )
         if result.get("status") != "started":
             return result
-        postprocess_run_id = str(uuid.uuid4())
-        postprocess = db.create_scan_postprocess_run(
-            postprocess_run_id,
-            mp_task_id=task_id,
-            started_from=str(result["started_from"]),
-            options=options.model_dump(),
-            idempotency_key=clean_idempotency_key,
-        )
+        created_before_start = "run" in postprocess_holder
+        docker_group = result.get("docker_dynamic_group")
+        if not created_before_start and isinstance(docker_group, dict):
+            run_options["docker_dynamic_group"] = docker_group
+        postprocess = ensure_postprocess_run(str(result["started_from"]))
+        if created_before_start:
+            postprocess = db.get_scan_postprocess_run(postprocess_run_id) or postprocess
         if background_tasks is None:
             schedule_scan_postprocess(postprocess_run_id, client.auth, token)
         else:
@@ -1358,8 +1387,25 @@ def _start_scanner_task_request(
             "postprocess": postprocess,
             "operation_id": postprocess_run_id,
         }
-    except (MpVmApiError, requests.RequestException) as exc:
-        raise http_error(exc) from exc
+    except Exception as exc:
+        if "run" in postprocess_holder:
+            try:
+                finish_provisional_scan_start_failure(
+                    run_id=postprocess_run_id,
+                    auth=client.auth,
+                    token=token,
+                    error=exc,
+                )
+            except Exception:
+                SCAN_LOG.exception(
+                    "[scan-postprocess] failed to finalize provisional scanner start "
+                    "postprocess_run_id=%s task_id=%s",
+                    postprocess_run_id,
+                    task_id,
+                )
+        if isinstance(exc, (MpVmApiError, requests.RequestException)):
+            raise http_error(exc) from exc
+        raise
 
 
 @tasks_router.get("/api/scanner-tasks/{task_id}/postprocess-runs/latest")
@@ -1777,6 +1823,38 @@ def refresh_asset_card_by_scan(
         target_ip=target_ip,
         display_name=str(card.get("display_name") or card.get("hostname") or target_ip),
     )
+    postprocess_run_id = str(uuid.uuid4())
+    options = payload.start_options.model_dump()
+    options.update(
+        {
+            "refresh_asset_id": asset_id,
+            "refresh_asset_label": str(card.get("display_name") or card.get("hostname") or target_ip),
+            "refresh_target_ip": target_ip,
+            "refresh_template_task_id": template.get("mp_task_id"),
+            "auto_created_refresh_task": True,
+        }
+    )
+    if DOCKER_DYNAMIC_GROUP_ITERATIONS > 0:
+        options["docker_dynamic_group"] = {
+            "name": docker_scan_group_name(postprocess_run_id),
+            "state": "planned",
+        }
+    postprocess_holder: dict[str, dict[str, Any]] = {}
+    refresh_task_id: str | None = None
+
+    def ensure_refresh_postprocess_run(started_from: str) -> dict[str, Any]:
+        if not refresh_task_id:
+            raise RuntimeError("Refresh scanner task id is unavailable.")
+        if "run" not in postprocess_holder:
+            postprocess_holder["run"] = db.create_scan_postprocess_run(
+                postprocess_run_id,
+                mp_task_id=refresh_task_id,
+                started_from=started_from,
+                options=options,
+                idempotency_key=clean_key,
+            )
+        return postprocess_holder["run"]
+
     try:
         refresh_task_id = client.create_scanner_task(token, task_payload)
         db.record_scan_task(
@@ -1790,9 +1868,28 @@ def refresh_asset_card_by_scan(
             token=token,
             task_id=refresh_task_id,
             options=payload.start_options,
+            docker_group_run_id=postprocess_run_id,
+            before_remote_start=ensure_refresh_postprocess_run,
         )
-    except (MpVmApiError, requests.RequestException) as exc:
-        raise http_error(exc) from exc
+    except Exception as exc:
+        if "run" in postprocess_holder:
+            try:
+                finish_provisional_scan_start_failure(
+                    run_id=postprocess_run_id,
+                    auth=client.auth,
+                    token=token,
+                    error=exc,
+                )
+            except Exception:
+                SCAN_LOG.exception(
+                    "[scan-postprocess] failed to finalize provisional refresh scanner start "
+                    "postprocess_run_id=%s task_id=%s",
+                    postprocess_run_id,
+                    refresh_task_id,
+                )
+        if isinstance(exc, (MpVmApiError, requests.RequestException)):
+            raise http_error(exc) from exc
+        raise
 
     if start_result.get("status") != "started":
         return {
@@ -1803,24 +1900,13 @@ def refresh_asset_card_by_scan(
             "target_ip": target_ip,
         }
 
-    postprocess_run_id = str(uuid.uuid4())
-    options = payload.start_options.model_dump()
-    options.update(
-        {
-            "refresh_asset_id": asset_id,
-            "refresh_asset_label": str(card.get("display_name") or card.get("hostname") or target_ip),
-            "refresh_target_ip": target_ip,
-            "refresh_template_task_id": template.get("mp_task_id"),
-            "auto_created_refresh_task": True,
-        }
-    )
-    postprocess = db.create_scan_postprocess_run(
-        postprocess_run_id,
-        mp_task_id=refresh_task_id,
-        started_from=str(start_result["started_from"]),
-        options=options,
-        idempotency_key=clean_key,
-    )
+    created_before_start = "run" in postprocess_holder
+    docker_group = start_result.get("docker_dynamic_group")
+    if not created_before_start and isinstance(docker_group, dict):
+        options["docker_dynamic_group"] = docker_group
+    postprocess = ensure_refresh_postprocess_run(str(start_result["started_from"]))
+    if created_before_start:
+        postprocess = db.get_scan_postprocess_run(postprocess_run_id) or postprocess
     background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
     scan_log(
         logging.INFO,
@@ -2847,12 +2933,174 @@ def build_asset_refresh_task_payload(
     return task_payload
 
 
+def docker_scan_group_name(run_id: str) -> str:
+    run_key = re.sub(r"[^a-zA-Z0-9-]", "", str(run_id)) or str(uuid.uuid4())
+    return f"docker containers [mpvm scan] {run_key[:80]}"
+
+
+def prepare_docker_dynamic_group_for_scan(
+    *,
+    client: MpVmClient,
+    token: str,
+    run_id: str,
+    task_id: str,
+    persist_lifecycle: bool = False,
+) -> dict[str, Any] | None:
+    """Create one run-scoped Docker group and make it ready before the remote scan starts."""
+    if DOCKER_DYNAMIC_GROUP_ITERATIONS <= 0:
+        return None
+
+    group_name = docker_scan_group_name(run_id)
+    if persist_lifecycle:
+        db.update_scan_postprocess_docker_group(
+            run_id,
+            name=group_name,
+            state="creating",
+            cleanup_error=None,
+        )
+    try:
+        hierarchy = client.get_asset_group_hierarchy(token)
+        existing = client.find_asset_group(hierarchy, name=group_name)
+    except Exception as exc:
+        if persist_lifecycle:
+            db.update_scan_postprocess_docker_group(
+                run_id,
+                state="create_failed",
+                cleanup_after=db.now_utc(),
+                cleanup_error=str(exc)[:4000],
+            )
+        raise
+    if existing and existing.get("id"):
+        group_id = str(existing["id"])
+        reused_at = db.now_utc()
+        if persist_lifecycle:
+            db.update_scan_postprocess_docker_group(
+                run_id,
+                id=group_id,
+                name=group_name,
+                state="ready",
+                created_at=reused_at,
+                reused=True,
+            )
+        scan_log(
+            logging.INFO,
+            "docker_dynamic_group_reused",
+            postprocess_run_id=run_id,
+            task_id=task_id,
+            group_id=group_id,
+            group_name=group_name,
+        )
+        return {
+            "id": group_id,
+            "name": group_name,
+            "created_at": reused_at,
+            "reused": True,
+        }
+
+    try:
+        operation_id = client.create_dynamic_asset_group(
+            token,
+            name=group_name,
+            predicate=DOCKER_DYNAMIC_GROUP_PREDICATE,
+            parent_id=DOCKER_DYNAMIC_GROUP_PARENT_ID,
+            description=(
+                f"Managed Docker container discovery group for scanner task {task_id}; "
+                f"scan run {run_id}."
+            ),
+        )
+        if persist_lifecycle:
+            db.update_scan_postprocess_docker_group(
+                run_id,
+                creation_operation_id=operation_id,
+            )
+        group_id = client.wait_for_asset_group_creation(
+            token,
+            operation_id,
+            timeout_seconds=DOCKER_DYNAMIC_GROUP_TIMEOUT_SECONDS,
+            poll_seconds=DOCKER_DYNAMIC_GROUP_POLL_SECONDS,
+        )
+    except Exception as exc:
+        if persist_lifecycle:
+            db.update_scan_postprocess_docker_group(
+                run_id,
+                state="create_failed",
+                cleanup_after=db.now_utc(),
+                cleanup_error=str(exc)[:4000],
+            )
+        raise
+    if DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS > 0:
+        time.sleep(DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS)
+    created_at = db.now_utc()
+    if persist_lifecycle:
+        db.update_scan_postprocess_docker_group(
+            run_id,
+            id=group_id,
+            name=group_name,
+            state="ready",
+            created_at=created_at,
+            creation_operation_id=operation_id,
+            reused=False,
+            cleanup_error=None,
+        )
+    scan_log(
+        logging.INFO,
+        "docker_dynamic_group_ready_before_scan",
+        postprocess_run_id=run_id,
+        task_id=task_id,
+        group_id=group_id,
+        group_name=group_name,
+        creation_operation_id=operation_id,
+    )
+    return {
+        "id": group_id,
+        "name": group_name,
+        "created_at": created_at,
+        "creation_operation_id": operation_id,
+        "reused": False,
+    }
+
+
+def remove_docker_dynamic_group(
+    *,
+    client: MpVmClient,
+    token: str,
+    group: dict[str, Any],
+) -> dict[str, Any]:
+    group_id = str(group.get("id") or "").strip()
+    group_name = str(group.get("name") or "").strip()
+    hierarchy = client.get_asset_group_hierarchy(token)
+    existing = client.find_asset_group(hierarchy, group_id=group_id) if group_id else None
+    if existing is None and group_name:
+        existing = client.find_asset_group(hierarchy, name=group_name)
+    if existing is None:
+        return {"removed": True, "already_absent": True, "group_id": group_id or None}
+
+    actual_group_id = str(existing.get("id") or group_id)
+    if not actual_group_id:
+        raise RuntimeError(f"Docker dynamic group {group_name or '<unnamed>'} has no id.")
+    removal_operation_id = client.remove_asset_groups(token, [actual_group_id])
+    client.wait_for_asset_group_absent(
+        token,
+        actual_group_id,
+        timeout_seconds=DOCKER_DYNAMIC_GROUP_TIMEOUT_SECONDS,
+        poll_seconds=DOCKER_DYNAMIC_GROUP_POLL_SECONDS,
+    )
+    return {
+        "removed": True,
+        "already_absent": False,
+        "group_id": actual_group_id,
+        "removal_operation_id": removal_operation_id,
+    }
+
+
 def start_scanner_task_impl(
     *,
     client: MpVmClient,
     token: str,
     task_id: str,
     options: StartScannerTaskRequest,
+    docker_group_run_id: str | None = None,
+    before_remote_start: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": task_id,
@@ -2880,13 +3128,61 @@ def start_scanner_task_impl(
             return {**result, "status": "precheck_failed"}
 
     started_from = datetime.now(timezone.utc).isoformat()
-    start_response = client.start_scanner_task_with_retry(
-        token,
-        task_id,
-        timeout_seconds=options.create_settle_seconds,
-        poll_seconds=min(options.task_poll_seconds, 5),
+    if before_remote_start:
+        before_remote_start(started_from)
+    docker_group = (
+        prepare_docker_dynamic_group_for_scan(
+            client=client,
+            token=token,
+            run_id=docker_group_run_id,
+            task_id=task_id,
+            persist_lifecycle=before_remote_start is not None,
+        )
+        if docker_group_run_id
+        else None
     )
+    try:
+        start_response = client.start_scanner_task_with_retry(
+            token,
+            task_id,
+            timeout_seconds=options.create_settle_seconds,
+            poll_seconds=min(options.task_poll_seconds, 5),
+        )
+    except Exception:
+        if docker_group:
+            try:
+                cleanup = remove_docker_dynamic_group(client=client, token=token, group=docker_group)
+                scan_log(
+                    logging.INFO,
+                    "docker_dynamic_group_removed_after_start_failure",
+                    postprocess_run_id=docker_group_run_id,
+                    task_id=task_id,
+                    **cleanup,
+                )
+                if before_remote_start and docker_group_run_id:
+                    db.update_scan_postprocess_docker_group(
+                        docker_group_run_id,
+                        state="removed",
+                        removed_at=db.now_utc(),
+                        removal_operation_id=cleanup.get("removal_operation_id"),
+                        cleanup_error=None,
+                    )
+            except Exception:
+                SCAN_LOG.exception(
+                    "[scan-postprocess] failed to remove Docker group after scanner start failure "
+                    "postprocess_run_id=%s task_id=%s",
+                    docker_group_run_id,
+                    task_id,
+                )
+        raise
     result["start"] = start_response
+    result["docker_dynamic_group"] = docker_group
+    if before_remote_start and docker_group_run_id and docker_group:
+        db.update_scan_postprocess_docker_group(
+            docker_group_run_id,
+            state="active",
+            scanner_started_at=started_from,
+        )
     db.update_scan_task_status(task_id, "started", start_response)
     return {**result, "status": "started", "started_from": started_from}
 
@@ -2975,6 +3271,197 @@ def build_precheck_task_name(prefix: str, audit_task_name: str) -> str:
     return f"{prefix} {audit_task_name} {stamp}"
 
 
+def docker_dynamic_group_from_options(options: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(options, dict):
+        return None
+    group = options.get("docker_dynamic_group")
+    if not isinstance(group, dict) or not (group.get("id") or group.get("name")):
+        return None
+    return dict(group)
+
+
+def remember_docker_scan_finished_at(run_id: str, finished_at: str, *, confirmed: bool) -> None:
+    run = db.get_scan_postprocess_run(run_id)
+    if not run or not docker_dynamic_group_from_options(run.get("options")):
+        return
+    db.update_scan_postprocess_docker_group(
+        run_id,
+        scan_finished_at=finished_at,
+        scan_terminal_confirmed=confirmed,
+    )
+
+
+def docker_group_cleanup_after(scan_finished_at: str | None) -> str:
+    finished = parse_mpvm_datetime(scan_finished_at) or datetime.now(UTC)
+    return (finished + timedelta(seconds=DOCKER_DYNAMIC_GROUP_RETENTION_SECONDS)).isoformat(timespec="seconds")
+
+
+def finish_provisional_scan_start_failure(
+    *,
+    run_id: str,
+    auth: AuthConfig,
+    token: str,
+    error: Exception,
+) -> None:
+    run = db.get_scan_postprocess_run(run_id)
+    if not run or run.get("status") not in db.SCAN_POSTPROCESS_ACTIVE_STATUSES:
+        return
+    options = run.get("options") if isinstance(run.get("options"), dict) else {}
+    failed_at = db.now_utc()
+    schedule_scan_docker_group_cleanup(
+        run_id=run_id,
+        auth=auth,
+        token=token,
+        options=options,
+        scan_finished_at=failed_at,
+    )
+    db.finish_scan_postprocess_run(
+        run_id,
+        status="failed",
+        stage="scanner_start_failed",
+        message="Scanner task did not start; managed Docker group cleanup was requested.",
+        error=str(error)[:4000],
+    )
+
+
+def schedule_scan_docker_group_cleanup(
+    *,
+    run_id: str,
+    auth: AuthConfig,
+    token: str,
+    options: dict[str, Any] | None = None,
+    scan_finished_at: str | None = None,
+) -> bool:
+    supplied_group = docker_dynamic_group_from_options(options)
+    if supplied_group is None:
+        return False
+
+    run = db.get_scan_postprocess_run(run_id)
+    if not run:
+        return False
+    group = docker_dynamic_group_from_options(run.get("options")) or supplied_group
+    if group.get("removed_at"):
+        return False
+
+    terminal_at = str(group.get("scan_finished_at") or scan_finished_at or db.now_utc())
+    cleanup_after = str(group.get("cleanup_after") or docker_group_cleanup_after(terminal_at))
+    updated = db.update_scan_postprocess_docker_group(
+        run_id,
+        scan_finished_at=str(group.get("scan_finished_at") or terminal_at),
+        cleanup_after=cleanup_after,
+        cleanup_error=None,
+    )
+    if not updated:
+        return False
+
+    with DOCKER_GROUP_CLEANUP_FUTURES_LOCK:
+        current = DOCKER_GROUP_CLEANUP_FUTURES.get(run_id)
+        if current and not current.done():
+            return True
+        cancel_event = CONTAINER.operation_runner.cancellations.register("docker-group-cleanup", run_id)
+        future = CONTAINER.operation_runner.submit(
+            "docker-group-cleanup",
+            run_scan_docker_group_cleanup,
+            run_id=run_id,
+            auth=auth,
+            token=token,
+            cancel_event=cancel_event,
+        )
+        DOCKER_GROUP_CLEANUP_FUTURES[run_id] = future
+
+    def forget(_future: Future[Any]) -> None:
+        with DOCKER_GROUP_CLEANUP_FUTURES_LOCK:
+            if DOCKER_GROUP_CLEANUP_FUTURES.get(run_id) is _future:
+                DOCKER_GROUP_CLEANUP_FUTURES.pop(run_id, None)
+        CONTAINER.operation_runner.cancellations.remove("docker-group-cleanup", run_id)
+
+    future.add_done_callback(forget)
+    scan_log(
+        logging.INFO,
+        "docker_dynamic_group_cleanup_scheduled",
+        postprocess_run_id=run_id,
+        group_id=group.get("id"),
+        group_name=group.get("name"),
+        scan_finished_at=terminal_at,
+        cleanup_after=cleanup_after,
+        retention_seconds=DOCKER_DYNAMIC_GROUP_RETENTION_SECONDS,
+    )
+    return True
+
+
+def run_scan_docker_group_cleanup(
+    *,
+    run_id: str,
+    auth: AuthConfig,
+    token: str,
+    cancel_event: threading.Event,
+) -> None:
+    client = MpVmClient(auth)
+    retry_seconds = max(30.0, float(DOCKER_DYNAMIC_GROUP_POLL_SECONDS))
+    try:
+        while not cancel_event.is_set():
+            try:
+                run = db.get_scan_postprocess_run(run_id)
+                if not run:
+                    return
+                group = docker_dynamic_group_from_options(run.get("options"))
+                if not group or group.get("removed_at"):
+                    return
+                if run.get("status") in db.SCAN_POSTPROCESS_ACTIVE_STATUSES:
+                    if cancel_event.wait(min(5.0, retry_seconds)):
+                        return
+                    continue
+
+                cleanup_at = parse_mpvm_datetime(group.get("cleanup_after"))
+                if cleanup_at is None:
+                    raise RuntimeError("Docker dynamic group cleanup deadline is missing or invalid.")
+                remaining = (cleanup_at - datetime.now(UTC)).total_seconds()
+                if remaining > 0 and cancel_event.wait(remaining):
+                    return
+
+                cleanup_token = client.ensure_access_token()
+                cleanup = remove_docker_dynamic_group(client=client, token=cleanup_token, group=group)
+                removed_at = db.now_utc()
+                db.update_scan_postprocess_docker_group(
+                    run_id,
+                    removed_at=removed_at,
+                    removal_operation_id=cleanup.get("removal_operation_id"),
+                    cleanup_error=None,
+                )
+                scan_log(
+                    logging.INFO,
+                    "docker_dynamic_group_removed_after_scan",
+                    postprocess_run_id=run_id,
+                    group_name=group.get("name"),
+                    removed_at=removed_at,
+                    **cleanup,
+                )
+                return
+            except Exception as exc:
+                try:
+                    db.update_scan_postprocess_docker_group(
+                        run_id,
+                        cleanup_error=str(exc)[:4000],
+                        cleanup_last_attempt_at=db.now_utc(),
+                    )
+                except Exception:
+                    SCAN_LOG.exception(
+                        "[scan-postprocess] failed to persist Docker group cleanup error "
+                        "postprocess_run_id=%s",
+                        run_id,
+                    )
+                SCAN_LOG.exception(
+                    "[scan-postprocess] Docker group cleanup failed; retrying "
+                    "postprocess_run_id=%s retry_seconds=%s",
+                    run_id,
+                    retry_seconds,
+                )
+                if cancel_event.wait(retry_seconds):
+                    return
+    finally:
+        client.session.close()
+
+
 def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None:
     with SCAN_POSTPROCESS_FUTURES_LOCK:
         current = SCAN_POSTPROCESS_FUTURES.get(run_id)
@@ -3006,18 +3493,27 @@ def resume_scan_postprocess_runs() -> None:
         scan_log(logging.DEBUG, "resume_skipped_no_session")
         return
     try:
-        cleanup_runs = db.list_pending_asset_refresh_task_cleanups()
+        refresh_cleanup_runs = db.list_pending_asset_refresh_task_cleanups()
+        docker_cleanup_runs = db.list_pending_docker_group_cleanups()
         runs = db.list_resumable_scan_postprocess_runs()
     except psycopg.Error:
         SCAN_LOG.exception("[scan-postprocess] failed to list resumable runs")
         return
-    scan_log(logging.INFO, "refresh_task_cleanup_resume", pending_count=len(cleanup_runs))
-    for cleanup_run in cleanup_runs:
+    scan_log(logging.INFO, "refresh_task_cleanup_resume", pending_count=len(refresh_cleanup_runs))
+    for cleanup_run in refresh_cleanup_runs:
         cleanup_auto_created_refresh_task(
             client=SESSION.client,
             token=SESSION.access_token,
             run_id=str(cleanup_run["run_id"]),
             task_id=str(cleanup_run["mp_task_id"]),
+        )
+    scan_log(logging.INFO, "docker_group_cleanup_resume", pending_count=len(docker_cleanup_runs))
+    for cleanup_run in docker_cleanup_runs:
+        schedule_scan_docker_group_cleanup(
+            run_id=str(cleanup_run["run_id"]),
+            auth=SESSION.client.auth,
+            token=SESSION.access_token,
+            options=cleanup_run.get("options"),
         )
     scan_log(logging.INFO, "resume_scan", resumable_count=len(runs))
     for run in runs:
@@ -3039,6 +3535,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
     timeout_seconds = max(1.0, float(options.get("task_timeout_minutes") or 120) * 60)
     poll_seconds = max(1.0, float(options.get("task_poll_seconds") or 15))
     require_clean_jobs = bool(options.get("require_clean_jobs"))
+    scan_finished_at: str | None = None
     scan_log(
         logging.INFO,
         "run_started",
@@ -3064,7 +3561,9 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             poll_seconds=poll_seconds,
             postprocess_run_id=run_id,
             require_clean_jobs=require_clean_jobs,
+            docker_group_options=options,
         )
+        scan_finished_at = str(monitoring.get("scan_finished_at") or "") or None
         if not monitoring["successful_job_count"]:
             scan_log(
                 logging.ERROR,
@@ -3084,6 +3583,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 else None
             )
             cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
+            schedule_scan_docker_group_cleanup(
+                run_id=run_id,
+                auth=auth,
+                token=token,
+                options=options,
+                scan_finished_at=scan_finished_at,
+            )
             db.finish_scan_postprocess_run(
                 run_id,
                 status="completed_with_errors",
@@ -3113,6 +3619,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 message += " Refresh task deletion is pending."
                 if final_status == "completed":
                     final_status = "completed_with_errors"
+        schedule_scan_docker_group_cleanup(
+            run_id=run_id,
+            auth=auth,
+            token=token,
+            options=options,
+            scan_finished_at=scan_finished_at,
+        )
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
         if completed_count:
             capture_vulnerability_snapshot("scan_postprocess", run_id)
@@ -3140,6 +3653,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             else ""
         )
         db.update_scan_task_status(task_id, "postprocess_cancelled", {"postprocess_run_id": run_id})
+        schedule_scan_docker_group_cleanup(
+            run_id=run_id,
+            auth=auth,
+            token=token,
+            options=options,
+            scan_finished_at=scan_finished_at or db.now_utc(),
+        )
         db.finish_scan_postprocess_run(
             run_id,
             status="cancelled",
@@ -3169,6 +3689,13 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             else None
         )
         cleanup_text = " Refresh task deleted." if cleanup_deleted else " Refresh task deletion is pending." if cleanup_deleted is False else ""
+        schedule_scan_docker_group_cleanup(
+            run_id=run_id,
+            auth=auth,
+            token=token,
+            options=options,
+            scan_finished_at=scan_finished_at or db.now_utc(),
+        )
         db.finish_scan_postprocess_run(
             run_id,
             status=final_status,
@@ -3291,7 +3818,8 @@ def monitor_successful_scan_jobs(
     poll_seconds: float,
     postprocess_run_id: str,
     require_clean_jobs: bool,
-) -> dict[str, int]:
+    docker_group_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     scan_deadline = time.monotonic() + timeout_seconds
     resolution_deadline: float | None = None
     latest_run: dict[str, Any] | None = None
@@ -3311,6 +3839,7 @@ def monitor_successful_scan_jobs(
     last_summary: tuple[int, int, int] | None = None
     logged_mp_run_id: str | None = None
     logged_waiting_for_run = False
+    scan_finished_at: str | None = None
 
     with ThreadPoolExecutor(
         max_workers=SCAN_ASSET_PROCESS_WORKERS,
@@ -3549,6 +4078,18 @@ def monitor_successful_scan_jobs(
                         target_errors.pop(target, None)
 
                     terminal = is_finished(latest_run)
+                    if terminal and scan_finished_at is None:
+                        scan_finished_at = str(latest_run.get("finishedAt") or db.now_utc())
+                        if docker_dynamic_group_from_options(docker_group_options):
+                            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at)
+                        scan_log(
+                            logging.INFO,
+                            "mp_run_finished",
+                            postprocess_run_id=postprocess_run_id,
+                            task_id=task_id,
+                            mp_run_id=mp_run_id,
+                            scan_finished_at=scan_finished_at,
+                        )
                     if terminal and resolution_deadline is None:
                         resolution_deadline = time.monotonic() + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
                     db.update_scan_postprocess_run(
@@ -3624,10 +4165,15 @@ def monitor_successful_scan_jobs(
 
     if latest_run is None:
         raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
+    if scan_finished_at is None:
+        scan_finished_at = db.now_utc()
+        if docker_dynamic_group_from_options(docker_group_options):
+            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at)
     return {
         "total_job_count": len(latest_jobs),
         "successful_job_count": len(successful_jobs),
         "asset_count": len(seen_asset_ids),
+        "scan_finished_at": scan_finished_at,
     }
 
 
@@ -3790,73 +4336,31 @@ def refresh_docker_containers_for_scanned_asset(
     successful_query = False
     for attempt in range(1, iterations + 1):
         raise_if_scan_postprocess_cancelled(parent_operation_id)
-        run_key = re.sub(r"[^a-z0-9]", "", parent_operation_id.casefold())[:8] or "run"
-        asset_key = re.sub(r"[^a-z0-9]", "", asset_id.casefold())[:8] or str(item_id)
-        group_name = f"docker containers [mpvm temp] {run_key}-{asset_key}-{item_id}-{attempt}"
-        group_id: str | None = None
-        attempt_error: Exception | None = None
+        if attempt > 1 and settle_seconds > 0:
+            if cancel_event:
+                if cancel_event.wait(settle_seconds):
+                    raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+            else:
+                time.sleep(settle_seconds)
+        raise_if_scan_postprocess_cancelled(parent_operation_id)
         docker_source: dict[str, Any] | None = None
-        cleanup_error: Exception | None = None
         db.update_scan_postprocess_item(
             item_id,
             status="preparing",
-            stage="refreshing_docker_containers",
-            message=f"Docker container refresh iteration {attempt} of {iterations}.",
+            stage="probing_docker_containers",
+            message=f"Docker container data probe {attempt} of {iterations}.",
             error=None,
         )
         scan_log(
             logging.INFO,
-            "docker_dynamic_group_iteration_started",
+            "docker_container_probe_started",
             postprocess_run_id=parent_operation_id,
             item_id=item_id,
             asset_id=asset_id,
             attempt=attempt,
             iterations=iterations,
-            group_name=group_name,
         )
         try:
-            hierarchy = client.get_asset_group_hierarchy(token)
-            stale_group = client.find_asset_group(hierarchy, name=group_name)
-            if stale_group and stale_group.get("id"):
-                stale_group_id = str(stale_group["id"])
-                stale_removal_operation_id = client.remove_asset_groups(token, [stale_group_id])
-                client.wait_for_asset_group_absent(
-                    token,
-                    stale_group_id,
-                    timeout_seconds=timeout_seconds,
-                    poll_seconds=poll_seconds,
-                )
-                scan_log(
-                    logging.WARNING,
-                    "stale_docker_dynamic_group_removed",
-                    postprocess_run_id=parent_operation_id,
-                    item_id=item_id,
-                    asset_id=asset_id,
-                    attempt=attempt,
-                    group_id=stale_group_id,
-                    removal_operation_id=stale_removal_operation_id,
-                )
-            operation_id = client.create_dynamic_asset_group(
-                token,
-                name=group_name,
-                predicate=DOCKER_DYNAMIC_GROUP_PREDICATE,
-                parent_id=DOCKER_DYNAMIC_GROUP_PARENT_ID,
-                description=f"Temporary Docker container refresh for asset {asset_id}.",
-            )
-            group_id = client.wait_for_asset_group_creation(
-                token,
-                operation_id,
-                timeout_seconds=timeout_seconds,
-                poll_seconds=poll_seconds,
-                cancel_event=cancel_event,
-            )
-            if settle_seconds > 0:
-                if cancel_event:
-                    if cancel_event.wait(settle_seconds):
-                        raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
-                else:
-                    time.sleep(settle_seconds)
-            raise_if_scan_postprocess_cancelled(parent_operation_id)
             docker_source, warning = build_docker_vulnerability_source(
                 token=token,
                 asset_id=asset_id,
@@ -3872,54 +4376,15 @@ def refresh_docker_containers_for_scanned_asset(
         except ScanPostprocessCancelled:
             raise
         except Exception as exc:
-            attempt_error = exc
             last_error = exc
-        finally:
-            if not group_id:
-                try:
-                    hierarchy = client.get_asset_group_hierarchy(token)
-                    existing = client.find_asset_group(hierarchy, name=group_name)
-                    if existing and existing.get("id"):
-                        group_id = str(existing["id"])
-                except Exception as exc:
-                    cleanup_error = exc
-            if group_id:
-                try:
-                    removal_operation_id = client.remove_asset_groups(token, [group_id])
-                    client.wait_for_asset_group_absent(
-                        token,
-                        group_id,
-                        timeout_seconds=timeout_seconds,
-                        poll_seconds=poll_seconds,
-                    )
-                    scan_log(
-                        logging.INFO,
-                        "docker_dynamic_group_removed",
-                        postprocess_run_id=parent_operation_id,
-                        item_id=item_id,
-                        asset_id=asset_id,
-                        attempt=attempt,
-                        group_id=group_id,
-                        removal_operation_id=removal_operation_id,
-                    )
-                except Exception as exc:
-                    cleanup_error = exc
-
-        if cleanup_error:
-            raise RuntimeError(
-                f"Temporary Docker group cleanup failed for {group_name}: {cleanup_error}"
-            ) from cleanup_error
-        if cancel_event and cancel_event.is_set():
-            raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
-        if attempt_error:
             scan_log(
                 logging.WARNING,
-                "docker_dynamic_group_iteration_failed",
+                "docker_container_probe_failed",
                 postprocess_run_id=parent_operation_id,
                 item_id=item_id,
                 asset_id=asset_id,
                 attempt=attempt,
-                error=str(attempt_error),
+                error=str(exc),
             )
             continue
 

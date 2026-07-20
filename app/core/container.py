@@ -30,6 +30,7 @@ class AppContainer:
         self.operation_runner = OperationRunner(
             {
                 "scan-postprocess": settings.scan_postprocess_workers,
+                "docker-group-cleanup": 4,
                 "vm-workflow": 4,
                 "automation-run": 2,
                 "automation-scheduler": 1,

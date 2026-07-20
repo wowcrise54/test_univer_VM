@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     docker_dynamic_group_settle_seconds: int = 10
     docker_dynamic_group_timeout_seconds: int = 120
     docker_dynamic_group_poll_seconds: int = 5
+    docker_dynamic_group_retention_seconds: int = 600
     automation_scheduler_poll_seconds: int = 30
     automation_webhook_url: str = ""
     automation_webhook_secret: str = Field(default="", repr=False)
@@ -86,6 +87,7 @@ class Settings(BaseSettings):
         "asset_metadata_ttl_seconds",
         "docker_dynamic_group_iterations",
         "docker_dynamic_group_settle_seconds",
+        "docker_dynamic_group_retention_seconds",
     )
     @classmethod
     def non_negative_integer(cls, value: int) -> int:
