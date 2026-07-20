@@ -1097,6 +1097,9 @@ function TaskPostprocessPanel({ run }) {
           <span className="eyebrow">Фоновая обработка</span>
           <h3>{postprocessStageLabel(run.stage)}</h3>
           <p>{run.message || run.error || `Run ${run.run_id}`}</p>
+          {run.error ? (
+            <p className="error-text">Исходная причина: {run.error}</p>
+          ) : null}
         </div>
         <div className="task-postprocess__metrics">
           <span>
@@ -1206,6 +1209,7 @@ function postprocessStageLabel(stage) {
     scanning: "Сканирование выполняется",
     watching_jobs: "Ожидание успешных scan jobs",
     scan_finished: "Сканирование завершено",
+    scanner_start_failed: "Не удалось подтвердить запуск сканирования",
     resolving_assets: "Поиск просканированных активов",
     building_cards: "Создание карточек и удаление активов",
     completed: "Обработка завершена",

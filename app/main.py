@@ -1368,25 +1368,6 @@ def _start_scanner_task_request(
             docker_group_run_id=postprocess_run_id,
             before_remote_start=ensure_postprocess_run,
         )
-        if result.get("status") != "started":
-            return result
-        created_before_start = "run" in postprocess_holder
-        docker_group = result.get("docker_dynamic_group")
-        if not created_before_start and isinstance(docker_group, dict):
-            run_options["docker_dynamic_group"] = docker_group
-        postprocess = ensure_postprocess_run(str(result["started_from"]))
-        if created_before_start:
-            postprocess = db.get_scan_postprocess_run(postprocess_run_id) or postprocess
-        if background_tasks is None:
-            schedule_scan_postprocess(postprocess_run_id, client.auth, token)
-        else:
-            background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
-        return {
-            **result,
-            "postprocess_run_id": postprocess_run_id,
-            "postprocess": postprocess,
-            "operation_id": postprocess_run_id,
-        }
     except Exception as exc:
         if "run" in postprocess_holder:
             try:
@@ -1406,6 +1387,26 @@ def _start_scanner_task_request(
         if isinstance(exc, (MpVmApiError, requests.RequestException)):
             raise http_error(exc) from exc
         raise
+
+    if result.get("status") != "started":
+        return result
+    created_before_start = "run" in postprocess_holder
+    docker_group = result.get("docker_dynamic_group")
+    if not created_before_start and isinstance(docker_group, dict):
+        run_options["docker_dynamic_group"] = docker_group
+    postprocess = ensure_postprocess_run(str(result["started_from"]))
+    if created_before_start:
+        postprocess = db.get_scan_postprocess_run(postprocess_run_id) or postprocess
+    if background_tasks is None:
+        schedule_scan_postprocess(postprocess_run_id, client.auth, token)
+    else:
+        background_tasks.add_task(schedule_scan_postprocess, postprocess_run_id, client.auth, token)
+    return {
+        **result,
+        "postprocess_run_id": postprocess_run_id,
+        "postprocess": postprocess,
+        "operation_id": postprocess_run_id,
+    }
 
 
 @tasks_router.get("/api/scanner-tasks/{task_id}/postprocess-runs/latest")
@@ -3142,48 +3143,65 @@ def start_scanner_task_impl(
         else None
     )
     try:
+        if before_remote_start and docker_group_run_id and docker_group:
+            db.update_scan_postprocess_docker_group(
+                docker_group_run_id,
+                state="starting",
+                scanner_start_requested_at=db.now_utc(),
+            )
         start_response = client.start_scanner_task_with_retry(
             token,
             task_id,
             timeout_seconds=options.create_settle_seconds,
             poll_seconds=min(options.task_poll_seconds, 5),
         )
-    except Exception:
-        if docker_group:
+    except Exception as exc:
+        if docker_group and before_remote_start and docker_group_run_id:
             try:
-                cleanup = remove_docker_dynamic_group(client=client, token=token, group=docker_group)
-                scan_log(
-                    logging.INFO,
-                    "docker_dynamic_group_removed_after_start_failure",
-                    postprocess_run_id=docker_group_run_id,
-                    task_id=task_id,
-                    **cleanup,
+                db.update_scan_postprocess_docker_group(
+                    docker_group_run_id,
+                    state="start_failed",
+                    scanner_start_error=str(exc)[:4000],
                 )
-                if before_remote_start and docker_group_run_id:
-                    db.update_scan_postprocess_docker_group(
-                        docker_group_run_id,
-                        state="removed",
-                        removed_at=db.now_utc(),
-                        removal_operation_id=cleanup.get("removal_operation_id"),
-                        cleanup_error=None,
-                    )
             except Exception:
                 SCAN_LOG.exception(
-                    "[scan-postprocess] failed to remove Docker group after scanner start failure "
+                    "[scan-postprocess] failed to persist scanner start failure for Docker group "
                     "postprocess_run_id=%s task_id=%s",
                     docker_group_run_id,
                     task_id,
                 )
+        elif docker_group:
+            scan_log(
+                logging.WARNING,
+                "docker_dynamic_group_cleanup_skipped_without_lifecycle_record",
+                task_id=task_id,
+                group_id=docker_group.get("id"),
+                group_name=docker_group.get("name"),
+            )
         raise
     result["start"] = start_response
     result["docker_dynamic_group"] = docker_group
     if before_remote_start and docker_group_run_id and docker_group:
-        db.update_scan_postprocess_docker_group(
-            docker_group_run_id,
-            state="active",
-            scanner_started_at=started_from,
+        try:
+            db.update_scan_postprocess_docker_group(
+                docker_group_run_id,
+                state="active",
+                scanner_started_at=started_from,
+            )
+        except Exception:
+            SCAN_LOG.exception(
+                "[scan-postprocess] scanner started but Docker group lifecycle update failed "
+                "postprocess_run_id=%s task_id=%s",
+                docker_group_run_id,
+                task_id,
+            )
+    try:
+        db.update_scan_task_status(task_id, "started", start_response)
+    except Exception:
+        SCAN_LOG.exception(
+            "[scan-postprocess] scanner started but local task status update failed task_id=%s",
+            task_id,
         )
-    db.update_scan_task_status(task_id, "started", start_response)
     return {**result, "status": "started", "started_from": started_from}
 
 
@@ -3296,6 +3314,62 @@ def docker_group_cleanup_after(scan_finished_at: str | None) -> str:
     return (finished + timedelta(seconds=DOCKER_DYNAMIC_GROUP_RETENTION_SECONDS)).isoformat(timespec="seconds")
 
 
+def confirm_docker_scan_terminal_for_cleanup(
+    *,
+    client: MpVmClient,
+    token: str,
+    run: dict[str, Any],
+    group: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return cleanup-ready metadata, or ``None`` while the remote scan may still be active."""
+    start_was_requested = bool(group.get("scanner_start_requested_at") or group.get("scanner_started_at"))
+    if not start_was_requested or group.get("scan_terminal_confirmed") is True:
+        return group
+
+    task_id = str(run.get("mp_task_id") or "").strip()
+    started_from = str(run.get("started_from") or "").strip()
+    if not task_id or not started_from:
+        raise RuntimeError("Cannot confirm scanner termination: task id or start timestamp is missing.")
+
+    runs = client.get_task_runs(token, task_id, time_from=started_from)
+    if not runs:
+        cleanup_at = parse_mpvm_datetime(group.get("cleanup_after"))
+        start_failed = str(group.get("state") or "").strip().lower() == "start_failed"
+        if start_failed and cleanup_at is not None and cleanup_at <= datetime.now(UTC):
+            scan_log(
+                logging.WARNING,
+                "docker_dynamic_group_cleanup_after_unobserved_start_failure",
+                postprocess_run_id=run.get("run_id"),
+                task_id=task_id,
+                cleanup_after=group.get("cleanup_after"),
+            )
+            return {**group, "scanner_run_not_observed": True}
+        return None
+    latest_run = runs[0]
+    expected_run_id = str(run.get("mp_run_id") or "").strip()
+    actual_run_id = str(latest_run.get("id") or "").strip()
+    if expected_run_id and actual_run_id and actual_run_id != expected_run_id:
+        return None
+    if not is_finished(latest_run):
+        return None
+
+    terminal_at = str(latest_run.get("finishedAt") or db.now_utc())
+    cleanup_after = docker_group_cleanup_after(terminal_at)
+    db.update_scan_postprocess_docker_group(
+        str(run["run_id"]),
+        scan_finished_at=terminal_at,
+        scan_terminal_confirmed=True,
+        cleanup_after=cleanup_after,
+        cleanup_error=None,
+    )
+    return {
+        **group,
+        "scan_finished_at": terminal_at,
+        "scan_terminal_confirmed": True,
+        "cleanup_after": cleanup_after,
+    }
+
+
 def finish_provisional_scan_start_failure(
     *,
     run_id: str,
@@ -3319,7 +3393,7 @@ def finish_provisional_scan_start_failure(
         run_id,
         status="failed",
         stage="scanner_start_failed",
-        message="Scanner task did not start; managed Docker group cleanup was requested.",
+        message="Scanner task start could not be confirmed; managed Docker group cleanup was requested.",
         error=str(error)[:4000],
     )
 
@@ -3412,6 +3486,29 @@ def run_scan_docker_group_cleanup(
                         return
                     continue
 
+                needs_terminal_check = bool(
+                    (group.get("scanner_start_requested_at") or group.get("scanner_started_at"))
+                    and group.get("scan_terminal_confirmed") is not True
+                )
+                confirmation_token = client.ensure_access_token() if needs_terminal_check else token
+                confirmed_group = confirm_docker_scan_terminal_for_cleanup(
+                    client=client,
+                    token=confirmation_token,
+                    run=run,
+                    group=group,
+                )
+                if confirmed_group is None:
+                    scan_log(
+                        logging.INFO,
+                        "docker_dynamic_group_cleanup_waiting_for_scan_terminal",
+                        postprocess_run_id=run_id,
+                        task_id=run.get("mp_task_id"),
+                        mp_run_id=run.get("mp_run_id"),
+                    )
+                    if cancel_event.wait(retry_seconds):
+                        return
+                    continue
+                group = confirmed_group
                 cleanup_at = parse_mpvm_datetime(group.get("cleanup_after"))
                 if cleanup_at is None:
                     raise RuntimeError("Docker dynamic group cleanup deadline is missing or invalid.")
@@ -4081,7 +4178,7 @@ def monitor_successful_scan_jobs(
                     if terminal and scan_finished_at is None:
                         scan_finished_at = str(latest_run.get("finishedAt") or db.now_utc())
                         if docker_dynamic_group_from_options(docker_group_options):
-                            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at)
+                            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at, confirmed=True)
                         scan_log(
                             logging.INFO,
                             "mp_run_finished",
@@ -4168,7 +4265,7 @@ def monitor_successful_scan_jobs(
     if scan_finished_at is None:
         scan_finished_at = db.now_utc()
         if docker_dynamic_group_from_options(docker_group_options):
-            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at)
+            remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at, confirmed=False)
     return {
         "total_job_count": len(latest_jobs),
         "successful_job_count": len(successful_jobs),

@@ -510,6 +510,65 @@ class StartScannerTaskApiTests(unittest.TestCase):
         self.assertIn("11111111-2222-3333-4444-555555555555", client.created_name)
         self.assertEqual(result["docker_dynamic_group"]["id"], "group-id")
 
+    def test_remote_start_success_is_not_reclassified_when_local_bookkeeping_fails(self):
+        client = MagicMock()
+        client.validate_scanner_task_with_retry.return_value = (True, None)
+        client.start_scanner_task_with_retry.return_value = {"id": "task-1"}
+        group = {"id": "group-1", "name": "docker containers [mpvm scan] run-1"}
+
+        def fail_active_group_update(_run_id, **values):
+            if values.get("state") == "active":
+                raise RuntimeError("db unavailable")
+
+        with (
+            patch.object(main, "prepare_docker_dynamic_group_for_scan", return_value=group),
+            patch.object(main.db, "update_scan_postprocess_docker_group", side_effect=fail_active_group_update),
+            patch.object(main.db, "update_scan_task_status", side_effect=RuntimeError("db unavailable")),
+            patch.object(main.SCAN_LOG, "exception"),
+        ):
+            result = main.start_scanner_task_impl(
+                client=client,
+                token="token",
+                task_id="task-1",
+                options=main.StartScannerTaskRequest(),
+                docker_group_run_id="run-1",
+                before_remote_start=lambda _started_from: None,
+            )
+
+        self.assertEqual(result["status"], "started")
+        self.assertEqual(result["start"], {"id": "task-1"})
+        client.start_scanner_task_with_retry.assert_called_once()
+
+    def test_post_start_schedule_failure_does_not_mark_scanner_start_failed(self):
+        client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
+        postprocess = {"run_id": "post-1", "status": "monitoring", "stage": "waiting_for_run"}
+
+        def start_and_persist(**kwargs):
+            kwargs["before_remote_start"]("2026-01-01T00:00:00+00:00")
+            return {
+                "id": "task-1",
+                "status": "started",
+                "started_from": "2026-01-01T00:00:00+00:00",
+            }
+
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.uuid, "uuid4", return_value="post-1"),
+            patch.object(main, "start_scanner_task_impl", side_effect=start_and_persist),
+            patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess),
+            patch.object(main.db, "get_scan_postprocess_run", return_value=postprocess),
+            patch.object(main, "schedule_scan_postprocess", side_effect=RuntimeError("runner unavailable")),
+            patch.object(main, "finish_provisional_scan_start_failure") as finish_start_failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "runner unavailable"):
+                main._start_scanner_task_request(
+                    "task-1",
+                    main.StartScannerTaskRequest(),
+                    None,
+                )
+
+        finish_start_failure.assert_not_called()
+
     def test_start_returns_postprocess_run_and_schedules_background_monitor(self):
         background = BackgroundTasks()
         client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
@@ -601,11 +660,176 @@ class StartScannerTaskApiTests(unittest.TestCase):
 
 
 class DockerGroupCleanupTests(unittest.TestCase):
+    def test_unconfirmed_start_failure_message_does_not_claim_remote_task_never_started(self):
+        run = {
+            "run_id": "post-1",
+            "status": "monitoring",
+            "options": {"docker_dynamic_group": {"name": "docker containers [mpvm scan] post-1"}},
+        }
+        with (
+            patch.object(main.db, "get_scan_postprocess_run", return_value=run),
+            patch.object(main.db, "now_utc", return_value="2026-07-17T10:00:00+00:00"),
+            patch.object(main, "schedule_scan_docker_group_cleanup", return_value=True),
+            patch.object(main.db, "finish_scan_postprocess_run") as finish,
+        ):
+            main.finish_provisional_scan_start_failure(
+                run_id="post-1",
+                auth=SimpleNamespace(api_url="https://fixture"),
+                token="token",
+                error=TimeoutError("remote response timed out"),
+            )
+
+        self.assertEqual(
+            finish.call_args.kwargs["message"],
+            "Scanner task start could not be confirmed; managed Docker group cleanup was requested.",
+        )
+        self.assertEqual(finish.call_args.kwargs["error"], "remote response timed out")
+
     def test_cleanup_deadline_is_ten_minutes_after_remote_finish(self):
         self.assertEqual(
             main.docker_group_cleanup_after("2026-07-17T10:00:00+00:00"),
             "2026-07-17T10:10:00+00:00",
         )
+
+    def test_cleanup_waits_while_remote_scan_is_not_terminal(self):
+        events: list[str] = []
+        run = {
+            "run_id": "post-active",
+            "mp_task_id": "task-active",
+            "started_from": "2026-07-17T09:00:00+00:00",
+            "status": "failed",
+            "options": {
+                "docker_dynamic_group": {
+                    "id": "group-active",
+                    "name": "docker containers [mpvm scan] post-active",
+                    "scanner_start_requested_at": "2026-07-17T09:00:01+00:00",
+                    "cleanup_after": "2020-01-01T00:00:00+00:00",
+                }
+            },
+        }
+
+        class CancelAfterWait:
+            def is_set(self) -> bool:
+                return False
+
+            def wait(self, _seconds: float) -> bool:
+                events.append("wait")
+                return True
+
+        class ActiveScanClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+            def ensure_access_token(self):
+                return "fresh-token"
+
+            def get_task_runs(self, _token, task_id, *, time_from=None):
+                events.append(f"runs:{task_id}:{time_from}")
+                return [{"id": "run-active", "status": "running"}]
+
+            def get_asset_group_hierarchy(self, _token):
+                events.append("group-removal-attempted")
+                return []
+
+        with (
+            patch.object(main, "MpVmClient", ActiveScanClient),
+            patch.object(main.db, "get_scan_postprocess_run", return_value=run),
+            patch.object(main.db, "update_scan_postprocess_docker_group") as update_group,
+        ):
+            main.run_scan_docker_group_cleanup(
+                run_id="post-active",
+                auth=SimpleNamespace(),
+                token="token",
+                cancel_event=CancelAfterWait(),
+            )
+
+        self.assertEqual(events, ["runs:task-active:2026-07-17T09:00:00+00:00", "wait"])
+        update_group.assert_not_called()
+
+    def test_remote_terminal_confirmation_restarts_ten_minute_retention(self):
+        run = {
+            "run_id": "post-terminal",
+            "mp_task_id": "task-terminal",
+            "started_from": "2026-07-17T09:00:00+00:00",
+        }
+        group = {
+            "id": "group-terminal",
+            "scanner_start_requested_at": "2026-07-17T09:00:01+00:00",
+            "cleanup_after": "2020-01-01T00:00:00+00:00",
+        }
+        client = SimpleNamespace(
+            get_task_runs=MagicMock(
+                return_value=[{
+                    "id": "run-terminal",
+                    "status": "finished",
+                    "finishedAt": "2026-07-17T10:00:00+00:00",
+                }]
+            )
+        )
+
+        with patch.object(main.db, "update_scan_postprocess_docker_group") as update_group:
+            confirmed = main.confirm_docker_scan_terminal_for_cleanup(
+                client=client,
+                token="token",
+                run=run,
+                group=group,
+            )
+
+        self.assertIsNotNone(confirmed)
+        self.assertTrue(confirmed["scan_terminal_confirmed"])
+        self.assertEqual(confirmed["cleanup_after"], "2026-07-17T10:10:00+00:00")
+        update_group.assert_called_once_with(
+            "post-terminal",
+            scan_finished_at="2026-07-17T10:00:00+00:00",
+            scan_terminal_confirmed=True,
+            cleanup_after="2026-07-17T10:10:00+00:00",
+            cleanup_error=None,
+        )
+
+    def test_unobserved_start_failure_waits_until_cleanup_deadline(self):
+        client = SimpleNamespace(get_task_runs=MagicMock(return_value=[]))
+        group = {
+            "id": "group-start-failed",
+            "state": "start_failed",
+            "scanner_start_requested_at": "2026-07-17T09:00:01+00:00",
+            "cleanup_after": "2099-01-01T00:00:00+00:00",
+        }
+
+        confirmed = main.confirm_docker_scan_terminal_for_cleanup(
+            client=client,
+            token="token",
+            run={
+                "run_id": "post-start-failed",
+                "mp_task_id": "task-start-failed",
+                "started_from": "2026-07-17T09:00:00+00:00",
+            },
+            group=group,
+        )
+
+        self.assertIsNone(confirmed)
+
+    def test_unobserved_start_failure_can_cleanup_after_deadline(self):
+        client = SimpleNamespace(get_task_runs=MagicMock(return_value=[]))
+        group = {
+            "id": "group-start-failed",
+            "state": "start_failed",
+            "scanner_start_requested_at": "2026-07-17T09:00:01+00:00",
+            "cleanup_after": "2020-01-01T00:00:00+00:00",
+        }
+
+        cleanup_ready = main.confirm_docker_scan_terminal_for_cleanup(
+            client=client,
+            token="token",
+            run={
+                "run_id": "post-start-failed",
+                "mp_task_id": "task-start-failed",
+                "started_from": "2026-07-17T09:00:00+00:00",
+            },
+            group=group,
+        )
+
+        self.assertIsNotNone(cleanup_ready)
+        self.assertTrue(cleanup_ready["scanner_run_not_observed"])
 
     def test_cleanup_deadline_is_persisted_before_background_removal(self):
         run = {
