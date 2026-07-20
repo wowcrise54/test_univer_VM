@@ -38,7 +38,7 @@ describe("ExportPanel vulnerability reports", () => {
     downloadApiFile.mockResolvedValue({ filename: "report.csv", bytes: 100 });
   });
 
-  it("downloads separate OS and software reports with unique asset IDs", async () => {
+  it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
     fireEvent.change(screen.getByRole("textbox", { name: "Asset ID для отчёта" }), {
       target: { value: "asset-1, asset-1\nasset-2" },
@@ -57,6 +57,13 @@ describe("ExportPanel vulnerability reports", () => {
       "/api/reports/vulnerabilities/software/csv",
       expect.any(Object),
     ));
+
+    fireEvent.click(screen.getByRole("button", { name: /Docker/ }));
+    await waitFor(() => expect(downloadApiFile).toHaveBeenLastCalledWith(
+      "/api/reports/vulnerabilities/docker/csv",
+      { method: "POST", body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }) },
+    ));
+    expect(runBusy).toHaveBeenCalledWith("report-docker", expect.any(Function));
   });
 
   it("shows the existing error alert when download fails", async () => {
@@ -65,10 +72,11 @@ describe("ExportPanel vulnerability reports", () => {
     await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Не удалось сформировать отчёт", "error"));
   });
 
-  it("keeps OS and software download states independent", () => {
+  it("keeps OS, software, and Docker download states independent", () => {
     renderPanel({ busy: { "report-os": true } });
     const busyButton = screen.getByRole("button", { name: /Выполняю/ });
     expect(busyButton).toBeDisabled();
     expect(screen.getByRole("button", { name: "Скачать уязвимости ПО" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Docker/ })).toBeEnabled();
   });
 });

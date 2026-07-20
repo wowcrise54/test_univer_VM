@@ -1519,6 +1519,13 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
           >
             Скачать уязвимости ПО
           </Button>
+          <Button
+            variant="secondary"
+            busy={busy["report-docker"]}
+            onClick={() => downloadVulnerabilityReport("docker")}
+          >
+            Скачать уязвимости Docker
+          </Button>
         </div>
       </section>
       {result ? <pre className="result-box">{result}</pre> : null}

@@ -2005,6 +2005,12 @@ VULNERABILITY_REPORT_HEADERS = {
         "Asset ID", "IP-адрес", "FQDN", "Имя хоста", "Программное обеспечение",
         "CVE", "Уязвимость", "Критичность", "CVSS", "Дата обновления карточки",
     ],
+    "docker": [
+        "Asset ID", "IP-адрес", "FQDN", "Имя хоста", "Docker Engine", "Контейнер",
+        "Container ID", "Образ", "Image ID", "Registry", "Repository", "Tag", "Пакет",
+        "Версия пакета", "CVE", "Уязвимость", "Vulnerability ID", "Критичность",
+        "CVSS", "Статус", "Исправленная версия", "Рекомендация", "Дата обновления карточки",
+    ],
 }
 
 
@@ -2018,7 +2024,7 @@ def safe_csv_cell(value: Any) -> Any:
     return value
 
 
-def stream_vulnerability_report_csv(report_type: Literal["os", "software"], rows):
+def stream_vulnerability_report_csv(report_type: Literal["os", "software", "docker"], rows):
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";", lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
     writer.writerow(VULNERABILITY_REPORT_HEADERS[report_type])
@@ -2031,24 +2037,39 @@ def stream_vulnerability_report_csv(report_type: Literal["os", "software"], rows
         ]
         if report_type == "os":
             values = common + [row.get("os_name"), row.get("os_version")]
-        else:
+        elif report_type == "software":
             values = common + [row.get("object_name")]
-        values += [
-            row.get("cve_name"), row.get("vulnerability_name"), row.get("severity"),
-            row.get("cvss_score"), row.get("last_seen"),
-        ]
+        else:
+            values = common + [
+                row.get("docker_engine"), row.get("container_name"), row.get("container_id"),
+                row.get("image_name"), row.get("image_id"), row.get("registry"),
+                row.get("repository"), row.get("tag"), row.get("package_name"),
+                row.get("package_version"), row.get("cve_name"), row.get("vulnerability_name"),
+                row.get("vulnerability_id"), row.get("severity"), row.get("cvss_score"),
+                row.get("vulnerability_status"), row.get("fixed_version"), row.get("how_to_fix"),
+                row.get("last_seen"),
+            ]
+        if report_type != "docker":
+            values += [
+                row.get("cve_name"), row.get("vulnerability_name"), row.get("severity"),
+                row.get("cvss_score"), row.get("last_seen"),
+            ]
         writer.writerow([safe_csv_cell(value) for value in values])
         yield output.getvalue()
 
 
 @imports_router.post("/api/reports/vulnerabilities/{report_type}/csv")
 def export_vulnerability_report(
-    report_type: Literal["os", "software"],
+    report_type: Literal["os", "software", "docker"],
     payload: VulnerabilityReportRequest,
 ) -> StreamingResponse:
-    rows = db.iter_vulnerability_report_rows(report_type, payload.asset_ids)
+    rows = (
+        db.iter_docker_vulnerability_report_rows(payload.asset_ids)
+        if report_type == "docker"
+        else db.iter_vulnerability_report_rows(report_type, payload.asset_ids)
+    )
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"host_{'os' if report_type == 'os' else 'software'}_vulnerabilities_{timestamp}.csv"
+    filename = f"host_{report_type}_vulnerabilities_{timestamp}.csv"
     return StreamingResponse(
         stream_vulnerability_report_csv(report_type, rows),
         media_type="text/csv; charset=utf-8",
