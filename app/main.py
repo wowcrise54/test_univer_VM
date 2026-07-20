@@ -1825,6 +1825,167 @@ def active_asset_card_build_job() -> dict[str, Any]:
     return {"job": db.get_active_asset_card_build_job()}
 
 
+SCANNER_TASK_TEMPLATE_FIELDS = {
+    "name",
+    "description",
+    "scope",
+    "profile",
+    "agents",
+    "overrides",
+    "include",
+    "exclude",
+    "hostDiscovery",
+    "triggerParameters",
+    "deniedScanSettings",
+    "isFqdnPriority",
+    "groups",
+}
+
+
+def extract_remote_scanner_task_rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+    for key in ("items", "data", "rows", "records", "values", "content"):
+        nested = value.get(key)
+        if isinstance(nested, list):
+            return [item for item in nested if isinstance(item, dict)]
+        if isinstance(nested, dict):
+            rows = extract_remote_scanner_task_rows(nested)
+            if rows:
+                return rows
+    return []
+
+
+def normalize_remote_scanner_task_template(item: dict[str, Any]) -> dict[str, Any] | None:
+    if item.get("isDeleted") is True or item.get("deleted") is True:
+        return None
+    raw_payload = item
+    for key in ("payload", "configuration", "config", "scannerTask", "task"):
+        nested = item.get(key)
+        if isinstance(nested, dict):
+            raw_payload = nested
+            break
+    payload = {key: copy.deepcopy(raw_payload[key]) for key in SCANNER_TASK_TEMPLATE_FIELDS if key in raw_payload}
+    payload.setdefault("name", str(raw_payload.get("displayName") or item.get("name") or item.get("displayName") or "Scanner task"))
+    payload.setdefault("description", str(raw_payload.get("description") or item.get("description") or ""))
+    if not payload.get("scope"):
+        payload["scope"] = raw_payload.get("scopeId") or item.get("scopeId")
+    if not payload.get("profile"):
+        payload["profile"] = raw_payload.get("profileId") or item.get("profileId")
+    for key in ("scope", "profile"):
+        if isinstance(payload.get(key), dict):
+            payload[key] = payload[key].get("id") or payload[key].get("uuid")
+    if not payload.get("scope") or not payload.get("profile"):
+        return None
+    task_id = first_present(
+        item.get("id"),
+        item.get("taskId"),
+        item.get("task_id"),
+        item.get("uuid"),
+        raw_payload.get("id"),
+        raw_payload.get("taskId"),
+    )
+    if not task_id:
+        return None
+    name = str(payload.get("name") or "")
+    if name.casefold().startswith("asset card refresh "):
+        return None
+    return {"mp_task_id": str(task_id), "name": name or str(task_id), "payload": payload, "source": "remote"}
+
+
+def remote_scanner_task_templates(
+    client: MpVmClient,
+    token: str,
+    *,
+    main_filter: str | None = None,
+    max_tasks: int = 200,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    page_size = 50
+    for offset in range(0, max_tasks, page_size):
+        response = client.list_remote_scanner_tasks(
+            token,
+            offset=offset,
+            limit=min(page_size, max_tasks - offset),
+            main_filter=main_filter,
+        )
+        page = extract_remote_scanner_task_rows(response)
+        for item in page:
+            template = normalize_remote_scanner_task_template(item)
+            if template:
+                rows.append(template)
+        if len(page) < page_size:
+            break
+    return rows
+
+
+def resolve_asset_card_refresh_template(
+    asset_id: str,
+    template_task_id: str | None = None,
+) -> dict[str, Any]:
+    local = db.get_asset_card_refresh_template(asset_id, template_task_id)
+    if local and isinstance(local.get("payload"), dict):
+        return local
+
+    client, token = require_mpvm()
+    try:
+        remote = remote_scanner_task_templates(
+            client,
+            token,
+            main_filter=template_task_id,
+            max_tasks=200 if template_task_id else 50,
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+    selected = next(
+        (item for item in remote if not template_task_id or item["mp_task_id"] == template_task_id),
+        None,
+    )
+    if not selected:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SCANNER_TASK_TEMPLATE_REQUIRED",
+                "message": (
+                    "Выберите сохранённую задачу MP VM с заполненными scope и scanner profile; "
+                    "её настройки нужны для повторного сканирования карточек."
+                ),
+            },
+        )
+    return db.record_scan_task(
+        mp_task_id=selected["mp_task_id"],
+        payload=selected["payload"],
+        status="imported_as_refresh_template",
+        remote_response={"source": "remote_scanner_tasks"},
+    )
+
+
+@asset_cards_router.get("/api/asset-cards/refresh-scan/templates")
+def asset_card_refresh_templates() -> dict[str, Any]:
+    templates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for task in db.list_scan_tasks():
+        task_id = str(task.get("mp_task_id") or "")
+        payload = task.get("payload")
+        if task_id and not task.get("deleted_at") and isinstance(payload, dict) and payload.get("scope") and payload.get("profile"):
+            templates.append({"mp_task_id": task_id, "name": payload.get("name") or task.get("name") or task_id, "source": "local"})
+            seen.add(task_id)
+    client, token = require_mpvm()
+    try:
+        remote = remote_scanner_task_templates(client, token)
+    except (MpVmApiError, requests.RequestException) as exc:
+        if not templates:
+            raise http_error(exc) from exc
+        remote = []
+    for task in remote:
+        if task["mp_task_id"] not in seen:
+            templates.append({key: task[key] for key in ("mp_task_id", "name", "source")})
+            seen.add(task["mp_task_id"])
+    return {"rows": templates, "recommended_task_id": templates[0]["mp_task_id"] if templates else None}
+
+
 @asset_cards_router.post("/api/asset-cards/refresh-scan/bulk", status_code=202)
 def refresh_asset_cards_bulk(
     payload: AssetCardBulkRefreshRequest,
@@ -1845,8 +2006,10 @@ def refresh_asset_cards_bulk(
             )
         return {"operation_id": replay["operation_id"], "operation": replay, "idempotent_replay": True}
 
-    operation_id = str(uuid.uuid4())
     request = payload.model_dump()
+    template = resolve_asset_card_refresh_template("", payload.template_task_id)
+    request["template_task_id"] = template["mp_task_id"]
+    operation_id = str(uuid.uuid4())
     label = "Все карточки активов" if payload.selection == "all" else "Карточки старше порога свежести"
     operation = db.register_operation(
         operation_id,
@@ -1918,15 +2081,7 @@ def refresh_asset_card_by_scan(
             detail={"code": "ASSET_CARD_REFRESH_ACTIVE", "message": "This asset card is already being refreshed.", "postprocess": active},
         )
 
-    template = db.get_asset_card_refresh_template(asset_id, payload.template_task_id)
-    if not template or not isinstance(template.get("payload"), dict):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "SCANNER_TASK_TEMPLATE_REQUIRED",
-                "message": "Create a regular scanner task first; its scope, profile, agents and credentials are used as the refresh template.",
-            },
-        )
+    template = resolve_asset_card_refresh_template(asset_id, payload.template_task_id)
 
     client, token = require_mpvm()
     task_payload = build_asset_refresh_task_payload(
@@ -7067,6 +7222,13 @@ def refresh_asset_card_batch(
 
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    batch_config = config
+    if rows:
+        template = resolve_asset_card_refresh_template(
+            str(rows[0]["asset_id"]),
+            str(config.get("template_task_id") or "").strip() or None,
+        )
+        batch_config = {**config, "template_task_id": template["mp_task_id"]}
     if progress_callback:
         progress_callback(len(rows), 0, 0, None)
     for index, item in enumerate(rows):
@@ -7074,7 +7236,7 @@ def refresh_asset_card_batch(
         try:
             result = refresh_one_asset_card_for_automation(
                 asset_id=asset_id,
-                config=config,
+                config=batch_config,
                 register_child=register_child,
                 cancel_check=cancel_check,
                 idempotency_key=f"{idempotency_prefix}:{selection}:{index}:{asset_id}",

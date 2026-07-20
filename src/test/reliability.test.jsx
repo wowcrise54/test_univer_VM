@@ -154,6 +154,12 @@ describe("reliability UI", () => {
       if (path === "/api/asset-cards/build-jobs/active") {
         return Promise.resolve({ job: null });
       }
+      if (path === "/api/asset-cards/refresh-scan/templates") {
+        return Promise.resolve({
+          rows: [{ mp_task_id: "template-task-1", name: "Production" }],
+          recommended_task_id: "template-task-1",
+        });
+      }
       if (path === "/api/asset-cards/refresh-scan/bulk") {
         return Promise.resolve({
           operation_id: "bulk-operation-1",
@@ -176,16 +182,21 @@ describe("reliability UI", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Обновить все карточки активов" }),
-    );
+    const refreshAll = await screen.findByRole("button", {
+      name: "Обновить все карточки активов",
+    });
+    await waitFor(() => expect(refreshAll).toBeEnabled());
+    fireEvent.click(refreshAll);
 
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
         "/api/asset-cards/refresh-scan/bulk",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ selection: "all" }),
+          body: JSON.stringify({
+            selection: "all",
+            template_task_id: "template-task-1",
+          }),
         }),
       ),
     );

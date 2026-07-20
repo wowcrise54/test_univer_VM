@@ -1052,6 +1052,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
 
         with (
             patch.object(coverage, "list_assets", return_value=page) as list_assets,
+            patch.object(main, "resolve_asset_card_refresh_template", return_value={"mp_task_id": "template-task"}),
             patch.object(main, "refresh_one_asset_card_for_automation", side_effect=refresh_one) as refresh,
         ):
             result = main.execute_automation_step(
@@ -1101,6 +1102,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
 
         with (
             patch.object(cards, "list", return_value=page) as list_cards,
+            patch.object(main, "resolve_asset_card_refresh_template", return_value={"mp_task_id": "template-task"}),
             patch.object(main, "refresh_one_asset_card_for_automation", side_effect=refresh_one),
         ):
             result = main.refresh_asset_card_batch(
@@ -1131,6 +1133,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         with (
             patch.object(main.uuid, "uuid4", return_value="bulk-1"),
             patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
+            patch.object(main, "resolve_asset_card_refresh_template", return_value={"mp_task_id": "template-task"}),
             patch.object(main.db, "register_operation", return_value=operation) as register,
             patch.object(main.CONTAINER.operation_runner.cancellations, "register", return_value=threading.Event()),
             patch.object(main.CONTAINER.operation_runner, "submit", return_value=future) as submit,
@@ -1143,7 +1146,42 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         self.assertEqual(result["operation_id"], "bulk-1")
         self.assertEqual(register.call_args.kwargs["kind"], "asset_card_bulk_refresh")
         self.assertEqual(register.call_args.kwargs["request"]["selection"], "all")
+        self.assertEqual(register.call_args.kwargs["request"]["template_task_id"], "template-task")
         self.assertEqual(submit.call_args.args[:2], ("asset-card-bulk-refresh", main.run_asset_card_bulk_refresh_operation))
+
+    def test_remote_scanner_task_is_normalized_into_safe_refresh_template(self):
+        template = main.normalize_remote_scanner_task_template(
+            {
+                "id": "task-remote-1",
+                "name": "Production perimeter",
+                "scope": "scope-1",
+                "profile": "profile-1",
+                "include": {"targets": ["10.0.0.0/24"]},
+                "createdAt": "must-not-be-sent-back",
+            }
+        )
+
+        self.assertEqual(template["mp_task_id"], "task-remote-1")
+        self.assertEqual(template["payload"]["scope"], "scope-1")
+        self.assertNotIn("createdAt", template["payload"])
+
+    def test_bulk_refresh_fails_preflight_once_when_no_template_exists(self):
+        with (
+            patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
+            patch.object(
+                main,
+                "resolve_asset_card_refresh_template",
+                side_effect=main.HTTPException(status_code=409, detail={"code": "SCANNER_TASK_TEMPLATE_REQUIRED"}),
+            ),
+            patch.object(main.db, "register_operation") as register,
+            patch.object(main.CONTAINER.operation_runner, "submit") as submit,
+        ):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.refresh_asset_cards_bulk(main.AssetCardBulkRefreshRequest(selection="all"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        register.assert_not_called()
+        submit.assert_not_called()
 
     def test_refresh_task_reuses_scan_settings_and_targets_only_card_ip(self):
         template = {
@@ -1198,7 +1236,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
             patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
             patch.object(main.db, "get_asset_card", return_value={"asset_id": "asset-old", "ip_address": "10.0.0.7", "display_name": "host-7"}),
             patch.object(main.db, "get_active_asset_card_refresh", return_value=None),
-            patch.object(main.db, "get_asset_card_refresh_template", return_value=template),
+            patch.object(main, "resolve_asset_card_refresh_template", return_value=template),
             patch.object(main, "require_mpvm", return_value=(client, "token")),
             patch.object(main.db, "record_scan_task") as record_task,
             patch.object(main, "start_scanner_task_impl", return_value={"id": "refresh-task-1", "status": "started", "started_from": "2026-01-01T00:00:00+00:00"}),

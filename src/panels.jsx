@@ -1570,6 +1570,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetCardJob, setAssetCardJob] = useState(null);
   const [assetRefreshRun, setAssetRefreshRun] = useState(null);
   const [assetBulkRefreshOperation, setAssetBulkRefreshOperation] = useState(null);
+  const [assetRefreshTemplates, setAssetRefreshTemplates] = useState([]);
+  const [selectedRefreshTemplateId, setSelectedRefreshTemplateId] = useState("");
+  const [assetRefreshTemplatesError, setAssetRefreshTemplatesError] = useState("");
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
@@ -1613,12 +1616,29 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
 
   useEffect(() => {
     let alive = true;
-    api("/api/asset-cards/build-jobs/active")
-      .then((result) => {
-        if (alive && result.job) setAssetCardJob(result.job);
-      })
-      .catch((error) => {
-        if (alive) showAlert(error.message || String(error), "error");
+    Promise.allSettled([
+      api("/api/asset-cards/build-jobs/active"),
+      api("/api/asset-cards/refresh-scan/templates"),
+    ])
+      .then(([activeRequest, templatesRequest]) => {
+        if (!alive) return;
+        if (activeRequest.status === "fulfilled" && activeRequest.value.job) {
+          setAssetCardJob(activeRequest.value.job);
+        }
+        if (templatesRequest.status === "rejected") {
+          const error = templatesRequest.reason;
+          setAssetRefreshTemplatesError(
+            error?.operatorMessage || error?.message || String(error),
+          );
+          return;
+        }
+        const templatesResult = templatesRequest.value;
+        const rows = templatesResult.rows || [];
+        setAssetRefreshTemplates(rows);
+        setSelectedRefreshTemplateId(
+          templatesResult.recommended_task_id || rows[0]?.mp_task_id || "",
+        );
+        setAssetRefreshTemplatesError("");
       });
     return () => {
       alive = false;
@@ -1948,7 +1968,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             "asset-cards-bulk-refresh",
           ),
         },
-        body: JSON.stringify({ selection: "all" }),
+        body: JSON.stringify({
+          selection: "all",
+          template_task_id: selectedRefreshTemplateId || null,
+        }),
       });
       if (!result.operation_id || !result.operation) {
         throw new Error("Массовое обновление карточек не было поставлено в очередь.");
@@ -2056,7 +2079,10 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             variant="success"
             busy={busy.assetCardsBulkRefresh}
             disabled={
-              assetCardJobActive || assetRefreshActive || assetBulkRefreshActive
+              !selectedRefreshTemplateId ||
+              assetCardJobActive ||
+              assetRefreshActive ||
+              assetBulkRefreshActive
             }
             onClick={updateAllLocalCards}
           >
@@ -2065,6 +2091,41 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </div>
       }
     >
+      <div className="options-card">
+        <div>
+          <h3>Шаблон повторного сканирования</h3>
+          <p>
+            Scope, scanner profile, коллекторы и учётные данные берутся из
+            выбранной существующей задачи MP VM. Цель каждой временной задачи
+            заменяется на IP обновляемой карточки.
+          </p>
+        </div>
+        <Field label="Задача MP VM для обновления карточек">
+          <select
+            value={selectedRefreshTemplateId}
+            onChange={(event) =>
+              setSelectedRefreshTemplateId(event.target.value)
+            }
+          >
+            <option value="">Выберите задачу-шаблон</option>
+            {assetRefreshTemplates.map((task) => (
+              <option key={task.mp_task_id} value={task.mp_task_id}>
+                {task.name || task.mp_task_id}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {assetRefreshTemplatesError ? (
+          <small className="error-text">
+            Не удалось загрузить задачи-шаблоны: {assetRefreshTemplatesError}
+          </small>
+        ) : assetRefreshTemplates.length === 0 ? (
+          <small className="error-text">
+            В MP VM не найдено задач с заполненными scope и scanner profile.
+            Создайте такую задачу перед массовым обновлением карточек.
+          </small>
+        ) : null}
+      </div>
       <Field label="PDQL для получения asset_id">
         <textarea
           className="code-input"
