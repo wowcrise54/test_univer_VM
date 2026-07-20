@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from fastapi import BackgroundTasks
+import requests
+from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from app import main, mpvm_client
@@ -461,6 +462,71 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
 
 
 class StartScannerTaskApiTests(unittest.TestCase):
+    def test_local_configuration_is_put_before_validation_and_start(self):
+        events: list[str] = []
+        payload = {
+            "name": "Client task",
+            "scope": "scope-1",
+            "profile": "profile-1",
+            "include": {"targets": ["10.0.0.1"]},
+        }
+
+        class SyncClient:
+            auth = SimpleNamespace(api_url="https://fixture")
+
+            def update_scanner_task(self, _token, task_id, task_payload):
+                events.append("put")
+                self.task_id = task_id
+                self.payload = task_payload
+                return {"id": task_id, "status": "updated"}
+
+        client = SyncClient()
+
+        def start_after_put(**_kwargs):
+            events.append("start")
+            return {"id": "task-1", "status": "validation_failed", "error": "invalid"}
+
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "get_scan_task", return_value={"payload": payload}),
+            patch.object(
+                main.db,
+                "record_scan_task",
+                side_effect=lambda **_kwargs: events.append("record") or {},
+            ) as record_task,
+            patch.object(main, "start_scanner_task_impl", side_effect=start_after_put),
+        ):
+            result = main._start_scanner_task_request(
+                "task-1",
+                main.StartScannerTaskRequest(),
+                None,
+            )
+
+        self.assertEqual(events, ["put", "record", "start"])
+        self.assertEqual(client.task_id, "task-1")
+        self.assertEqual(client.payload, payload)
+        self.assertIsNot(client.payload, payload)
+        self.assertEqual(record_task.call_args.kwargs["status"], "updated_before_start")
+        self.assertEqual(result["configuration_update"]["status"], "updated")
+
+    def test_configuration_put_failure_prevents_remote_start(self):
+        client = MagicMock(auth=SimpleNamespace(api_url="https://fixture"))
+        client.update_scanner_task.side_effect = requests.RequestException("PUT failed")
+
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "get_scan_task", return_value={"payload": {"name": "Client task"}}),
+            patch.object(main, "start_scanner_task_impl") as start_impl,
+        ):
+            with self.assertRaises(HTTPException):
+                main._start_scanner_task_request(
+                    "task-1",
+                    main.StartScannerTaskRequest(),
+                    None,
+                )
+
+        start_impl.assert_not_called()
+
     def test_run_scoped_docker_group_is_ready_before_remote_scan_starts(self):
         events: list[str] = []
 
@@ -553,6 +619,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
 
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main, "sync_scanner_task_configuration_before_start", return_value={"status": "updated"}),
             patch.object(main.uuid, "uuid4", return_value="post-1"),
             patch.object(main, "start_scanner_task_impl", side_effect=start_and_persist),
             patch.object(main.db, "create_scan_postprocess_run", return_value=postprocess),
@@ -575,6 +642,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
         postprocess = {"run_id": "post-1", "status": "monitoring", "stage": "waiting_for_run"}
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main, "sync_scanner_task_configuration_before_start", return_value={"status": "updated"}),
             patch.object(main, "start_scanner_task_impl", return_value={
                 "id": "task-1",
                 "status": "started",
@@ -599,6 +667,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
         postprocess = {"run_id": "post-http", "status": "monitoring", "stage": "waiting_for_run"}
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main, "sync_scanner_task_configuration_before_start", return_value={"status": "updated"}),
             patch.object(main, "start_scanner_task_impl", return_value={
                 "id": "task-http",
                 "status": "started",
@@ -634,6 +703,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
 
         with (
             patch.object(main, "require_mpvm", return_value=(endpoint_client, "token")),
+            patch.object(main, "sync_scanner_task_configuration_before_start", return_value={"status": "updated"}),
             patch.object(main, "start_scanner_task_impl", return_value={
                 "id": "task-full",
                 "status": "started",

@@ -222,7 +222,7 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 - `POST /api/scanner-tasks` - создать задачу через `POST /api/scanning/v4/scanner_tasks/create`.
 - `PUT /api/scanner-tasks/{id}` - изменить задачу через `PUT /api/scanning/v4/scanner_tasks/{id}`.
 - `POST /api/scanner-tasks/{id}/validate` - проверить задачу.
-- `POST /api/scanner-tasks/{id}/start` - запустить задачу и вернуть `202`; завершение сканирования, создание локальных карточек и удаление успешно просканированных активов в MP VM выполняются в фоне.
+- `POST /api/scanner-tasks/{id}/start` - перед validation/precheck повторно отправить сохранённую в клиенте конфигурацию задачи через `PUT /api/scanning/v4/scanner_tasks/{id}`, затем запустить задачу и вернуть `202`; если локальная конфигурация отсутствует или PUT завершился ошибкой, удалённый старт не выполняется. Завершение сканирования, создание локальных карточек и удаление успешно просканированных активов в MP VM выполняются в фоне.
 - `GET /api/scanner-tasks/{id}/postprocess-runs/latest` - получить прогресс фоновой обработки и статусы каждого target/asset.
 
 После запуска основной задачи клиент опрашивает `/api/scanning/v2/runs/{runId}/jobs`. Каждый job с `runMode=default` обрабатывается отдельно сразу после перехода `errorStatus` в `success`; connection-check/precheck jobs исключаются. Для точного IP/FQDN успешного job asset разрешается без дополнительного фильтра по времени, после чего его локальная карточка пересобирается и перезаписывается.

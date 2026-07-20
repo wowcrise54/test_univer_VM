@@ -1347,6 +1347,7 @@ def _start_scanner_task_request(
             "state": "planned",
         }
     postprocess_holder: dict[str, dict[str, Any]] = {}
+    configuration_update: dict[str, Any] | None = None
 
     def ensure_postprocess_run(started_from: str) -> dict[str, Any]:
         if "run" not in postprocess_holder:
@@ -1360,6 +1361,11 @@ def _start_scanner_task_request(
         return postprocess_holder["run"]
 
     try:
+        configuration_update = sync_scanner_task_configuration_before_start(
+            client=client,
+            token=token,
+            task_id=task_id,
+        )
         result = start_scanner_task_impl(
             client=client,
             token=token,
@@ -1388,6 +1394,7 @@ def _start_scanner_task_request(
             raise http_error(exc) from exc
         raise
 
+    result["configuration_update"] = configuration_update
     if result.get("status") != "started":
         return result
     created_before_start = "run" in postprocess_holder
@@ -1406,6 +1413,43 @@ def _start_scanner_task_request(
         "postprocess_run_id": postprocess_run_id,
         "postprocess": postprocess,
         "operation_id": postprocess_run_id,
+    }
+
+
+def sync_scanner_task_configuration_before_start(
+    *,
+    client: MpVmClient,
+    token: str,
+    task_id: str,
+) -> dict[str, Any]:
+    """Make the locally saved task configuration authoritative before validation and start."""
+    local_task = db.get_scan_task(task_id)
+    task_payload = local_task.get("payload") if isinstance(local_task, dict) else None
+    if not isinstance(task_payload, dict) or not task_payload:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "LOCAL_SCANNER_TASK_CONFIGURATION_REQUIRED",
+                "message": "Save the scanner task in the client before starting it.",
+            },
+        )
+
+    payload = copy.deepcopy(task_payload)
+    update_response = client.update_scanner_task(token, task_id, payload)
+    db.record_scan_task(
+        mp_task_id=task_id,
+        payload=payload,
+        status="updated_before_start",
+        remote_response=update_response,
+    )
+    scan_log(
+        logging.INFO,
+        "scanner_task_configuration_synced_before_start",
+        task_id=task_id,
+    )
+    return {
+        "status": "updated",
+        "response": update_response,
     }
 
 
