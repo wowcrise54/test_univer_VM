@@ -109,7 +109,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         operation_id = client.create_dynamic_asset_group(
             "access",
             name="mpvm-temp-docker-test",
-            predicate="(@ImageSet)",
+            predicate="(ImageSet)",
             description="temporary",
         )
 
@@ -117,7 +117,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         request = client.session.post.call_args
         self.assertEqual(request.args[0], "https://fixture/api/assets_processing/v2/groups")
         self.assertEqual(request.kwargs["json"]["groupType"], "dynamic")
-        self.assertEqual(request.kwargs["json"]["predicate"], "(@ImageSet)")
+        self.assertEqual(request.kwargs["json"]["predicate"], "(ImageSet)")
         self.assertEqual(
             request.kwargs["json"]["parentId"],
             "00000000-0000-0000-0000-000000000002",
@@ -505,7 +505,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ["run:persisted", "group:lookup", "group:create:(@ImageSet)", "group:ready", "scan:start"],
+            ["run:persisted", "group:lookup", "group:create:(ImageSet)", "group:ready", "scan:start"],
         )
         self.assertIn("11111111-2222-3333-4444-555555555555", client.created_name)
         self.assertEqual(result["docker_dynamic_group"]["id"], "group-id")
