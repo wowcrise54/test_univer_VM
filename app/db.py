@@ -2638,8 +2638,9 @@ def iter_docker_vulnerability_report_rows(
                   ON card.asset_id = finding.asset_id
                 WHERE vulnerability_group.source_type = 'docker'
                   AND (%s::text[] IS NULL OR card.asset_id = ANY(%s))
-            )
-            SELECT
+            ),
+            resolved_findings AS (
+                SELECT
                 asset_id,
                 ip_address,
                 fqdn,
@@ -2695,8 +2696,11 @@ def iter_docker_vulnerability_report_rows(
                 NULLIF(finding_json ->> 'status', '') AS vulnerability_status,
                 NULLIF(finding_json ->> 'fixed_version', '') AS fixed_version,
                 NULLIF(finding_json ->> 'how_to_fix', '') AS how_to_fix,
-                last_seen
-            FROM docker_findings
+                    last_seen
+                FROM docker_findings
+            )
+            SELECT *
+            FROM resolved_findings
             ORDER BY
                 COALESCE(ip_address, ''),
                 COALESCE(fqdn, ''),
