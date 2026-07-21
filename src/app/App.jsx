@@ -66,7 +66,7 @@ function AppShell({ navigate, path, route, auth }) {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} reauthenticate={auth.reauthenticate} {...appData} />
+        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} {...appData} />
       </main>
     </div>
   );
@@ -77,7 +77,7 @@ function ActivePage({ routeId, ...props }) {
     return <VmManagementPage session={props.session} currentUser={props.currentUser} showAlert={props.showAlert} onNavigate={props.onNavigate} />;
   }
   if (routeId === "users") {
-    return <UsersPage currentUser={props.currentUser} reauthenticate={props.reauthenticate} showAlert={props.showAlert} />;
+    return <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />;
   }
   if (routeId === "connection") {
     return (

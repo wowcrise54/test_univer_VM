@@ -21,7 +21,6 @@ from . import db
 COOKIE_NAME = "mpvm_app_session"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
 SYSTEM_ROLE_KEYS = {"admin", "operator", "viewer"}
-ELEVATION_MINUTES = 30
 
 PERMISSIONS: dict[str, tuple[str, str]] = {
     "system.read": ("Система", "Просмотр состояния и общих настроек"),
@@ -82,10 +81,6 @@ BUILTIN_ROLE_NAMES = {"admin": "Администратор", "operator": "Опе
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
-    password: str = Field(min_length=1, max_length=1024)
-
-
-class ReauthRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
@@ -203,7 +198,7 @@ def public_user(row: dict[str, Any], *, roles: list[dict[str, Any]] | None = Non
     return {"id": int(row["id"]), "username": row["username"], "display_name": row["display_name"],
         "role": primary, "roles": roles, "permissions": permissions or row.get("permissions") or [],
         "is_active": bool(row["is_active"]), "created_at": row.get("created_at"), "updated_at": row.get("updated_at"),
-        "last_login_at": row.get("last_login_at"), "elevated_until": row.get("elevated_until")}
+        "last_login_at": row.get("last_login_at")}
 
 
 def ensure_bootstrap_admin(username: str, password: str, display_name: str) -> bool:
@@ -243,7 +238,7 @@ def get_session_user(token: str | None) -> dict[str, Any] | None:
     if not token: return None
     current, hashed = _iso(_utc_now()), _token_hash(token)
     with db.connect() as conn:
-        row = conn.execute("""SELECT users.*,sessions.elevated_until FROM app_auth_sessions sessions JOIN app_users users ON users.id=sessions.user_id
+        row = conn.execute("""SELECT users.* FROM app_auth_sessions sessions JOIN app_users users ON users.id=sessions.user_id
             WHERE sessions.token_hash=%s AND sessions.revoked_at IS NULL AND sessions.expires_at>%s AND users.is_active=TRUE""", (hashed, current)).fetchone()
         if not row: return None
         conn.execute("UPDATE app_auth_sessions SET last_seen_at=%s WHERE token_hash=%s AND last_seen_at<%s", (current, hashed, _iso(_utc_now()-timedelta(minutes=5))))
@@ -253,24 +248,6 @@ def get_session_user(token: str | None) -> dict[str, Any] | None:
 def revoke_session(token: str | None) -> None:
     if token:
         with db.connect() as conn: conn.execute("UPDATE app_auth_sessions SET revoked_at=COALESCE(revoked_at,%s) WHERE token_hash=%s", (db.now_utc(), _token_hash(token)))
-
-
-def is_elevated(user: dict[str, Any]) -> bool:
-    try: return datetime.fromisoformat(str(user.get("elevated_until"))) > _utc_now()
-    except (TypeError, ValueError): return False
-
-
-def reauthenticate(token: str | None, password: str) -> dict[str, Any]:
-    if not token: raise HTTPException(401, detail={"code": "AUTH_REQUIRED", "message": "Войдите в приложение."})
-    hashed = _token_hash(token)
-    with db.connect() as conn:
-        row = conn.execute("""SELECT users.* FROM app_auth_sessions sessions JOIN app_users users ON users.id=sessions.user_id
-            WHERE sessions.token_hash=%s AND sessions.revoked_at IS NULL""", (hashed,)).fetchone()
-        if not row or not verify_password(password, row["password_hash"]):
-            raise HTTPException(401, detail={"code": "REAUTH_FAILED", "message": "Неверный пароль."})
-        elevated = _iso(_utc_now()+timedelta(minutes=ELEVATION_MINUTES))
-        conn.execute("UPDATE app_auth_sessions SET elevated_until=%s WHERE token_hash=%s", (elevated, hashed))
-    return {"elevated_until": elevated}
 
 
 def list_users() -> list[dict[str, Any]]:
@@ -329,7 +306,7 @@ def update_user(user_id: int, payload: UserUpdateRequest, *, actor_id: int) -> d
         else: row=existing
         if requested is not None: _replace_user_roles(conn,user_id,requested)
         if changes.get("is_active") is False or "password_hash" in changes or requested is not None:
-            conn.execute("UPDATE app_auth_sessions SET revoked_at=%s,elevated_until=NULL WHERE user_id=%s AND revoked_at IS NULL",(db.now_utc(),user_id))
+            conn.execute("UPDATE app_auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",(db.now_utc(),user_id))
         assert row is not None
         return public_user(dict(row),roles=_roles_for_user(conn,user_id),permissions=_permissions_for_user(conn,user_id))
 
@@ -373,8 +350,6 @@ def update_role(role_id:int,payload:RoleUpdateRequest)->dict[str,Any]:
         if permissions is not None:
             conn.execute("DELETE FROM app_role_permissions WHERE role_id=%s",(role_id,))
             for key in permissions: conn.execute("INSERT INTO app_role_permissions(role_id,permission_key) VALUES(%s,%s)",(role_id,key))
-        conn.execute("""UPDATE app_auth_sessions sessions SET elevated_until=NULL
-            FROM app_user_roles ur WHERE ur.user_id=sessions.user_id AND ur.role_id=%s""", (role_id,))
     return next(role for role in list_roles() if role["id"]==role_id)
 
 
@@ -457,7 +432,6 @@ def required_permission(method:str,path:str)->str|None:
     if path.startswith("/api/auth/users"): return "security.users.read" if method in {"GET","HEAD"} else "security.users.manage"
     if path.startswith("/api/auth/roles") or path=="/api/auth/permissions": return "security.roles.read" if method in {"GET","HEAD"} else "security.roles.manage"
     if path.startswith("/api/auth/audit"): return "security.audit.read"
-    if path=="/api/auth/reauth": return None
     if path.startswith("/api/diagnostics/frontend"): return "diagnostics.write"
     if path.startswith("/api/session/connect") or path.startswith("/api/session/disconnect"): return "connection.manage"
     if path.startswith("/api/session") or path.startswith("/api/mpvm/lookups") or path.startswith("/api/mpvm/scanner-tasks/remote"): return "connection.read"

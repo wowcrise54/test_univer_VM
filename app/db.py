@@ -496,7 +496,6 @@ def schema_statements() -> list[str]:
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
-            elevated_until TEXT,
             revoked_at TEXT
         )
         """,

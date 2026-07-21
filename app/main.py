@@ -450,7 +450,7 @@ PUBLIC_API_PATHS = {
     "/api/auth/bootstrap-status",
     "/api/health",
 }
-SENSITIVE_PERMISSIONS = {
+AUDITED_PERMISSIONS = {
     "security.users.manage", "security.roles.manage", "connection.manage",
     "remediation.policy", "diagnostics.read",
 }
@@ -484,11 +484,8 @@ async def application_auth_middleware(request: Request, call_next):
     if permission and permission not in effective:
         app_auth.audit_event(request=request, user=user, event_type="access", decision="deny", permission_key=permission, target_type="api", target_id=path)
         return auth_error(403, "PERMISSION_DENIED", f"Недостаточно прав: {permission}.")
-    if permission in SENSITIVE_PERMISSIONS and not app_auth.is_elevated(user):
-        app_auth.audit_event(request=request, user=user, event_type="reauth_required", decision="deny", permission_key=permission, target_type="api", target_id=path)
-        return auth_error(403, "REAUTH_REQUIRED", "Повторно подтвердите пароль для критического действия.")
     response = await call_next(request)
-    if permission in SENSITIVE_PERMISSIONS and response.status_code < 400:
+    if permission in AUDITED_PERMISSIONS and response.status_code < 400:
         app_auth.audit_event(request=request, user=user, event_type="critical_action", decision="allow", permission_key=permission, target_type="api", target_id=path)
     return response
 
@@ -840,17 +837,6 @@ def auth_login(payload: app_auth.LoginRequest, request: Request, response: Respo
 @auth_router.post("/logout")
 def auth_logout(request: Request, response: Response) -> dict[str, Any]:
     return app_auth.logout(request, response)
-
-
-@auth_router.post("/reauth")
-def auth_reauth(payload: app_auth.ReauthRequest, request: Request) -> dict[str, Any]:
-    try:
-        result = app_auth.reauthenticate(request.cookies.get(app_auth.COOKIE_NAME), payload.password)
-    except HTTPException:
-        app_auth.audit_event(request=request, user=request.state.user, event_type="reauth", decision="deny")
-        raise
-    app_auth.audit_event(request=request, user=request.state.user, event_type="reauth", decision="allow")
-    return result
 
 
 @auth_router.get("/me")

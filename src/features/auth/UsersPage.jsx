@@ -3,18 +3,16 @@ import { api } from "../../api/client.js";
 
 const EMPTY_USER = { username: "", display_name: "", password: "", role_ids: [] };
 
-export function UsersPage({ currentUser, reauthenticate, showAlert }) {
+export function UsersPage({ currentUser, showAlert }) {
   const [tab, setTab] = useState(() => currentUser?.permissions?.includes("security.users.read") ? "users" : currentUser?.permissions?.includes("security.roles.read") ? "roles" : "audit");
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [permissions, setPermissions] = useState([]);
   const [audit, setAudit] = useState([]);
   const [form, setForm] = useState(EMPTY_USER);
-  const [password, setPassword] = useState("");
   const canReadUsers = currentUser?.permissions?.includes("security.users.read");
   const canReadRoles = currentUser?.permissions?.includes("security.roles.read");
   const canReadAudit = currentUser?.permissions?.includes("security.audit.read");
-  const elevated = currentUser?.elevated_until && new Date(currentUser.elevated_until) > new Date();
 
   const load = async () => {
     const [userData, roleData, permissionData] = await Promise.all([
@@ -29,14 +27,9 @@ export function UsersPage({ currentUser, reauthenticate, showAlert }) {
     if (tab === "audit" && canReadAudit) api("/api/auth/audit?limit=200").then((value) => setAudit(value.rows || [])).catch((error) => showAlert(error.operatorMessage || error.message, "error"));
   }, [tab, canReadAudit, showAlert]);
 
-  const confirmPassword = async (event) => {
-    event.preventDefault();
-    try { await reauthenticate(password); setPassword(""); showAlert("Критические действия подтверждены на 30 минут.", "success"); }
-    catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
-  };
   const mutate = async (request, success) => {
     try { await request(); await load(); if (success) showAlert(success, "success"); }
-    catch (error) { showAlert(error.code === "REAUTH_REQUIRED" ? "Сначала подтвердите пароль выше." : error.operatorMessage || error.message, "error"); }
+    catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
   };
 
   if (!canReadUsers && !canReadRoles && !canReadAudit) return <section className="panel"><p>Недостаточно прав.</p></section>;
@@ -47,11 +40,6 @@ export function UsersPage({ currentUser, reauthenticate, showAlert }) {
       {canReadRoles ? <button className={tab === "roles" ? "is-active" : ""} onClick={() => setTab("roles")}>Роли</button> : null}
       {canReadAudit ? <button className={tab === "audit" ? "is-active" : ""} onClick={() => setTab("audit")}>Аудит</button> : null}
     </nav>
-    {!elevated && currentUser.permissions.includes("security.users.manage") ? <form className="reauth-panel" onSubmit={confirmPassword}>
-      <div><strong>Подтвердите критические действия</strong><span>Подтверждение действует 30 минут.</span></div>
-      <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Ваш пароль" autoComplete="current-password" required />
-      <button type="submit">Подтвердить</button>
-    </form> : null}
     {tab === "users" && canReadUsers ? <UsersTab users={users} roles={roles} form={form} setForm={setForm} currentUser={currentUser} mutate={mutate} /> : null}
     {tab === "roles" && canReadRoles ? <RolesTab roles={roles} permissions={permissions} canManage={currentUser.permissions.includes("security.roles.manage")} mutate={mutate} /> : null}
     {tab === "audit" && canReadAudit ? <AuditTab rows={audit} /> : null}

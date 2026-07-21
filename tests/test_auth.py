@@ -78,15 +78,20 @@ def test_all_registered_api_routes_have_an_explicit_policy():
     assert missing == []
 
 
-def test_sensitive_permission_requires_recent_reauthentication():
-    admin = {**ADMIN, "permissions": sorted(auth.PERMISSIONS), "elevated_until": None}
-    with patch.object(auth, "get_session_user", return_value=admin), patch.object(auth, "audit_event"):
+def test_sensitive_permission_does_not_require_password_confirmation():
+    admin = {**ADMIN, "permissions": sorted(auth.PERMISSIONS)}
+    created = {"id": 4, "username": "new-user", "display_name": "New", "role": "viewer", "is_active": True}
+    with (
+        patch.object(auth, "get_session_user", return_value=admin),
+        patch.object(auth, "create_user", return_value=created),
+        patch.object(auth, "audit_event"),
+    ):
         response = TestClient(main.app).post(
             "/api/auth/users",
             json={"username": "new-user", "display_name": "New", "password": "long-enough-password", "role_ids": [1]},
         )
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "REAUTH_REQUIRED"
+    assert response.status_code == 201
+    assert response.json()["username"] == "new-user"
 
 
 def test_permissions_from_multiple_roles_are_used_as_a_union():

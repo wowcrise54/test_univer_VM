@@ -29,16 +29,9 @@ export function AuthGate({ children }) {
       setState({ loading: false, user: null, error: null, configured: true });
     }
   };
-  const reauthenticate = async (password) => {
-    const result = await api("/api/auth/reauth", { method: "POST", body: JSON.stringify({ password }) });
-    const me = await api("/api/auth/me");
-    setState({ loading: false, user: me.user, error: null, configured: true });
-    return result;
-  };
-
   if (state.loading) return <div className="auth-screen"><div className="auth-card"><p>Проверяем доступ…</p></div></div>;
   if (!state.user) return <LoginForm onLogin={login} error={state.error} configured={state.configured} />;
-  return children({ user: state.user, logout, reauthenticate });
+  return children({ user: state.user, logout });
 }
 
 function LoginForm({ onLogin, error, configured }) {
