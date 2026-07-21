@@ -58,6 +58,11 @@ class AutomationService:
         normalized = dict(config or {})
         if step_type == "pdql_export":
             normalized.setdefault("delete_assets_after_export", False)
+        if step_type == "asset_card_build" and normalized.get("selection") in {"all", "stale"}:
+            parallelism = int(normalized.get("parallelism") or 3)
+            if parallelism < 1 or parallelism > 4:
+                raise ValueError("asset_card_build parallelism must be between 1 and 4.")
+            normalized["parallelism"] = parallelism
         return normalized
 
     @staticmethod
@@ -261,11 +266,11 @@ class AutomationService:
                         else:
                             execution_context = {
                                 **context,
-                                "_register_child_operation": lambda child_id: self.repository.set_step_status(
+                                "_register_child_operation": lambda child_id, step_index=index, attempt=attempts: self.repository.set_step_status(
                                     run_id,
-                                    index,
+                                    step_index,
                                     "running",
-                                    attempts=attempts,
+                                    attempts=attempt,
                                     child_operation_id=str(child_id),
                                 ),
                                 "_is_cancel_requested": lambda: bool(

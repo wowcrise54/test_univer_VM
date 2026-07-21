@@ -24,12 +24,18 @@ class AppContainer:
     """Explicit owner of mutable process-scoped application state."""
 
     def __init__(self, settings: Settings) -> None:
+        scan_postprocess_workers = min(4, settings.scan_postprocess_workers)
+        asset_card_refresh_workers = min(
+            4,
+            settings.asset_card_refresh_workers,
+            scan_postprocess_workers,
+        )
         self.settings = settings
         self.session = RuntimeSession()
         self.repositories = RepositoryBundle()
         self.operation_runner = OperationRunner(
             {
-                "scan-postprocess": settings.scan_postprocess_workers,
+                "scan-postprocess": scan_postprocess_workers,
                 "docker-group-cleanup": 4,
                 "vm-workflow": 4,
                 "automation-run": 2,
@@ -44,6 +50,7 @@ class AppContainer:
             operation_runner=self.operation_runner,
         )
         self.background_request_semaphore = threading.BoundedSemaphore(settings.background_request_limit)
+        self.asset_card_refresh_semaphore = threading.BoundedSemaphore(asset_card_refresh_workers)
         self.asset_metadata_cache: dict[tuple[str, str], tuple[float, dict]] = {}
         self.asset_metadata_inflight: dict[tuple[str, str], threading.Event] = {}
         self.asset_metadata_cache_lock = threading.Lock()

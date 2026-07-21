@@ -72,6 +72,7 @@ class AssetCardBulkRefreshRequest(BaseModel):
     selection: Literal["all", "stale"] = "all"
     template_task_id: str | None = None
     max_assets: int | None = Field(default=None, gt=0)
+    parallelism: int | None = Field(default=None, gt=0, le=4)
     start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
 
 

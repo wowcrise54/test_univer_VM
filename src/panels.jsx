@@ -1554,6 +1554,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     max_items_per_collection: "5000",
     max_depth: "8",
     docker_vulnerability_pdql: "",
+    asset_refresh_parallelism: "",
     save_to_db: true,
   });
   const [candidates, setCandidates] = useState([]);
@@ -1601,6 +1602,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         value.docker_vulnerability_pdql ||
         defaults.docker_vulnerability_pdql ||
         "",
+      asset_refresh_parallelism:
+        value.asset_refresh_parallelism ||
+        String(defaults.asset_card_refresh_workers || 3),
       utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
     }));
   }, [defaults]);
@@ -1971,6 +1975,12 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         body: JSON.stringify({
           selection: "all",
           template_task_id: selectedRefreshTemplateId || null,
+          parallelism: clampNumber(
+            form.asset_refresh_parallelism,
+            defaults?.asset_card_refresh_workers || 3,
+            1,
+            defaults?.asset_card_refresh_workers || 3,
+          ),
         }),
       });
       if (!result.operation_id || !result.operation) {
@@ -1978,7 +1988,12 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       }
       setAssetBulkRefreshOperation(result.operation);
       showAlert(
-        "Все сохранённые карточки поставлены на последовательное обновление. Прогресс доступен в центре операций.",
+        `Все сохранённые карточки поставлены на обновление: до ${clampNumber(
+          form.asset_refresh_parallelism,
+          defaults?.asset_card_refresh_workers || 3,
+          1,
+          defaults?.asset_card_refresh_workers || 3,
+        )} одновременно. Прогресс доступен в центре операций.`,
         "info",
       );
     });
@@ -2114,6 +2129,17 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               </option>
             ))}
           </select>
+        </Field>
+        <Field label="Параллельных обновлений">
+          <input
+            type="number"
+            min="1"
+            max={defaults?.asset_card_refresh_workers || 3}
+            value={form.asset_refresh_parallelism}
+            onChange={(event) =>
+              update("asset_refresh_parallelism", event.target.value)
+            }
+          />
         </Field>
         {assetRefreshTemplatesError ? (
           <small className="error-text">

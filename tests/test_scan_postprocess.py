@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -1035,19 +1036,30 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         wait_operation.assert_called_once()
         direct_build.assert_not_called()
 
-    def test_automation_refreshes_all_stale_cards_sequentially(self):
+    def test_automation_refreshes_all_stale_cards_in_a_bounded_parallel_pool(self):
         coverage = main.CONTAINER.services.coverage
         page = {
             "rows": [
                 {"asset_id": "asset-stale-1", "stale": True},
                 {"asset_id": "asset-stale-2", "stale": True},
+                {"asset_id": "asset-stale-3", "stale": True},
             ],
-            "total": 2,
+            "total": 3,
         }
         completed: list[str] = []
+        active = 0
+        peak_active = 0
+        lock = threading.Lock()
 
         def refresh_one(**kwargs):
-            completed.append(kwargs["asset_id"])
+            nonlocal active, peak_active
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.05)
+            with lock:
+                completed.append(kwargs["asset_id"])
+                active -= 1
             return {"operation_id": f"operation-{kwargs['asset_id']}"}
 
         with (
@@ -1057,19 +1069,22 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         ):
             result = main.execute_automation_step(
                 "asset_card_build",
-                {"selection": "stale", "wait": True},
+                {"selection": "stale", "parallelism": 2, "wait": True},
                 {"_is_cancel_requested": lambda: False},
                 "automation-run-1",
                 0,
             )
 
-        self.assertEqual(completed, ["asset-stale-1", "asset-stale-2"])
-        self.assertEqual(result["selected_count"], 2)
-        self.assertEqual(result["completed_count"], 2)
+        self.assertCountEqual(completed, ["asset-stale-1", "asset-stale-2", "asset-stale-3"])
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(result["parallelism"], 2)
+        self.assertEqual(result["selected_count"], 3)
+        self.assertEqual(result["completed_count"], 3)
         self.assertEqual(result["failed_count"], 0)
         list_assets.assert_called_once_with(q=None, issue="stale", limit=500, offset=0)
-        self.assertIn(":stale:0:asset-stale-1", refresh.call_args_list[0].kwargs["idempotency_key"])
-        self.assertIn(":stale:1:asset-stale-2", refresh.call_args_list[1].kwargs["idempotency_key"])
+        idempotency_keys = {call.kwargs["idempotency_key"] for call in refresh.call_args_list}
+        self.assertTrue(any(":stale:0:asset-stale-1" in key for key in idempotency_keys))
+        self.assertTrue(any(":stale:1:asset-stale-2" in key for key in idempotency_keys))
 
     def test_stale_automation_completes_cleanly_when_nothing_is_outdated(self):
         coverage = main.CONTAINER.services.coverage
@@ -1107,7 +1122,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         ):
             result = main.refresh_asset_card_batch(
                 selection="all",
-                config={"wait": True},
+                config={"wait": True, "parallelism": 1},
                 register_child=None,
                 cancel_check=None,
                 idempotency_prefix="bulk:test",
@@ -1139,7 +1154,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
             patch.object(main.CONTAINER.operation_runner, "submit", return_value=future) as submit,
         ):
             result = main.refresh_asset_cards_bulk(
-                main.AssetCardBulkRefreshRequest(selection="all"),
+                main.AssetCardBulkRefreshRequest(selection="all", parallelism=2),
                 idempotency_key="bulk-key",
             )
 
@@ -1147,7 +1162,42 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         self.assertEqual(register.call_args.kwargs["kind"], "asset_card_bulk_refresh")
         self.assertEqual(register.call_args.kwargs["request"]["selection"], "all")
         self.assertEqual(register.call_args.kwargs["request"]["template_task_id"], "template-task")
+        self.assertEqual(register.call_args.kwargs["request"]["parallelism"], 2)
         self.assertEqual(submit.call_args.args[:2], ("asset-card-bulk-refresh", main.run_asset_card_bulk_refresh_operation))
+
+    def test_bulk_refresh_cancel_stops_every_started_child_operation(self):
+        parent = {
+            "operation_id": "bulk-1",
+            "source_id": "bulk-1",
+            "kind": "asset_card_bulk_refresh",
+            "status": "running",
+            "can_cancel": True,
+            "progress_percent": 25,
+            "result": {
+                "current_child_operation_id": "child-2",
+                "child_operation_ids": ["child-1", "child-2"],
+            },
+        }
+
+        def get_operation(operation_id, **_kwargs):
+            if operation_id == "bulk-1":
+                return parent
+            return {"operation_id": operation_id, "can_cancel": True}
+
+        cancel_parent = main.cancel_operation
+        with (
+            patch.object(main.db, "get_operation", side_effect=get_operation),
+            patch.object(main.db, "register_operation", return_value=parent),
+            patch.object(main.CONTAINER.operation_runner.cancellations, "cancel", return_value=True),
+            patch.object(main, "cancel_operation") as cancel_child,
+        ):
+            result = cancel_parent("bulk-1")
+
+        self.assertEqual(result, parent)
+        self.assertEqual(
+            {call.args[0] for call in cancel_child.call_args_list},
+            {"child-1", "child-2"},
+        )
 
     def test_remote_scanner_task_is_normalized_into_safe_refresh_template(self):
         template = main.normalize_remote_scanner_task_template(

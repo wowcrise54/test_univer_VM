@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     exports_dir: Path = Path("exports")
     background_request_limit: int = 10
     asset_card_request_workers: int = 8
-    scan_postprocess_workers: int = 1
+    asset_card_refresh_workers: int = 3
+    scan_postprocess_workers: int = 3
     scan_asset_process_workers: int = 1
     passport_detail_workers: int = 10
     passport_detail_ttl_hours: int = 24
@@ -63,6 +64,7 @@ class Settings(BaseSettings):
         "timeout",
         "background_request_limit",
         "asset_card_request_workers",
+        "asset_card_refresh_workers",
         "scan_postprocess_workers",
         "scan_asset_process_workers",
         "passport_detail_workers",

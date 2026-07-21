@@ -186,6 +186,9 @@ describe("reliability UI", () => {
       name: "Обновить все карточки активов",
     });
     await waitFor(() => expect(refreshAll).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Параллельных обновлений"), {
+      target: { value: "2" },
+    });
     fireEvent.click(refreshAll);
 
     await waitFor(() =>
@@ -196,6 +199,7 @@ describe("reliability UI", () => {
           body: JSON.stringify({
             selection: "all",
             template_task_id: "template-task-1",
+            parallelism: 2,
           }),
         }),
       ),

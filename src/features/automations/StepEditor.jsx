@@ -61,11 +61,12 @@ const STEP_META = {
   asset_card_build: {
     short: "Карточка актива",
     description:
-      "Обновляет выбранную карточку или последовательно обрабатывает все устаревшие карточки.",
+      "Обновляет выбранную карточку или параллельно обрабатывает пачку карточек с заданным лимитом.",
     defaults: {
       selection: "asset",
       asset_id: "",
       max_assets: "",
+      parallelism: 3,
       template_task_id: "",
       wait: true,
       timeout_seconds: 14400,
@@ -567,13 +568,22 @@ function StepConfigFields({ step, scannerTasks, fieldCatalog, updateConfig }) {
             />
           </Field>
         ) : (
-          <NumberField
-            label="Максимум карточек за запуск (необязательно)"
-            value={config.max_assets ?? ""}
-            min={1}
-            placeholder="Без ограничения"
-            onChange={(value) => updateConfig("max_assets", value)}
-          />
+          <>
+            <NumberField
+              label="Максимум карточек за запуск (необязательно)"
+              value={config.max_assets ?? ""}
+              min={1}
+              placeholder="Без ограничения"
+              onChange={(value) => updateConfig("max_assets", value)}
+            />
+            <NumberField
+              label="Параллельных обновлений"
+              value={config.parallelism ?? 3}
+              min={1}
+              max={4}
+              onChange={(value) => updateConfig("parallelism", value)}
+            />
+          </>
         )}
         <Field label="Задача-шаблон MP VM (необязательно)">
           <input
