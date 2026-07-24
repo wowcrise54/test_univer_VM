@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://mpvm:mpvm@localhost:5432/mpvm"
     exports_dir: Path = Path("exports")
-    background_request_limit: int = 10
-    asset_card_request_workers: int = 8
+    background_request_limit: int = 20
+    asset_card_request_workers: int = 20
     asset_card_refresh_workers: int = 10
     scan_postprocess_workers: int = 10
     scan_asset_process_workers: int = 3

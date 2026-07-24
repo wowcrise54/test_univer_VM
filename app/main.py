@@ -140,7 +140,7 @@ SETTINGS = get_settings()
 BACKGROUND_REQUEST_LIMIT = min(32, SETTINGS.background_request_limit)
 ASSET_CARD_REQUEST_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
-    min(16, SETTINGS.asset_card_request_workers),
+    min(20, SETTINGS.asset_card_request_workers),
 )
 SCAN_POSTPROCESS_WORKERS = min(10, SETTINGS.scan_postprocess_workers)
 ASSET_CARD_REFRESH_WORKERS = min(10, SETTINGS.asset_card_refresh_workers, SCAN_POSTPROCESS_WORKERS)

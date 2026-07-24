@@ -25,7 +25,7 @@ describe("automation step model", () => {
     expect(destructive.config.delete_assets_after_export).toBe(true);
   });
 
-  it("defaults batch asset-card refreshes to three parallel workers", () => {
+  it("defaults batch asset-card refreshes to ten parallel workers", () => {
     const step = createAutomationStep("asset_card_build");
     expect(step.config.parallelism).toBe(10);
   });
