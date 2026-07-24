@@ -29,6 +29,18 @@ services:
     # The persistent project volume was initialized by PostgreSQL 16.
     # A major-version upgrade requires pg_upgrade and must not happen implicitly.
     image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_compression=on
     ports:
       - "55432:5432"
     environment:

@@ -3051,6 +3051,8 @@ def run_vulnerability_passport_detail_job(
 
         flush_batch(details_batch, errors_batch)
         job = db.get_vulnerability_passport_detail_job(job_id) or {}
+        if job.get("loaded_count"):
+            db.reconcile_vulnerability_passport_detail_job_links()
         if cancel_event.is_set():
             final_status = "cancelled"
             message = "Cancelled by operator."

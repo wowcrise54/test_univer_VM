@@ -2162,13 +2162,16 @@ def _upsert_vulnerability_passport_details(
     conn: psycopg.Connection[dict[str, Any]],
     details: list[tuple[str, dict[str, Any]]],
     current: str,
+    *,
+    reconcile_links: bool = True,
 ) -> int:
     values = [vulnerability_passport_detail_values(internal_id, raw_detail, current) for internal_id, raw_detail in details]
     if not values:
         return 0
     with conn.cursor() as cursor:
         cursor.executemany(VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL, values)
-    reconcile_asset_card_vulnerability_passport_links(conn, [value[0] for value in values], current)
+    if reconcile_links:
+        reconcile_asset_card_vulnerability_passport_links(conn, [value[0] for value in values], current)
     return len(values)
 
 
@@ -2189,6 +2192,14 @@ def upsert_vulnerability_passport_details(details: list[tuple[str, dict[str, Any
     current = now_utc()
     with connect() as conn:
         return _upsert_vulnerability_passport_details(conn, details, current)
+
+
+def reconcile_vulnerability_passport_detail_job_links() -> int:
+    """Rebuild finding links once after a bulk passport detail sync."""
+    init_db()
+    current = now_utc()
+    with connect() as conn:
+        return reconcile_asset_card_vulnerability_passport_links(conn, None, current)
 
 
 def get_vulnerability_passport(internal_id: str) -> dict[str, Any] | None:
@@ -2468,7 +2479,15 @@ def save_vulnerability_passport_detail_job_batch(
         ).fetchone()
         if not row:
             return None
-        loaded_count = _upsert_vulnerability_passport_details(conn, details, current)
+        # A detail job can contain thousands of passports. Rebuilding every
+        # finding-to-passport link for each batch creates extreme WAL churn.
+        # The worker performs one reconciliation after all batches are saved.
+        loaded_count = _upsert_vulnerability_passport_details(
+            conn,
+            details,
+            current,
+            reconcile_links=False,
+        )
         saved_errors = json_loads(row.get("errors_json"), [])
         if not isinstance(saved_errors, list):
             saved_errors = []

@@ -67,6 +67,7 @@ class PassportDetailWorkerTests(unittest.TestCase):
             patch.object(main.db, "start_vulnerability_passport_detail_job", side_effect=self.start_job),
             patch.object(main.db, "save_vulnerability_passport_detail_job_batch", side_effect=self.save_batch),
             patch.object(main.db, "get_vulnerability_passport_detail_job", side_effect=self.get_job),
+            patch.object(main.db, "reconcile_vulnerability_passport_detail_job_links") as reconcile_links,
             patch.object(main.db, "finish_vulnerability_passport_detail_job", side_effect=self.finish_job),
         ):
             main.run_vulnerability_passport_detail_job(
@@ -78,6 +79,7 @@ class PassportDetailWorkerTests(unittest.TestCase):
                 workers=10,
                 batch_size=20,
             )
+        self.reconcile_links_calls = reconcile_links.call_count
 
     def test_worker_caps_concurrency_and_is_at_least_five_times_faster(self):
         internal_ids = [f"passport-{index}" for index in range(100)]
@@ -90,6 +92,7 @@ class PassportDetailWorkerTests(unittest.TestCase):
         self.assertLessEqual(FakePassportClient.max_active, 10)
         self.assertGreaterEqual(FakePassportClient.max_active, 5)
         self.assertTrue(all(size <= 20 for size in self.batch_sizes))
+        self.assertEqual(self.reconcile_links_calls, 1)
         self.assertLess(elapsed, (len(internal_ids) * FakePassportClient.delay) / 5)
 
     def test_cancel_stops_scheduling_new_passports(self):
