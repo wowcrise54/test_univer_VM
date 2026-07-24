@@ -1,13 +1,47 @@
-test.sql
-test.sql
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Node.js / Vite
 node_modules/
 .vite/
+dist/
+
+# Test and browser artifacts
+coverage/
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Generated application output
 output/logs/
 output/diagnostics/
 output/coverage-*/
 output/coverage-*.json
 output/playwright/
-coverage/
-.coverage
+
+# Local tool artifacts
+.superdesign/tmp/
+
+# Logs and scratch files
+*.log
+test.sql
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
