@@ -2592,6 +2592,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                       <FreshnessBadge
                         value={row.last_seen}
                         source="PostgreSQL"
+                        freshForHours={14 * 24}
                         staleAfterHours={14 * 24}
                       />
                     </td>
@@ -6722,7 +6723,12 @@ function Severity({ value }) {
   );
 }
 
-function FreshnessBadge({ value, source, staleAfterHours = 7 * 24 }) {
+function FreshnessBadge({
+  value,
+  source,
+  freshForHours = 24,
+  staleAfterHours = 7 * 24,
+}) {
   const timestamp = value ? new Date(value).getTime() : Number.NaN;
   const ageHours = Number.isFinite(timestamp)
     ? Math.max(0, (Date.now() - timestamp) / 3600000)
@@ -6730,7 +6736,7 @@ function FreshnessBadge({ value, source, staleAfterHours = 7 * 24 }) {
   const state =
     ageHours == null
       ? "unknown"
-      : ageHours <= 24
+      : ageHours <= freshForHours
         ? "fresh"
         : ageHours <= staleAfterHours
           ? "aging"
@@ -6765,6 +6771,7 @@ export {
   VulnerabilityPassportsPanel,
   PassportCard,
   PassportModal,
+  FreshnessBadge,
   buildAssetPropertyRows,
   formatAssetCell,
 };

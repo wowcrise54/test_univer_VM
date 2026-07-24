@@ -7,6 +7,7 @@ import { OperationsPage } from "../pages/OperationsPage.jsx";
 import {
   AssetCard,
   AssetCardsPanel,
+  FreshnessBadge,
   buildAssetPropertyRows,
   formatAssetCell,
 } from "../panels.jsx";
@@ -21,6 +22,22 @@ describe("reliability UI", () => {
   beforeEach(() => {
     api.mockReset();
     api.mockResolvedValue({ rows: [] });
+  });
+
+  it("keeps a two-day-old asset card fresh with a fourteen-day window", () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    render(
+      <FreshnessBadge
+        value={twoDaysAgo}
+        source="PostgreSQL"
+        freshForHours={14 * 24}
+        staleAfterHours={14 * 24}
+      />,
+    );
+
+    expect(screen.getByText("PostgreSQL").closest(".freshness")).toHaveClass(
+      "freshness--fresh",
+    );
   });
 
   it("normalizes a network failure into an operator-facing error", () => {

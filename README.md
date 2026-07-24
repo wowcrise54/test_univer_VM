@@ -36,7 +36,6 @@ SLA по умолчанию: Critical — 7, High — 30, Medium — 90, Low —
 - `GET /api/remediation/cases`, `GET /api/remediation/cases/{id}` — очередь и карточка кейса;
 - `PATCH /api/remediation/cases/{id}`, `POST /api/remediation/cases/bulk-update` — единичные и массовые изменения;
 - `GET /api/remediation/summary`, `GET|PUT /api/remediation/policy` — KPI и SLA;
-- `GET /api/coverage/summary`, `GET /api/coverage/assets` — показатели и список покрытия.
 
 ## Архитектура и проверки качества
 

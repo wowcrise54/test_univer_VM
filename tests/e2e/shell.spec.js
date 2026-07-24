@@ -220,8 +220,6 @@ function defaultApiResponse(path) {
   if (path === "/api/remediation/cases") return { rows: [], total: 0 };
   if (path === "/api/remediation/summary") return { open: 0, overdue: 0, near_due: 0, risk_accepted: 0, resolved_30d: 0 };
   if (path === "/api/remediation/policy") return { critical_days: 7, high_days: 30, medium_days: 90, low_days: 180, near_due_days: 7 };
-  if (path === "/api/coverage/summary") return { total_assets: 0, healthy_assets: 0, coverage_percent: 100, missing_card: 0, stale: 0, truncated: 0, last_refresh_failed: 0, stale_days: 7 };
-  if (path === "/api/coverage/assets") return { rows: [], total: 0, stale_days: 7 };
   if (path === "/api/notifications") return { rows: [], unread: 0 };
   if (path === "/api/asset-cards/build-jobs/active") return { job: null };
   if (path === "/api/vulnerability-passports/detail-jobs/active") {
@@ -337,8 +335,6 @@ test("remediation lifecycle reaches scan-confirmed resolution", async ({ page })
       assignee = payload.assignee;
       await route.fulfill({ json: remediationCase() });
     },
-    "/api/coverage/summary": (route) => route.fulfill({ json: { total_assets: 1, healthy_assets: 0, coverage_percent: 0, missing_card: 0, stale: 1, truncated: 0, last_refresh_failed: 0, stale_days: 7 } }),
-    "/api/coverage/assets": (route) => route.fulfill({ json: { rows: [{ asset_id: "asset-e2e-1", display_name: "server-e2e", stale: true, missing_card: false, truncated: false, last_refresh_failed: false }], total: 1 } }),
     "POST /api/asset-cards/build-jobs": async (route) => {
       caseStatus = "resolved";
       await route.fulfill({ status: 202, json: { job: { job_id: "job-e2e-1", status: "queued" } } });

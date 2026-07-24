@@ -1,11 +1,9 @@
-.remediation-page,
-.coverage-page {
+.remediation-page {
   display: grid;
   gap: 20px;
 }
 
-.remediation-metrics,
-.coverage-page .metric-grid {
+.remediation-metrics {
   grid-template-columns: repeat(6, minmax(120px, 1fr));
 }
 
@@ -36,8 +34,7 @@
   gap: 7px;
 }
 
-.remediation-page td small,
-.coverage-page td small {
+.remediation-page td small {
   display: block;
   margin-top: 4px;
   color: var(--text-muted);
@@ -123,33 +120,13 @@
   margin: 16px 0;
 }
 
-.issue-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.issue-list span {
-  padding: 3px 8px;
-  border-radius: 999px;
-  color: var(--danger, #c63d4f);
-  background: color-mix(in srgb, var(--danger, #c63d4f) 10%, transparent);
-}
-
-.issue-list .issue-ok {
-  color: var(--success, #16845b);
-  background: color-mix(in srgb, var(--success, #16845b) 10%, transparent);
-}
-
 @media (max-width: 1100px) {
   .remediation-metrics,
-  .coverage-page .metric-grid,
   .policy-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
 }
 
 @media (max-width: 700px) {
   .remediation-metrics,
-  .coverage-page .metric-grid,
   .policy-grid,
   .remediation-detail .form-grid { grid-template-columns: 1fr; }
   .remediation-detail .span-2 { grid-column: auto; }

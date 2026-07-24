@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client.js";
-import { CoveragePage } from "../pages/CoveragePage.jsx";
 import { RemediationPage } from "../pages/RemediationPage.jsx";
 
 vi.mock("../api/client.js", () => ({ api: vi.fn(), createIdempotencyKey: () => "test-key" }));
@@ -24,17 +23,5 @@ describe("RemediationPage", () => {
     expect(screen.getAllByText("Просрочено")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name:"CVE-2026-1" }));
     await waitFor(() => expect(screen.getByLabelText("Ответственный")).toBeInTheDocument());
-  });
-});
-
-describe("CoveragePage", () => {
-  it("shows stale and truncated assets", async () => {
-    api.mockImplementation((path) => path === "/api/coverage/summary"
-      ? Promise.resolve({ coverage_percent:50, total_assets:2, missing_card:0, stale:1, truncated:1, last_refresh_failed:0, stale_days:7 })
-      : Promise.resolve({ rows:[{ asset_id:"asset-1", display_name:"server-1", stale:true, truncated:true, missing_card:false, last_refresh_failed:false }] }));
-    render(<CoveragePage showAlert={vi.fn()} onNavigate={vi.fn()} />);
-    expect(await screen.findByText("server-1")).toBeInTheDocument();
-    expect(screen.getByText("Устарела")).toBeInTheDocument();
-    expect(screen.getByText("Данные усечены")).toBeInTheDocument();
   });
 });
