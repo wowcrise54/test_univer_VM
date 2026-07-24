@@ -7655,8 +7655,8 @@ AUTOMATION_TEMPLATES = [
     },
     {
         "template_id": "stale-asset-card-refresh",
-        "name": "Обновление карточек старше недели",
-        "description": "Параллельно обновляет карточки, у которых дата «Обновлено» старше порога свежести (по умолчанию 7 дней).",
+        "name": "Обновление устаревших карточек",
+        "description": "Параллельно обновляет карточки, у которых дата «Обновлено» старше настроенного порога свежести (по умолчанию 14 дней).",
         "steps": [{"step_id": "stale-asset-cards", "type": "asset_card_build", "config": {"selection": "stale", "parallelism": 10, "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
     },
     {

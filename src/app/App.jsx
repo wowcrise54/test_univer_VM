@@ -56,7 +56,13 @@ function AppShell({ navigate, path, route, auth }) {
         currentUser={auth.user}
       />
       <main className="workspace">
-        <Topbar session={appData.session} route={route} onNavigate={navigate} currentUser={auth.user} onLogout={auth.logout} />
+        <Topbar
+          session={appData.session}
+          route={route}
+          onNavigate={navigate}
+          currentUser={auth.user}
+          onLogout={auth.logout}
+        />
         <WorkflowRail activeRouteId={route?.id} onNavigate={navigate} />
         <SystemBanner
           status={appData.systemStatus}
@@ -65,7 +71,12 @@ function AppShell({ navigate, path, route, auth }) {
           onNavigate={navigate}
         />
         <AlertStack alerts={appData.alerts} />
-        <ActivePage routeId={route?.id} onNavigate={navigate} currentUser={auth.user} {...appData} />
+        <ActivePage
+          routeId={route?.id}
+          onNavigate={navigate}
+          currentUser={auth.user}
+          {...appData}
+        />
       </main>
     </div>
   );
@@ -73,10 +84,19 @@ function AppShell({ navigate, path, route, auth }) {
 
 function ActivePage({ routeId, ...props }) {
   if (routeId === "vm") {
-    return <VmManagementPage session={props.session} currentUser={props.currentUser} showAlert={props.showAlert} onNavigate={props.onNavigate} />;
+    return (
+      <VmManagementPage
+        session={props.session}
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
   }
   if (routeId === "users") {
-    return <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />;
+    return (
+      <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />
+    );
   }
   if (routeId === "connection") {
     return (
@@ -137,10 +157,20 @@ function ActivePage({ routeId, ...props }) {
     return <AutomationsPage showAlert={props.showAlert} />;
   }
   if (routeId === "vulnerabilities") {
-    return <VulnerabilitiesPage />;
+    return (
+      <VulnerabilitiesPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
   }
   if (routeId === "remediation") {
-    return <RemediationPage showAlert={props.showAlert} onNavigate={props.onNavigate} />;
+    return (
+      <RemediationPage
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
   }
   if (routeId === "export") {
     return (

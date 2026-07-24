@@ -72,6 +72,33 @@ class RemediationService:
         self.repository.ensure_daily_digest(webhook_enabled=self.webhook_enabled, summary=result)
         return result
 
+    def resolution_stats(self, *, days: int, recent_limit: int = 10) -> dict[str, Any]:
+        return self.repository.resolution_stats(days=days, recent_limit=recent_limit)
+
+    def start_for_finding(
+        self,
+        *,
+        asset_id: str,
+        vulnerability_selector: str,
+        assignee: str | None = None,
+        due_at: datetime | None = None,
+        comment: str | None = None,
+        resume_exception: bool = False,
+    ) -> dict[str, Any]:
+        clean_asset_id = asset_id.strip()
+        clean_selector = vulnerability_selector.strip()
+        if not clean_asset_id or not clean_selector:
+            raise ValueError("Asset and vulnerability selector are required.")
+
+        return self.repository.start_for_finding(
+            asset_id=clean_asset_id,
+            vulnerability_key=clean_selector,
+            assignee=assignee,
+            due_at=due_at,
+            comment=comment or "Задача запущена из вкладки «Уязвимости».",
+            resume_exception=resume_exception,
+        )
+
     def policy(self) -> dict[str, Any]:
         return self.repository.policy()
 

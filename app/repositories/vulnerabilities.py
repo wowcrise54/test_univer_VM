@@ -293,6 +293,17 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
 
 def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
     cvss_score = db.decimal_to_number(row.get("cvss_score"))
+    remediation = None
+    if row.get("remediation_case_id"):
+        remediation = {
+            "case_id": row.get("remediation_case_id"),
+            "version": int(row.get("remediation_version") or 0),
+            "status": row.get("remediation_status"),
+            "assignee": row.get("remediation_assignee"),
+            "due_at": row.get("remediation_due_at"),
+            "resolved_at": row.get("remediation_resolved_at"),
+            "overdue": bool(row.get("remediation_overdue")),
+        }
     return {
         "asset_id": row.get("asset_id"),
         "display_name": row.get("display_name"),
@@ -311,6 +322,7 @@ def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
         "objects": list(row.get("objects") or []),
         "sources": list(row.get("sources") or []),
         "last_seen": row.get("last_seen"),
+        "remediation": remediation,
     }
 
 
@@ -923,11 +935,26 @@ class VulnerabilityAnalyticsRepository:
                 cte
                 + aggregate
                 + f"""
-                SELECT * FROM aggregated_hosts
+                SELECT
+                    aggregated_hosts.*,
+                    remediation.case_id AS remediation_case_id,
+                    remediation.version AS remediation_version,
+                    remediation.status AS remediation_status,
+                    remediation.assignee AS remediation_assignee,
+                    remediation.due_at AS remediation_due_at,
+                    remediation.resolved_at AS remediation_resolved_at,
+                    (
+                        remediation.status IN ('open', 'in_progress')
+                        AND remediation.due_at < NOW()
+                    ) AS remediation_overdue
+                FROM aggregated_hosts
+                LEFT JOIN remediation_cases AS remediation
+                    ON remediation.asset_id = aggregated_hosts.asset_id
+                   AND remediation.vulnerability_key = %s
                 ORDER BY {expression} {direction} NULLS LAST, asset_id ASC
                 LIMIT %s OFFSET %s
                 """,
-                [*params, limit, offset],
+                [*params, selector, limit, offset],
             ).fetchall()
         return {
             "selection": _decode_vulnerability(dict(selection_row)) if selection_row else None,

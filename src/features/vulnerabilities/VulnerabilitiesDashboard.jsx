@@ -16,6 +16,7 @@ const DEFAULT_VULNERABILITY_SORT = {
 };
 const DEFAULT_HOST_SORT = { key: "severity", direction: "asc" };
 const TREND_PERIODS = [7, 30, 90];
+const RESOLUTION_PERIODS = [7, 30, 90];
 const TREND_METRICS = [
   { key: "affected_hosts", label: "Затронутые хосты" },
   { key: "findings", label: "Findings" },
@@ -43,7 +44,17 @@ const SOURCE_LABELS = {
   docker: "Docker-контейнеры",
 };
 
-export function VulnerabilitiesDashboard() {
+export function VulnerabilitiesDashboard({
+  currentUser,
+  showAlert = () => {},
+}) {
+  const permissions = new Set(currentUser?.permissions || []);
+  const canReadRemediation = permissions.has("remediation.read");
+  const canManageRemediation =
+    permissions.has("assets.read") &&
+    canReadRemediation &&
+    permissions.has("remediation.manage");
+  const [workspace, setWorkspace] = useState("current");
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [trendDays, setTrendDays] = useState(30);
@@ -58,19 +69,29 @@ export function VulnerabilitiesDashboard() {
   const [passportDetail, setPassportDetail] = useState(null);
   const [passportLoading, setPassportLoading] = useState(false);
   const [passportError, setPassportError] = useState(null);
+  const [hostFinding, setHostFinding] = useState(null);
+  const [remediationBusyAssetId, setRemediationBusyAssetId] = useState(null);
+  const [resolutionDays, setResolutionDays] = useState(30);
   const hostHeadingRef = useRef(null);
   const drilldownTriggerRef = useRef(null);
   const restoreDrilldownFocusRef = useRef(false);
-  const { trendsQuery, summaryQuery, vulnerabilitiesQuery, hostsQuery } =
-    useVulnerabilityDashboard({
-      filters,
-      trendDays,
-      vulnerabilityOffset,
-      vulnerabilitySort,
-      selectedSelector: selected?.selector || "",
-      hostOffset,
-      hostSort,
-    });
+  const {
+    trendsQuery,
+    summaryQuery,
+    vulnerabilitiesQuery,
+    hostsQuery,
+    resolutionQuery,
+  } = useVulnerabilityDashboard({
+    filters,
+    trendDays,
+    vulnerabilityOffset,
+    vulnerabilitySort,
+    selectedSelector: selected?.selector || "",
+    hostOffset,
+    hostSort,
+    resolutionDays,
+    resolutionEnabled: workspace === "resolved",
+  });
 
   useEffect(() => {
     if (selected?.selector) hostHeadingRef.current?.focus();
@@ -81,6 +102,12 @@ export function VulnerabilitiesDashboard() {
     restoreDrilldownFocusRef.current = false;
     drilldownTriggerRef.current?.focus();
   }, [selected]);
+
+  useEffect(() => {
+    if (!canReadRemediation && workspace === "resolved") {
+      setWorkspace("current");
+    }
+  }, [canReadRemediation, workspace]);
 
   const resetResultState = () => {
     setVulnerabilityOffset(0);
@@ -127,6 +154,10 @@ export function VulnerabilitiesDashboard() {
   };
 
   const refresh = () => {
+    if (workspace === "resolved") {
+      resolutionQuery.refetch();
+      return;
+    }
     trendsQuery.refetch();
     summaryQuery.refetch();
     vulnerabilitiesQuery.refetch();
@@ -166,6 +197,49 @@ export function VulnerabilitiesDashboard() {
     setPassportError(null);
   };
 
+  const startRemediation = async (row) => {
+    if (!row?.asset_id || !selected?.selector) return;
+    const resumesException = ["risk_accepted", "false_positive"].includes(
+      row.remediation?.status,
+    );
+    if (
+      resumesException &&
+      !window.confirm(
+        "Для этой находки действует исключение. Снять его и возобновить устранение?",
+      )
+    ) {
+      return;
+    }
+    setRemediationBusyAssetId(row.asset_id);
+    try {
+      const remediation = await api("/api/remediation/cases/start", {
+        method: "POST",
+        body: JSON.stringify({
+          asset_id: row.asset_id,
+          vulnerability_selector: selected.selector,
+          comment: "Задача запущена из вкладки «Уязвимости».",
+          resume_exception: resumesException,
+        }),
+      });
+      const nextRow = { ...row, remediation };
+      setHostFinding((current) =>
+        current?.asset_id === row.asset_id ? nextRow : current,
+      );
+      showAlert(
+        `Задача на устранение запущена для ${hostLabel(row)}.`,
+        "success",
+      );
+      await hostsQuery.refetch();
+    } catch (error) {
+      showAlert(
+        error.operatorMessage || error.message || String(error),
+        "error",
+      );
+    } finally {
+      setRemediationBusyAssetId(null);
+    }
+  };
+
   const summary = summaryQuery.data || {};
   const vulnerabilityRows = resultRows(vulnerabilitiesQuery.data);
   const vulnerabilityTotal = resultTotal(
@@ -178,7 +252,8 @@ export function VulnerabilitiesDashboard() {
     trendsQuery.isFetching ||
     summaryQuery.isFetching ||
     vulnerabilitiesQuery.isFetching ||
-    hostsQuery.isFetching;
+    hostsQuery.isFetching ||
+    resolutionQuery.isFetching;
 
   return (
     <Panel
@@ -193,117 +268,471 @@ export function VulnerabilitiesDashboard() {
         </Button>
       }
     >
-      <VulnerabilityFilters
-        filters={draftFilters}
-        onChange={setDraftFilters}
-        onSubmit={submitFilters}
-        onReset={() => applyFilters(EMPTY_FILTERS)}
-        busy={refreshing}
+      <VulnerabilityWorkspaceTabs
+        value={workspace}
+        canReadRemediation={canReadRemediation}
+        onChange={(value) => {
+          setWorkspace(value);
+          setHostFinding(null);
+        }}
       />
 
-      <MetricGlossary />
-
-      {summaryQuery.isPending ? (
-        <LoadingState label="Загружаю сводку по уязвимостям…" />
-      ) : summaryQuery.isError ? (
-        <QueryError
-          title="Не удалось загрузить сводку"
-          error={summaryQuery.error}
-          retryLabel="Повторить загрузку сводки"
-          onRetry={summaryQuery.refetch}
+      {workspace === "resolved" ? (
+        <ResolutionStats
+          query={resolutionQuery}
+          periodDays={resolutionDays}
+          onPeriodChange={setResolutionDays}
         />
       ) : (
         <>
-          <DashboardContext summary={summary} />
-          {summary.coverage?.complete === false ? (
-            <div className="vulnerability-coverage-warning" role="note">
-              <strong>Показатели неполные.</strong>
-              <span>
-                Найдены усечённые группы: значения ниже являются нижней оценкой
-                текущего риска.
-              </span>
-            </div>
+          <VulnerabilityFilters
+            filters={draftFilters}
+            onChange={setDraftFilters}
+            onSubmit={submitFilters}
+            onReset={() => applyFilters(EMPTY_FILTERS)}
+            busy={refreshing}
+          />
+
+          <MetricGlossary />
+
+          {summaryQuery.isPending ? (
+            <LoadingState label="Загружаю сводку по уязвимостям…" />
+          ) : summaryQuery.isError ? (
+            <QueryError
+              title="Не удалось загрузить сводку"
+              error={summaryQuery.error}
+              retryLabel="Повторить загрузку сводки"
+              onRetry={summaryQuery.refetch}
+            />
+          ) : (
+            <>
+              <DashboardContext summary={summary} />
+              {summary.coverage?.complete === false ? (
+                <div className="vulnerability-coverage-warning" role="note">
+                  <strong>Показатели неполные.</strong>
+                  <span>
+                    Найдены усечённые группы: значения ниже являются нижней
+                    оценкой текущего риска.
+                  </span>
+                </div>
+              ) : null}
+              <KpiGrid totals={summary.totals || {}} />
+              <div className="vulnerability-insights-grid">
+                <SeverityBreakdown
+                  rows={summary.by_severity || []}
+                  selectedSeverity={filters.severity}
+                  onSelect={(severity) =>
+                    applyFilters({
+                      ...filters,
+                      severity: filterSeverity(severity),
+                    })
+                  }
+                />
+                <TopVulnerabilities
+                  rows={summary.top_vulnerabilities || []}
+                  selectedSelector={selected?.selector}
+                  onSelect={selectVulnerability}
+                />
+                <TopHosts rows={summary.top_hosts || []} />
+              </div>
+            </>
+          )}
+
+          <VulnerabilityTable
+            rows={vulnerabilityRows}
+            total={vulnerabilityTotal}
+            offset={vulnerabilityOffset}
+            sort={vulnerabilitySort}
+            selectedSelector={selected?.selector}
+            pending={vulnerabilitiesQuery.isPending}
+            fetching={vulnerabilitiesQuery.isFetching}
+            error={vulnerabilitiesQuery.error}
+            onRetry={vulnerabilitiesQuery.refetch}
+            onSort={changeVulnerabilitySort}
+            onSelect={selectVulnerability}
+            onOpenPassport={openPassport}
+            onPage={setVulnerabilityOffset}
+          />
+
+          {selected?.selector ? (
+            <HostDrilldown
+              selected={selected}
+              rows={hostRows}
+              total={hostTotal}
+              offset={hostOffset}
+              sort={hostSort}
+              pending={hostsQuery.isPending}
+              fetching={hostsQuery.isFetching}
+              error={hostsQuery.error}
+              headingRef={hostHeadingRef}
+              canReadRemediation={canReadRemediation}
+              canManageRemediation={canManageRemediation}
+              remediationBusyAssetId={remediationBusyAssetId}
+              onRetry={hostsQuery.refetch}
+              onSort={changeHostSort}
+              onPage={setHostOffset}
+              onClose={closeDrilldown}
+              onOpenPassport={openPassport}
+              onOpenFinding={setHostFinding}
+              onStartRemediation={startRemediation}
+            />
           ) : null}
-          <KpiGrid totals={summary.totals || {}} />
-          <div className="vulnerability-insights-grid">
-            <SeverityBreakdown
-              rows={summary.by_severity || []}
-              selectedSeverity={filters.severity}
-              onSelect={(severity) =>
-                applyFilters({ ...filters, severity: filterSeverity(severity) })
-              }
+          <RiskTrendSection
+            query={trendsQuery}
+            periodDays={trendDays}
+            onPeriodChange={setTrendDays}
+          />
+          {hostFinding ? (
+            <HostFindingModal
+              selected={selected}
+              row={hostFinding}
+              canReadRemediation={canReadRemediation}
+              canManageRemediation={canManageRemediation}
+              busy={remediationBusyAssetId === hostFinding.asset_id}
+              onStartRemediation={startRemediation}
+              onClose={() => setHostFinding(null)}
             />
-            <TopVulnerabilities
-              rows={summary.top_vulnerabilities || []}
-              selectedSelector={selected?.selector}
-              onSelect={selectVulnerability}
-            />
-            <TopHosts rows={summary.top_hosts || []} />
-          </div>
+          ) : null}
+          {passport ? (
+            <PassportModal
+              title="Паспорт уязвимости"
+              className="asset-modal"
+              overlayClassName="asset-modal-overlay"
+              closeLabel="Назад"
+              onClose={closePassport}
+            >
+              {passportError ? (
+                <div className="passport-load-error" role="alert">
+                  <strong>Не удалось открыть паспорт.</strong>
+                  <span>{passportError.message}</span>
+                </div>
+              ) : null}
+              <PassportCard
+                row={passport}
+                detail={passportDetail}
+                loading={passportLoading}
+              />
+            </PassportModal>
+          ) : null}
         </>
       )}
-
-      <VulnerabilityTable
-        rows={vulnerabilityRows}
-        total={vulnerabilityTotal}
-        offset={vulnerabilityOffset}
-        sort={vulnerabilitySort}
-        selectedSelector={selected?.selector}
-        pending={vulnerabilitiesQuery.isPending}
-        fetching={vulnerabilitiesQuery.isFetching}
-        error={vulnerabilitiesQuery.error}
-        onRetry={vulnerabilitiesQuery.refetch}
-        onSort={changeVulnerabilitySort}
-        onSelect={selectVulnerability}
-        onOpenPassport={openPassport}
-        onPage={setVulnerabilityOffset}
-      />
-
-      {selected?.selector ? (
-        <HostDrilldown
-          selected={selected}
-          rows={hostRows}
-          total={hostTotal}
-          offset={hostOffset}
-          sort={hostSort}
-          pending={hostsQuery.isPending}
-          fetching={hostsQuery.isFetching}
-          error={hostsQuery.error}
-          headingRef={hostHeadingRef}
-          onRetry={hostsQuery.refetch}
-          onSort={changeHostSort}
-          onPage={setHostOffset}
-          onClose={closeDrilldown}
-          onOpenPassport={openPassport}
-        />
-      ) : null}
-      <RiskTrendSection
-        query={trendsQuery}
-        periodDays={trendDays}
-        onPeriodChange={setTrendDays}
-      />
-      {passport ? (
-        <PassportModal
-          title="Паспорт уязвимости"
-          className="asset-modal"
-          overlayClassName="asset-modal-overlay"
-          closeLabel="Назад"
-          onClose={closePassport}
-        >
-          {passportError ? (
-            <div className="passport-load-error" role="alert">
-              <strong>Не удалось открыть паспорт.</strong>
-              <span>{passportError.message}</span>
-            </div>
-          ) : null}
-          <PassportCard
-            row={passport}
-            detail={passportDetail}
-            loading={passportLoading}
-          />
-        </PassportModal>
-      ) : null}
     </Panel>
+  );
+}
+
+function VulnerabilityWorkspaceTabs({ value, canReadRemediation, onChange }) {
+  return (
+    <nav
+      className="vulnerability-workspace-tabs"
+      aria-label="Разделы уязвимостей"
+    >
+      <button
+        type="button"
+        className={value === "current" ? "is-active" : ""}
+        aria-current={value === "current" ? "page" : undefined}
+        onClick={() => onChange("current")}
+      >
+        Текущие уязвимости
+      </button>
+      {canReadRemediation ? (
+        <button
+          type="button"
+          className={value === "resolved" ? "is-active" : ""}
+          aria-current={value === "resolved" ? "page" : undefined}
+          onClick={() => onChange("resolved")}
+        >
+          Статистика устранений
+        </button>
+      ) : null}
+    </nav>
+  );
+}
+
+function ResolutionStats({ query, periodDays, onPeriodChange }) {
+  const data = query.data || {};
+  const severityRows = data.by_severity || [];
+  const trend = data.trend || [];
+  const recent = data.recent || [];
+  const maximumSeverity = Math.max(
+    0,
+    ...severityRows.map((row) =>
+      Number(row.confirmed_resolutions ?? row.resolved_cases ?? 0),
+    ),
+  );
+  const maximumTrend = Math.max(
+    0,
+    ...trend.map((row) =>
+      Number(row.confirmed_resolutions ?? row.resolved_cases ?? 0),
+    ),
+  );
+
+  return (
+    <section
+      className="resolution-stats"
+      aria-labelledby="resolution-stats-title"
+    >
+      <header className="resolution-stats__header">
+        <div>
+          <span className="vulnerability-section-heading__eyebrow">
+            Отдельный срез
+          </span>
+          <h3 id="resolution-stats-title">Подтверждённые устранения</h3>
+          <p>
+            Устранение учитывается только после полного свежего сканирования, в
+            котором находка больше не обнаружена.
+          </p>
+        </div>
+        <div
+          className="risk-trend__periods"
+          role="group"
+          aria-label="Период статистики устранений"
+        >
+          {RESOLUTION_PERIODS.map((days) => (
+            <button
+              type="button"
+              className={periodDays === days ? "is-active" : ""}
+              aria-pressed={periodDays === days}
+              onClick={() => onPeriodChange(days)}
+              key={days}
+            >
+              {days} дней
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {query.isPending ? (
+        <LoadingState label="Загружаю статистику устранений…" />
+      ) : query.isError ? (
+        <QueryError
+          title="Не удалось загрузить статистику устранений"
+          error={query.error}
+          retryLabel="Повторить загрузку статистики"
+          onRetry={query.refetch}
+        />
+      ) : (
+        <>
+          <div
+            className="resolution-kpi-grid"
+            aria-label="Показатели устранения"
+          >
+            <ResolutionMetric
+              label="Подтверждений"
+              value={data.confirmed_resolutions ?? data.resolved_cases}
+              note={`за ${formatCount(data.period_days || periodDays)} дней`}
+            />
+            <ResolutionMetric
+              label="Уязвимостей"
+              value={data.resolved_vulnerabilities}
+              note="уникальных типов"
+            />
+            <ResolutionMetric
+              label="Хостов"
+              value={data.resolved_hosts}
+              note="с подтверждённым устранением"
+            />
+            <ResolutionMetric
+              label="Остаются устранёнными"
+              value={data.currently_resolved ?? data.resolved_cases}
+              note="из подтверждений выбранного периода"
+            />
+            <ResolutionMetric
+              label="Средний срок"
+              value={
+                data.mean_time_to_resolve_days == null
+                  ? "—"
+                  : `${formatScore(data.mean_time_to_resolve_days)} дн.`
+              }
+              note="от первого обнаружения"
+            />
+          </div>
+
+          <div className="resolution-stats__grid">
+            <article className="resolution-card">
+              <header>
+                <h4>По критичности</h4>
+                <p>Количество подтверждений за выбранный период</p>
+              </header>
+              {severityRows.length ? (
+                <div className="resolution-severity-list">
+                  {severityRows.map((row) => {
+                    const value = Number(
+                      row.confirmed_resolutions ?? row.resolved_cases ?? 0,
+                    );
+                    return (
+                      <div
+                        className="resolution-severity-row"
+                        key={row.severity}
+                      >
+                        <div>
+                          <SeverityBadge value={row.severity} />
+                          <strong>{formatCount(value)}</strong>
+                        </div>
+                        <span aria-hidden="true">
+                          <i
+                            style={{
+                              "--bar-width": `${barWidth(value, maximumSeverity)}%`,
+                            }}
+                          />
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyState>За этот период устранений нет.</EmptyState>
+              )}
+            </article>
+
+            <article className="resolution-card">
+              <header>
+                <h4>Динамика подтверждений</h4>
+                <p>По дням завершившихся проверочных сканирований</p>
+              </header>
+              {trend.length ? (
+                <div
+                  className="resolution-trend"
+                  role="list"
+                  aria-label="Динамика подтверждённых устранений по дням"
+                >
+                  {trend.map((row) => {
+                    const value =
+                      row.confirmed_resolutions ?? row.resolved_cases;
+                    return (
+                      <div
+                        className="resolution-trend__point"
+                        role="listitem"
+                        aria-label={`${formatTrendDate(
+                          row.bucket_start,
+                        )}: ${formatCount(value)} подтверждений`}
+                        key={row.bucket_start}
+                      >
+                        <span
+                          style={{
+                            "--bar-height": `${barWidth(value, maximumTrend)}%`,
+                          }}
+                          title={`${formatTrendDate(row.bucket_start)}: ${formatCount(
+                            value,
+                          )}`}
+                        >
+                          <i />
+                        </span>
+                        <strong>{formatCount(value)}</strong>
+                        <small>{formatTrendDate(row.bucket_start)}</small>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyState>Динамика за выбранный период пуста.</EmptyState>
+              )}
+            </article>
+          </div>
+
+          <section
+            className="resolution-recent"
+            aria-labelledby="resolution-recent-title"
+          >
+            <div className="vulnerability-section-heading">
+              <div>
+                <h3 id="resolution-recent-title">
+                  Последние подтверждения устранения
+                </h3>
+                <p>
+                  История сохраняется, даже если находка позднее появилась
+                  снова.
+                </p>
+              </div>
+            </div>
+            <div className="table-shell">
+              <table className="resolution-recent__table">
+                <thead>
+                  <tr>
+                    <th>Уязвимость</th>
+                    <th>Хост</th>
+                    <th>Критичность</th>
+                    <th>Подтверждено</th>
+                    <th>Текущий статус</th>
+                    <th>Задача</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.length ? (
+                    recent.map((row, index) => (
+                      <tr
+                        key={`${row.case_id}-${row.resolution_confirmed_at || index}`}
+                      >
+                        <td>
+                          <strong>
+                            {row.resolution_cve ||
+                              row.cve ||
+                              row.resolution_title ||
+                              row.title ||
+                              row.vulnerability_key}
+                          </strong>
+                          {(row.resolution_cve || row.cve) &&
+                          (row.resolution_title || row.title) ? (
+                            <small>{row.resolution_title || row.title}</small>
+                          ) : null}
+                        </td>
+                        <td>
+                          <strong>{hostLabel(row)}</strong>
+                          <small>
+                            {row.ip_address || row.fqdn || row.asset_id}
+                          </small>
+                        </td>
+                        <td>
+                          <SeverityBadge
+                            value={row.resolution_severity || row.severity}
+                          />
+                        </td>
+                        <td>
+                          {formatDate(
+                            row.resolution_confirmed_at || row.resolved_at,
+                          )}
+                        </td>
+                        <td>
+                          <RemediationStatus status={row.status} />
+                        </td>
+                        <td>
+                          <a
+                            className="button tiny"
+                            aria-label={`Открыть задачу ${row.resolution_cve || row.cve || row.title || row.case_id} на хосте ${hostLabel(row)}`}
+                            href={`/remediation?case=${encodeURIComponent(
+                              row.case_id,
+                            )}`}
+                          >
+                            Открыть
+                          </a>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="empty-cell">
+                        За выбранный период подтверждённых устранений нет.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ResolutionMetric({ label, value, note }) {
+  return (
+    <article className="resolution-metric">
+      <span>{label}</span>
+      <strong>
+        {typeof value === "number" ? formatCount(value) : (value ?? "—")}
+      </strong>
+      <small>{note}</small>
+    </article>
   );
 }
 
@@ -886,11 +1315,7 @@ function SeverityBreakdown({ rows, selectedSeverity, onSelect }) {
   );
 }
 
-function TopVulnerabilities({
-  rows,
-  selectedSelector,
-  onSelect,
-}) {
+function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
   const maximum = Math.max(
     0,
     ...rows.map((row) => Number(row.affected_hosts || 0)),
@@ -1110,9 +1535,7 @@ function VulnerabilityTable({
                         aria-pressed={row.selector === selectedSelector}
                         aria-label={`Показать хосты с уязвимостью ${label}`}
                         title="Показать затронутые хосты"
-                        onClick={(event) =>
-                          onSelect(row, event.currentTarget)
-                        }
+                        onClick={(event) => onSelect(row, event.currentTarget)}
                       >
                         {label}
                       </button>
@@ -1177,11 +1600,16 @@ function HostDrilldown({
   fetching,
   error,
   headingRef,
+  canReadRemediation,
+  canManageRemediation,
+  remediationBusyAssetId,
   onRetry,
   onSort,
   onPage,
   onClose,
   onOpenPassport,
+  onOpenFinding,
+  onStartRemediation,
 }) {
   const label = vulnerabilityLabel(selected);
   const hasPassport = Boolean(selected.passports?.[0]?.internal_id);
@@ -1203,7 +1631,10 @@ function HostDrilldown({
         </div>
         <div className="host-drilldown__actions">
           {hasPassport ? (
-            <Button variant="secondary" onClick={() => onOpenPassport(selected)}>
+            <Button
+              variant="secondary"
+              onClick={() => onOpenPassport(selected)}
+            >
               Открыть паспорт
             </Button>
           ) : null}
@@ -1283,12 +1714,13 @@ function HostDrilldown({
               >
                 Обновлено
               </SortableHeader>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={9} className="empty-cell">
+                <td colSpan={10} className="empty-cell">
                   Загружаю хосты…
                 </td>
               </tr>
@@ -1296,7 +1728,13 @@ function HostDrilldown({
               rows.map((row, index) => (
                 <tr key={`${row.asset_id || hostLabel(row)}-${index}`}>
                   <td>
-                    <strong>{hostLabel(row)}</strong>
+                    <button
+                      type="button"
+                      className="vulnerability-host-link"
+                      onClick={() => onOpenFinding(row)}
+                    >
+                      {hostLabel(row)}
+                    </button>
                     {row.asset_id ? <code>{row.asset_id}</code> : null}
                   </td>
                   <td>
@@ -1315,11 +1753,22 @@ function HostDrilldown({
                   <td>{formatList(row.objects)}</td>
                   <td>{formatSources(row.sources)}</td>
                   <td>{formatDate(row.last_seen)}</td>
+                  <td>
+                    <HostRemediationActions
+                      row={row}
+                      compact
+                      canRead={canReadRemediation}
+                      canManage={canManageRemediation}
+                      busy={remediationBusyAssetId === row.asset_id}
+                      onOpenFinding={() => onOpenFinding(row)}
+                      onStart={() => onStartRemediation(row)}
+                    />
+                  </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={9} className="empty-cell">
+                <td colSpan={10} className="empty-cell">
                   Для выбранной уязвимости хосты не найдены.
                 </td>
               </tr>
@@ -1340,6 +1789,193 @@ function HostDrilldown({
         onPage={onPage}
       />
     </section>
+  );
+}
+
+function HostFindingModal({
+  selected,
+  row,
+  canReadRemediation,
+  canManageRemediation,
+  busy,
+  onStartRemediation,
+  onClose,
+}) {
+  const remediation = row.remediation;
+  return (
+    <PassportModal
+      title="Уязвимость на хосте"
+      className="asset-modal host-finding-modal"
+      overlayClassName="asset-modal-overlay"
+      closeLabel="Закрыть"
+      onClose={onClose}
+    >
+      <article className="host-finding-card">
+        <header>
+          <div>
+            <span>Конкретная находка</span>
+            <h3>{vulnerabilityLabel(selected)}</h3>
+            <p>
+              {hostLabel(row)} ·{" "}
+              {row.ip_address || row.fqdn || "адрес не указан"}
+            </p>
+          </div>
+          <SeverityBadge value={row.severity || selected?.severity} />
+        </header>
+
+        <div className="host-finding-card__facts">
+          <div>
+            <span>Идентификатор</span>
+            <strong>
+              {selected?.cve || selected?.vulnerability_id || "—"}
+            </strong>
+          </div>
+          <div>
+            <span>CVSS</span>
+            <strong>{formatScore(row.max_cvss ?? row.cvss_score)}</strong>
+          </div>
+          <div>
+            <span>Findings на хосте</span>
+            <strong>{formatCount(row.finding_count)}</strong>
+          </div>
+          <div>
+            <span>Последнее обновление</span>
+            <strong>{formatDate(row.last_seen)}</strong>
+          </div>
+        </div>
+
+        <div className="host-finding-card__details">
+          <section>
+            <h4>Затронутые объекты</h4>
+            <p>{formatList(row.objects)}</p>
+          </section>
+          <section>
+            <h4>Источники</h4>
+            <p>{formatSources(row.sources)}</p>
+          </section>
+          <section>
+            <h4>Операционная система</h4>
+            <p>
+              {[row.os_name, row.os_version].filter(Boolean).join(" ") || "—"}
+            </p>
+          </section>
+        </div>
+
+        {canReadRemediation ? (
+          <section className="host-finding-card__remediation">
+            <div>
+              <span>Задача устранения</span>
+              <RemediationStatus status={remediation?.status} />
+            </div>
+            <dl>
+              <div>
+                <dt>Ответственный</dt>
+                <dd>{remediation?.assignee || "Не назначен"}</dd>
+              </div>
+              <div>
+                <dt>Срок</dt>
+                <dd>
+                  {formatDate(remediation?.due_at)}
+                  {remediation?.overdue ? " · просрочен" : ""}
+                </dd>
+              </div>
+            </dl>
+          </section>
+        ) : null}
+
+        <div className="host-finding-card__actions">
+          <a
+            className="button secondary"
+            href={`/asset-cards?asset=${encodeURIComponent(row.asset_id)}`}
+          >
+            Карточка хоста
+          </a>
+          {canReadRemediation && remediation?.case_id ? (
+            <a
+              className="button secondary"
+              href={`/remediation?case=${encodeURIComponent(
+                remediation.case_id,
+              )}`}
+            >
+              Открыть задачу
+            </a>
+          ) : null}
+          {canManageRemediation && remediation?.status !== "in_progress" ? (
+            <Button busy={busy} onClick={() => onStartRemediation(row)}>
+              {remediationStartLabel(remediation?.status)}
+            </Button>
+          ) : null}
+        </div>
+        {!canManageRemediation ? (
+          <small className="host-finding-card__permission">
+            Для запуска устранения требуется право remediation.manage.
+          </small>
+        ) : null}
+      </article>
+    </PassportModal>
+  );
+}
+
+function HostRemediationActions({
+  row,
+  compact = false,
+  canRead,
+  canManage,
+  busy,
+  onOpenFinding,
+  onStart,
+}) {
+  const remediation = row.remediation;
+  return (
+    <div
+      className={`host-remediation-actions ${
+        compact ? "host-remediation-actions--compact" : ""
+      }`}
+    >
+      {canRead ? <RemediationStatus status={remediation?.status} /> : null}
+      <Button
+        variant="tiny"
+        aria-label={`Открыть находку на хосте ${hostLabel(row)}`}
+        onClick={onOpenFinding}
+      >
+        Открыть находку
+      </Button>
+      {canManage && remediation?.status !== "in_progress" ? (
+        <Button
+          variant="secondary"
+          busy={busy}
+          aria-label={`${remediationStartLabel(
+            remediation?.status,
+          )} на хосте ${hostLabel(row)}`}
+          onClick={onStart}
+        >
+          {remediationStartLabel(remediation?.status)}
+        </Button>
+      ) : null}
+      {canRead && remediation?.case_id ? (
+        <a
+          className="button tiny"
+          aria-label={`Открыть задачу на хосте ${hostLabel(row)}`}
+          href={`/remediation?case=${encodeURIComponent(remediation.case_id)}`}
+        >
+          Задача
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function RemediationStatus({ status }) {
+  const normalized = status || "missing";
+  return (
+    <span
+      className={`remediation-status remediation-status--${normalized.replaceAll(
+        "_",
+        "-",
+      )}`}
+    >
+      {remediationStatusLabel(status)}
+    </span>
   );
 }
 
@@ -1476,6 +2112,28 @@ function hostLabel(row) {
     row?.asset_id ||
     "Хост без имени"
   );
+}
+
+function remediationStatusLabel(status) {
+  return (
+    {
+      open: "Открыта",
+      in_progress: "В работе",
+      risk_accepted: "Риск принят",
+      false_positive: "Ложное срабатывание",
+      resolved: "Устранена",
+      missing: "Не создана",
+    }[status || "missing"] || status
+  );
+}
+
+function remediationStartLabel(status) {
+  if (status === "open") return "Взять в работу";
+  if (["risk_accepted", "false_positive"].includes(status)) {
+    return "Возобновить устранение";
+  }
+  if (status === "resolved") return "Переоткрыть задачу";
+  return "Взять в устранение";
 }
 
 function formatScore(value) {

@@ -79,6 +79,13 @@ const HOST = {
   objects: ["kernel"],
   sources: ["os"],
   last_seen: "2026-07-11T08:00:00Z",
+  remediation: {
+    case_id: "case-1",
+    status: "open",
+    assignee: null,
+    due_at: "2026-07-18T08:00:00Z",
+    overdue: false,
+  },
 };
 
 const TRENDS = {
@@ -134,8 +141,41 @@ const TRENDS = {
   ],
 };
 
+const RESOLUTION_STATS = {
+  period_days: 30,
+  confirmed_resolutions: 7,
+  resolved_vulnerabilities: 4,
+  resolved_hosts: 5,
+  currently_resolved: 6,
+  mean_time_to_resolve_days: 2.5,
+  by_severity: [
+    { severity: "critical", confirmed_resolutions: 3 },
+    { severity: "high", confirmed_resolutions: 4 },
+  ],
+  trend: [
+    { bucket_start: "2026-07-10T00:00:00Z", resolved_cases: 2 },
+    { bucket_start: "2026-07-11T00:00:00Z", resolved_cases: 5 },
+  ],
+  recent: [
+    {
+      case_id: "case-resolved-1",
+      cve: "CVE-2026-2001",
+      title: "Исправленная уязвимость",
+      asset_id: "asset-2",
+      display_name: "server-02",
+      ip_address: "10.0.0.2",
+      severity: "critical",
+      status: "resolved",
+      resolution_confirmed_at: "2026-07-11T09:00:00Z",
+    },
+  ],
+};
+
 function responseFor(path, { total = 75, empty = false } = {}) {
   const url = new URL(path, "http://localhost");
+  if (url.pathname === "/api/remediation/resolution-stats") {
+    return RESOLUTION_STATS;
+  }
   if (url.pathname === "/api/vulnerabilities/trends") {
     return empty ? { ...TRENDS, rows: [] } : TRENDS;
   }
@@ -159,7 +199,11 @@ function responseFor(path, { total = 75, empty = false } = {}) {
   return {};
 }
 
-function renderDashboard() {
+function renderDashboard(
+  currentUser = {
+    permissions: ["assets.read", "remediation.read", "remediation.manage"],
+  },
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
@@ -167,7 +211,7 @@ function renderDashboard() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <VulnerabilitiesDashboard />
+      <VulnerabilitiesDashboard currentUser={currentUser} showAlert={vi.fn()} />
     </QueryClientProvider>,
   );
 }
@@ -185,8 +229,9 @@ describe("vulnerability dashboard", () => {
     expect(affectedHosts.closest("article")).toHaveTextContent("143");
     expect(screen.getByText("Карточки активов")).toBeInTheDocument();
     expect(screen.getByText("184 из 201 · 92%")).toBeInTheDocument();
-    expect(screen.getByText("Как читать показатели: уязвимости, findings и хосты"))
-      .toBeInTheDocument();
+    expect(
+      screen.getByText("Как читать показатели: уязвимости, findings и хосты"),
+    ).toBeInTheDocument();
 
     const selectors = await screen.findAllByRole("button", {
       name: "Показать хосты с уязвимостью Удалённое выполнение кода",
@@ -212,6 +257,132 @@ describe("vulnerability dashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     await waitFor(() => expect(selectors[0]).toHaveFocus());
+  });
+
+  it("opens a host finding and starts its remediation task", async () => {
+    let currentHost = HOST;
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/remediation/cases/start") {
+        currentHost = {
+          ...HOST,
+          remediation: {
+            ...HOST.remediation,
+            status: "in_progress",
+            assignee: "operator",
+          },
+        };
+        return Promise.resolve(currentHost.remediation);
+      }
+      if (url.pathname === "/api/vulnerabilities/hosts") {
+        return Promise.resolve({
+          rows: [currentHost],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    const selectors = await screen.findAllByRole("button", {
+      name: "Показать хосты с уязвимостью Удалённое выполнение кода",
+    });
+    fireEvent.click(selectors[0]);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Открыть находку на хосте server-01",
+      }),
+    );
+
+    const finding = await screen.findByRole("dialog");
+    expect(
+      within(finding).getByRole("heading", {
+        name: "Удалённое выполнение кода",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(finding).getByRole("button", { name: "Взять в работу" }),
+    );
+
+    await waitFor(() => {
+      const call = api.mock.calls.find(
+        ([path]) => path === "/api/remediation/cases/start",
+      );
+      expect(call).toBeDefined();
+      expect(call[1].method).toBe("POST");
+      expect(JSON.parse(call[1].body)).toEqual({
+        asset_id: HOST.asset_id,
+        vulnerability_selector: VULNERABILITY.selector,
+        comment: "Задача запущена из вкладки «Уязвимости».",
+        resume_exception: false,
+      });
+    });
+    expect(await within(finding).findByText("В работе")).toBeInTheDocument();
+  });
+
+  it("opens resolution statistics and renders its KPIs", async () => {
+    renderDashboard();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Статистика устранений" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Подтверждённые устранения",
+      }),
+    ).toBeInTheDocument();
+    const metrics = await screen.findByLabelText("Показатели устранения");
+    expect(
+      within(metrics).getByText("Подтверждений").closest("article"),
+    ).toHaveTextContent("7");
+    expect(
+      within(metrics).getByText("Уязвимостей").closest("article"),
+    ).toHaveTextContent("4");
+    expect(
+      within(metrics).getByText("Хостов").closest("article"),
+    ).toHaveTextContent("5");
+    expect(
+      within(metrics).getByText("Остаются устранёнными").closest("article"),
+    ).toHaveTextContent("6");
+    expect(await screen.findByText("CVE-2026-2001")).toBeInTheDocument();
+    expect(
+      api.mock.calls.some(([path]) => {
+        const url = new URL(path, "http://localhost");
+        return (
+          url.pathname === "/api/remediation/resolution-stats" &&
+          url.searchParams.get("days") === "30" &&
+          url.searchParams.get("recent_limit") === "20"
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it("hides remediation data and actions without remediation permissions", async () => {
+    renderDashboard({ permissions: ["assets.read"] });
+
+    expect(
+      screen.queryByRole("button", { name: "Статистика устранений" }),
+    ).not.toBeInTheDocument();
+    const selectors = await screen.findAllByRole("button", {
+      name: "Показать хосты с уязвимостью Удалённое выполнение кода",
+    });
+    fireEvent.click(selectors[0]);
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Открыть находку на хосте server-01",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Открыта")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Взять в работу/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Открыть задачу/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens a mapped vulnerability passport from the vulnerability table", async () => {
@@ -257,7 +428,9 @@ describe("vulnerability dashboard", () => {
         name: `Хосты с уязвимостью «${VULNERABILITY.name}»`,
       }),
     ).toBeInTheDocument();
-    expect(await screen.findByText("server-01.example.test")).toBeInTheDocument();
+    expect(
+      await screen.findByText("server-01.example.test"),
+    ).toBeInTheDocument();
 
     const passportButtons = await screen.findAllByRole("button", {
       name: `Открыть паспорт уязвимости ${VULNERABILITY.name}`,

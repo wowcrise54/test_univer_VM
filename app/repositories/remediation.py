@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import db
@@ -30,6 +31,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "created_at",
         "updated_at",
         "exception_expires_at",
+        "resolution_confirmed_at",
     ):
         result[key] = _iso(result.get(key))
     if result.get("cvss_score") is not None:
@@ -200,6 +202,259 @@ class RemediationRepository:
         ]
         return result
 
+    def start_for_finding(
+        self,
+        *,
+        asset_id: str,
+        vulnerability_key: str,
+        assignee: str | None,
+        due_at: datetime | None,
+        comment: str | None,
+        resume_exception: bool,
+    ) -> dict[str, Any]:
+        selector = VULNERABILITY_SELECTOR_SQL
+        case_id: str | None = None
+        with db.connect() as conn:
+            finding = conn.execute(
+                f"""
+                SELECT DISTINCT ON ({selector})
+                    {selector} AS vulnerability_key,
+                    finding.name AS title,
+                    finding.cve_name AS cve,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(finding.severity, ''))) IN
+                            ('critical', 'high', 'medium', 'low')
+                        THEN LOWER(TRIM(finding.severity))
+                        ELSE 'unknown'
+                    END AS severity,
+                    finding.cvss_score,
+                    link.passport_internal_id
+                FROM asset_card_vulnerabilities AS finding
+                JOIN asset_card_vulnerability_groups AS vulnerability_group
+                  ON vulnerability_group.id = finding.group_id
+                LEFT JOIN asset_card_vulnerability_passports AS link
+                  ON link.asset_vulnerability_id = finding.id
+                WHERE finding.asset_id = %s
+                  AND {selector} = %s
+                ORDER BY
+                    {selector},
+                    finding.cvss_score DESC NULLS LAST,
+                    link.passport_internal_id
+                """,
+                (asset_id, vulnerability_key),
+            ).fetchone()
+            if not finding:
+                raise LookupError("FINDING_NOT_FOUND")
+
+            current = conn.execute(
+                """
+                SELECT *
+                FROM remediation_cases
+                WHERE asset_id = %s AND vulnerability_key = %s
+                FOR UPDATE
+                """,
+                (asset_id, vulnerability_key),
+            ).fetchone()
+            if not current:
+                policy = conn.execute(
+                    "SELECT * FROM remediation_sla_policy WHERE policy_id = 1"
+                ).fetchone()
+                severity = str(finding["severity"])
+                raw_days = (
+                    policy.get(f"{severity}_days")
+                    if policy and severity != "unknown"
+                    else None
+                )
+                initial_due_at = (
+                    datetime.now(UTC).replace(microsecond=0)
+                    + timedelta(days=int(raw_days))
+                    if raw_days is not None
+                    else None
+                )
+                generated_case_id = hashlib.md5(
+                    f"{asset_id}\x1f{vulnerability_key}".encode(),
+                    usedforsecurity=False,
+                ).hexdigest()
+                inserted = conn.execute(
+                    """
+                    INSERT INTO remediation_cases (
+                        case_id, asset_id, vulnerability_key, title, cve,
+                        severity, cvss_score, passport_internal_id, due_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (asset_id, vulnerability_key) DO NOTHING
+                    RETURNING *
+                    """,
+                    (
+                        generated_case_id,
+                        asset_id,
+                        vulnerability_key,
+                        finding["title"],
+                        finding["cve"],
+                        severity,
+                        finding["cvss_score"],
+                        finding["passport_internal_id"],
+                        initial_due_at,
+                    ),
+                ).fetchone()
+                if inserted:
+                    current = inserted
+                    conn.execute(
+                        """
+                        INSERT INTO remediation_case_events (
+                            case_id, event_type, new_status, changes_json
+                        )
+                        VALUES (
+                            %s, 'finding_created', 'open',
+                            %s::jsonb
+                        )
+                        """,
+                        (
+                            inserted["case_id"],
+                            json.dumps(
+                                {
+                                    "source": "vulnerabilities",
+                                    "severity": severity,
+                                    "cve": finding["cve"],
+                                    "title": finding["title"],
+                                },
+                                default=str,
+                            ),
+                        ),
+                    )
+                else:
+                    current = conn.execute(
+                        """
+                        SELECT *
+                        FROM remediation_cases
+                        WHERE asset_id = %s AND vulnerability_key = %s
+                        FOR UPDATE
+                        """,
+                        (asset_id, vulnerability_key),
+                    ).fetchone()
+            if not current:
+                raise LookupError("FINDING_NOT_FOUND")
+
+            current_status = str(current["status"])
+            if current_status in {"risk_accepted", "false_positive"} and not resume_exception:
+                raise ValueError(
+                    "Explicit confirmation is required to resume a case with an active exception."
+                )
+            case_id = str(current["case_id"])
+            if current_status == "in_progress" and assignee is None and due_at is None:
+                return self.get(case_id) or _case(dict(current))
+
+            assignments = [
+                "title = %s",
+                "cve = %s",
+                "severity = %s",
+                "cvss_score = %s",
+                "passport_internal_id = %s",
+                "last_seen_at = NOW()",
+                "status = 'in_progress'",
+                "resolved_at = NULL",
+                "risk_reason = NULL",
+                "risk_expires_at = NULL",
+                "exception_reason = NULL",
+                "exception_expires_at = NULL",
+                "version = version + 1",
+                "updated_at = NOW()",
+            ]
+            params: list[Any] = [
+                finding["title"],
+                finding["cve"],
+                finding["severity"],
+                finding["cvss_score"],
+                finding["passport_internal_id"],
+            ]
+            if current_status == "resolved":
+                assignments.append("reopened_at = NOW()")
+                conn.execute(
+                    """
+                    INSERT INTO remediation_case_events (
+                        case_id, event_type, old_status, new_status, changes_json
+                    )
+                    VALUES (
+                        %s, 'finding_reappeared', 'resolved', 'in_progress',
+                        %s::jsonb
+                    )
+                    """,
+                    (
+                        case_id,
+                        json.dumps(
+                            {
+                                "source": "vulnerabilities",
+                                "severity": finding["severity"],
+                                "cve": finding["cve"],
+                                "title": finding["title"],
+                            },
+                            default=str,
+                        ),
+                    ),
+                )
+            if assignee is not None:
+                assignments.append("assignee = %s")
+                params.append(assignee or None)
+            if current_status == "resolved" and due_at is None:
+                policy = conn.execute(
+                    "SELECT * FROM remediation_sla_policy WHERE policy_id = 1"
+                ).fetchone()
+                severity = str(finding["severity"])
+                raw_days = (
+                    policy.get(f"{severity}_days")
+                    if policy and severity != "unknown"
+                    else None
+                )
+                reopened_due_at = (
+                    datetime.now(UTC).replace(microsecond=0)
+                    + timedelta(days=int(raw_days))
+                    if raw_days is not None
+                    else None
+                )
+                assignments.extend(("due_at = %s", "manual_due = FALSE"))
+                params.append(reopened_due_at)
+            elif due_at is not None:
+                assignments.extend(("due_at = %s", "manual_due = TRUE"))
+                params.append(due_at)
+            updated = conn.execute(
+                f"""
+                UPDATE remediation_cases
+                SET {", ".join(assignments)}
+                WHERE case_id = %s
+                RETURNING *
+                """,
+                (*params, case_id),
+            ).fetchone()
+            assert updated is not None
+            changes = {
+                "status": "in_progress",
+                "assignee": assignee,
+                "due_at": _iso(due_at),
+            }
+            conn.execute(
+                """
+                INSERT INTO remediation_case_events (
+                    case_id, event_type, old_status, new_status,
+                    changes_json, comment
+                )
+                VALUES (
+                    %s, 'operator_update', %s, 'in_progress', %s::jsonb, %s
+                )
+                """,
+                (
+                    case_id,
+                    current_status,
+                    json.dumps(changes, default=str),
+                    comment,
+                ),
+            )
+        if case_id is None:
+            raise LookupError("FINDING_NOT_FOUND")
+        result = self.get(case_id)
+        if not result:
+            raise LookupError("FINDING_NOT_FOUND")
+        return result
+
     def update(
         self, case_id: str, changes: dict[str, Any], *, expected_version: int, comment: str | None
     ) -> dict[str, Any] | None:
@@ -263,6 +518,188 @@ class RemediationRepository:
                 "mean_time_to_resolve_days": None,
             }
         )
+
+    def resolution_stats(self, *, days: int, recent_limit: int = 10) -> dict[str, Any]:
+        period_days = max(1, min(int(days), 3650))
+        recent_limit = max(1, min(int(recent_limit), 100))
+        as_of = datetime.now(UTC)
+        period_start = (as_of - timedelta(days=period_days - 1)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        with db.connect() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            summary = dict(
+                conn.execute(
+                    """
+                    WITH resolutions AS (
+                        SELECT
+                            event.event_id,
+                            event.created_at AS resolution_confirmed_at,
+                            remediation.*
+                        FROM remediation_case_events AS event
+                        JOIN remediation_cases AS remediation
+                          ON remediation.case_id = event.case_id
+                        WHERE event.event_type = 'finding_absent'
+                          AND event.created_at >= %s
+                          AND event.created_at <= %s
+                    )
+                    SELECT
+                        COUNT(*) AS confirmed_resolutions,
+                        COUNT(DISTINCT case_id) AS resolved_cases,
+                        COUNT(DISTINCT asset_id) AS resolved_hosts,
+                        COUNT(DISTINCT vulnerability_key) AS resolved_vulnerabilities,
+                        COUNT(DISTINCT case_id) FILTER (
+                            WHERE status = 'resolved'
+                        ) AS currently_resolved,
+                        ROUND(
+                            AVG(
+                                EXTRACT(
+                                    EPOCH FROM (resolution_confirmed_at - first_seen_at)
+                                ) / 86400
+                            ),
+                            1
+                        ) AS mean_time_to_resolve_days
+                    FROM resolutions
+                    """,
+                    (period_start, as_of),
+                ).fetchone()
+                or {}
+            )
+            severity_rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(
+                        NULLIF(event.changes_json->>'severity', ''),
+                        remediation.severity
+                    ) AS severity,
+                    COUNT(*) AS confirmed_resolutions,
+                    COUNT(DISTINCT remediation.case_id) AS resolved_cases
+                FROM remediation_case_events AS event
+                JOIN remediation_cases AS remediation
+                  ON remediation.case_id = event.case_id
+                WHERE event.event_type = 'finding_absent'
+                  AND event.created_at >= %s
+                  AND event.created_at <= %s
+                GROUP BY COALESCE(
+                    NULLIF(event.changes_json->>'severity', ''),
+                    remediation.severity
+                )
+                ORDER BY CASE COALESCE(
+                    NULLIF(event.changes_json->>'severity', ''),
+                    remediation.severity
+                )
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                    ELSE 5
+                END
+                """,
+                (period_start, as_of),
+            ).fetchall()
+            trend_rows = conn.execute(
+                """
+                WITH days AS (
+                    SELECT generate_series(
+                        %s::date,
+                        %s::date,
+                        INTERVAL '1 day'
+                    )::date AS bucket_start
+                )
+                SELECT
+                    days.bucket_start,
+                    COUNT(event.event_id) AS confirmed_resolutions,
+                    COUNT(DISTINCT remediation.case_id) AS resolved_cases,
+                    COUNT(DISTINCT remediation.asset_id) AS resolved_hosts
+                FROM days
+                LEFT JOIN remediation_case_events AS event
+                  ON (event.created_at AT TIME ZONE 'UTC')::date = days.bucket_start
+                 AND event.event_type = 'finding_absent'
+                 AND event.created_at >= %s
+                 AND event.created_at <= %s
+                LEFT JOIN remediation_cases AS remediation
+                  ON remediation.case_id = event.case_id
+                GROUP BY days.bucket_start
+                ORDER BY days.bucket_start
+                """,
+                (period_start, as_of, period_start, as_of),
+            ).fetchall()
+            recent_rows = conn.execute(
+                """
+                SELECT
+                    remediation.*,
+                    card.display_name,
+                    card.ip_address,
+                    card.fqdn,
+                    event.created_at AS resolution_confirmed_at,
+                    COALESCE(
+                        NULLIF(event.changes_json->>'severity', ''),
+                        remediation.severity
+                    ) AS resolution_severity,
+                    COALESCE(
+                        NULLIF(event.changes_json->>'cve', ''),
+                        remediation.cve
+                    ) AS resolution_cve,
+                    COALESCE(
+                        NULLIF(event.changes_json->>'title', ''),
+                        remediation.title
+                    ) AS resolution_title,
+                    FALSE AS overdue,
+                    FALSE AS near_due
+                FROM remediation_case_events AS event
+                JOIN remediation_cases AS remediation
+                  ON remediation.case_id = event.case_id
+                LEFT JOIN asset_cards AS card
+                  ON card.asset_id = remediation.asset_id
+                WHERE event.event_type = 'finding_absent'
+                  AND event.created_at >= %s
+                  AND event.created_at <= %s
+                ORDER BY event.created_at DESC, event.event_id DESC
+                LIMIT %s
+                """,
+                (period_start, as_of, recent_limit),
+            ).fetchall()
+
+        return {
+            "period_days": period_days,
+            "period_start": period_start.isoformat(),
+            "as_of": as_of.isoformat(),
+            "confirmed_resolutions": int(summary.get("confirmed_resolutions") or 0),
+            "resolved_cases": int(summary.get("resolved_cases") or 0),
+            "resolved_hosts": int(summary.get("resolved_hosts") or 0),
+            "resolved_vulnerabilities": int(summary.get("resolved_vulnerabilities") or 0),
+            "currently_resolved": int(summary.get("currently_resolved") or 0),
+            "mean_time_to_resolve_days": (
+                float(summary["mean_time_to_resolve_days"])
+                if summary.get("mean_time_to_resolve_days") is not None
+                else None
+            ),
+            "by_severity": [
+                {
+                    "severity": row.get("severity") or "unknown",
+                    "confirmed_resolutions": int(
+                        row.get("confirmed_resolutions") or 0
+                    ),
+                    "resolved_cases": int(row.get("resolved_cases") or 0),
+                }
+                for row in severity_rows
+            ],
+            "trend": [
+                {
+                    "bucket_start": _iso(row.get("bucket_start")),
+                    "confirmed_resolutions": int(
+                        row.get("confirmed_resolutions") or 0
+                    ),
+                    "resolved_cases": int(row.get("resolved_cases") or 0),
+                    "resolved_hosts": int(row.get("resolved_hosts") or 0),
+                }
+                for row in trend_rows
+            ],
+            "recent": [_case(dict(row)) for row in recent_rows],
+        }
 
     def reconcile_asset(self, asset_id: str, *, stale_days: int) -> dict[str, int]:
         now = datetime.now(UTC)
@@ -372,8 +809,28 @@ class RemediationRepository:
                             (old["case_id"],),
                         )
                         conn.execute(
-                            "INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_absent',%s,'resolved')",
-                            (old["case_id"], old["status"]),
+                            """
+                            INSERT INTO remediation_case_events (
+                                case_id, event_type, old_status, new_status,
+                                changes_json
+                            )
+                            VALUES (
+                                %s, 'finding_absent', %s, 'resolved', %s::jsonb
+                            )
+                            """,
+                            (
+                                old["case_id"],
+                                old["status"],
+                                json.dumps(
+                                    {
+                                        "severity": old["severity"],
+                                        "cve": old["cve"],
+                                        "title": old["title"],
+                                        "asset_id": asset_id,
+                                    },
+                                    default=str,
+                                ),
+                            ),
                         )
                         resolved += 1
         return {"created": created, "reopened": reopened, "resolved": resolved}

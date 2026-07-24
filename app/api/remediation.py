@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from .. import auth as app_auth
+
 Status = Literal["open", "in_progress", "risk_accepted", "false_positive", "resolved"]
 Severity = Literal["critical", "high", "medium", "low", "unknown"]
 
@@ -37,6 +39,15 @@ class BulkCaseUpdate(BaseModel):
     comment: str | None = Field(default=None, max_length=4000)
 
 
+class StartFindingRemediation(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=500)
+    vulnerability_selector: str = Field(min_length=1, max_length=2000)
+    assignee: str | None = Field(default=None, max_length=200)
+    due_at: datetime | None = None
+    comment: str | None = Field(default=None, max_length=4000)
+    resume_exception: bool = False
+
+
 class PolicyUpdate(BaseModel):
     critical_days: int = Field(ge=1, le=3650)
     high_days: int = Field(ge=1, le=3650)
@@ -50,6 +61,23 @@ def _service(request: Request):
     return request.app.state.container.services.remediation
 
 
+def _require_permissions(request: Request, *required: str) -> None:
+    user = getattr(request.state, "user", None) or {}
+    permissions = set(
+        user.get("permissions")
+        or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ())
+    )
+    missing = sorted(set(required) - permissions)
+    if missing:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "PERMISSION_DENIED",
+                "message": f"Missing permissions: {', '.join(missing)}",
+            },
+        )
+
+
 @router.get("/cases")
 def list_cases(
     request: Request, q: Annotated[str | None, Query(max_length=500)] = None,
@@ -58,6 +86,42 @@ def list_cases(
     limit: Annotated[int, Query(ge=1, le=500)] = 50, offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
     return _service(request).list(q=q, status=status, severity=severity, assignee=assignee, overdue=overdue, limit=limit, offset=offset)
+
+
+@router.post("/cases/start")
+def start_finding_remediation(
+    request: Request,
+    payload: StartFindingRemediation,
+) -> dict:
+    _require_permissions(
+        request,
+        "assets.read",
+        "remediation.read",
+        "remediation.manage",
+    )
+    try:
+        item = _service(request).start_for_finding(
+            asset_id=payload.asset_id,
+            vulnerability_selector=payload.vulnerability_selector,
+            assignee=payload.assignee,
+            due_at=payload.due_at,
+            comment=payload.comment,
+            resume_exception=payload.resume_exception,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_CASE_START", "message": str(exc)},
+        ) from exc
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "FINDING_NOT_FOUND",
+                "message": "The selected vulnerability is not present on this host.",
+            },
+        ) from exc
+    return item
 
 
 @router.get("/cases/{case_id}")
@@ -93,6 +157,15 @@ def bulk_update(request: Request, payload: BulkCaseUpdate) -> dict:
 @router.get("/summary")
 def summary(request: Request) -> dict:
     return _service(request).summary()
+
+
+@router.get("/resolution-stats")
+def resolution_stats(
+    request: Request,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
+    recent_limit: Annotated[int, Query(ge=1, le=100)] = 10,
+) -> dict:
+    return _service(request).resolution_stats(days=days, recent_limit=recent_limit)
 
 
 @router.get("/policy")

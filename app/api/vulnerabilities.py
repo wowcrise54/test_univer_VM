@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from .. import auth as app_auth
 from ..services.vulnerabilities import VulnerabilityAnalyticsService
 
 router = APIRouter(prefix="/api/vulnerabilities", tags=["vulnerabilities"])
@@ -68,7 +69,7 @@ def vulnerability_hosts(
     sort_dir: SortDirection | None = None,
 ) -> dict:
     try:
-        return _service(request).hosts(
+        result = _service(request).hosts(
             selector=selector,
             host_q=host_q,
             severity=severity,
@@ -78,6 +79,15 @@ def vulnerability_hosts(
             sort_by=sort_by,
             sort_dir=sort_dir,
         )
+        user = getattr(request.state, "user", None) or {}
+        permissions = set(
+            user.get("permissions")
+            or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ())
+        )
+        if "remediation.read" not in permissions:
+            for row in result.get("rows", []):
+                row.pop("remediation", None)
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SORT", "message": str(exc)}) from exc
 

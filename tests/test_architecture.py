@@ -31,6 +31,8 @@ EXPECTED_API_PATHS = {
     "/api/automations/runs",
     "/api/notifications",
     "/api/remediation/cases",
+    "/api/remediation/cases/start",
+    "/api/remediation/resolution-stats",
     "/api/remediation/summary",
     "/api/remediation/policy",
     "/api/coverage/summary",
