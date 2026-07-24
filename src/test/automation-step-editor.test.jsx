@@ -27,7 +27,7 @@ describe("automation step model", () => {
 
   it("defaults batch asset-card refreshes to three parallel workers", () => {
     const step = createAutomationStep("asset_card_build");
-    expect(step.config.parallelism).toBe(3);
+    expect(step.config.parallelism).toBe(10);
   });
 
   it("serializes typed condition values without JSON text", () => {

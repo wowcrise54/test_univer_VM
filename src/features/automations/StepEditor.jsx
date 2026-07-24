@@ -66,7 +66,7 @@ const STEP_META = {
       selection: "asset",
       asset_id: "",
       max_assets: "",
-      parallelism: 3,
+      parallelism: 10,
       template_task_id: "",
       wait: true,
       timeout_seconds: 14400,
@@ -578,9 +578,9 @@ function StepConfigFields({ step, scannerTasks, fieldCatalog, updateConfig }) {
             />
             <NumberField
               label="Параллельных обновлений"
-              value={config.parallelism ?? 3}
+              value={config.parallelism ?? 10}
               min={1}
-              max={4}
+              max={10}
               onChange={(value) => updateConfig("parallelism", value)}
             />
           </>

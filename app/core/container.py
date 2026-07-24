@@ -24,9 +24,9 @@ class AppContainer:
     """Explicit owner of mutable process-scoped application state."""
 
     def __init__(self, settings: Settings) -> None:
-        scan_postprocess_workers = min(4, settings.scan_postprocess_workers)
+        scan_postprocess_workers = min(10, settings.scan_postprocess_workers)
         asset_card_refresh_workers = min(
-            4,
+            10,
             settings.asset_card_refresh_workers,
             scan_postprocess_workers,
         )

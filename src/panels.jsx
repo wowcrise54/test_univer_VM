@@ -1604,7 +1604,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         "",
       asset_refresh_parallelism:
         value.asset_refresh_parallelism ||
-        String(defaults.asset_card_refresh_workers || 3),
+        String(defaults.asset_card_refresh_workers || 10),
       utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
     }));
   }, [defaults]);
@@ -1977,9 +1977,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           template_task_id: selectedRefreshTemplateId || null,
           parallelism: clampNumber(
             form.asset_refresh_parallelism,
-            defaults?.asset_card_refresh_workers || 3,
+            defaults?.asset_card_refresh_workers || 10,
             1,
-            defaults?.asset_card_refresh_workers || 3,
+            defaults?.asset_card_refresh_workers || 10,
           ),
         }),
       });
@@ -1990,9 +1990,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       showAlert(
         `Все сохранённые карточки поставлены на обновление: до ${clampNumber(
           form.asset_refresh_parallelism,
-          defaults?.asset_card_refresh_workers || 3,
+          defaults?.asset_card_refresh_workers || 10,
           1,
-          defaults?.asset_card_refresh_workers || 3,
+          defaults?.asset_card_refresh_workers || 10,
         )} одновременно. Прогресс доступен в центре операций.`,
         "info",
       );
@@ -2134,7 +2134,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           <input
             type="number"
             min="1"
-            max={defaults?.asset_card_refresh_workers || 3}
+            max={defaults?.asset_card_refresh_workers || 10}
             value={form.asset_refresh_parallelism}
             onChange={(event) =>
               update("asset_refresh_parallelism", event.target.value)

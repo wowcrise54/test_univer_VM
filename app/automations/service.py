@@ -59,9 +59,9 @@ class AutomationService:
         if step_type == "pdql_export":
             normalized.setdefault("delete_assets_after_export", False)
         if step_type == "asset_card_build" and normalized.get("selection") in {"all", "stale"}:
-            parallelism = int(normalized.get("parallelism") or 3)
-            if parallelism < 1 or parallelism > 4:
-                raise ValueError("asset_card_build parallelism must be between 1 and 4.")
+            parallelism = int(normalized.get("parallelism") or 10)
+            if parallelism < 1 or parallelism > 10:
+                raise ValueError("asset_card_build parallelism must be between 1 and 10.")
             normalized["parallelism"] = parallelism
         return normalized
 

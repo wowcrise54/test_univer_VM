@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     exports_dir: Path = Path("exports")
     background_request_limit: int = 10
     asset_card_request_workers: int = 8
-    asset_card_refresh_workers: int = 3
-    scan_postprocess_workers: int = 3
+    asset_card_refresh_workers: int = 10
+    scan_postprocess_workers: int = 10
     scan_asset_process_workers: int = 3
     scan_target_resolution_workers: int = 3
     reconciliation_workers: int = 3

@@ -142,8 +142,8 @@ ASSET_CARD_REQUEST_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
     min(16, SETTINGS.asset_card_request_workers),
 )
-SCAN_POSTPROCESS_WORKERS = min(4, SETTINGS.scan_postprocess_workers)
-ASSET_CARD_REFRESH_WORKERS = min(4, SETTINGS.asset_card_refresh_workers, SCAN_POSTPROCESS_WORKERS)
+SCAN_POSTPROCESS_WORKERS = min(10, SETTINGS.scan_postprocess_workers)
+ASSET_CARD_REFRESH_WORKERS = min(10, SETTINGS.asset_card_refresh_workers, SCAN_POSTPROCESS_WORKERS)
 SCAN_ASSET_PROCESS_WORKERS = min(4, SETTINGS.scan_asset_process_workers)
 SCAN_TARGET_RESOLUTION_WORKERS = min(4, SETTINGS.scan_target_resolution_workers)
 RECONCILIATION_WORKERS = min(4, SETTINGS.reconciliation_workers)
@@ -7657,7 +7657,7 @@ AUTOMATION_TEMPLATES = [
         "template_id": "stale-asset-card-refresh",
         "name": "Обновление карточек старше недели",
         "description": "Параллельно обновляет карточки, у которых дата «Обновлено» старше порога свежести (по умолчанию 7 дней).",
-        "steps": [{"step_id": "stale-asset-cards", "type": "asset_card_build", "config": {"selection": "stale", "parallelism": 3, "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
+        "steps": [{"step_id": "stale-asset-cards", "type": "asset_card_build", "config": {"selection": "stale", "parallelism": 10, "wait": True, "timeout_seconds": 14400, "start_options": {"task_timeout_minutes": 120}}, "on_error": "stop", "max_retries": 1}],
     },
     {
         "template_id": "weekly-export",
