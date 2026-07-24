@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -83,3 +85,40 @@ def test_reconciliation_error_is_isolated_and_workflow_completes_with_errors():
     assert run_update["status"] == "completed_with_errors"
     assert run_update["result"]["reconciliation"]["created"] == 1
     assert run_update["result"]["reconciliation_errors"][0]["asset_id"] == "asset-1"
+
+
+def test_reconciliation_runs_independent_assets_in_parallel():
+    repository = MagicMock()
+    runner = MagicMock()
+    state_lock = threading.Lock()
+    active = 0
+    peak_active = 0
+
+    def reconcile(_asset_id):
+        nonlocal active, peak_active
+        with state_lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        time.sleep(0.05)
+        with state_lock:
+            active -= 1
+        return {"created": 1, "reopened": 0, "resolved": 0}
+
+    remediation = MagicMock()
+    remediation.reconcile_asset.side_effect = reconcile
+    service = VmWorkflowService(repository, runner, remediation=remediation, reconciliation_workers=3)
+    workflow = {
+        "workflow_id": "wf-parallel",
+        "kind": "verification",
+        "campaign_id": None,
+        "request": {"asset_ids": ["asset-1", "asset-2", "asset-3"]},
+        "result": {},
+    }
+
+    started = time.perf_counter()
+    service._reconcile("wf-parallel", workflow, [], [])
+    elapsed = time.perf_counter() - started
+
+    assert peak_active == 3
+    assert elapsed < 0.11
+    assert repository.update_run.call_args.kwargs["result"]["reconciliation"]["created"] == 3

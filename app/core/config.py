@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     asset_card_request_workers: int = 8
     asset_card_refresh_workers: int = 3
     scan_postprocess_workers: int = 3
-    scan_asset_process_workers: int = 1
+    scan_asset_process_workers: int = 3
+    scan_target_resolution_workers: int = 3
+    reconciliation_workers: int = 3
     passport_detail_workers: int = 10
     passport_detail_ttl_hours: int = 24
     asset_metadata_ttl_seconds: int = 3600
@@ -67,6 +69,8 @@ class Settings(BaseSettings):
         "asset_card_refresh_workers",
         "scan_postprocess_workers",
         "scan_asset_process_workers",
+        "scan_target_resolution_workers",
+        "reconciliation_workers",
         "passport_detail_workers",
         "scan_asset_resolution_timeout_seconds",
         "scan_asset_resolution_poll_seconds",

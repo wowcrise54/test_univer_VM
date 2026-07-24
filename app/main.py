@@ -145,6 +145,8 @@ ASSET_CARD_REQUEST_WORKERS = min(
 SCAN_POSTPROCESS_WORKERS = min(4, SETTINGS.scan_postprocess_workers)
 ASSET_CARD_REFRESH_WORKERS = min(4, SETTINGS.asset_card_refresh_workers, SCAN_POSTPROCESS_WORKERS)
 SCAN_ASSET_PROCESS_WORKERS = min(4, SETTINGS.scan_asset_process_workers)
+SCAN_TARGET_RESOLUTION_WORKERS = min(4, SETTINGS.scan_target_resolution_workers)
+RECONCILIATION_WORKERS = min(4, SETTINGS.reconciliation_workers)
 PASSPORT_DETAIL_WORKERS = min(
     BACKGROUND_REQUEST_LIMIT,
     min(32, SETTINGS.passport_detail_workers),
@@ -386,6 +388,12 @@ class AssetCardRequestExecutor:
 
     def telemetry(self) -> dict[str, Any]:
         with self._progress_lock, self._telemetry_lock:
+            http = {"requests": 0, "retries": 0, "errors": 0, "rate_limited": 0}
+            for client in self._clients:
+                telemetry = getattr(client.session, "telemetry", None)
+                snapshot = telemetry() if callable(telemetry) else {}
+                for key in http:
+                    http[key] += int(snapshot.get(key) or 0)
             return {
                 "peak_active_requests": self.peak_active,
                 "queue_wait_ms": round(self.queue_wait_ms, 2),
@@ -393,6 +401,7 @@ class AssetCardRequestExecutor:
                 "request_duration_ms": {
                     key: round(value, 2) for key, value in sorted(self.request_duration_ms.items())
                 },
+                "http": http,
             }
 
     def close(self) -> None:
@@ -779,6 +788,8 @@ def startup() -> None:
         "worker_limits",
         scan_postprocess_workers=SCAN_POSTPROCESS_WORKERS,
         scan_asset_process_workers=SCAN_ASSET_PROCESS_WORKERS,
+        scan_target_resolution_workers=SCAN_TARGET_RESOLUTION_WORKERS,
+        reconciliation_workers=RECONCILIATION_WORKERS,
         asset_card_request_workers=ASSET_CARD_REQUEST_WORKERS,
         asset_card_refresh_workers=ASSET_CARD_REFRESH_WORKERS,
     )
@@ -4204,6 +4215,7 @@ def monitor_successful_scan_jobs(
     require_clean_jobs: bool,
     docker_group_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    monitor_started = time.perf_counter()
     scan_deadline = time.monotonic() + timeout_seconds
     resolution_deadline: float | None = None
     latest_run: dict[str, Any] | None = None
@@ -4218,33 +4230,97 @@ def monitor_successful_scan_jobs(
         for item in existing_items
         if item.get("asset_id")
     }
-    futures: list[Future[Any]] = []
+    asset_futures: set[Future[Any]] = set()
     last_job_states: dict[str, str] = {}
     last_summary: tuple[int, int, int] | None = None
+    last_persisted_progress: tuple[Any, ...] | None = None
     logged_mp_run_id: str | None = None
     logged_waiting_for_run = False
     scan_finished_at: str | None = None
+    resolution_request_count = 0
+    resolution_error_count = 0
+    resolution_peak_active = 0
+    resolution_active = 0
+    resolution_lock = threading.Lock()
+    resolution_queue_wait_ms = 0.0
+    worker_state = threading.local()
+    resolution_clients: list[MpVmClient] = []
+
+    def resolution_client() -> MpVmClient:
+        nonlocal client
+        worker_client = getattr(worker_state, "client", None)
+        if worker_client is None:
+            # Unit-test callers sometimes use a lightweight auth stub. Production
+            # always supplies AuthConfig and receives one isolated Session per worker.
+            worker_client = MpVmClient(auth) if isinstance(auth, AuthConfig) else client
+            worker_state.client = worker_client
+            if worker_client is not client:
+                with resolution_lock:
+                    resolution_clients.append(worker_client)
+        return worker_client
+
+    def resolve_target(target: str, job_id: str | None, run_started_at: str) -> tuple[str, str | None, list[dict[str, Any]], str]:
+        nonlocal resolution_active, resolution_error_count, resolution_peak_active
+        nonlocal resolution_queue_wait_ms, resolution_request_count
+        queued_at = time.perf_counter()
+        try:
+            with BACKGROUND_REQUEST_SEMAPHORE:
+                started = time.perf_counter()
+                with resolution_lock:
+                    resolution_queue_wait_ms += (started - queued_at) * 1000
+                    resolution_request_count += 1
+                    resolution_active += 1
+                    resolution_peak_active = max(resolution_peak_active, resolution_active)
+                try:
+                    assets, error = resolve_scanned_target_once(
+                        client=resolution_client(),
+                        token=token,
+                        target=target,
+                        mp_job_id=job_id,
+                        run_started_at=run_started_at,
+                    )
+                    return target, job_id, assets, error
+                finally:
+                    with resolution_lock:
+                        resolution_active -= 1
+        except (MpVmApiError, requests.RequestException, ValueError) as exc:
+            with resolution_lock:
+                resolution_error_count += 1
+            return target, job_id, [], f"{type(exc).__name__}: {exc}"
+
+    def submit_asset(
+        executor: ThreadPoolExecutor,
+        item: dict[str, Any],
+    ) -> None:
+        # Keep only a small sliding window instead of queueing every discovered
+        # asset in ThreadPoolExecutor's unbounded internal queue.
+        while len(asset_futures) >= max(1, SCAN_ASSET_PROCESS_WORKERS * 2):
+            completed, _ = wait(tuple(asset_futures), return_when=FIRST_COMPLETED)
+            for completed_future in completed:
+                asset_futures.remove(completed_future)
+                completed_future.result()
+        asset_futures.add(
+            executor.submit(
+                process_scanned_asset_item_with_progress,
+                item=item,
+                auth=auth,
+                token=token,
+                postprocess_run_id=postprocess_run_id,
+            )
+        )
 
     with ThreadPoolExecutor(
         max_workers=SCAN_ASSET_PROCESS_WORKERS,
         thread_name_prefix="scan-asset-process",
-    ) as asset_executor:
+    ) as asset_executor, ThreadPoolExecutor(
+        max_workers=SCAN_TARGET_RESOLUTION_WORKERS,
+        thread_name_prefix="scan-target-resolution",
+    ) as resolution_executor:
         for item in existing_items:
             if item.get("asset_id") and item.get("status") not in {
-                "completed",
-                "resolution_failed",
-                "build_failed",
-                "removal_failed",
+                "completed", "resolution_failed", "build_failed", "removal_failed",
             }:
-                futures.append(
-                    asset_executor.submit(
-                        process_scanned_asset_item_with_progress,
-                        item=item,
-                        auth=auth,
-                        token=token,
-                        postprocess_run_id=postprocess_run_id,
-                    )
-                )
+                submit_asset(asset_executor, item)
                 scan_log(
                     logging.INFO,
                     "item_resumed",
@@ -4258,7 +4334,8 @@ def monitor_successful_scan_jobs(
 
         while True:
             raise_if_scan_postprocess_cancelled(postprocess_run_id)
-            runs = client.get_task_runs(token, task_id, time_from=started_from)
+            with BACKGROUND_REQUEST_SEMAPHORE:
+                runs = client.get_task_runs(token, task_id, time_from=started_from)
             if not runs and not logged_waiting_for_run:
                 logged_waiting_for_run = True
                 scan_log(
@@ -4284,11 +4361,12 @@ def monitor_successful_scan_jobs(
                             run_error_status=latest_run.get("errorStatus"),
                             run_started_at=latest_run.get("startedAt"),
                         )
-                    latest_jobs, successful_jobs = client.split_successful_run_jobs(
-                        token,
-                        mp_run_id,
-                        require_clean_jobs=require_clean_jobs,
-                    )
+                    with BACKGROUND_REQUEST_SEMAPHORE:
+                        latest_jobs, successful_jobs = client.split_successful_run_jobs(
+                            token,
+                            mp_run_id,
+                            require_clean_jobs=require_clean_jobs,
+                        )
                     successful_ids = {str(job.get("id") or "") for job in successful_jobs}
                     for job in latest_jobs:
                         job_id = str(job.get("id") or "")
@@ -4354,27 +4432,17 @@ def monitor_successful_scan_jobs(
                             pending_targets[target] = job_id
 
                     run_started_at = str(latest_run.get("startedAt") or started_from)
-                    for target, job_id in list(pending_targets.items()):
-                        try:
-                            assets, error = resolve_scanned_target_once(
-                                client=client,
-                                token=token,
-                                target=target,
-                                mp_job_id=job_id,
-                                run_started_at=run_started_at,
-                            )
-                        except (MpVmApiError, requests.RequestException, ValueError) as exc:
-                            error = f"{type(exc).__name__}: {exc}"
-                            target_errors[target] = error
-                            SCAN_LOG.exception(
-                                "[scan-postprocess] asset resolution request failed postprocess_run_id=%s task_id=%s mp_run_id=%s job_id=%s target=%s",
-                                postprocess_run_id,
-                                task_id,
-                                mp_run_id,
-                                job_id,
-                                target,
-                            )
-                            continue
+                    resolution_results: list[tuple[str, str | None, list[dict[str, Any]], str]] = []
+                    target_items = list(pending_targets.items())
+                    for offset in range(0, len(target_items), SCAN_TARGET_RESOLUTION_WORKERS):
+                        window = target_items[offset:offset + SCAN_TARGET_RESOLUTION_WORKERS]
+                        window_futures = [
+                            resolution_executor.submit(resolve_target, target, job_id, run_started_at)
+                            for target, job_id in window
+                        ]
+                        resolution_results.extend(future.result() for future in window_futures)
+
+                    for target, job_id, assets, error in resolution_results:
                         if not assets:
                             target_errors[target] = error
                             scan_log(
@@ -4435,15 +4503,7 @@ def monitor_successful_scan_jobs(
                                 asset_id=asset_id,
                                 item_id=item.get("id"),
                             )
-                            futures.append(
-                                asset_executor.submit(
-                                    process_scanned_asset_item_with_progress,
-                                    item=item,
-                                    auth=auth,
-                                    token=token,
-                                    postprocess_run_id=postprocess_run_id,
-                                )
-                            )
+                            submit_asset(asset_executor, item)
                         if not target_scheduled:
                             scan_log(
                                 logging.WARNING,
@@ -4476,20 +4536,26 @@ def monitor_successful_scan_jobs(
                         )
                     if terminal and resolution_deadline is None:
                         resolution_deadline = time.monotonic() + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
-                    db.update_scan_postprocess_run(
-                        postprocess_run_id,
-                        mp_run_id=mp_run_id,
-                        run_started_at=run_started_at,
-                        status="processing" if seen_asset_ids else "monitoring",
-                        stage="building_cards" if seen_asset_ids else "watching_jobs",
-                        total_job_count=len(latest_jobs),
-                        successful_job_count=len(successful_jobs),
-                        target_count=len(successful_scan_target_jobs(successful_jobs)),
-                        asset_count=len(seen_asset_ids),
-                        message=(
-                            f"Processing {len(seen_asset_ids)} asset(s); watching errorStatus for {len(latest_jobs)} job(s)."
-                        ),
+                    progress = (
+                        mp_run_id, run_started_at, bool(seen_asset_ids), len(latest_jobs),
+                        len(successful_jobs), len(successful_scan_target_jobs(successful_jobs)), len(seen_asset_ids),
                     )
+                    if progress != last_persisted_progress:
+                        last_persisted_progress = progress
+                        db.update_scan_postprocess_run(
+                            postprocess_run_id,
+                            mp_run_id=mp_run_id,
+                            run_started_at=run_started_at,
+                            status="processing" if seen_asset_ids else "monitoring",
+                            stage="building_cards" if seen_asset_ids else "watching_jobs",
+                            total_job_count=len(latest_jobs),
+                            successful_job_count=len(successful_jobs),
+                            target_count=len(successful_scan_target_jobs(successful_jobs)),
+                            asset_count=len(seen_asset_ids),
+                            message=(
+                                f"Processing {len(seen_asset_ids)} asset(s); watching errorStatus for {len(latest_jobs)} job(s)."
+                            ),
+                        )
 
             now = time.monotonic()
             scan_timed_out = now >= scan_deadline
@@ -4515,7 +4581,13 @@ def monitor_successful_scan_jobs(
                     timeout_seconds=timeout_seconds,
                 )
                 resolution_deadline = now + SCAN_ASSET_RESOLUTION_TIMEOUT_SECONDS
-            time.sleep(min(poll_seconds, SCAN_ASSET_RESOLUTION_POLL_SECONDS))
+            sleep_seconds = min(poll_seconds, SCAN_ASSET_RESOLUTION_POLL_SECONDS)
+            cancel_event = scan_postprocess_cancel_event(postprocess_run_id)
+            if cancel_event:
+                if cancel_event.wait(sleep_seconds):
+                    raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+            else:
+                time.sleep(sleep_seconds)
 
         for target, job_id in pending_targets.items():
             item = db.upsert_scan_postprocess_item(
@@ -4544,8 +4616,15 @@ def monitor_successful_scan_jobs(
                 target=target,
                 error=target_errors.get(target, "Asset resolution timed out."),
             )
-        for future in futures:
+        for future in asset_futures:
             future.result()
+
+    resolution_http = {"requests": 0, "retries": 0, "errors": 0, "rate_limited": 0}
+    for resolution_worker_client in resolution_clients:
+        snapshot = resolution_worker_client.session.telemetry()
+        for key in resolution_http:
+            resolution_http[key] += int(snapshot.get(key) or 0)
+        resolution_worker_client.session.close()
 
     if latest_run is None:
         raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
@@ -4558,6 +4637,16 @@ def monitor_successful_scan_jobs(
         "successful_job_count": len(successful_jobs),
         "asset_count": len(seen_asset_ids),
         "scan_finished_at": scan_finished_at,
+        "stats": {
+            "elapsed_ms": round((time.perf_counter() - monitor_started) * 1000, 2),
+            "asset_process_workers": SCAN_ASSET_PROCESS_WORKERS,
+            "target_resolution_workers": SCAN_TARGET_RESOLUTION_WORKERS,
+            "target_resolution_peak_active": resolution_peak_active,
+            "target_resolution_requests": resolution_request_count,
+            "target_resolution_errors": resolution_error_count,
+            "background_queue_wait_ms": round(resolution_queue_wait_ms, 2),
+            "http": resolution_http,
+        },
     }
 
 

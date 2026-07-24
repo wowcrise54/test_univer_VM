@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import builtins
 import threading
-import time
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 
 from ..repositories.vm_workflows import ACTIVE, TERMINAL, VmWorkflowRepository
@@ -22,13 +22,14 @@ class VmWorkflowService:
 
     def __init__(
         self, repository: VmWorkflowRepository, runner: OperationRunner, remediation: Any,
-        coverage: Any | None = None, risk: Any | None = None,
+        coverage: Any | None = None, risk: Any | None = None, reconciliation_workers: int = 3,
     ) -> None:
         self.repository = repository
         self.runner = runner
         self.remediation = remediation
         self.coverage = coverage
         self.risk = risk
+        self.reconciliation_workers = min(4, max(1, reconciliation_workers))
         self.scan_starter: Starter | None = None
         self.verification_starter: VerificationStarter | None = None
         self.operation_canceller: OperationAction | None = None
@@ -315,16 +316,25 @@ class VmWorkflowService:
             operations = [self._operation(value) for value in operation_ids]
             known = [item for item in operations if item]
             if not known:
-                time.sleep(1)
+                if token.wait(1):
+                    continue
                 continue
             average = sum(int(item.get("progress_percent") or 0) for item in known) / len(operation_ids)
-            self.repository.update_step(workflow_id, "postprocess", progress_percent=round(average), message=self._progress_message(known))
-            self.repository.update_run(workflow_id, progress_percent=min(90, 35 + round(average * 0.55)))
+            progress = round(average)
+            postprocess_step: dict[str, Any] = next(
+                (step for step in current.get("steps") or [] if step.get("step_key") == "postprocess"),
+                {},
+            )
+            if int(postprocess_step.get("progress_percent") or 0) != progress:
+                self.repository.update_step(
+                    workflow_id, "postprocess", progress_percent=progress, message=self._progress_message(known),
+                )
+                self.repository.update_run(workflow_id, progress_percent=min(90, 35 + round(average * 0.55)))
             if all(item.get("status") in OPERATION_TERMINAL for item in known) and len(known) == len(operation_ids):
                 failed = [item for item in known if item.get("status") != "completed"]
                 self._reconcile(workflow_id, current, known, failed)
                 return
-            time.sleep(1)
+            token.wait(1)
 
     def _reconcile(
         self, workflow_id: str, workflow: dict[str, Any], operations: builtins.list[dict[str, Any]],
@@ -338,14 +348,34 @@ class VmWorkflowService:
         reconciliation_errors: builtins.list[dict[str, str]] = []
         if assets:
             totals = {"created": 0, "reopened": 0, "resolved": 0}
-            for asset_id in assets:
+            worker_count = min(self.reconciliation_workers, len(assets))
+            pending: dict[Future[dict[str, Any]], str] = {}
+            asset_iterator = iter(assets)
+
+            def submit_next(executor: ThreadPoolExecutor) -> bool:
                 try:
-                    result = self.remediation.reconcile_asset(asset_id)
-                except Exception as exc:
-                    reconciliation_errors.append({"asset_id": asset_id, "message": str(exc)[:1000]})
-                    continue
-                for key in totals:
-                    totals[key] += int(result.get(key) or 0)
+                    asset_id = next(asset_iterator)
+                except StopIteration:
+                    return False
+                pending[executor.submit(self.remediation.reconcile_asset, asset_id)] = asset_id
+                return True
+
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="vm-reconcile") as executor:
+                for _ in range(worker_count):
+                    submit_next(executor)
+                while pending:
+                    completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        asset_id = pending.pop(future)
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            reconciliation_errors.append({"asset_id": asset_id, "message": str(exc)[:1000]})
+                        else:
+                            for key in totals:
+                                totals[key] += int(result.get(key) or 0)
+                        submit_next(executor)
+            reconciliation_errors.sort(key=lambda item: item["asset_id"])
         else:
             totals = self.remediation.reconcile_all()
         self.repository.update_step(

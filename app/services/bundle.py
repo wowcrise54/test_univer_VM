@@ -84,6 +84,7 @@ class ServiceBundle:
         operation_runner: OperationRunner,
         coverage_stale_days: int = 7,
         automation_webhook_enabled: bool = False,
+        reconciliation_workers: int = 3,
     ) -> None:
         self.operations = OperationsService(repositories)
         self.assets = AssetsService(repositories)
@@ -101,5 +102,5 @@ class ServiceBundle:
         self.risk = RiskService(repositories.risk)
         self.vm_workflows = VmWorkflowService(
             repositories.vm_workflows, operation_runner, self.remediation,
-            coverage=self.coverage, risk=self.risk,
+            coverage=self.coverage, risk=self.risk, reconciliation_workers=reconciliation_workers,
         )

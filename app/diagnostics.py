@@ -399,6 +399,23 @@ def capture_debug_payload(*, direction: str, payload: Any, **fields: Any) -> Non
 class DiagnosticSession(requests.Session):
     """Requests session that records sanitized MP VM request lifecycle events."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._telemetry_lock = threading.Lock()
+        self._request_count = 0
+        self._retry_count = 0
+        self._error_count = 0
+        self._rate_limit_count = 0
+
+    def telemetry(self) -> dict[str, int]:
+        with self._telemetry_lock:
+            return {
+                "requests": self._request_count,
+                "retries": self._retry_count,
+                "errors": self._error_count,
+                "rate_limited": self._rate_limit_count,
+            }
+
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         remote_request_id = new_trace_id()
         endpoint = sanitize_url(url)
@@ -425,6 +442,9 @@ class DiagnosticSession(requests.Session):
         try:
             response = super().request(method, url, **kwargs)
         except Exception:
+            with self._telemetry_lock:
+                self._request_count += 1
+                self._error_count += 1
             log_exception(
                 "mpvm-http",
                 "mpvm.request.failed",
@@ -437,6 +457,11 @@ class DiagnosticSession(requests.Session):
             )
             raise
         retry_history = getattr(getattr(response.raw, "retries", None), "history", ()) or ()
+        with self._telemetry_lock:
+            self._request_count += 1
+            self._retry_count += len(retry_history)
+            self._error_count += int(not response.ok)
+            self._rate_limit_count += int(response.status_code == 429)
         response_bytes = _response_size(response)
         log_event(
             "mpvm-http",

@@ -1569,6 +1569,78 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
         self.assertIn("asset_queue_retry_pending", logs)
         self.assertIn("asset_queued", logs)
 
+    def test_successful_targets_are_resolved_in_parallel_with_bounded_workers(self):
+        finished = {
+            "id": "run-1",
+            "status": "finished",
+            "startedAt": "2026-01-01T00:00:00+00:00",
+            "finishedAt": "2026-01-01T00:01:00+00:00",
+        }
+        jobs = [
+            {
+                "id": f"job-{index}",
+                "status": "finished",
+                "errorStatus": "success",
+                "runMode": "default",
+                "targets": [f"10.0.0.{index}"],
+            }
+            for index in range(1, 4)
+        ]
+        client = MagicMock()
+        client.get_task_runs.return_value = [finished]
+        client.split_successful_run_jobs.return_value = (jobs, jobs)
+        state_lock = threading.Lock()
+        active = 0
+        peak_active = 0
+
+        def resolve_target(*, target, mp_job_id, **_kwargs):
+            nonlocal active, peak_active
+            with state_lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.05)
+            with state_lock:
+                active -= 1
+            suffix = target.rsplit(".", 1)[-1]
+            return ([{
+                "asset_id": f"asset-{suffix}",
+                "target": target,
+                "mp_job_id": mp_job_id,
+                "display_name": f"Host {suffix}",
+            }], "")
+
+        def save_item(_run_id, **values):
+            suffix = str(values["asset_id"]).rsplit("-", 1)[-1]
+            return {"id": int(suffix), "postprocess_run_id": "post-1", **values}
+
+        with (
+            patch.object(main, "SCAN_TARGET_RESOLUTION_WORKERS", 3),
+            patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+            patch.object(main.db, "upsert_scan_postprocess_item", side_effect=save_item),
+            patch.object(main.db, "update_scan_postprocess_run"),
+            patch.object(main.db, "refresh_scan_postprocess_counts"),
+            patch.object(main, "resolve_scanned_target_once", side_effect=resolve_target),
+            patch.object(main, "process_scanned_asset_item"),
+        ):
+            started = time.perf_counter()
+            result = main.monitor_successful_scan_jobs(
+                client=client,
+                auth=SimpleNamespace(),
+                token="token",
+                task_id="task-1",
+                started_from="2026-01-01T00:00:00+00:00",
+                timeout_seconds=60,
+                poll_seconds=1,
+                postprocess_run_id="post-1",
+                require_clean_jobs=False,
+            )
+            elapsed = time.perf_counter() - started
+
+        self.assertEqual(result["asset_count"], 3)
+        self.assertEqual(result["stats"]["target_resolution_peak_active"], 3)
+        self.assertEqual(peak_active, 3)
+        self.assertLess(elapsed, 0.11)
+
 
 if __name__ == "__main__":
     unittest.main()

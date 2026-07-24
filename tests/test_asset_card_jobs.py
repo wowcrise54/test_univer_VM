@@ -258,6 +258,7 @@ def semantic_card(card):
         "queue_wait_ms",
         "request_counts",
         "request_duration_ms",
+        "http",
         "save_duration_ms",
     ):
         stats.pop(key, None)

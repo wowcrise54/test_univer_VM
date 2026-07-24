@@ -48,6 +48,7 @@ class AppContainer:
             coverage_stale_days=settings.coverage_stale_days,
             automation_webhook_enabled=bool(settings.automation_webhook_url),
             operation_runner=self.operation_runner,
+            reconciliation_workers=settings.reconciliation_workers,
         )
         self.background_request_semaphore = threading.BoundedSemaphore(settings.background_request_limit)
         self.asset_card_refresh_semaphore = threading.BoundedSemaphore(asset_card_refresh_workers)
