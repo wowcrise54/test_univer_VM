@@ -9,7 +9,6 @@ const ROUTES = [
   "/export",
   "/vulnerabilities",
   "/remediation",
-  "/coverage",
   "/asset-cards",
   "/automations",
   "/asset-query",
@@ -355,10 +354,6 @@ test("remediation lifecycle reaches scan-confirmed resolution", async ({ page })
   await page.getByRole("button", { name: "Сохранить", exact: true }).click();
   await expect(page.getByText("Иван Петров").first()).toBeVisible();
 
-  await page.locator('.nav a[href="/coverage"]').click();
-  await page.getByRole("button", { name: "Обновить карточку" }).click();
-  await expectRoute(page, "/operations");
-  await page.locator('.nav a[href="/remediation"]').click();
   await expect(page.getByRole("cell", { name: "Устранена" })).toBeVisible();
 });
 

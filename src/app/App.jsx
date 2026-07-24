@@ -9,7 +9,6 @@ import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
 import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
 import { RemediationPage } from "../pages/RemediationPage.jsx";
-import { CoveragePage } from "../pages/CoveragePage.jsx";
 import {
   AlertStack,
   Sidebar,
@@ -142,9 +141,6 @@ function ActivePage({ routeId, ...props }) {
   }
   if (routeId === "remediation") {
     return <RemediationPage showAlert={props.showAlert} onNavigate={props.onNavigate} />;
-  }
-  if (routeId === "coverage") {
-    return <CoveragePage showAlert={props.showAlert} onNavigate={props.onNavigate} />;
   }
   if (routeId === "export") {
     return (

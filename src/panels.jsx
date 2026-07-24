@@ -2592,6 +2592,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                       <FreshnessBadge
                         value={row.last_seen}
                         source="PostgreSQL"
+                        staleAfterHours={14 * 24}
                       />
                     </td>
                     <td>
@@ -6721,7 +6722,7 @@ function Severity({ value }) {
   );
 }
 
-function FreshnessBadge({ value, source }) {
+function FreshnessBadge({ value, source, staleAfterHours = 7 * 24 }) {
   const timestamp = value ? new Date(value).getTime() : Number.NaN;
   const ageHours = Number.isFinite(timestamp)
     ? Math.max(0, (Date.now() - timestamp) / 3600000)
@@ -6731,7 +6732,7 @@ function FreshnessBadge({ value, source }) {
       ? "unknown"
       : ageHours <= 24
         ? "fresh"
-        : ageHours <= 168
+        : ageHours <= staleAfterHours
           ? "aging"
           : "stale";
   const label =

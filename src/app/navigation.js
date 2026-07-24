@@ -12,7 +12,7 @@ export const navigationGroups = [
 export const workflowSteps = [
   { id: "overview", label: "Обзор", hint: "VM-контур", path: "/vm", routes: ["vm"] },
   { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "operations"] },
-  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "coverage", "asset-cards", "assets", "passports", "asset-query"] },
+  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "assets", "passports", "asset-query"] },
   { id: "fix", label: "Устранение", hint: "SLA и проверка", path: "/remediation", routes: ["remediation"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
 ];
@@ -90,10 +90,6 @@ export const routes = [
   {
     id: "remediation", requiredPermission: "remediation.read", group: "remediation", icon: "✓", path: "/remediation", label: "Устранение",
     title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
-  },
-  {
-    id: "coverage", requiredPermission: "assets.read", group: "findings", icon: "◉", path: "/coverage", label: "Покрытие",
-    title: "Покрытие сканированием", description: "Свежесть и полнота карточек активов и результаты обновлений.",
   },
   {
     id: "asset-cards",

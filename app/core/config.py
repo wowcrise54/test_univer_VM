@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     automation_scheduler_poll_seconds: int = 30
     automation_webhook_url: str = ""
     automation_webhook_secret: str = Field(default="", repr=False)
-    coverage_stale_days: int = 7
+    coverage_stale_days: int = 14
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = Field(default="", repr=False)
     bootstrap_admin_display_name: str = "Administrator"

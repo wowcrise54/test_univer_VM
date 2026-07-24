@@ -82,7 +82,7 @@ class ServiceBundle:
         repositories: RepositoryBundle,
         *,
         operation_runner: OperationRunner,
-        coverage_stale_days: int = 7,
+        coverage_stale_days: int = 14,
         automation_webhook_enabled: bool = False,
         reconciliation_workers: int = 3,
     ) -> None:
