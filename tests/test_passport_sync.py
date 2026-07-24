@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ from fastapi import HTTPException
 
 from app import db
 from app import main
+from app.mpvm_client import TRENDING_VULNERABILITY_PDQL
 
 
 class FakePassportClient:
@@ -129,6 +131,170 @@ class PassportDetailWorkerTests(unittest.TestCase):
 
 
 class PassportQueryTests(unittest.TestCase):
+    def test_trending_pdql_matches_the_current_trend_contract(self):
+        expected = (
+            "filter((VulnerPassport.IsTrend = true)) | "
+            "select(@VulnerPassport, VulnerPassport.Score, "
+            "VulnerPassport.Description, VulnerPassport.IssueTime, "
+            "VulnerPassport.IsTrendSince, "
+            "VulnerPassport.AffectedComponents.Vendor, "
+            "compact(VulnerPassport.AffectedComponents.Name)) | "
+            "sort(VulnerPassport.IsTrendSince DESC)"
+        )
+
+        self.assertEqual(
+            " ".join(TRENDING_VULNERABILITY_PDQL.split()),
+            expected,
+        )
+
+    def test_trending_record_normalizes_dashboard_metadata(self):
+        record = {
+            "@VulnerPassport": {
+                "internalId": "passport-trend-1",
+                "id": "CVE-2026-58644",
+                "name": "SharePoint remote code execution",
+                "severityRating": "critical",
+            },
+            "VulnerPassport.Score": Decimal("9.8"),
+            "VulnerPassport.Description": "Remote code execution in SharePoint Server.",
+            "VulnerPassport.IssueTime": "2026-07-10T08:00:00Z",
+            "VulnerPassport.IsTrendSince": "2026-07-16T13:00:00Z",
+            "VulnerPassport.AffectedComponents.Vendor": [
+                "Microsoft",
+                "Microsoft",
+                "",
+            ],
+            "compact(VulnerPassport.AffectedComponents.Name)": {
+                "data": [
+                    {"displayName": "Microsoft SharePoint Server"},
+                    {"name": "Windows"},
+                    {"displayName": "Microsoft SharePoint Server"},
+                ]
+            },
+        }
+
+        normalized = main.normalize_trending_vulnerability_record(record)
+
+        self.assertEqual(normalized["internal_id"], "passport-trend-1")
+        self.assertEqual(normalized["external_id"], "CVE-2026-58644")
+        self.assertEqual(normalized["name"], "SharePoint remote code execution")
+        self.assertEqual(normalized["severity"], "critical")
+        self.assertEqual(normalized["score"], Decimal("9.8"))
+        self.assertEqual(
+            normalized["description"],
+            "Remote code execution in SharePoint Server.",
+        )
+        self.assertEqual(normalized["issue_time"], "2026-07-10T08:00:00Z")
+        self.assertEqual(
+            normalized["is_trend_since"],
+            "2026-07-16T13:00:00Z",
+        )
+        self.assertEqual(normalized["vendors"], ["Microsoft"])
+        self.assertEqual(
+            normalized["affected_components"],
+            ["Microsoft SharePoint Server", "Windows"],
+        )
+        self.assertEqual(normalized["raw_record"], record)
+
+    def test_expanded_trend_rows_merge_vendor_and_component_values(self):
+        base = {
+            "internal_id": "passport-trend-1",
+            "is_trend": True,
+            "name": "SharePoint remote code execution",
+            "vendors": ["Microsoft"],
+            "affected_components": ["SharePoint Server"],
+            "cves": [],
+        }
+
+        merged = main.merge_trending_vulnerability_records(
+            [
+                base,
+                {
+                    **base,
+                    "vendors": ["Microsoft", "Contoso"],
+                    "affected_components": ["Windows"],
+                },
+            ]
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["vendors"], ["Microsoft", "Contoso"])
+        self.assertEqual(
+            merged[0]["affected_components"],
+            ["SharePoint Server", "Windows"],
+        )
+
+    def test_passport_sync_requires_manage_permission(self):
+        self.assertEqual(
+            main.app_auth.required_permission(
+                "POST", "/api/vulnerability-passports/query"
+            ),
+            "passports.manage",
+        )
+        self.assertEqual(
+            main.app_auth.required_permission(
+                "GET", "/api/vulnerability-passports/local"
+            ),
+            "passports.read",
+        )
+
+    def test_unverified_empty_trend_response_preserves_the_previous_snapshot(self):
+        client = SimpleNamespace(
+            create_pdql_token=lambda *_args, **_kwargs: "trend-token"
+        )
+        with (
+            patch.object(
+                main,
+                "fetch_asset_grid_records",
+                return_value=([], {"recordCount": 0, "reportedTotal": None}),
+            ),
+            patch.object(
+                main.db, "replace_vulnerability_passport_trends"
+            ) as replace,
+        ):
+            with self.assertRaisesRegex(ValueError, "previous snapshot was preserved"):
+                main.sync_trending_vulnerability_passports(
+                    client=client,
+                    token="token",
+                    utc_offset="+05:00",
+                    batch_size=5000,
+                    reconcile_links=False,
+                )
+
+        replace.assert_not_called()
+
+    def test_verified_empty_trend_response_clears_the_current_snapshot(self):
+        client = SimpleNamespace(
+            create_pdql_token=lambda *_args, **_kwargs: "trend-token"
+        )
+        with (
+            patch.object(
+                main,
+                "fetch_asset_grid_records",
+                return_value=([], {"recordCount": 0, "reportedTotal": 0}),
+            ),
+            patch.object(
+                main.db,
+                "replace_vulnerability_passport_trends",
+                return_value={"saved": 0, "skipped": 0},
+            ) as replace,
+        ):
+            result = main.sync_trending_vulnerability_passports(
+                client=client,
+                token="token",
+                utc_offset="+05:00",
+                batch_size=5000,
+                reconcile_links=False,
+            )
+
+        self.assertEqual(result["total"], 0)
+        replace.assert_called_once_with(
+            [],
+            source_pdql=TRENDING_VULNERABILITY_PDQL,
+            pdql_token="trend-token",
+            reconcile_links=False,
+        )
+
     def test_query_returns_before_background_details_run(self):
         client = SimpleNamespace(
             auth=SimpleNamespace(),
@@ -148,6 +314,15 @@ class PassportQueryTests(unittest.TestCase):
             patch.object(main, "fetch_asset_grid_records", return_value=(records, {"recordCount": 100})),
             patch.object(main.db, "get_active_vulnerability_passport_detail_job", return_value=None),
             patch.object(main.db, "upsert_vulnerability_passports", return_value={"saved": 100, "skipped": 0}),
+            patch.object(
+                main,
+                "sync_trending_vulnerability_passports",
+                return_value={
+                    "status": "completed",
+                    "total": 2,
+                    "db": {"saved": 2},
+                },
+            ) as trend_sync,
             patch.object(
                 main.db,
                 "vulnerability_passport_detail_refresh_candidates",
@@ -181,6 +356,8 @@ class PassportQueryTests(unittest.TestCase):
         self.assertEqual(response["total"], 100)
         self.assertEqual(len(response["records"]), 50)
         self.assertEqual(response["detail_job"]["status"], "queued")
+        self.assertEqual(response["trend_sync"]["total"], 2)
+        trend_sync.assert_called_once()
         self.assertEqual(len(background_tasks.tasks), 1)
         self.assertNotIn("raw_detail", response["records"][0])
 

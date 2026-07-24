@@ -141,6 +141,42 @@ const TRENDS = {
   ],
 };
 
+const TRENDING_VULNERABILITIES = {
+  total: 2,
+  limit: 20,
+  rows: [
+    {
+      internal_id: "trend-passport-1",
+      external_id: "CVE-2026-58644",
+      cve: "CVE-2026-58644",
+      name: "Удалённое выполнение кода в Microsoft SharePoint Server",
+      severity: "critical",
+      score: 9.8,
+      description:
+        "Ошибка десериализации позволяет неаутентифицированному злоумышленнику удалённо выполнить код.",
+      issue_time: "2026-07-14T08:00:00Z",
+      is_trend_since: "2026-07-16T08:00:00Z",
+      vendors: ["Microsoft"],
+      affected_components: ["Microsoft SharePoint Server"],
+      affected_hosts: 0,
+    },
+    {
+      internal_id: "trend-passport-2",
+      external_id: "CVE-2026-42980",
+      cve: "CVE-2026-42980",
+      name: "Повышение привилегий в ядре Microsoft Windows",
+      severity: "medium",
+      score: 6.7,
+      description: "Некорректная обработка значений в подсистеме WMI.",
+      issue_time: "2026-07-13T08:00:00Z",
+      is_trend_since: "2026-07-15T08:00:00Z",
+      vendors: ["Microsoft"],
+      affected_components: ["Windows"],
+      affected_hosts: 2,
+    },
+  ],
+};
+
 const RESOLUTION_STATS = {
   period_days: 30,
   confirmed_resolutions: 7,
@@ -178,6 +214,11 @@ function responseFor(path, { total = 75, empty = false } = {}) {
   }
   if (url.pathname === "/api/vulnerabilities/trends") {
     return empty ? { ...TRENDS, rows: [] } : TRENDS;
+  }
+  if (url.pathname === "/api/vulnerabilities/trending") {
+    return empty
+      ? { ...TRENDING_VULNERABILITIES, total: 0, rows: [] }
+      : TRENDING_VULNERABILITIES;
   }
   if (url.pathname === "/api/vulnerabilities/summary") return SUMMARY;
   if (url.pathname === "/api/vulnerabilities/hosts") {
@@ -257,6 +298,122 @@ describe("vulnerability dashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     await waitFor(() => expect(selectors[0]).toHaveFocus());
+  });
+
+  it("renders trending vulnerability details and opens its passport", async () => {
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/vulnerability-passports/trend-passport-1") {
+        return Promise.resolve({
+          passport: TRENDING_VULNERABILITIES.rows[0],
+          raw: {
+            name: TRENDING_VULNERABILITIES.rows[0].name,
+            severity: "critical",
+          },
+          source: "db",
+        });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    const heading = await screen.findByRole("heading", {
+      name: "Трендовые уязвимости",
+    });
+    const section = heading.closest("section");
+    expect(
+      await within(section).findByText("CVE-2026-58644"),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByText(/Ошибка десериализации позволяет/),
+    ).toBeInTheDocument();
+    expect(within(section).getAllByText("Microsoft").length).toBeGreaterThan(0);
+    expect(
+      within(section).getByText("Microsoft SharePoint Server"),
+    ).toBeInTheDocument();
+    expect(within(section).getByText("CVSS 9,8")).toBeInTheDocument();
+    expect(within(section).getByText("16.07.2026")).toBeInTheDocument();
+    expect(
+      within(section).getByLabelText("Заражённых хостов: 0"),
+    ).toHaveTextContent("0");
+    expect(
+      within(section).getByLabelText("Заражённых хостов: 2"),
+    ).toHaveTextContent("2");
+    expect(
+      api.mock.calls.some(([path]) => {
+        const url = new URL(path, "http://localhost");
+        return (
+          url.pathname === "/api/vulnerabilities/trending" &&
+          url.searchParams.get("limit") === "20"
+        );
+      }),
+    ).toBe(true);
+
+    const trendingCallsBeforeRefresh = api.mock.calls.filter(([path]) => {
+      const url = new URL(path, "http://localhost");
+      return url.pathname === "/api/vulnerabilities/trending";
+    }).length;
+    const refreshButton = await screen.findByRole("button", {
+      name: "Перечитать срез",
+    });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    fireEvent.click(refreshButton);
+    await waitFor(() => {
+      const calls = api.mock.calls.filter(([path]) => {
+        const url = new URL(path, "http://localhost");
+        return url.pathname === "/api/vulnerabilities/trending";
+      });
+      expect(calls.length).toBeGreaterThan(trendingCallsBeforeRefresh);
+    });
+
+    fireEvent.click(
+      within(section).getByRole("button", {
+        name: "Открыть паспорт уязвимости CVE-2026-58644",
+      }),
+    );
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "trend-passport-1",
+    );
+    expect(api).toHaveBeenCalledWith(
+      "/api/vulnerability-passports/trend-passport-1",
+    );
+  });
+
+  it("retries and renders an empty state for trending vulnerabilities independently", async () => {
+    let trendingFails = true;
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/vulnerabilities/trending") {
+        if (trendingFails) {
+          return Promise.reject(
+            new Error("Трендовые паспорта временно недоступны"),
+          );
+        }
+        return Promise.resolve({
+          ...TRENDING_VULNERABILITIES,
+          total: 0,
+          rows: [],
+        });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    expect(
+      await screen.findByText("Трендовые паспорта временно недоступны"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Хосты с уязвимостями")).toBeInTheDocument();
+
+    trendingFails = false;
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Повторить загрузку трендовых уязвимостей",
+      }),
+    );
+    expect(
+      await screen.findByText("Трендовые уязвимости не найдены."),
+    ).toBeInTheDocument();
   });
 
   it("opens a host finding and starts its remediation task", async () => {

@@ -2881,9 +2881,16 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
         const detailsLine = detailJob
           ? `, деталей в очереди: ${formatCount(detailJob.eligible_count)}, свежих в кэше: ${formatCount(detailJob.skipped_fresh_count)}`
           : "";
+        const trendSync = result.trend_sync;
+        const trendsLine =
+          trendSync?.status === "completed"
+            ? `, трендовых: ${formatCount(trendSync.total)}`
+            : trendSync?.status === "failed"
+              ? ", тренды не обновлены"
+              : "";
         showAlert(
-          `Получено паспортов: ${formatCount(result.total)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}${detailsLine}.`,
-          "success",
+          `Получено паспортов: ${formatCount(result.total)}${saved == null ? "" : `, сохранено в БД: ${formatCount(saved)}`}${detailsLine}${trendsLine}.`,
+          trendSync?.status === "failed" ? "info" : "success",
         );
       } else {
         showAlert(

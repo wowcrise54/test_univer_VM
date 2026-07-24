@@ -45,6 +45,9 @@ class VulnerabilityAnalyticsService:
     def summary(self, **filters: Any) -> dict[str, Any]:
         return self._repository.summary(**filters)
 
+    def trending(self, *, limit: int = 20) -> dict[str, Any]:
+        return self._repository.trending(limit=limit)
+
     def list(self, **filters: Any) -> dict[str, Any]:
         return self._repository.list(**filters)
 

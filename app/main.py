@@ -93,6 +93,7 @@ from .mpvm_client import (
     ASSET_CARD_PDQL,
     DOCKER_VULNERABILITY_PDQL,
     SOFTWARE_VULN_PDQL,
+    TRENDING_VULNERABILITY_PDQL,
     VULNER_PASSPORT_PDQL,
     AuthConfig,
     MpVmApiError,
@@ -1187,6 +1188,7 @@ def defaults() -> dict[str, Any]:
         "utc_offset": os.getenv("MPVM_UTC_OFFSET") or os.getenv("MP10_UTC_OFFSET") or "+05:00",
         "software_vuln_pdql": SOFTWARE_VULN_PDQL,
         "vulnerability_passport_pdql": VULNER_PASSPORT_PDQL,
+        "trending_vulnerability_pdql": TRENDING_VULNERABILITY_PDQL,
         "asset_card_pdql": ASSET_CARD_PDQL,
         "docker_vulnerability_pdql": DOCKER_VULNERABILITY_PDQL,
         "asset_card_refresh_workers": ASSET_CARD_REFRESH_WORKERS,
@@ -2807,6 +2809,59 @@ def delete_local_asset_card(asset_id: str) -> dict[str, Any]:
     return {"asset_id": asset_id, "deleted": True}
 
 
+def sync_trending_vulnerability_passports(
+    *,
+    client: MpVmClient,
+    token: str,
+    utc_offset: str | None,
+    batch_size: int,
+    reconcile_links: bool,
+) -> dict[str, Any]:
+    pdql_token = client.create_pdql_token(
+        token,
+        TRENDING_VULNERABILITY_PDQL,
+        utc_offset=utc_offset,
+        selected_group_ids=[],
+        include_nested_groups=True,
+        asset_ids=[],
+    )
+    records, raw_response = fetch_asset_grid_records(
+        client=client,
+        token=token,
+        pdql_token=pdql_token,
+        limit=None,
+        batch_size=batch_size,
+    )
+    parsed = [
+        normalize_trending_vulnerability_record(record) for record in records
+    ]
+    if not records and raw_response.get("reportedTotal") is None:
+        raise ValueError(
+            "MP VM returned an unverified empty trend response; "
+            "the previous snapshot was preserved."
+        )
+    if any(not item.get("internal_id") or not item.get("is_trend") for item in parsed):
+        raise ValueError(
+            "MP VM returned malformed or non-trending passport rows; "
+            "the previous snapshot was preserved."
+        )
+    normalized = merge_trending_vulnerability_records(parsed)
+    db_result = db.replace_vulnerability_passport_trends(
+        normalized,
+        source_pdql=TRENDING_VULNERABILITY_PDQL,
+        pdql_token=pdql_token,
+        reconcile_links=reconcile_links,
+    )
+    return {
+        "status": "completed",
+        "pdql": TRENDING_VULNERABILITY_PDQL,
+        "pdql_token": pdql_token,
+        "total": len(normalized),
+        "db": db_result,
+        "raw": raw_response,
+    }
+
+
 @passports_router.post("/api/vulnerability-passports/query")
 def query_vulnerability_passports(
     payload: VulnerabilityPassportQueryRequest,
@@ -2853,6 +2908,41 @@ def query_vulnerability_passports(
         if payload.save_to_db
         else None
     )
+    trend_sync = None
+    if payload.save_to_db:
+        try:
+            full_catalog_sync = (
+                " ".join(payload.pdql.split())
+                == " ".join(VULNER_PASSPORT_PDQL.split())
+                and payload.limit is None
+                and not payload.group_ids
+                and not payload.asset_ids
+            )
+            trend_sync = sync_trending_vulnerability_passports(
+                client=client,
+                token=token,
+                utc_offset=payload.utc_offset,
+                batch_size=payload.batch_size,
+                # A complete default passport sync already rebuilt links. A
+                # scoped/custom sync may introduce a parent seen only in the
+                # trend result, so reconcile once more in that case.
+                reconcile_links=not full_catalog_sync,
+            )
+        except Exception as exc:
+            # Trend metadata is an independent optional snapshot. A malformed
+            # remote response or a local serialization failure must not block
+            # the main passport list or its background detail job.
+            trend_sync = {
+                "status": "failed",
+                "pdql": TRENDING_VULNERABILITY_PDQL,
+                "message": str(exc),
+            }
+            log_event(
+                "passport-sync",
+                "trending-vulnerabilities.sync.failed",
+                level=logging.WARNING,
+                error=str(exc),
+            )
     saved_finished = time.perf_counter()
     detail_job = None
     if payload.save_to_db and payload.load_details:
@@ -2909,6 +2999,7 @@ def query_vulnerability_passports(
         "total": len(normalized),
         "records": records_response,
         "db": db_result,
+        "trend_sync": trend_sync,
         "detail_job": detail_job,
         "details": detail_job,
         "raw": raw_response,
@@ -2918,6 +3009,21 @@ def query_vulnerability_passports(
             "response_prepare": round((time.perf_counter() - saved_finished) * 1000),
         },
     }
+
+
+@passports_router.post("/api/vulnerability-passports/trending/refresh")
+def refresh_trending_vulnerability_passports() -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        return sync_trending_vulnerability_passports(
+            client=client,
+            token=token,
+            utc_offset=os.getenv("MPVM_UTC_OFFSET") or "+05:00",
+            batch_size=5000,
+            reconcile_links=True,
+        )
+    except (MpVmApiError, requests.RequestException, ValueError) as exc:
+        raise http_error(exc) from exc
 
 
 @passports_router.get("/api/vulnerability-passports/local")
@@ -7073,6 +7179,69 @@ def normalize_vulnerability_passport_record(record: dict[str, Any]) -> dict[str,
     }
 
 
+def normalize_trending_vulnerability_record(record: dict[str, Any]) -> dict[str, Any]:
+    passport = record.get("@VulnerPassport") if isinstance(record.get("@VulnerPassport"), dict) else {}
+    affected_components = passport.get("affectedComponents")
+    if not isinstance(affected_components, list):
+        affected_components = passport.get("AffectedComponents")
+    nested_vendors: list[Any] = []
+    nested_names: list[Any] = []
+    if isinstance(affected_components, list):
+        for component in affected_components:
+            if not isinstance(component, dict):
+                nested_names.append(component)
+                continue
+            nested_vendors.append(first_present(component.get("vendor"), component.get("Vendor")))
+            nested_names.append(
+                first_present(
+                    component.get("name"),
+                    component.get("displayName"),
+                    component.get("Name"),
+                )
+            )
+
+    normalized = normalize_vulnerability_passport_record(record)
+    trend_value = first_present(
+        record.get("VulnerPassport.IsTrend"),
+        passport.get("isTrend"),
+        passport.get("IsTrend"),
+    )
+    normalized.update(
+        {
+            # This normalizer is only used for the result of the exact
+            # IsTrend=true PDQL query, where some MP VM versions omit the
+            # selected boolean from the returned row.
+            "is_trend": True if trend_value is None else normalize_boolean(trend_value),
+            "description": normalize_passport_text(
+                first_present(
+                    record.get("VulnerPassport.Description"),
+                    passport.get("description"),
+                    passport.get("Description"),
+                )
+            ),
+            "is_trend_since": first_present(
+                record.get("VulnerPassport.IsTrendSince"),
+                passport.get("isTrendSince"),
+                passport.get("IsTrendSince"),
+            ),
+            "vendors": normalize_passport_labels(
+                first_present(
+                    record.get("VulnerPassport.AffectedComponents.Vendor"),
+                    nested_vendors,
+                )
+            ),
+            "affected_components": normalize_passport_labels(
+                first_present(
+                    record.get("compact(VulnerPassport.AffectedComponents.Name)"),
+                    record.get("VulnerPassport.AffectedComponents.Name"),
+                    nested_names,
+                )
+            ),
+        }
+    )
+    return normalized
+
+
 def vulnerability_passport_summary(passport: dict[str, Any]) -> dict[str, Any]:
     return {
         "internal_id": passport.get("internal_id"),
@@ -7105,6 +7274,66 @@ def dedupe_vulnerability_passports(passports: list[dict[str, Any]]) -> list[dict
     return result
 
 
+def merge_trending_vulnerability_records(
+    passports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge rows expanded by affected-component fields into one passport."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    metadata_fields = (
+        "external_id",
+        "name",
+        "severity",
+        "score",
+        "description",
+        "issue_time",
+        "is_trend_since",
+        "package_id",
+        "package_version",
+    )
+    for passport in passports:
+        internal_id = str(passport.get("internal_id") or "").strip()
+        if not internal_id:
+            continue
+        current = merged.get(internal_id)
+        if current is None:
+            current = {
+                **passport,
+                "vendors": list(passport.get("vendors") or []),
+                "affected_components": list(
+                    passport.get("affected_components") or []
+                ),
+                "cves": list(passport.get("cves") or []),
+            }
+            merged[internal_id] = current
+            continue
+        for field in metadata_fields:
+            current_value = current.get(field)
+            candidate_value = passport.get(field)
+            if (
+                (current_value is None or current_value == "")
+                and candidate_value is not None
+                and candidate_value != ""
+            ):
+                current[field] = passport[field]
+        for field in ("vendors", "affected_components"):
+            values = current.setdefault(field, [])
+            for value in passport.get(field) or []:
+                if value not in values:
+                    values.append(value)
+        cves = current.setdefault("cves", [])
+        cve_keys = {
+            json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            for item in cves
+        }
+        for cve in passport.get("cves") or []:
+            key = json.dumps(cve, ensure_ascii=False, sort_keys=True, default=str)
+            if key not in cve_keys:
+                cve_keys.add(key)
+                cves.append(cve)
+    return list(merged.values())
+
+
 def normalize_compact_items(value: Any) -> list[dict[str, Any]]:
     items: list[Any] = []
     if isinstance(value, dict) and isinstance(value.get("data"), list):
@@ -7125,6 +7354,68 @@ def normalize_compact_items(value: Any) -> list[dict[str, Any]]:
         elif item:
             result.append({"display_name": str(item), "url": None, "raw": item})
     return result
+
+
+def normalize_passport_labels(value: Any) -> list[str]:
+    labels: list[str] = []
+
+    def append(item: Any) -> None:
+        if item is None or item == "":
+            return
+        if isinstance(item, list):
+            for child in item:
+                append(child)
+            return
+        if isinstance(item, dict):
+            data = item.get("data")
+            if isinstance(data, list):
+                append(data)
+                return
+            label = first_present(
+                item.get("display_name"),
+                item.get("displayName"),
+                item.get("name"),
+                item.get("Name"),
+                item.get("value"),
+                item.get("title"),
+                item.get("id"),
+            )
+            append(label)
+            return
+        text = str(item).strip()
+        if text and text not in labels:
+            labels.append(text)
+
+    append(value)
+    return labels
+
+
+def normalize_passport_text(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        value = first_present(
+            value.get("text"),
+            value.get("description"),
+            value.get("displayName"),
+            value.get("name"),
+            value.get("value"),
+        )
+    if isinstance(value, list):
+        parts = [normalize_passport_text(item) for item in value]
+        value = " ".join(part for part in parts if part)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def first_present(*values: Any) -> Any:

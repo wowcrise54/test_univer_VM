@@ -77,6 +77,7 @@ export function VulnerabilitiesDashboard({
   const restoreDrilldownFocusRef = useRef(false);
   const {
     trendsQuery,
+    trendingPassportsQuery,
     summaryQuery,
     vulnerabilitiesQuery,
     hostsQuery,
@@ -159,6 +160,7 @@ export function VulnerabilitiesDashboard({
       return;
     }
     trendsQuery.refetch();
+    trendingPassportsQuery.refetch();
     summaryQuery.refetch();
     vulnerabilitiesQuery.refetch();
     if (selected?.selector) hostsQuery.refetch();
@@ -170,7 +172,8 @@ export function VulnerabilitiesDashboard({
   };
 
   const openPassport = async (row) => {
-    const mappedPassport = row?.passports?.[0];
+    const mappedPassport =
+      row?.passport || row?.passports?.[0] || (row?.internal_id ? row : null);
     if (!mappedPassport?.internal_id) {
       return;
     }
@@ -250,6 +253,7 @@ export function VulnerabilitiesDashboard({
   const hostTotal = resultTotal(hostsQuery.data, hostRows);
   const refreshing =
     trendsQuery.isFetching ||
+    trendingPassportsQuery.isFetching ||
     summaryQuery.isFetching ||
     vulnerabilitiesQuery.isFetching ||
     hostsQuery.isFetching ||
@@ -337,6 +341,11 @@ export function VulnerabilitiesDashboard({
               </div>
             </>
           )}
+
+          <TrendingVulnerabilities
+            query={trendingPassportsQuery}
+            onOpenPassport={openPassport}
+          />
 
           <VulnerabilityTable
             rows={vulnerabilityRows}
@@ -1423,6 +1432,143 @@ function InsightCard({ title, description, children }) {
   );
 }
 
+function TrendingVulnerabilities({ query, onOpenPassport }) {
+  const rows = resultRows(query.data);
+
+  return (
+    <section
+      className="trending-vulnerabilities"
+      aria-labelledby="trending-vulnerabilities-title"
+    >
+      <div className="trending-vulnerabilities__heading">
+        <div>
+          <h3 id="trending-vulnerabilities-title">Трендовые уязвимости</h3>
+          <p>
+            Паспорта, отмеченные как трендовые, и число затронутых ими хостов
+          </p>
+        </div>
+        {query.isFetching && !query.isPending ? (
+          <span role="status">Обновляю…</span>
+        ) : null}
+      </div>
+
+      {query.isPending ? (
+        <LoadingState label="Загружаю трендовые уязвимости…" />
+      ) : query.isError ? (
+        <QueryError
+          title="Не удалось загрузить трендовые уязвимости"
+          error={query.error}
+          retryLabel="Повторить загрузку трендовых уязвимостей"
+          onRetry={query.refetch}
+        />
+      ) : rows.length ? (
+        <ol className="trending-vulnerabilities__list">
+          {rows.map((row, index) => {
+            const label =
+              row.cve ||
+              row.external_id ||
+              row.name ||
+              row.internal_id ||
+              "Без названия";
+            const vendors = trendTagValues(row.vendors);
+            const components = trendTagValues(row.affected_components);
+            return (
+              <li
+                className={`trending-vulnerability trending-vulnerability--${severityClass(row.severity)}`}
+                key={`${row.internal_id || label}-${index}`}
+              >
+                <span
+                  className="trending-vulnerability__marker"
+                  aria-hidden="true"
+                />
+                <div className="trending-vulnerability__content">
+                  <div className="trending-vulnerability__identity">
+                    <button
+                      type="button"
+                      disabled={!row.internal_id}
+                      aria-label={`Открыть паспорт уязвимости ${label}`}
+                      onClick={() => onOpenPassport(row)}
+                    >
+                      {label}
+                    </button>
+                    <SeverityBadge value={row.severity} />
+                    {row.score !== null &&
+                    row.score !== undefined &&
+                    row.score !== "" ? (
+                      <span className="trending-vulnerability__score">
+                        CVSS {formatScore(row.score)}
+                      </span>
+                    ) : null}
+                  </div>
+                  {row.name && row.name !== label ? (
+                    <strong className="trending-vulnerability__name">
+                      {row.name}
+                    </strong>
+                  ) : null}
+                  <p className="trending-vulnerability__description">
+                    {row.description || "Описание отсутствует."}
+                  </p>
+                  <div className="trending-vulnerability__dates">
+                    <span>
+                      В тренде с{" "}
+                      <time dateTime={row.is_trend_since || undefined}>
+                        {formatCalendarDate(row.is_trend_since)}
+                      </time>
+                    </span>
+                    <span>
+                      Опубликована{" "}
+                      <time dateTime={row.issue_time || undefined}>
+                        {formatCalendarDate(row.issue_time)}
+                      </time>
+                    </span>
+                  </div>
+                  {vendors.length || components.length ? (
+                    <div className="trending-vulnerability__tags">
+                      {vendors.length ? (
+                        <TrendTags label="Поставщик" values={vendors} />
+                      ) : null}
+                      {components.length ? (
+                        <TrendTags
+                          label="Уязвимые компоненты"
+                          values={components}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                <div
+                  className="trending-vulnerability__hosts"
+                  aria-label={`Заражённых хостов: ${formatCount(row.affected_hosts)}`}
+                >
+                  <strong>{formatCount(row.affected_hosts)}</strong>
+                  <span>Заражённых хостов</span>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <EmptyState>Трендовые уязвимости не найдены.</EmptyState>
+      )}
+    </section>
+  );
+}
+
+function TrendTags({ label, values }) {
+  return (
+    <div className="trending-vulnerability__tag-group">
+      <strong>{label}:</strong>
+      <span>
+        {values.map((value) => (
+          <span className="trending-vulnerability__tag" key={value}>
+            {value}
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
 function VulnerabilityTable({
   rows,
   total,
@@ -2167,6 +2313,38 @@ function formatList(value) {
   if (typeof value === "object")
     return value.name || value.label || value.count || "—";
   return String(value);
+}
+
+function trendTagValues(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return Array.from(
+    new Set(
+      values
+        .map((item) => {
+          if (item && typeof item === "object") {
+            return (
+              item.name ||
+              item.display_name ||
+              item.displayName ||
+              item.label ||
+              item.id ||
+              ""
+            );
+          }
+          return item === null || item === undefined ? "" : String(item);
+        })
+        .map((item) => String(item).trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function formatCalendarDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : date.toLocaleDateString("ru-RU");
 }
 
 function formatDate(value) {

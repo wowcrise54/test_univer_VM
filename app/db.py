@@ -243,6 +243,19 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS vulnerability_passport_trends (
+            passport_internal_id TEXT PRIMARY KEY
+                REFERENCES vulnerability_passports(internal_id) ON DELETE CASCADE,
+            description TEXT,
+            is_trend_since TEXT,
+            vendors_json TEXT NOT NULL DEFAULT '[]',
+            affected_components_json TEXT NOT NULL DEFAULT '[]',
+            source_pdql TEXT NOT NULL,
+            pdql_token TEXT,
+            synced_at TEXT NOT NULL
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS vulnerability_passport_detail_jobs (
             job_id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
@@ -636,6 +649,7 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_severity_lower ON vulnerability_passports((LOWER(severity)))",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_package ON vulnerability_passports(package_id, package_version)",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passports_pdql_token ON vulnerability_passports(pdql_token)",
+        "CREATE INDEX IF NOT EXISTS idx_vulnerability_passport_trends_since ON vulnerability_passport_trends(is_trend_since DESC, passport_internal_id)",
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_created ON vulnerability_passport_detail_jobs(created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_single_active ON vulnerability_passport_detail_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_build_jobs_created ON asset_card_build_jobs(created_at DESC)",
@@ -2103,6 +2117,127 @@ def upsert_vulnerability_passports(
                 )
         links_created = reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
     return {"saved": len(values), "skipped": skipped, "passport_links": links_created}
+
+
+def replace_vulnerability_passport_trends(
+    passports: list[dict[str, Any]],
+    *,
+    source_pdql: str,
+    pdql_token: str | None = None,
+    reconcile_links: bool = False,
+) -> dict[str, Any]:
+    """Atomically replace the current trend snapshot without degrading passport data."""
+
+    init_db()
+    current = now_utc()
+    skipped = 0
+    parent_values: list[tuple[Any, ...]] = []
+    trend_values: list[tuple[Any, ...]] = []
+    saved_ids: list[str] = []
+    for passport in passports:
+        internal_id = clean_value(passport.get("internal_id"))
+        if not internal_id:
+            skipped += 1
+            continue
+        cves = passport.get("cves") if isinstance(passport.get("cves"), list) else []
+        raw_record = (
+            passport.get("raw_record")
+            if isinstance(passport.get("raw_record"), dict)
+            else {}
+        )
+        parent_values.append(
+            (
+                internal_id,
+                clean_value(passport.get("external_id")),
+                clean_value(passport.get("name")),
+                clean_value(passport.get("severity")),
+                clean_value(passport.get("score")),
+                clean_value(passport.get("issue_time")),
+                json.dumps(cves, ensure_ascii=False, default=str),
+                json.dumps(raw_record, ensure_ascii=False, default=str),
+                current,
+                current,
+            )
+        )
+        trend_values.append(
+            (
+                internal_id,
+                clean_value(passport.get("description")),
+                clean_value(passport.get("is_trend_since")),
+                json.dumps(
+                    passport.get("vendors") or [], ensure_ascii=False, default=str
+                ),
+                json.dumps(
+                    passport.get("affected_components") or [],
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                source_pdql,
+                pdql_token,
+                current,
+            )
+        )
+        saved_ids.append(internal_id)
+
+    with connect() as conn:
+        # Serialize full-snapshot replacements while still allowing readers to
+        # see the previously committed snapshot until this transaction commits.
+        conn.execute("LOCK TABLE vulnerability_passport_trends IN EXCLUSIVE MODE")
+        if parent_values:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO vulnerability_passports (
+                        internal_id, external_id, name, severity, score, issue_time,
+                        cves_json, raw_record_json, first_seen, last_seen
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(internal_id) DO UPDATE SET
+                        external_id = COALESCE(
+                            EXCLUDED.external_id, vulnerability_passports.external_id
+                        ),
+                        name = COALESCE(EXCLUDED.name, vulnerability_passports.name),
+                        severity = COALESCE(
+                            EXCLUDED.severity, vulnerability_passports.severity
+                        ),
+                        score = COALESCE(EXCLUDED.score, vulnerability_passports.score),
+                        issue_time = COALESCE(
+                            EXCLUDED.issue_time, vulnerability_passports.issue_time
+                        ),
+                        cves_json = CASE
+                            WHEN EXCLUDED.cves_json <> '[]'
+                                THEN EXCLUDED.cves_json
+                            ELSE vulnerability_passports.cves_json
+                        END,
+                        last_seen = EXCLUDED.last_seen
+                    """,
+                    parent_values,
+                )
+        conn.execute("DELETE FROM vulnerability_passport_trends")
+        if trend_values:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO vulnerability_passport_trends (
+                        passport_internal_id, description, is_trend_since,
+                        vendors_json, affected_components_json, source_pdql,
+                        pdql_token, synced_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    trend_values,
+                )
+        links_created = (
+            reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
+            if reconcile_links
+            else 0
+        )
+    return {
+        "saved": len(trend_values),
+        "skipped": skipped,
+        "passport_links": links_created,
+        "synced_at": current,
+    }
 
 
 VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL = """

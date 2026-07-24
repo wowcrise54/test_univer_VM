@@ -67,6 +67,13 @@ VulnerPassport.IssueTime, VulnerPassport.PackageId,
 VulnerPassport.PackageVersion, VulnerPassport.Metrics)
 | limit(0)"""
 
+TRENDING_VULNERABILITY_PDQL = """filter((VulnerPassport.IsTrend = true))
+| select(@VulnerPassport, VulnerPassport.Score, VulnerPassport.Description,
+VulnerPassport.IssueTime, VulnerPassport.IsTrendSince,
+VulnerPassport.AffectedComponents.Vendor,
+compact(VulnerPassport.AffectedComponents.Name))
+| sort(VulnerPassport.IsTrendSince DESC)"""
+
 ASSET_CARD_PDQL = "select(@Host, Host.OsName, Host.@CreationTime, Host.@UpdateTime) | sort(@Host ASC)"
 
 # Container findings are exposed by a grouped Host -> DockerEngine -> Container

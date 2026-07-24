@@ -213,6 +213,19 @@ GET /api/assets_temporal_readmodel/v1/vulnerabilities/{internalId}
 Список сохраняется в таблицу `vulnerability_passports` сразу после загрузки из `/assets_grid/data`, после чего HTTP-ответ возвращается пользователю. Детали догружаются фоновой задачей с прогрессом и отменой: одновременно выполняется до `MPVM_PASSPORT_DETAIL_WORKERS` запросов, записи сохраняются пачками по 100, а детали моложе `MPVM_PASSPORT_DETAIL_TTL_HOURS` часов повторно не запрашиваются.
 Для больших выгрузок используйте поля `Сколько загрузить` и `Размер пачки`: пустой лимит загружает все доступные паспорта, а backend ходит в MP VM батчами до 10 000 записей через `offset + limit`.
 
+При синхронизации паспортов отдельно выполняется короткий запрос текущих трендов:
+
+```pdql
+filter((VulnerPassport.IsTrend = true))
+| select(@VulnerPassport, VulnerPassport.Score, VulnerPassport.Description,
+VulnerPassport.IssueTime, VulnerPassport.IsTrendSince,
+VulnerPassport.AffectedComponents.Vendor,
+compact(VulnerPassport.AffectedComponents.Name))
+| sort(VulnerPassport.IsTrendSince DESC)
+```
+
+Успешный ответ атомарно заменяет локальный снимок `vulnerability_passport_trends`; ошибка MP VM не удаляет предыдущий снимок. Дашборд читает его через `GET /api/vulnerabilities/trending` и считает заражённые хосты как `COUNT(DISTINCT asset_id)` по локальным findings, поэтому один хост с несколькими findings учитывается один раз. Принудительное обновление доступно через `POST /api/vulnerability-passports/trending/refresh`.
+
 ## Основные endpoints приложения
 
 - `POST /api/session/connect` - подключиться к MP VM.

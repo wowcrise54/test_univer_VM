@@ -454,7 +454,7 @@ def required_permission(method:str,path:str)->str|None:
         if any(marker in path for marker in ("/build","/refresh-scan")): return "asset_cards.build" if method not in {"GET","HEAD"} else "asset_cards.read"
         return "asset_cards.read" if method in {"GET","HEAD"} or path.endswith("/query-assets") else "asset_cards.manage"
     if path.startswith("/api/vulnerability-passports"):
-        return "passports.read" if method in {"GET","HEAD"} or path.endswith("/query") else "passports.manage"
+        return "passports.read" if method in {"GET","HEAD"} else "passports.manage"
     if path.startswith("/api/remediation/policy"): return "remediation.read" if method in {"GET","HEAD"} else "remediation.policy"
     if path.startswith("/api/remediation"): return "remediation.read" if method in {"GET","HEAD"} else "remediation.manage"
     if path.startswith("/api/automations"):

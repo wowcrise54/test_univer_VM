@@ -291,6 +291,66 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
+    cves = db.json_loads(row.get("cves_json"), [])
+    cves = cves if isinstance(cves, list) else []
+    cve = None
+    for item in cves:
+        if isinstance(item, str) and item.strip():
+            cve = item.strip()
+            break
+        if isinstance(item, dict):
+            cve = next(
+                (
+                    str(item.get(key)).strip()
+                    for key in ("display_name", "displayName", "cve", "name", "value", "id")
+                    if item.get(key)
+                ),
+                None,
+            )
+            if cve:
+                break
+    external_id = row.get("external_id")
+    if not cve and str(external_id or "").upper().startswith("CVE-"):
+        cve = str(external_id)
+
+    score = db.decimal_to_number(row.get("score_numeric"))
+    if score is None:
+        score = row.get("score")
+    severity = str(row.get("severity") or "").strip().lower()
+    if severity not in {"critical", "high", "medium", "low"}:
+        numeric_score = db.decimal_to_number(row.get("score_numeric"))
+        if numeric_score is None:
+            severity = "unknown"
+        elif numeric_score >= 9:
+            severity = "critical"
+        elif numeric_score >= 7:
+            severity = "high"
+        elif numeric_score >= 4:
+            severity = "medium"
+        else:
+            severity = "low"
+
+    vendors = db.json_loads(row.get("vendors_json"), [])
+    components = db.json_loads(row.get("affected_components_json"), [])
+    return {
+        "internal_id": row.get("internal_id"),
+        "external_id": external_id,
+        "cve": cve,
+        "name": row.get("name"),
+        "severity": severity,
+        "score": score,
+        "description": row.get("description"),
+        "issue_time": row.get("issue_time"),
+        "is_trend_since": row.get("is_trend_since"),
+        "vendors": vendors if isinstance(vendors, list) else [],
+        "affected_components": components if isinstance(components, list) else [],
+        "affected_hosts": int(row.get("affected_hosts") or 0),
+        "findings": int(row.get("findings") or 0),
+        "synced_at": row.get("synced_at"),
+    }
+
+
 def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
     cvss_score = db.decimal_to_number(row.get("cvss_score"))
     remediation = None
@@ -703,6 +763,75 @@ class VulnerabilityAnalyticsRepository:
             "coverage": coverage,
             "top_vulnerabilities": top["rows"],
             "top_hosts": [_decode_host(dict(row)) for row in top_host_rows],
+        }
+
+    def trending(self, *, limit: int = 20) -> dict[str, Any]:
+        limit = min(100, max(1, int(limit)))
+        db.init_db()
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH selected_trends AS (
+                    SELECT
+                        passport.internal_id,
+                        passport.external_id,
+                        passport.name,
+                        passport.severity,
+                        passport.score,
+                        passport.issue_time,
+                        passport.cves_json,
+                        trend.description,
+                        trend.is_trend_since,
+                        trend.vendors_json,
+                        trend.affected_components_json,
+                        trend.synced_at,
+                        CASE
+                            WHEN REPLACE(COALESCE(passport.score, ''), ',', '.')
+                                ~ '^[0-9]+([.][0-9]+)?$'
+                            THEN REPLACE(passport.score, ',', '.')::numeric
+                            ELSE NULL
+                        END AS score_numeric,
+                        COUNT(*) OVER() AS trend_total
+                    FROM vulnerability_passport_trends AS trend
+                    JOIN vulnerability_passports AS passport
+                        ON passport.internal_id = trend.passport_internal_id
+                    ORDER BY
+                        trend.is_trend_since DESC NULLS LAST,
+                        passport.issue_time DESC NULLS LAST,
+                        passport.internal_id ASC
+                    LIMIT %s
+                ), host_counts AS (
+                    SELECT
+                        link.passport_internal_id,
+                        COUNT(DISTINCT finding.asset_id) AS affected_hosts,
+                        COUNT(*) AS findings
+                    FROM selected_trends
+                    JOIN asset_card_vulnerability_passports AS link
+                        ON link.passport_internal_id = selected_trends.internal_id
+                    JOIN asset_card_vulnerabilities AS finding
+                        ON finding.id = link.asset_vulnerability_id
+                    GROUP BY link.passport_internal_id
+                )
+                SELECT
+                    selected_trends.*,
+                    COALESCE(host_counts.affected_hosts, 0) AS affected_hosts,
+                    COALESCE(host_counts.findings, 0) AS findings
+                FROM selected_trends
+                LEFT JOIN host_counts
+                    ON host_counts.passport_internal_id = selected_trends.internal_id
+                ORDER BY
+                    selected_trends.is_trend_since DESC NULLS LAST,
+                    selected_trends.issue_time DESC NULLS LAST,
+                    selected_trends.internal_id ASC
+                """,
+                (limit,),
+            ).fetchall()
+        decoded = [_decode_trending_passport(dict(row)) for row in rows]
+        return {
+            "total": int(rows[0].get("trend_total") or 0) if rows else 0,
+            "limit": limit,
+            "rows": decoded,
+            "synced_at": decoded[0].get("synced_at") if decoded else None,
         }
 
     def list(

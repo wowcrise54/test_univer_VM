@@ -40,6 +40,14 @@ def vulnerability_summary(
     return _service(request).summary(q=q, host_q=host_q, severity=severity, source=source)
 
 
+@router.get("/trending")
+def trending_vulnerabilities(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict:
+    return _service(request).trending(limit=limit)
+
+
 @router.get("/trends")
 def vulnerability_trends(
     request: Request,
