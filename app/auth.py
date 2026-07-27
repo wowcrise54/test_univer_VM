@@ -427,6 +427,7 @@ def required_permission(method:str,path:str)->str|None:
     method=method.upper()
     if path.startswith("/api/vm/workflows/") and path.endswith("/cancel"): return "operations.cancel"
     if path.startswith("/api/vm/workflows/") and path.endswith("/retry"): return "operations.retry"
+    if path=="/api/vm/workflows/scan/preflight": return "tasks.read"
     if path=="/api/vm/workflows/scan": return "tasks.execute"
     if path.startswith("/api/vm"): return "operations.read"
     if path.startswith("/api/auth/users"): return "security.users.read" if method in {"GET","HEAD"} else "security.users.manage"

@@ -15,6 +15,13 @@ Starter = Callable[[str, dict[str, Any], str], dict[str, Any]]
 VerificationStarter = Callable[[str, builtins.list[str], dict[str, Any]], dict[str, Any]]
 OperationAction = Callable[[str], Any]
 OPERATION_TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
+ACTIVE_OPERATIONS = {"queued", "running", "cancelling", "recovering"}
+
+
+class VmPreflightBlocked(RuntimeError):
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__("VM scan preflight failed.")
+        self.result = result
 
 
 class VmWorkflowService:
@@ -34,17 +41,23 @@ class VmWorkflowService:
         self.verification_starter: VerificationStarter | None = None
         self.operation_canceller: OperationAction | None = None
         self.status_provider: Callable[[], dict[str, Any]] | None = None
+        self.task_provider: Callable[[], builtins.list[dict[str, Any]]] | None = None
+        self.operation_provider: Callable[[], dict[str, Any]] | None = None
         self._scheduled: set[str] = set()
         self._lock = threading.Lock()
 
     def configure(
         self, *, scan_starter: Starter, verification_starter: VerificationStarter,
         operation_canceller: OperationAction, status_provider: Callable[[], dict[str, Any]],
+        task_provider: Callable[[], builtins.list[dict[str, Any]]] | None = None,
+        operation_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.scan_starter = scan_starter
         self.verification_starter = verification_starter
         self.operation_canceller = operation_canceller
         self.status_provider = status_provider
+        self.task_provider = task_provider
+        self.operation_provider = operation_provider
 
     def overview(self) -> dict[str, Any]:
         result = self.repository.overview()
@@ -60,9 +73,84 @@ class VmWorkflowService:
     def get(self, workflow_id: str) -> dict[str, Any] | None:
         return self.repository.get(workflow_id)
 
+    def scan_preflight(
+        self, *, task_id: str, options: dict[str, Any], can_execute: bool = True,
+    ) -> dict[str, Any]:
+        blocking: builtins.list[dict[str, str]] = []
+        warnings: builtins.list[dict[str, str]] = []
+        tasks = self.task_provider() if self.task_provider else []
+        task = next((item for item in tasks if str(item.get("mp_task_id")) == task_id), None)
+        if self.task_provider and not task:
+            blocking.append({"code": "TASK_NOT_FOUND", "message": "Задача сканирования не найдена или удалена."})
+        if not can_execute:
+            blocking.append({"code": "PERMISSION_DENIED", "message": "Нет права tasks.execute для запуска сканирования."})
+
+        system = self.status_provider() if self.status_provider else {}
+        mpvm = (system.get("components") or {}).get("mpvm") or {}
+        if self.status_provider and mpvm.get("state") != "ok":
+            blocking.append({"code": "MPVM_UNAVAILABLE", "message": mpvm.get("message") or "MP VM недоступен."})
+
+        targets = []
+        if task:
+            targets = task.get("include_targets") or (task.get("payload") or {}).get("include", {}).get("targets") or []
+            if not targets:
+                warnings.append({
+                    "code": "TARGETS_NOT_EXPLICIT",
+                    "message": "В задаче нет явного списка целей; охват будет определён настройками области MP VM.",
+                })
+
+        operations = (self.operation_provider() or {}).get("rows", []) if self.operation_provider else []
+        conflicts = []
+        for operation in operations:
+            if operation.get("status") not in ACTIVE_OPERATIONS:
+                continue
+            request = operation.get("request") or {}
+            if str(request.get("task_id") or operation.get("subject_id") or "") == task_id:
+                conflicts.append({
+                    "operation_id": operation.get("operation_id"),
+                    "status": operation.get("status"),
+                    "progress_percent": operation.get("progress_percent") or 0,
+                })
+        active_workflows = self.repository.active() if hasattr(self.repository, "active") else []
+        conflicts.extend({
+            "workflow_id": item.get("workflow_id"),
+            "status": item.get("status"),
+            "progress_percent": item.get("progress_percent") or 0,
+        } for item in active_workflows if str((item.get("request") or {}).get("task_id") or "") == task_id)
+        if conflicts:
+            issue = {
+                "code": "ACTIVE_CONFLICTS",
+                "message": f"Для этой задачи уже выполняется процессов: {len(conflicts)}.",
+            }
+            (blocking if options.get("require_clean_jobs") else warnings).append(issue)
+
+        return {
+            "ready": not blocking,
+            "blocking_issues": blocking,
+            "warnings": warnings,
+            "task": {
+                "task_id": task_id,
+                "name": (task or {}).get("name") or (task or {}).get("payload", {}).get("name") or task_id,
+                "status": (task or {}).get("status"),
+                "updated_at": (task or {}).get("updated_at"),
+                "last_execution": (task or {}).get("postprocess"),
+            },
+            "target_count": len(targets),
+            "conflicting_operations": conflicts,
+        }
+
     def start_scan(
         self, *, task_id: str, options: dict[str, Any], actor: str | None, idempotency_key: str | None,
     ) -> tuple[dict[str, Any], bool]:
+        if idempotency_key and hasattr(self.repository, "by_idempotency_key"):
+            replay = self.repository.by_idempotency_key(idempotency_key)
+            if replay:
+                if replay.get("kind") != "scan":
+                    raise ValueError("Idempotency key belongs to another workflow kind.")
+                return replay, True
+        preflight = self.scan_preflight(task_id=task_id, options=options)
+        if not preflight["ready"]:
+            raise VmPreflightBlocked(preflight)
         workflow, replay = self.repository.create(
             kind="scan", request={"task_id": task_id, "options": options}, requested_by=actor,
             idempotency_key=idempotency_key,

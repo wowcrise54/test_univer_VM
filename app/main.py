@@ -8163,6 +8163,8 @@ CONTAINER.services.vm_workflows.configure(
     verification_starter=start_vm_verification_children,
     operation_canceller=cancel_operation,
     status_provider=system_status,
+    task_provider=CONTAINER.services.tasks.list,
+    operation_provider=lambda: db.list_operations(limit=200, sync_sources=True),
 )
 
 

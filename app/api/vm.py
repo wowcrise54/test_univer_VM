@@ -5,6 +5,8 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..services.vm_workflows import VmPreflightBlocked
+
 router = APIRouter(prefix="/api/vm", tags=["vm-workflows"])
 
 
@@ -59,9 +61,24 @@ def start_scan(
         workflow, replay = _service(request).start_scan(
             task_id=payload.task_id, options=payload.options, actor=_actor(request), idempotency_key=idempotency_key,
         )
+    except VmPreflightBlocked as exc:
+        raise HTTPException(
+            409,
+            detail={"code": "VM_PREFLIGHT_BLOCKED", "message": "Запуск заблокирован предварительной проверкой.", "preflight": exc.result},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": str(exc)}) from exc
     return {"workflow": workflow, "workflow_id": workflow["workflow_id"], "status": workflow["status"], "idempotent_replay": replay}
+
+
+@router.post("/workflows/scan/preflight")
+def scan_preflight(request: Request, payload: VmScanRequest) -> dict:
+    permissions = set(getattr(request.state, "user", {}).get("permissions") or [])
+    return _service(request).scan_preflight(
+        task_id=payload.task_id,
+        options=payload.options,
+        can_execute="tasks.execute" in permissions,
+    )
 
 
 @router.post("/workflows/{workflow_id}/cancel")

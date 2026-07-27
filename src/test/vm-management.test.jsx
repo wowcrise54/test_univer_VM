@@ -19,6 +19,10 @@ beforeEach(() => {
     if (path === "/api/vm/overview") return Promise.resolve({ active_workflows: 1, open_cases: 4, overdue_cases: 2, awaiting_verification: 1, asset_count: 10, attention: [], recent_workflows: [] });
     if (path === "/api/scanner-tasks") return Promise.resolve([{ mp_task_id: "task-1", payload: { name: "Production" } }]);
     if (path === "/api/remediation/campaigns") return Promise.resolve({ rows: [], total: 0 });
+    if (path === "/api/vm/workflows/scan/preflight") return Promise.resolve({
+      ready: true, blocking_issues: [], warnings: [], target_count: 2,
+      conflicting_operations: [], task: { task_id: "task-1", name: "Production" },
+    });
     if (path === "/api/vm/workflows/scan" && options?.method === "POST") return Promise.resolve({ workflow_id: "wf-1", status: "queued" });
     if (path === "/api/vm/workflows/wf-1") return Promise.resolve({ workflow_id: "wf-1", kind: "scan", status: "queued", progress_percent: 0, steps: [] });
     return Promise.reject(new Error(path));
@@ -31,6 +35,8 @@ describe("VM Management", () => {
     expect(await screen.findByText("Единый контур VM Management")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Просрочено").previousSibling).toHaveTextContent("2"));
     await screen.findByRole("option", { name: "Production" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить перед запуском" }));
+    expect(await screen.findByText("Проверка пройдена")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Запустить конвейер" }));
     await waitFor(() => expect(api).toHaveBeenCalledWith("/api/vm/workflows/scan", expect.objectContaining({ method: "POST" })));
     expect(await screen.findByRole("dialog", { name: "Полное сканирование" })).toBeInTheDocument();

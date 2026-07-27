@@ -5,7 +5,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 from app import auth
-from app.services.vm_workflows import VmWorkflowService
+from app.services.vm_workflows import VmPreflightBlocked, VmWorkflowService
 
 
 class ImmediateFuture:
@@ -53,8 +53,64 @@ def test_scan_workflow_is_persisted_before_it_is_scheduled():
 def test_vm_api_permissions_reuse_existing_fine_grained_catalog():
     assert auth.required_permission("GET", "/api/vm/overview") == "operations.read"
     assert auth.required_permission("POST", "/api/vm/workflows/scan") == "tasks.execute"
+    assert auth.required_permission("POST", "/api/vm/workflows/scan/preflight") == "tasks.read"
     assert auth.required_permission("POST", "/api/vm/workflows/wf-1/cancel") == "operations.cancel"
     assert auth.required_permission("POST", "/api/vm/workflows/wf-1/retry") == "operations.retry"
+
+
+def test_scan_preflight_separates_warnings_from_blocking_conflicts():
+    repository, runner = FakeRepository(), FakeRunner()
+    repository.active = lambda: []
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+    service.task_provider = lambda: [{
+        "mp_task_id": "task-1", "name": "Production",
+        "include_targets": ["10.0.0.1", "10.0.0.2"],
+    }]
+    service.status_provider = lambda: {"components": {"mpvm": {"state": "ok"}}}
+    service.operation_provider = lambda: {"rows": [{
+        "operation_id": "op-1", "status": "running", "request": {"task_id": "task-1"},
+    }]}
+
+    warning = service.scan_preflight(task_id="task-1", options={"require_clean_jobs": False})
+    blocked = service.scan_preflight(task_id="task-1", options={"require_clean_jobs": True})
+
+    assert warning["ready"] is True
+    assert warning["target_count"] == 2
+    assert warning["warnings"][0]["code"] == "ACTIVE_CONFLICTS"
+    assert blocked["ready"] is False
+    assert blocked["blocking_issues"][0]["code"] == "ACTIVE_CONFLICTS"
+
+
+def test_start_scan_repeats_preflight_and_does_not_create_blocked_workflow():
+    repository, runner = FakeRepository(), FakeRunner()
+    repository.active = lambda: []
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+    service.task_provider = lambda: []
+    service.status_provider = lambda: {"components": {"mpvm": {"state": "ok"}}}
+
+    try:
+        service.start_scan(task_id="missing", options={}, actor="operator", idempotency_key="key")
+    except VmPreflightBlocked as exc:
+        assert exc.result["blocking_issues"][0]["code"] == "TASK_NOT_FOUND"
+    else:
+        raise AssertionError("Blocked workflow was created")
+
+
+def test_repeated_start_returns_idempotent_workflow_before_new_preflight():
+    repository, runner = FakeRepository(), FakeRunner()
+    existing = {"workflow_id": "wf-existing", "kind": "scan", "status": "running"}
+    repository.by_idempotency_key = lambda _key: existing
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+    service.task_provider = lambda: []
+
+    workflow, replay = service.start_scan(
+        task_id="task-1", options={"require_clean_jobs": True},
+        actor="operator", idempotency_key="same-click",
+    )
+
+    assert replay is True
+    assert workflow["workflow_id"] == "wf-existing"
+    assert runner.submitted == []
 
 
 def test_vm_migration_is_additive_and_links_verification():

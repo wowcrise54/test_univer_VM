@@ -16,10 +16,15 @@ const stepLabels = {
 
 export function VmManagementPage({ session, currentUser, showAlert, onNavigate }) {
   const queryClient = useQueryClient();
+  const preferenceKey = `mpvm.vm-launch.${currentUser?.username || "default"}`;
+  const savedPreferences = useMemo(() => readPreferences(preferenceKey), [preferenceKey]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(() => queryValue("workflow"));
   const [selectedCampaignId, setSelectedCampaignId] = useState(() => queryValue("campaign"));
-  const [taskId, setTaskId] = useState("");
-  const [options, setOptions] = useState({ precheck_enabled: false, require_clean_jobs: false, task_timeout_minutes: 120 });
+  const [taskId, setTaskId] = useState(() => savedPreferences.taskId || "");
+  const [options, setOptions] = useState(() => savedPreferences.options || { precheck_enabled: false, require_clean_jobs: false, task_timeout_minutes: 120 });
+  const [preflight, setPreflight] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [warningsAccepted, setWarningsAccepted] = useState(false);
   const [starting, setStarting] = useState(false);
   const permissions = useMemo(() => new Set(currentUser?.permissions || []), [currentUser]);
 
@@ -51,6 +56,11 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     if (!taskId && tasks.data?.length) setTaskId(tasks.data[0].mp_task_id);
   }, [taskId, tasks.data]);
   useEffect(() => {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(preferenceKey, JSON.stringify({ taskId, options }));
+    }
+  }, [preferenceKey, taskId, options]);
+  useEffect(() => {
     if (workflow.data && !ACTIVE.has(workflow.data.status)) {
       void queryClient.invalidateQueries({ queryKey: ["vm-overview"] });
       void queryClient.invalidateQueries({ queryKey: ["remediation-campaigns"] });
@@ -71,8 +81,28 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
       selectedCampaignId ? campaign.refetch() : Promise.resolve(),
     ]);
   };
-  const startScan = async () => {
+  const updateTask = (value) => {
+    setTaskId(value); setPreflight(null); setWarningsAccepted(false);
+  };
+  const updateOptions = (next) => {
+    setOptions(next); setPreflight(null); setWarningsAccepted(false);
+  };
+  const runPreflight = async () => {
     if (!taskId) return;
+    setChecking(true); setWarningsAccepted(false);
+    try {
+      const result = await api("/api/vm/workflows/scan/preflight", {
+        method: "POST",
+        body: JSON.stringify({ task_id: taskId, options }),
+      });
+      setPreflight(result);
+    } catch (error) {
+      setPreflight(null);
+      showAlert(error.operatorMessage || error.message, "error");
+    } finally { setChecking(false); }
+  };
+  const startScan = async () => {
+    if (!taskId || !preflight?.ready || (preflight.warnings?.length && !warningsAccepted)) return;
     setStarting(true);
     try {
       const result = await api("/api/vm/workflows/scan", {
@@ -80,7 +110,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
         body: JSON.stringify({ task_id: taskId, options }),
       });
       showAlert("VM-конвейер запущен.", "success");
-      openWorkflow(result.workflow_id); await refresh();
+      openWorkflow(result.workflow_id); setPreflight(null); await refresh();
     } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
     finally { setStarting(false); }
   };
@@ -107,31 +137,30 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
         <Kpi label="Активные процессы" value={data.active_workflows} tone="blue" />
         <Kpi label="Открытые кейсы" value={data.open_cases} />
         <Kpi label="Просрочено" value={data.overdue_cases} tone="danger" />
-        <Kpi label="Срочный риск" value={data.risk?.urgent} tone="danger" />
         <Kpi label="Ожидают проверки" value={data.awaiting_verification} tone="warning" />
-        <Kpi label="Покрытие" value={`${data.coverage?.coverage_percent ?? 100}%`} />
-      </div>
-      <div className="vm-stage-links" aria-label="Этапы VM-процесса">
-        <Stage number="01" title="Сканирование" text="Задачи и выполнение" onClick={() => onNavigate("/tasks")} />
-        <Stage number="02" title="Находки" text="Уязвимости и покрытие" onClick={() => onNavigate("/vulnerabilities")} />
-        <Stage number="03" title="Устранение" text="SLA, риск и кампании" onClick={() => onNavigate("/remediation")} />
-        <Stage number="04" title="Проверка" text="Повторное сканирование" onClick={() => document.getElementById("vm-campaigns")?.scrollIntoView({ behavior: "smooth" })} />
-        <Stage number="05" title="Отчётность" text="CSV и автоматизации" onClick={() => onNavigate("/export")} />
       </div>
     </Panel>
 
     <div className="vm-grid">
       <section className="panel vm-launcher">
-        <div className="panel__header"><div><h2>Запустить полный цикл</h2><p>После запуска импорт, карточки и сверка выполнятся автоматически.</p></div></div>
-        <label><span>Задача MP VM</span><select value={taskId} onChange={(event) => setTaskId(event.target.value)} disabled={!session.connected}>
+        <div className="panel__header"><div><h2>Безопасный запуск</h2><p>Выберите задачу, проверьте условия и подтвердите запуск.</p></div></div>
+        <ol className="vm-launch-steps" aria-label="Этапы запуска">
+          <li className={taskId ? "is-complete" : "is-active"}><span>1</span>Задача</li>
+          <li className={preflight ? "is-complete" : taskId ? "is-active" : ""}><span>2</span>Проверка</li>
+          <li className={preflight?.ready ? "is-active" : ""}><span>3</span>Запуск</li>
+        </ol>
+        <label><span>Задача MP VM</span><select value={taskId} onChange={(event) => updateTask(event.target.value)} disabled={!session.connected}>
           <option value="">Выберите задачу</option>{(tasks.data || []).map((task) => <option value={task.mp_task_id} key={task.mp_task_id}>{task.payload?.name || task.name || task.mp_task_id}</option>)}
         </select></label>
-        <div className="vm-launch-options">
-          <label><input type="checkbox" checked={options.precheck_enabled} onChange={(event) => setOptions({ ...options, precheck_enabled: event.target.checked })} /> Проверить доступность целей</label>
-          <label><input type="checkbox" checked={options.require_clean_jobs} onChange={(event) => setOptions({ ...options, require_clean_jobs: event.target.checked })} /> Требовать чистый результат</label>
-          <label><span>Таймаут, минут</span><input type="number" min="1" max="1440" value={options.task_timeout_minutes} onChange={(event) => setOptions({ ...options, task_timeout_minutes: Number(event.target.value) })} /></label>
-        </div>
-        <Button busy={starting} disabled={!taskId || !session.connected || !permissions.has("tasks.execute")} onClick={startScan}>Запустить конвейер</Button>
+        {taskId ? <TaskSummary task={(tasks.data || []).find((item) => item.mp_task_id === taskId)} preflight={preflight} /> : null}
+        <details className="vm-launch-options">
+          <summary>Дополнительные настройки</summary>
+          <label><input type="checkbox" checked={options.precheck_enabled} onChange={(event) => updateOptions({ ...options, precheck_enabled: event.target.checked })} /> Проверить доступность целей</label>
+          <label><input type="checkbox" checked={options.require_clean_jobs} onChange={(event) => updateOptions({ ...options, require_clean_jobs: event.target.checked })} /> Запретить запуск при активных процессах</label>
+          <label><span>Таймаут, минут</span><input type="number" min="1" max="1440" value={options.task_timeout_minutes} onChange={(event) => updateOptions({ ...options, task_timeout_minutes: Number(event.target.value) })} /></label>
+        </details>
+        {!preflight ? <Button busy={checking} disabled={!taskId || !session.connected} onClick={runPreflight}>Проверить перед запуском</Button> : <PreflightResult result={preflight} accepted={warningsAccepted} onAccept={setWarningsAccepted} />}
+        {preflight ? <div className="vm-launch-actions"><Button variant="secondary" onClick={runPreflight} busy={checking}>Проверить снова</Button><Button busy={starting} disabled={!preflight.ready || Boolean(preflight.warnings?.length && !warningsAccepted)} onClick={startScan}>Запустить конвейер</Button></div> : null}
         {!permissions.has("tasks.execute") ? <small>Для запуска требуется право tasks.execute.</small> : null}
       </section>
 
@@ -164,16 +193,35 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 }
 
 function Kpi({ label, value, tone = "neutral" }) { return <article className={`vm-kpi vm-kpi--${tone}`}><strong>{value ?? 0}</strong><span>{label}</span></article>; }
-function Stage({ number, title, text, onClick }) { return <button type="button" onClick={onClick}><span>{number}</span><strong>{title}</strong><small>{text}</small></button>; }
+function TaskSummary({ task, preflight }) {
+  const payload = task?.payload || {};
+  const targets = task?.include_targets || payload.include?.targets || [];
+  const last = preflight?.task?.last_execution || task?.postprocess;
+  return <div className="vm-task-summary">
+    <div><span>Задача</span><strong>{preflight?.task?.name || payload.name || task?.name || "—"}</strong></div>
+    <div><span>Явные цели</span><strong>{preflight?.target_count ?? targets.length}</strong></div>
+    <div><span>Последний запуск</span><strong>{last?.created_at ? date(last.created_at) : "Нет данных"}</strong></div>
+    <div><span>Конфликты</span><strong>{preflight?.conflicting_operations?.length ?? "Проверим"}</strong></div>
+  </div>;
+}
+function PreflightResult({ result, accepted, onAccept }) {
+  return <section className={`vm-preflight ${result.ready ? "vm-preflight--ready" : "vm-preflight--blocked"}`} aria-live="polite">
+    <header><strong>{result.ready ? "Проверка пройдена" : "Запуск заблокирован"}</strong><span>{result.ready ? "Условия запуска проверены на сервере." : "Исправьте блокирующие проблемы и повторите проверку."}</span></header>
+    {(result.blocking_issues || []).map((issue) => <div className="vm-preflight__issue vm-preflight__issue--blocking" key={issue.code}><b>Блокирует</b><span>{issue.message}</span></div>)}
+    {(result.warnings || []).map((issue) => <div className="vm-preflight__issue vm-preflight__issue--warning" key={issue.code}><b>Внимание</b><span>{issue.message}</span></div>)}
+    {result.ready && result.warnings?.length ? <label className="vm-warning-confirm"><input type="checkbox" checked={accepted} onChange={(event) => onAccept(event.target.checked)} /> Я понимаю предупреждения и подтверждаю запуск</label> : null}
+  </section>;
+}
 function Status({ value }) { return <span className={`vm-status vm-status--${value}`}>{workflowStatus[value] || value}</span>; }
 function Progress({ value = 0 }) { return <span className="vm-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={value}><i style={{ width: `${value}%` }} /></span>; }
 
 function WorkflowDrawer({ item, loading, onClose, onCancel, onRetry }) {
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-workflow-title">
     <header><div><span>VM workflow</span><h2 id="vm-workflow-title">{item?.kind === "verification" ? "Проверка кампании" : "Полное сканирование"}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
-    {loading || !item ? <p>Загрузка процесса…</p> : <><div className="vm-drawer-summary"><Status value={item.status} /><strong>{item.progress_percent}%</strong><span>{item.workflow_id}</span></div><Progress value={item.progress_percent} />
+    {loading || !item ? <p>Загрузка процесса…</p> : <><div className="vm-drawer-summary"><Status value={item.status} /><strong>{item.progress_percent}%</strong><span>{item.workflow_id}</span></div><Progress value={item.progress_percent} /><p className="vm-workflow-time">Запущен: {date(item.created_at)} · обновлён: {date(item.updated_at)}</p>
       <ol className="vm-step-list">{item.steps.map((step) => <li className={`is-${step.status}`} key={step.step_key}><span>{step.status === "completed" ? "✓" : step.position}</span><div><strong>{stepLabels[step.step_key] || step.step_key}</strong><small>{step.message || workflowStatus[step.status] || step.status}</small>{step.error?.message ? <em>{step.error.message}</em> : null}</div><b>{step.progress_percent}%</b></li>)}</ol>
       {item.error?.message ? <div className="inline-error" role="alert">{item.error.message}</div> : null}
+      <div className="vm-next-action"><strong>Следующее действие</strong><span>{item.can_retry ? "Устраните причину ошибки и повторите процесс." : item.can_cancel ? "Дождитесь завершения или остановите процесс." : "Откройте результаты и проверьте найденные уязвимости."}</span></div>
       <div className="action-row">{item.can_cancel ? <Button variant="danger" onClick={onCancel}>Остановить</Button> : null}{item.can_retry ? <Button onClick={onRetry}>Повторить с места сбоя</Button> : null}{item.operation_id ? <a className="button secondary" href={`/operations?operation=${encodeURIComponent(item.operation_id)}`}>Открыть операцию</a> : null}</div>
     </>}</aside></div>;
 }
@@ -197,3 +245,17 @@ function setQuery(values) { if (typeof window === "undefined") return; const par
 function date(value) { if (!value) return "без срока"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU"); }
 function inputDate(value) { if (!value) return ""; const parsed = new Date(value); return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
 function campaignLabel(value) { return { draft: "Черновик", active: "Активна", completed: "Завершена", cancelled: "Отменена" }[value] || value; }
+function readPreferences(key) {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "{}");
+    return {
+      taskId: typeof value.taskId === "string" ? value.taskId : "",
+      options: value.options && typeof value.options === "object" ? {
+        precheck_enabled: Boolean(value.options.precheck_enabled),
+        require_clean_jobs: Boolean(value.options.require_clean_jobs),
+        task_timeout_minutes: Math.min(1440, Math.max(1, Number(value.options.task_timeout_minutes) || 120)),
+      } : undefined,
+    };
+  } catch { return {}; }
+}

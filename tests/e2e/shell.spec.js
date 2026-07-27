@@ -301,11 +301,17 @@ test("VM Management launches and tracks a controlled scan workflow", async ({ pa
   };
   await installApiMock(page, {
     "/api/scanner-tasks": (route) => route.fulfill({ json: [{ mp_task_id: "task-e2e-1", payload: { name: "Production perimeter" } }] }),
+    "POST /api/vm/workflows/scan/preflight": (route) => route.fulfill({ json: {
+      ready: true, blocking_issues: [], warnings: [], target_count: 1,
+      conflicting_operations: [], task: { task_id: "task-e2e-1", name: "Production perimeter" },
+    } }),
     "POST /api/vm/workflows/scan": (route) => route.fulfill({ status: 202, json: { workflow_id: workflow.workflow_id, status: "queued", workflow: { ...workflow, status: "queued" } } }),
     "/api/vm/workflows/workflow-e2e-1": (route) => route.fulfill({ json: workflow }),
   });
   await page.goto("/vm");
   await page.getByLabel("Задача MP VM").selectOption("task-e2e-1");
+  await page.getByRole("button", { name: "Проверить перед запуском" }).click();
+  await expect(page.getByText("Проверка пройдена")).toBeVisible();
   await page.getByRole("button", { name: "Запустить конвейер" }).click();
   const dialog = page.getByRole("dialog", { name: "Полное сканирование" });
   await expect(dialog).toBeVisible();
