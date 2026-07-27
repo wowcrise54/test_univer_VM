@@ -36,6 +36,11 @@ _DB_CIRCUIT_LOCK = threading.Lock()
 _DB_CIRCUIT_OPEN_UNTIL = 0.0
 _DB_CIRCUIT_ERROR: str | None = None
 _DB_CIRCUIT_REASON: str | None = None
+# All application writers that mutate vulnerability_passports must take this
+# transaction-scoped PostgreSQL advisory lock before acquiring row locks. This
+# prevents concurrent sync, trend, and detail batches from locking passport
+# rows in conflicting orders while keeping readers fully concurrent.
+_VULNERABILITY_PASSPORT_WRITE_LOCK = (1297106509, 1448301139)
 
 
 def database_label() -> str:
@@ -111,6 +116,15 @@ def connect() -> psycopg.Connection[dict[str, Any]]:
         duration_ms=round(elapsed_ms, 2),
     )
     return connection
+
+
+def _lock_vulnerability_passport_writes(
+    conn: psycopg.Connection[dict[str, Any]],
+) -> None:
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)",
+        _VULNERABILITY_PASSPORT_WRITE_LOCK,
+    )
 
 
 def init_db() -> None:
@@ -2087,7 +2101,10 @@ def upsert_vulnerability_passports(
             )
         )
         saved_ids.append(internal_id)
+    values.sort(key=lambda value: value[0])
+    saved_ids.sort()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         if values:
             with conn.cursor() as cursor:
                 cursor.executemany(
@@ -2179,7 +2196,11 @@ def replace_vulnerability_passport_trends(
         )
         saved_ids.append(internal_id)
 
+    parent_values.sort(key=lambda value: value[0])
+    trend_values.sort(key=lambda value: value[0])
+    saved_ids.sort()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         # Serialize full-snapshot replacements while still allowing readers to
         # see the previously committed snapshot until this transaction commits.
         conn.execute("LOCK TABLE vulnerability_passport_trends IN EXCLUSIVE MODE")
@@ -2303,6 +2324,8 @@ def _upsert_vulnerability_passport_details(
     values = [vulnerability_passport_detail_values(internal_id, raw_detail, current) for internal_id, raw_detail in details]
     if not values:
         return 0
+    values.sort(key=lambda value: value[0])
+    _lock_vulnerability_passport_writes(conn)
     with conn.cursor() as cursor:
         cursor.executemany(VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL, values)
     if reconcile_links:
@@ -2314,6 +2337,7 @@ def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str,
     init_db()
     current = now_utc()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         row = conn.execute(
             VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL + " RETURNING *",
             vulnerability_passport_detail_values(internal_id, raw_detail, current),
@@ -2350,6 +2374,7 @@ def get_vulnerability_passport(internal_id: str) -> dict[str, Any] | None:
 def delete_vulnerability_passport(internal_id: str) -> bool:
     init_db()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         row = conn.execute(
             "DELETE FROM vulnerability_passports WHERE internal_id = %s RETURNING internal_id",
             (internal_id,),

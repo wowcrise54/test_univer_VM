@@ -14,7 +14,6 @@ import {
   Sidebar,
   SystemBanner,
   Topbar,
-  WorkflowRail,
 } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
@@ -41,7 +40,6 @@ function AppShell({ navigate, path, route, auth }) {
   return (
     <div className="app-shell">
       <Sidebar
-        session={appData.session}
         systemStatus={appData.systemStatus}
         activeOperations={
           appData.operationSummary?.active ??
@@ -63,7 +61,6 @@ function AppShell({ navigate, path, route, auth }) {
           currentUser={auth.user}
           onLogout={auth.logout}
         />
-        <WorkflowRail activeRouteId={route?.id} onNavigate={navigate} />
         <SystemBanner
           status={appData.systemStatus}
           stale={appData.operationsStale}

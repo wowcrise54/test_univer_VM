@@ -409,5 +409,70 @@ class DatabaseInitializationTests(unittest.TestCase):
         self.assertEqual(result["eligible"], ["stale", "missing"])
 
 
+class VulnerabilityPassportWriteLockTests(unittest.TestCase):
+    def connection(self):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.__exit__.return_value = False
+        cursor = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connection.cursor.return_value.__exit__.return_value = False
+        return connection
+
+    def test_lock_uses_transaction_scoped_postgres_advisory_lock(self):
+        connection = MagicMock()
+
+        db._lock_vulnerability_passport_writes(connection)
+
+        connection.execute.assert_called_once_with(
+            "SELECT pg_advisory_xact_lock(%s, %s)",
+            db._VULNERABILITY_PASSPORT_WRITE_LOCK,
+        )
+
+    def test_snapshot_and_trend_writers_use_the_same_lock(self):
+        for writer in (
+            lambda: db.upsert_vulnerability_passports([{"internal_id": "passport-1"}]),
+            lambda: db.replace_vulnerability_passport_trends(
+                [{"internal_id": "passport-1"}],
+                source_pdql="trend query",
+            ),
+        ):
+            connection = self.connection()
+            with (
+                self.subTest(writer=writer),
+                patch.object(db, "init_db"),
+                patch.object(db, "connect", return_value=connection),
+                patch.object(
+                    db, "reconcile_asset_card_vulnerability_passport_links", return_value=0
+                ),
+                patch.object(db, "_lock_vulnerability_passport_writes") as lock,
+            ):
+                writer()
+            lock.assert_called_once_with(connection)
+
+    def test_detail_batch_takes_lock_before_upsert(self):
+        events = []
+        connection = self.connection()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.executemany.side_effect = lambda *_args: events.append("upsert")
+
+        with patch.object(
+            db,
+            "_lock_vulnerability_passport_writes",
+            side_effect=lambda _connection: events.append("lock"),
+        ):
+            saved = db._upsert_vulnerability_passport_details(
+                connection,
+                [("passport-2", {}), ("passport-1", {})],
+                "2026-07-24T11:27:00+00:00",
+                reconcile_links=False,
+            )
+
+        self.assertEqual(saved, 2)
+        self.assertEqual(events, ["lock", "upsert"])
+        values = cursor.executemany.call_args.args[1]
+        self.assertEqual([value[0] for value in values], ["passport-1", "passport-2"])
+
+
 if __name__ == "__main__":
     unittest.main()

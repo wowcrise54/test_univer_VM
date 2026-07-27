@@ -13,7 +13,6 @@ function shouldHandleLinkClick(event) {
 }
 
 export function Sidebar({
-  session,
   systemStatus,
   activeOperations = 0,
   activePath,
@@ -96,19 +95,6 @@ export function Sidebar({
           ›
         </span>
       </nav>
-      <div className="sidebar-card">
-        <span className={session.connected ? "pulse pulse--ok" : "pulse"} />
-        <div>
-          <strong>
-            {session.connected ? "Сессия активна" : "Нет подключения"}
-          </strong>
-          <p>
-            {session.connected
-              ? session.api_url
-              : "Подключите MP VM, чтобы загрузить справочники."}
-          </p>
-        </div>
-      </div>
       {systemStatus?.components?.database?.state === "down" ? (
         <div className="sidebar-warning">PostgreSQL недоступен</div>
       ) : null}
@@ -206,7 +192,6 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
   return (
     <header className="topbar">
       <div className="topbar__copy">
-        <span className="topbar__eyebrow">MP VM · рабочее пространство</span>
         <h1 ref={headingRef} tabIndex={-1}>
           {route?.title || "MP VM REST Client"}
         </h1>
@@ -216,10 +201,6 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
         </p>
       </div>
       <div className="topbar__actions">
-        <div className="user-chip" title={currentUser?.username}>
-          <strong>{currentUser?.display_name || currentUser?.username}</strong>
-          <span>{roleLabel(currentUser?.role)}</span>
-        </div>
         <div
           className={
             session.connected ? "status-chip status-chip--ok" : "status-chip"
@@ -238,14 +219,17 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
             <strong aria-hidden="true">→</strong>
           </button>
         ) : null}
-        <button type="button" className="logout-button" onClick={onLogout}>Выйти</button>
+        <button
+          type="button"
+          className="logout-button"
+          title={currentUser?.display_name || currentUser?.username}
+          onClick={onLogout}
+        >
+          Выйти
+        </button>
       </div>
     </header>
   );
-}
-
-function roleLabel(role) {
-  return { admin: "Администратор", operator: "Оператор", viewer: "Наблюдатель" }[role] || role || "";
 }
 
 export function WorkflowRail({ activeRouteId, onNavigate }) {

@@ -8,13 +8,7 @@ html {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(
-      circle at 16% 0%,
-      rgba(37, 99, 235, 0.14),
-      transparent 30rem
-    ),
-    linear-gradient(180deg, #f5f8fc 0%, var(--bg) 48%, #e8eff7 100%);
+  background: var(--bg);
   color: var(--text);
 }
 
