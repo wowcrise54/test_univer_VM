@@ -1674,6 +1674,7 @@ function VulnerabilityTable({
               <SortableHeader column="name" sort={sort} onSort={onSort}>
                 Уязвимость
               </SortableHeader>
+              <th>Краткое описание</th>
               <th>CVE</th>
               <SortableHeader column="severity" sort={sort} onSort={onSort}>
                 Критичность
@@ -1719,7 +1720,7 @@ function VulnerabilityTable({
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={11} className="empty-cell">
+                <td colSpan={12} className="empty-cell">
                   Загружаю уязвимости…
                 </td>
               </tr>
@@ -1749,6 +1750,9 @@ function VulnerabilityTable({
                       {row.vulnerability_id ? (
                         <code>{row.vulnerability_id}</code>
                       ) : null}
+                    </td>
+                    <td>
+                      <VulnerabilityShortDescription row={row} />
                     </td>
                     <td>{row.cve || "—"}</td>
                     <td>
@@ -1783,7 +1787,7 @@ function VulnerabilityTable({
               })
             ) : (
               <tr>
-                <td colSpan={11} className="empty-cell">
+                <td colSpan={12} className="empty-cell">
                   Уязвимости с такими фильтрами не найдены.
                 </td>
               </tr>
@@ -2423,6 +2427,37 @@ function VulnerabilityComponent({ row }) {
       {images.map((image) => (
         <small key={image}>Образ: {image}</small>
       ))}
+    </div>
+  );
+}
+
+function VulnerabilityShortDescription({ row }) {
+  const passportDescription =
+    row?.short_description ||
+    (row?.passports || []).find((passport) => passport?.short_description)
+      ?.short_description;
+  const components = Array.from(new Set(row?.components || [])).filter(Boolean);
+  const dockerContext = [
+    ...(row?.docker_containers || []),
+    ...(row?.docker_images || []),
+  ].filter(Boolean);
+  const context = components.length ? components : dockerContext;
+
+  if (!passportDescription && !context.length) {
+    return <span className="muted-text">Описание отсутствует</span>;
+  }
+
+  return (
+    <div className="vulnerability-short-description">
+      {passportDescription ? (
+        <span title={passportDescription}>{passportDescription}</span>
+      ) : null}
+      {context.length ? (
+        <small title={context.join(", ")}>
+          Компонент: {context.slice(0, 3).join(", ")}
+          {context.length > 3 ? ` и ещё ${context.length - 3}` : ""}
+        </small>
+      ) : null}
     </div>
   );
 }

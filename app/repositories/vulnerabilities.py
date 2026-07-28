@@ -296,6 +296,15 @@ def _filtered_findings_cte(
 
 def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
     cvss_score = db.decimal_to_number(row.get("cvss_score"))
+    passports = list(row.get("passports") or [])
+    short_description = next(
+        (
+            str(passport.get("short_description")).strip()
+            for passport in passports
+            if isinstance(passport, dict) and passport.get("short_description")
+        ),
+        None,
+    )
     return {
         "selector": row.get("selector"),
         "vulnerability_id": row.get("vulnerability_id"),
@@ -307,10 +316,12 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
         "affected_hosts": int(row.get("affected_hosts") or 0),
         "findings": int(row.get("findings") or 0),
         "affected_objects": int(row.get("affected_objects") or 0),
+        "components": list(row.get("components") or []),
         "sources": list(row.get("sources") or []),
         "docker_containers": list(row.get("docker_containers") or []),
         "docker_images": list(row.get("docker_images") or []),
-        "passports": list(row.get("passports") or []),
+        "passports": passports,
+        "short_description": short_description,
         "last_seen": row.get("last_seen"),
     }
 
@@ -994,6 +1005,9 @@ class VulnerabilityAnalyticsRepository:
                     COUNT(DISTINCT asset_id) AS affected_hosts,
                     COUNT(*) AS findings,
                     COUNT(DISTINCT group_id) AS affected_objects,
+                    ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
+                        FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
+                        AS components,
                     ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
                     ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
                         FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
@@ -1016,6 +1030,25 @@ class VulnerabilityAnalyticsRepository:
                     passport.package_id,
                     passport.package_version,
                     COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb AS cves,
+                    COALESCE(
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'description') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'description'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,text}', ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,description}', ''),
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'vulnerabilityDescription') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'vulnerabilityDescription'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{vulnerabilityDescription,text}', ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{details,description}', ''),
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'localizedDescription') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'localizedDescription'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{localizedDescription,text}', '')
+                    ) AS short_description,
                     BOOL_OR(passport.raw_detail_json IS NOT NULL) AS has_detail,
                     MIN(
                         CASE link.match_method WHEN 'vulner_id' THEN 0 ELSE 1 END
@@ -1035,7 +1068,8 @@ class VulnerabilityAnalyticsRepository:
                     passport.issue_time,
                     passport.package_id,
                     passport.package_version,
-                    passport.cves_json
+                    passport.cves_json,
+                    passport.raw_detail_json
             ), passport_rollup AS (
                 SELECT
                     selector,
@@ -1050,6 +1084,7 @@ class VulnerabilityAnalyticsRepository:
                             'package_id', package_id,
                             'package_version', package_version,
                             'cves', cves,
+                            'short_description', short_description,
                             'has_detail', has_detail
                         ) ORDER BY match_priority, internal_id
                     ) AS passports

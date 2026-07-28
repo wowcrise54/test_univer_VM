@@ -22,6 +22,9 @@ const VULNERABILITY = {
   affected_hosts: 8,
   findings: 11,
   affected_objects: ["kernel"],
+  components: ["Linux kernel"],
+  short_description:
+    "Ошибка проверки границ памяти позволяет выполнить произвольный код.",
   sources: ["os"],
   last_seen: "2026-07-11T08:00:00Z",
 };
@@ -299,6 +302,15 @@ describe("vulnerability dashboard", () => {
     expect(
       screen.getByText("Как читать показатели: уязвимости, findings и хосты"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Краткое описание" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Ошибка проверки границ памяти позволяет выполнить произвольный код.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Компонент: Linux kernel")).toBeInTheDocument();
 
     const selectors = await screen.findAllByRole("button", {
       name: "Показать хосты с уязвимостью Удалённое выполнение кода",
@@ -891,8 +903,8 @@ describe("vulnerability dashboard", () => {
       name: "Показать хосты с уязвимостью Неподдерживаемая версия",
     });
     const cells = within(button.closest("tr")).getAllByRole("cell");
-    expect(cells[3]).toHaveTextContent("—");
-    expect(cells[7]).toHaveTextContent(
+    expect(cells[4]).toHaveTextContent("—");
+    expect(cells[8]).toHaveTextContent(
       "Операционная система, Установленное ПО",
     );
   });
