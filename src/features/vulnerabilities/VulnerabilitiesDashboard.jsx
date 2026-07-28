@@ -58,6 +58,7 @@ export function VulnerabilitiesDashboard({
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [trendDays, setTrendDays] = useState(30);
+  const [trendingContext, setTrendingContext] = useState("all");
   const [vulnerabilityOffset, setVulnerabilityOffset] = useState(0);
   const [vulnerabilitySort, setVulnerabilitySort] = useState(
     DEFAULT_VULNERABILITY_SORT,
@@ -85,6 +86,7 @@ export function VulnerabilitiesDashboard({
   } = useVulnerabilityDashboard({
     filters,
     trendDays,
+    trendingContext,
     vulnerabilityOffset,
     vulnerabilitySort,
     selectedSelector: selected?.selector || "",
@@ -344,6 +346,8 @@ export function VulnerabilitiesDashboard({
 
           <TrendingVulnerabilities
             query={trendingPassportsQuery}
+            context={trendingContext}
+            onContextChange={setTrendingContext}
             onOpenPassport={openPassport}
           />
 
@@ -1432,7 +1436,12 @@ function InsightCard({ title, description, children }) {
   );
 }
 
-function TrendingVulnerabilities({ query, onOpenPassport }) {
+function TrendingVulnerabilities({
+  query,
+  context,
+  onContextChange,
+  onOpenPassport,
+}) {
   const rows = resultRows(query.data);
 
   return (
@@ -1444,12 +1453,36 @@ function TrendingVulnerabilities({ query, onOpenPassport }) {
         <div>
           <h3 id="trending-vulnerabilities-title">Трендовые уязвимости</h3>
           <p>
-            Паспорта, отмеченные как трендовые, и число затронутых ими хостов
+            Паспорта, отмеченные как трендовые, с разделением по месту
+            обнаружения
           </p>
         </div>
-        {query.isFetching && !query.isPending ? (
-          <span role="status">Обновляю…</span>
-        ) : null}
+        <div className="trending-vulnerabilities__tools">
+          <div
+            className="trending-vulnerabilities__contexts"
+            role="group"
+            aria-label="Место обнаружения трендовых уязвимостей"
+          >
+            {[
+              ["all", "Все"],
+              ["docker", "Docker-контейнеры"],
+              ["host", "ПО и ОС"],
+            ].map(([value, label]) => (
+              <button
+                type="button"
+                aria-pressed={context === value}
+                className={context === value ? "is-active" : ""}
+                key={value}
+                onClick={() => onContextChange(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {query.isFetching && !query.isPending ? (
+            <span role="status">Обновляю…</span>
+          ) : null}
+        </div>
       </div>
 
       {query.isPending ? (
@@ -1472,6 +1505,12 @@ function TrendingVulnerabilities({ query, onOpenPassport }) {
               "Без названия";
             const vendors = trendTagValues(row.vendors);
             const components = trendTagValues(row.affected_components);
+            const containers = trendTagValues(row.docker_containers);
+            const images = trendTagValues(row.docker_images);
+            const contexts = new Set(row.contexts || []);
+            (row.sources || []).forEach((source) => {
+              contexts.add(source === "docker" ? "docker" : "software_os");
+            });
             return (
               <li
                 className={`trending-vulnerability trending-vulnerability--${severityClass(row.severity)}`}
@@ -1492,6 +1531,16 @@ function TrendingVulnerabilities({ query, onOpenPassport }) {
                       {label}
                     </button>
                     <SeverityBadge value={row.severity} />
+                    {contexts.has("docker") ? (
+                      <span className="trending-vulnerability__context trending-vulnerability__context--docker">
+                        Docker
+                      </span>
+                    ) : null}
+                    {contexts.has("software_os") ? (
+                      <span className="trending-vulnerability__context trending-vulnerability__context--host">
+                        ПО / ОС
+                      </span>
+                    ) : null}
                     {row.score !== null &&
                     row.score !== undefined &&
                     row.score !== "" ? (
@@ -1522,7 +1571,10 @@ function TrendingVulnerabilities({ query, onOpenPassport }) {
                       </time>
                     </span>
                   </div>
-                  {vendors.length || components.length ? (
+                  {vendors.length ||
+                  components.length ||
+                  containers.length ||
+                  images.length ? (
                     <div className="trending-vulnerability__tags">
                       {vendors.length ? (
                         <TrendTags label="Поставщик" values={vendors} />
@@ -1533,22 +1585,30 @@ function TrendingVulnerabilities({ query, onOpenPassport }) {
                           values={components}
                         />
                       ) : null}
+                      {containers.length ? (
+                        <TrendTags label="Контейнеры" values={containers} />
+                      ) : null}
+                      {images.length ? (
+                        <TrendTags label="Образы" values={images} />
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
                 <div
                   className="trending-vulnerability__hosts"
-                  aria-label={`Заражённых хостов: ${formatCount(row.affected_hosts)}`}
+                  aria-label={`Затронутых активов: ${formatCount(row.affected_hosts)}`}
                 >
                   <strong>{formatCount(row.affected_hosts)}</strong>
-                  <span>Заражённых хостов</span>
+                  <span>Затронутых активов</span>
                 </div>
               </li>
             );
           })}
         </ol>
       ) : (
-        <EmptyState>Трендовые уязвимости не найдены.</EmptyState>
+        <EmptyState>
+          Трендовые уязвимости в выбранной категории не найдены.
+        </EmptyState>
       )}
     </section>
   );

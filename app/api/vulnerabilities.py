@@ -23,6 +23,7 @@ SeverityFilter = Literal[
 SourceFilter = Literal["os", "software", "docker"]
 SortDirection = Literal["asc", "desc"]
 TrendBucket = Literal["day", "week"]
+TrendingContext = Literal["all", "docker", "host"]
 
 
 def _service(request: Request) -> VulnerabilityAnalyticsService:
@@ -44,8 +45,9 @@ def vulnerability_summary(
 def trending_vulnerabilities(
     request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    context: TrendingContext = "all",
 ) -> dict:
-    return _service(request).trending(limit=limit)
+    return _service(request).trending(limit=limit, context=context)
 
 
 @router.get("/trends")

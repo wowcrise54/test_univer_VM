@@ -357,6 +357,12 @@ def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
 
     vendors = db.json_loads(row.get("vendors_json"), [])
     components = db.json_loads(row.get("affected_components_json"), [])
+    sources = list(row.get("sources") or [])
+    contexts = []
+    if "docker" in sources:
+        contexts.append("docker")
+    if any(source in {"os", "software"} for source in sources):
+        contexts.append("software_os")
     return {
         "internal_id": row.get("internal_id"),
         "external_id": external_id,
@@ -370,7 +376,17 @@ def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
         "vendors": vendors if isinstance(vendors, list) else [],
         "affected_components": components if isinstance(components, list) else [],
         "affected_hosts": int(row.get("affected_hosts") or 0),
+        "affected_hosts_total": int(row.get("affected_hosts_total") or 0),
+        "docker_affected_hosts": int(row.get("docker_affected_hosts") or 0),
+        "software_os_affected_hosts": int(row.get("software_os_affected_hosts") or 0),
         "findings": int(row.get("findings") or 0),
+        "findings_total": int(row.get("findings_total") or 0),
+        "docker_findings": int(row.get("docker_findings") or 0),
+        "software_os_findings": int(row.get("software_os_findings") or 0),
+        "sources": sources,
+        "contexts": contexts,
+        "docker_containers": list(row.get("docker_containers") or []),
+        "docker_images": list(row.get("docker_images") or []),
         "synced_at": row.get("synced_at"),
     }
 
@@ -791,12 +807,29 @@ class VulnerabilityAnalyticsRepository:
             "top_hosts": [_decode_host(dict(row)) for row in top_host_rows],
         }
 
-    def trending(self, *, limit: int = 20) -> dict[str, Any]:
+    def trending(self, *, limit: int = 20, context: str = "all") -> dict[str, Any]:
         limit = min(100, max(1, int(limit)))
+        if context not in {"all", "docker", "host"}:
+            raise ValueError("Unsupported trending vulnerability context.")
+        context_filter = {
+            "all": "",
+            "docker": "WHERE COALESCE(host_counts.docker_affected_hosts, 0) > 0",
+            "host": "WHERE COALESCE(host_counts.software_os_affected_hosts, 0) > 0",
+        }[context]
+        affected_hosts_expression = {
+            "all": "COALESCE(host_counts.affected_hosts_total, 0)",
+            "docker": "COALESCE(host_counts.docker_affected_hosts, 0)",
+            "host": "COALESCE(host_counts.software_os_affected_hosts, 0)",
+        }[context]
+        findings_expression = {
+            "all": "COALESCE(host_counts.findings_total, 0)",
+            "docker": "COALESCE(host_counts.docker_findings, 0)",
+            "host": "COALESCE(host_counts.software_os_findings, 0)",
+        }[context]
         db.init_db()
         with db.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH trend_passports AS (
                     SELECT
                         passport.internal_id,
@@ -816,35 +849,91 @@ class VulnerabilityAnalyticsRepository:
                                 ~ '^[0-9]+([.][0-9]+)?$'
                             THEN REPLACE(passport.score, ',', '.')::numeric
                             ELSE NULL
-                        END AS score_numeric,
-                        COUNT(*) OVER() AS trend_total
+                        END AS score_numeric
                     FROM vulnerability_passport_trends AS trend
                     JOIN vulnerability_passports AS passport
                         ON passport.internal_id = trend.passport_internal_id
-                ), host_counts AS (
+                ), trend_findings AS (
                     SELECT
                         link.passport_internal_id,
-                        COUNT(DISTINCT finding.asset_id) AS affected_hosts,
-                        COUNT(*) AS findings
+                        finding.asset_id,
+                        vulnerability_group.source_type,
+                        CASE
+                            WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
+                                NULLIF(finding.vulnerability_json::jsonb ->> 'container_name', ''),
+                                NULLIF(finding.vulnerability_json::jsonb -> 'docker_container' ->> 'container_name', ''),
+                                NULLIF(vulnerability_group.group_json::jsonb ->> 'container_name', ''),
+                                NULLIF(vulnerability_group.name, '')
+                            )
+                            ELSE NULL
+                        END AS container_name,
+                        CASE
+                            WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
+                                NULLIF(finding.vulnerability_json::jsonb -> 'docker_image' ->> 'image_name', ''),
+                                NULLIF(vulnerability_group.group_json::jsonb ->> 'image_name', ''),
+                                NULLIF(finding.vulnerability_json::jsonb ->> 'image_id', ''),
+                                NULLIF(finding.vulnerability_json::jsonb -> 'docker_image' ->> 'image_key', '')
+                            )
+                            ELSE NULL
+                        END AS image_name
                     FROM trend_passports
                     JOIN asset_card_vulnerability_passports AS link
                         ON link.passport_internal_id = trend_passports.internal_id
                     JOIN asset_card_vulnerabilities AS finding
                         ON finding.id = link.asset_vulnerability_id
-                    GROUP BY link.passport_internal_id
+                    JOIN asset_card_vulnerability_groups AS vulnerability_group
+                        ON vulnerability_group.id = finding.group_id
+                ), host_counts AS (
+                    SELECT
+                        passport_internal_id,
+                        COUNT(DISTINCT asset_id) AS affected_hosts_total,
+                        COUNT(DISTINCT asset_id) FILTER (WHERE source_type = 'docker')
+                            AS docker_affected_hosts,
+                        COUNT(DISTINCT asset_id) FILTER (WHERE source_type IN ('os', 'software'))
+                            AS software_os_affected_hosts,
+                        COUNT(*) AS findings_total,
+                        COUNT(*) FILTER (WHERE source_type = 'docker') AS docker_findings,
+                        COUNT(*) FILTER (WHERE source_type IN ('os', 'software'))
+                            AS software_os_findings,
+                        ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                        ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                            FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                            AS docker_containers,
+                        ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                            FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                            AS docker_images
+                    FROM trend_findings
+                    GROUP BY passport_internal_id
+                ), filtered_trends AS (
+                    SELECT
+                        trend_passports.*,
+                        {affected_hosts_expression} AS affected_hosts,
+                        COALESCE(host_counts.affected_hosts_total, 0) AS affected_hosts_total,
+                        COALESCE(host_counts.docker_affected_hosts, 0) AS docker_affected_hosts,
+                        COALESCE(host_counts.software_os_affected_hosts, 0)
+                            AS software_os_affected_hosts,
+                        {findings_expression} AS findings,
+                        COALESCE(host_counts.findings_total, 0) AS findings_total,
+                        COALESCE(host_counts.docker_findings, 0) AS docker_findings,
+                        COALESCE(host_counts.software_os_findings, 0) AS software_os_findings,
+                        COALESCE(host_counts.sources, ARRAY[]::text[]) AS sources,
+                        COALESCE(host_counts.docker_containers, ARRAY[]::text[])
+                            AS docker_containers,
+                        COALESCE(host_counts.docker_images, ARRAY[]::text[]) AS docker_images
+                    FROM trend_passports
+                    LEFT JOIN host_counts
+                        ON host_counts.passport_internal_id = trend_passports.internal_id
+                    {context_filter}
                 )
                 SELECT
-                    trend_passports.*,
-                    COALESCE(host_counts.affected_hosts, 0) AS affected_hosts,
-                    COALESCE(host_counts.findings, 0) AS findings
-                FROM trend_passports
-                LEFT JOIN host_counts
-                    ON host_counts.passport_internal_id = trend_passports.internal_id
+                    filtered_trends.*,
+                    COUNT(*) OVER() AS trend_total
+                FROM filtered_trends
                 ORDER BY
-                    COALESCE(host_counts.affected_hosts, 0) DESC,
-                    trend_passports.is_trend_since DESC NULLS LAST,
-                    trend_passports.issue_time DESC NULLS LAST,
-                    trend_passports.internal_id ASC
+                    filtered_trends.affected_hosts DESC,
+                    filtered_trends.is_trend_since DESC NULLS LAST,
+                    filtered_trends.issue_time DESC NULLS LAST,
+                    filtered_trends.internal_id ASC
                 LIMIT %s
                 """,
                 (limit,),
@@ -853,6 +942,7 @@ class VulnerabilityAnalyticsRepository:
         return {
             "total": int(rows[0].get("trend_total") or 0) if rows else 0,
             "limit": limit,
+            "context": context,
             "rows": decoded,
             "synced_at": decoded[0].get("synced_at") if decoded else None,
         }

@@ -159,6 +159,12 @@ const TRENDING_VULNERABILITIES = {
       vendors: ["Microsoft"],
       affected_components: ["Microsoft SharePoint Server"],
       affected_hosts: 0,
+      sources: ["docker"],
+      contexts: ["docker"],
+      docker_affected_hosts: 0,
+      software_os_affected_hosts: 0,
+      docker_containers: ["sharepoint-api"],
+      docker_images: ["registry.example/sharepoint:latest"],
     },
     {
       internal_id: "trend-passport-2",
@@ -173,6 +179,12 @@ const TRENDING_VULNERABILITIES = {
       vendors: ["Microsoft"],
       affected_components: ["Windows"],
       affected_hosts: 2,
+      sources: ["os", "software"],
+      contexts: ["software_os"],
+      docker_affected_hosts: 0,
+      software_os_affected_hosts: 2,
+      docker_containers: [],
+      docker_images: [],
     },
   ],
 };
@@ -216,9 +228,23 @@ function responseFor(path, { total = 75, empty = false } = {}) {
     return empty ? { ...TRENDS, rows: [] } : TRENDS;
   }
   if (url.pathname === "/api/vulnerabilities/trending") {
+    const context = url.searchParams.get("context") || "all";
+    const rows =
+      context === "all"
+        ? TRENDING_VULNERABILITIES.rows
+        : TRENDING_VULNERABILITIES.rows.filter((row) =>
+            context === "docker"
+              ? row.contexts.includes("docker")
+              : row.contexts.includes("software_os"),
+          );
     return empty
-      ? { ...TRENDING_VULNERABILITIES, total: 0, rows: [] }
-      : TRENDING_VULNERABILITIES;
+      ? { ...TRENDING_VULNERABILITIES, context, total: 0, rows: [] }
+      : {
+          ...TRENDING_VULNERABILITIES,
+          context,
+          total: rows.length,
+          rows,
+        };
   }
   if (url.pathname === "/api/vulnerabilities/summary") return SUMMARY;
   if (url.pathname === "/api/vulnerabilities/hosts") {
@@ -333,21 +359,52 @@ describe("vulnerability dashboard", () => {
     ).toBeInTheDocument();
     expect(within(section).getByText("CVSS 9,8")).toBeInTheDocument();
     expect(within(section).getByText("16.07.2026")).toBeInTheDocument();
+    expect(within(section).getByText("Docker")).toBeInTheDocument();
+    expect(within(section).getByText("ПО / ОС")).toBeInTheDocument();
+    expect(within(section).getByText("sharepoint-api")).toBeInTheDocument();
     expect(
-      within(section).getByLabelText("Заражённых хостов: 0"),
+      within(section).getByText("registry.example/sharepoint:latest"),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByLabelText("Затронутых активов: 0"),
     ).toHaveTextContent("0");
     expect(
-      within(section).getByLabelText("Заражённых хостов: 2"),
+      within(section).getByLabelText("Затронутых активов: 2"),
     ).toHaveTextContent("2");
     expect(
       api.mock.calls.some(([path]) => {
         const url = new URL(path, "http://localhost");
         return (
           url.pathname === "/api/vulnerabilities/trending" &&
-          url.searchParams.get("limit") === "20"
+          url.searchParams.get("limit") === "20" &&
+          url.searchParams.get("context") === "all"
         );
       }),
     ).toBe(true);
+
+    fireEvent.click(within(section).getByRole("button", { name: "ПО и ОС" }));
+    await waitFor(() => {
+      expect(
+        api.mock.calls.some(([path]) => {
+          const url = new URL(path, "http://localhost");
+          return (
+            url.pathname === "/api/vulnerabilities/trending" &&
+            url.searchParams.get("context") === "host"
+          );
+        }),
+      ).toBe(true);
+    });
+    expect(
+      await within(section).findByText("CVE-2026-42980"),
+    ).toBeInTheDocument();
+    expect(
+      within(section).queryByText("CVE-2026-58644"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Все" }));
+    expect(
+      await within(section).findByText("CVE-2026-58644"),
+    ).toBeInTheDocument();
 
     const trendingCallsBeforeRefresh = api.mock.calls.filter(([path]) => {
       const url = new URL(path, "http://localhost");
@@ -412,7 +469,9 @@ describe("vulnerability dashboard", () => {
       }),
     );
     expect(
-      await screen.findByText("Трендовые уязвимости не найдены."),
+      await screen.findByText(
+        "Трендовые уязвимости в выбранной категории не найдены.",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -629,7 +688,9 @@ describe("vulnerability dashboard", () => {
     expect(
       await within(section).findByText("Docker-контейнеры"),
     ).toBeInTheDocument();
-    expect(await within(section).findByText("payments-api")).toBeInTheDocument();
+    expect(
+      await within(section).findByText("payments-api"),
+    ).toBeInTheDocument();
     expect(
       within(section).getByText(
         "Образ: registry.example.test/payments/api:2.4.1",
@@ -647,8 +708,7 @@ describe("vulnerability dashboard", () => {
           const url = new URL(path, "http://localhost");
           return (
             url.pathname === "/api/vulnerabilities/hosts" &&
-            url.searchParams.get("selector") ===
-              "id:vuln-1|source:docker"
+            url.searchParams.get("selector") === "id:vuln-1|source:docker"
           );
         }),
       ).toBe(true),
