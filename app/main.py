@@ -806,6 +806,13 @@ def startup() -> None:
 def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse:
     trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
     request_id = getattr(request.state, "request_id", None)
+    log_exception(
+        "database",
+        "api.database.failed",
+        method=request.method,
+        path=request.url.path,
+        database=db.database_label(),
+    )
     return JSONResponse(
         status_code=503,
         content={
