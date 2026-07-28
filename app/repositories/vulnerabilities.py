@@ -771,7 +771,7 @@ class VulnerabilityAnalyticsRepository:
         with db.connect() as conn:
             rows = conn.execute(
                 """
-                WITH selected_trends AS (
+                WITH trend_passports AS (
                     SELECT
                         passport.internal_id,
                         passport.external_id,
@@ -795,34 +795,31 @@ class VulnerabilityAnalyticsRepository:
                     FROM vulnerability_passport_trends AS trend
                     JOIN vulnerability_passports AS passport
                         ON passport.internal_id = trend.passport_internal_id
-                    ORDER BY
-                        trend.is_trend_since DESC NULLS LAST,
-                        passport.issue_time DESC NULLS LAST,
-                        passport.internal_id ASC
-                    LIMIT %s
                 ), host_counts AS (
                     SELECT
                         link.passport_internal_id,
                         COUNT(DISTINCT finding.asset_id) AS affected_hosts,
                         COUNT(*) AS findings
-                    FROM selected_trends
+                    FROM trend_passports
                     JOIN asset_card_vulnerability_passports AS link
-                        ON link.passport_internal_id = selected_trends.internal_id
+                        ON link.passport_internal_id = trend_passports.internal_id
                     JOIN asset_card_vulnerabilities AS finding
                         ON finding.id = link.asset_vulnerability_id
                     GROUP BY link.passport_internal_id
                 )
                 SELECT
-                    selected_trends.*,
+                    trend_passports.*,
                     COALESCE(host_counts.affected_hosts, 0) AS affected_hosts,
                     COALESCE(host_counts.findings, 0) AS findings
-                FROM selected_trends
+                FROM trend_passports
                 LEFT JOIN host_counts
-                    ON host_counts.passport_internal_id = selected_trends.internal_id
+                    ON host_counts.passport_internal_id = trend_passports.internal_id
                 ORDER BY
-                    selected_trends.is_trend_since DESC NULLS LAST,
-                    selected_trends.issue_time DESC NULLS LAST,
-                    selected_trends.internal_id ASC
+                    COALESCE(host_counts.affected_hosts, 0) DESC,
+                    trend_passports.is_trend_since DESC NULLS LAST,
+                    trend_passports.issue_time DESC NULLS LAST,
+                    trend_passports.internal_id ASC
+                LIMIT %s
                 """,
                 (limit,),
             ).fetchall()
