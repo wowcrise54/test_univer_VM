@@ -600,6 +600,61 @@ describe("vulnerability dashboard", () => {
     expect(api).toHaveBeenCalledWith("/api/vulnerability-passports/passport-1");
   });
 
+  it("shows Docker findings separately with their container and image", async () => {
+    const dockerVulnerability = {
+      ...VULNERABILITY,
+      selector: "id:vuln-1|source:docker",
+      sources: ["docker"],
+      docker_containers: ["payments-api"],
+      docker_images: ["registry.example.test/payments/api:2.4.1"],
+    };
+    api.mockImplementation((path) => {
+      const url = new URL(path, "http://localhost");
+      if (url.pathname === "/api/vulnerabilities") {
+        return Promise.resolve({
+          rows: [dockerVulnerability],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard();
+
+    const heading = await screen.findByRole("heading", {
+      name: "Все уязвимости",
+    });
+    const section = heading.closest("section");
+    expect(
+      await within(section).findByText("Docker-контейнеры"),
+    ).toBeInTheDocument();
+    expect(await within(section).findByText("payments-api")).toBeInTheDocument();
+    expect(
+      within(section).getByText(
+        "Образ: registry.example.test/payments/api:2.4.1",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      within(section).getByRole("button", {
+        name: `Показать хосты с уязвимостью ${VULNERABILITY.name}`,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) => {
+          const url = new URL(path, "http://localhost");
+          return (
+            url.pathname === "/api/vulnerabilities/hosts" &&
+            url.searchParams.get("selector") ===
+              "id:vuln-1|source:docker"
+          );
+        }),
+      ).toBe(true),
+    );
+  });
+
   it("renders historical risk deltas and switches the aggregation period", async () => {
     renderDashboard();
 

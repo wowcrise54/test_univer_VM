@@ -1643,7 +1643,8 @@ function VulnerabilityTable({
                 Findings
               </SortableHeader>
               <th>Объекты</th>
-              <th>Источники</th>
+              <th>Тип</th>
+              <th>Контейнер / компонент</th>
               <th>Паспорт</th>
               <SortableHeader
                 column="last_seen"
@@ -1658,7 +1659,7 @@ function VulnerabilityTable({
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={10} className="empty-cell">
+                <td colSpan={11} className="empty-cell">
                   Загружаю уязвимости…
                 </td>
               </tr>
@@ -1697,7 +1698,12 @@ function VulnerabilityTable({
                     <td>{formatCount(row.affected_hosts)}</td>
                     <td>{formatCount(row.findings)}</td>
                     <td>{formatList(row.affected_objects)}</td>
-                    <td>{formatSources(row.sources)}</td>
+                    <td>
+                      <VulnerabilitySourceBadge sources={row.sources} />
+                    </td>
+                    <td>
+                      <VulnerabilityComponent row={row} />
+                    </td>
                     <td>
                       {hasPassport ? (
                         <Button
@@ -1717,7 +1723,7 @@ function VulnerabilityTable({
               })
             ) : (
               <tr>
-                <td colSpan={10} className="empty-cell">
+                <td colSpan={11} className="empty-cell">
                   Уязвимости с такими фильтрами не найдены.
                 </td>
               </tr>
@@ -1851,7 +1857,8 @@ function HostDrilldown({
                 Findings
               </SortableHeader>
               <th>Объекты</th>
-              <th>Источники</th>
+              <th>Тип</th>
+              <th>Контейнер / компонент</th>
               <SortableHeader
                 column="last_seen"
                 sort={sort}
@@ -1866,7 +1873,7 @@ function HostDrilldown({
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={10} className="empty-cell">
+                <td colSpan={11} className="empty-cell">
                   Загружаю хосты…
                 </td>
               </tr>
@@ -1897,7 +1904,12 @@ function HostDrilldown({
                   <td>{formatScore(row.max_cvss ?? row.cvss_score)}</td>
                   <td>{formatCount(row.finding_count)}</td>
                   <td>{formatList(row.objects)}</td>
-                  <td>{formatSources(row.sources)}</td>
+                  <td>
+                    <VulnerabilitySourceBadge sources={row.sources} />
+                  </td>
+                  <td>
+                    <VulnerabilityComponent row={row} />
+                  </td>
                   <td>{formatDate(row.last_seen)}</td>
                   <td>
                     <HostRemediationActions
@@ -1914,7 +1926,7 @@ function HostDrilldown({
               ))
             ) : (
               <tr>
-                <td colSpan={10} className="empty-cell">
+                <td colSpan={11} className="empty-cell">
                   Для выбранной уязвимости хосты не найдены.
                 </td>
               </tr>
@@ -1999,6 +2011,12 @@ function HostFindingModal({
             <h4>Источники</h4>
             <p>{formatSources(row.sources)}</p>
           </section>
+          {isDockerVulnerability(row) ? (
+            <section>
+              <h4>Docker-контейнеры</h4>
+              <VulnerabilityComponent row={row} />
+            </section>
+          ) : null}
           <section>
             <h4>Операционная система</h4>
             <p>
@@ -2296,6 +2314,57 @@ function formatSources(value) {
     .map((item) => SOURCE_LABELS[String(item || "").toLowerCase()] || item)
     .filter(Boolean);
   return labels.length ? labels.join(", ") : "—";
+}
+
+function isDockerVulnerability(row) {
+  return (row?.sources || []).some(
+    (source) => String(source || "").toLowerCase() === "docker",
+  );
+}
+
+function VulnerabilitySourceBadge({ sources }) {
+  const values = Array.isArray(sources) ? sources : [sources];
+  const normalized = values.filter(Boolean);
+  if (!normalized.length) return <span className="muted-text">—</span>;
+  return (
+    <div className="vulnerability-source-badges">
+      {normalized.map((source, index) => {
+        const key = String(source).toLowerCase();
+        return (
+          <span
+            className={`vulnerability-source-badge vulnerability-source-badge--${key}`}
+            key={key}
+          >
+            {SOURCE_LABELS[key] || source}
+            {index < normalized.length - 1 ? ", " : ""}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function VulnerabilityComponent({ row }) {
+  if (!isDockerVulnerability(row)) {
+    return <span className="muted-text">—</span>;
+  }
+  const containers = Array.from(new Set(row.docker_containers || [])).filter(
+    Boolean,
+  );
+  const images = Array.from(new Set(row.docker_images || [])).filter(Boolean);
+  if (!containers.length && !images.length) {
+    return <span className="muted-text">Контейнер не определён</span>;
+  }
+  return (
+    <div className="vulnerability-container-list">
+      {containers.map((container) => (
+        <strong key={container}>{container}</strong>
+      ))}
+      {images.map((image) => (
+        <small key={image}>Образ: {image}</small>
+      ))}
+    </div>
+  );
 }
 
 function formatList(value) {

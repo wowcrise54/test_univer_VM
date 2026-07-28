@@ -689,11 +689,11 @@ button.ranking-row:focus-visible,
 }
 
 .vulnerability-table {
-  min-width: 1320px;
+  min-width: 1540px;
 }
 
 .vulnerability-host-table {
-  min-width: 1480px;
+  min-width: 1700px;
 }
 
 .vulnerability-row-button {
@@ -709,6 +709,58 @@ button.ranking-row:focus-visible,
 
 .vulnerability-row-button:hover {
   text-decoration: underline;
+}
+
+.vulnerability-source-badges,
+.vulnerability-container-list {
+  display: grid;
+  gap: 5px;
+}
+
+.vulnerability-source-badge {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #334155;
+  background: #e2e8f0;
+  font-size: 10px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.vulnerability-source-badge--docker {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.vulnerability-source-badge--software {
+  color: #5b21b6;
+  background: #ede9fe;
+}
+
+.vulnerability-source-badge--os {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.vulnerability-container-list {
+  min-width: 210px;
+  max-width: 360px;
+}
+
+.vulnerability-container-list strong,
+.vulnerability-container-list small {
+  overflow-wrap: anywhere;
+}
+
+.vulnerability-container-list strong {
+  color: #203147;
+  font-size: 12px;
+}
+
+.vulnerability-container-list small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .vulnerability-host-link {

@@ -31,8 +31,12 @@ VULNERABILITY_SELECTOR_SQL = """
 CASE
     WHEN NULLIF(TRIM(finding.vulnerability_id), '') IS NOT NULL
         THEN 'id:' || TRIM(finding.vulnerability_id)
+            || CASE WHEN vulnerability_group.source_type = 'docker'
+                THEN '|source:docker' ELSE '' END
     WHEN NULLIF(TRIM(finding.cve_name), '') IS NOT NULL
         THEN 'cve:' || UPPER(TRIM(finding.cve_name))
+            || CASE WHEN vulnerability_group.source_type = 'docker'
+                THEN '|source:docker' ELSE '' END
     WHEN NULLIF(TRIM(finding.name), '') IS NOT NULL
         THEN 'name:' || LOWER(REGEXP_REPLACE(TRIM(finding.name), '\\s+', ' ', 'g'))
             || '|source:' || vulnerability_group.source_type
@@ -252,6 +256,24 @@ def _filtered_findings_cte(
                 vulnerability_group.collection_id,
                 vulnerability_group.name AS object_name,
                 vulnerability_group.truncated,
+                CASE
+                    WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
+                        NULLIF(finding.vulnerability_json::jsonb ->> 'container_name', ''),
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_container,container_name}', ''),
+                        NULLIF(vulnerability_group.group_json::jsonb ->> 'container_name', ''),
+                        NULLIF(vulnerability_group.name, '')
+                    )
+                    ELSE NULL
+                END AS container_name,
+                CASE
+                    WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_image,image_name}', ''),
+                        NULLIF(vulnerability_group.group_json::jsonb ->> 'image_name', ''),
+                        NULLIF(finding.vulnerability_json::jsonb ->> 'image_id', ''),
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_image,image_key}', '')
+                    )
+                    ELSE NULL
+                END AS image_name,
                 card.asset_id,
                 card.display_name,
                 card.hostname,
@@ -286,6 +308,8 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
         "findings": int(row.get("findings") or 0),
         "affected_objects": int(row.get("affected_objects") or 0),
         "sources": list(row.get("sources") or []),
+        "docker_containers": list(row.get("docker_containers") or []),
+        "docker_images": list(row.get("docker_images") or []),
         "passports": list(row.get("passports") or []),
         "last_seen": row.get("last_seen"),
     }
@@ -381,6 +405,8 @@ def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
         "high_risk_vulnerabilities": int(row.get("high_risk_vulnerabilities") or 0),
         "objects": list(row.get("objects") or []),
         "sources": list(row.get("sources") or []),
+        "docker_containers": list(row.get("docker_containers") or []),
+        "docker_images": list(row.get("docker_images") or []),
         "last_seen": row.get("last_seen"),
         "remediation": remediation,
     }
@@ -879,6 +905,12 @@ class VulnerabilityAnalyticsRepository:
                     COUNT(*) AS findings,
                     COUNT(DISTINCT group_id) AS affected_objects,
                     ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                        AS docker_containers,
+                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                        AS docker_images,
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY selector
@@ -1025,6 +1057,12 @@ class VulnerabilityAnalyticsRepository:
                     ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
                         FILTER (WHERE NULLIF(object_name, '') IS NOT NULL) AS objects,
                     ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                        AS docker_containers,
+                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                        AS docker_images,
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY asset_id
@@ -1047,6 +1085,12 @@ class VulnerabilityAnalyticsRepository:
                     COUNT(*) AS findings,
                     COUNT(DISTINCT group_id) AS affected_objects,
                     ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                        AS docker_containers,
+                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                        AS docker_images,
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY selector
