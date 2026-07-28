@@ -27,6 +27,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+UVICORN_LOGGER = logging.getLogger("uvicorn.error")
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
 
@@ -519,12 +521,21 @@ async def diagnostic_http_middleware(request: Request, call_next):
         try:
             response = await call_next(request)
         except Exception:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            UVICORN_LOGGER.exception(
+                "api.request.failed method=%s path=%s duration_ms=%.2f trace_id=%s request_id=%s",
+                request.method,
+                request.url.path,
+                duration_ms,
+                trace_id,
+                request_id,
+            )
             log_exception(
                 "app",
                 "api.request.failed",
                 method=request.method,
                 path=request.url.path,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                duration_ms=duration_ms,
             )
             raise
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -546,6 +557,15 @@ async def diagnostic_http_middleware(request: Request, call_next):
             content_encoding=response.headers.get("content-encoding"),
             etag=response.headers.get("etag"),
             server_timing=response.headers.get("server-timing"),
+        )
+        UVICORN_LOGGER.info(
+            "api.response method=%s path=%s status=%s duration_ms=%.2f trace_id=%s request_id=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            trace_id,
+            request_id,
         )
         return response
 
@@ -806,6 +826,14 @@ def startup() -> None:
 def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse:
     trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
     request_id = getattr(request.state, "request_id", None)
+    UVICORN_LOGGER.error(
+        "api.database.failed method=%s path=%s trace_id=%s request_id=%s",
+        request.method,
+        request.url.path,
+        trace_id,
+        request_id,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     log_exception(
         "database",
         "api.database.failed",
