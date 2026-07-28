@@ -2186,7 +2186,7 @@ function HostRemediationActions({
           aria-label={`Открыть задачу на хосте ${hostLabel(row)}`}
           href={`/remediation?case=${encodeURIComponent(remediation.case_id)}`}
         >
-          Задача
+          Открыть задачу
         </a>
       ) : null}
     </div>

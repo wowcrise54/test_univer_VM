@@ -886,7 +886,20 @@ button.ranking-row:focus-visible,
 }
 
 .host-remediation-actions--compact {
-  min-width: 210px;
+  min-width: 610px;
+}
+
+.host-remediation-actions--compact > .button {
+  display: inline-flex;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 156px;
+  width: 156px;
+  min-height: 48px;
+  padding: 10px 14px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .remediation-status {

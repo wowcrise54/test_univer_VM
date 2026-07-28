@@ -325,6 +325,11 @@ describe("vulnerability dashboard", () => {
       await screen.findByText("server-01.example.test"),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole("link", {
+        name: "Открыть задачу на хосте server-01",
+      }),
+    ).toHaveTextContent("Открыть задачу");
+    expect(
       api.mock.calls.some(([path]) => {
         const url = new URL(path, "http://localhost");
         return (
