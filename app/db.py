@@ -2442,7 +2442,7 @@ def list_vulnerability_passports(
             SELECT
                 id, internal_id, external_id, name, severity, score, issue_time,
                 package_id, package_version, cves_json, metrics_json,
-                first_seen, last_seen, detail_updated_at,
+                raw_detail_json, first_seen, last_seen, detail_updated_at,
                 (raw_detail_json IS NOT NULL) AS has_detail
             FROM vulnerability_passports
             {where}
@@ -5424,6 +5424,7 @@ def decode_vulnerability_passport(row: dict[str, Any]) -> dict[str, Any]:
 def decode_vulnerability_passport_summary(row: dict[str, Any]) -> dict[str, Any]:
     cves = json_loads(row.get("cves_json"), [])
     metrics = json_loads(row.get("metrics_json"), {})
+    raw_detail = json_loads(row.get("raw_detail_json"), {})
     return {
         "id": row.get("id"),
         "internal_id": row.get("internal_id"),
@@ -5436,11 +5437,43 @@ def decode_vulnerability_passport_summary(row: dict[str, Any]) -> dict[str, Any]
         "package_version": row.get("package_version"),
         "cves": cves if isinstance(cves, list) else [],
         "metrics": metrics if isinstance(metrics, dict) else {},
+        "short_description": vulnerability_passport_short_description(raw_detail),
         "has_detail": bool(row.get("has_detail")),
         "first_seen": row.get("first_seen"),
         "last_seen": row.get("last_seen"),
         "detail_updated_at": row.get("detail_updated_at"),
     }
+
+
+def vulnerability_passport_short_description(raw_detail: Any) -> str | None:
+    if not isinstance(raw_detail, dict):
+        return None
+    details = raw_detail.get("details")
+    candidates = (
+        raw_detail.get("description"),
+        raw_detail.get("vulnerabilityDescription"),
+        details.get("description") if isinstance(details, dict) else None,
+        raw_detail.get("localizedDescription"),
+    )
+    for value in candidates:
+        if isinstance(value, dict):
+            value = first_non_empty(
+                value.get("text"),
+                value.get("description"),
+                value.get("displayName"),
+                value.get("name"),
+                value.get("value"),
+            )
+        if isinstance(value, list):
+            value = " ".join(
+                clean_value(item) or ""
+                for item in value
+                if not isinstance(item, (dict, list))
+            )
+        text = clean_value(value)
+        if text:
+            return text
+    return None
 
 
 def decode_vulnerability_passport_detail_job(row: dict[str, Any]) -> dict[str, Any]:

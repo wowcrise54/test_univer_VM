@@ -37,6 +37,26 @@ class FakePassportClient:
                 type(self).active -= 1
 
 
+class VulnerabilityPassportSummaryTests(unittest.TestCase):
+    def test_summary_includes_short_description_from_saved_detail(self):
+        summary = db.decode_vulnerability_passport_summary(
+            {
+                "internal_id": "passport-1",
+                "raw_detail_json": {
+                    "vulnerabilityDescription": {
+                        "text": "Уязвимость находится в компоненте Windows WMI."
+                    }
+                },
+                "has_detail": True,
+            }
+        )
+
+        self.assertEqual(
+            summary["short_description"],
+            "Уязвимость находится в компоненте Windows WMI.",
+        )
+
+
 class PassportDetailWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
         FakePassportClient.active = 0

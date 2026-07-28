@@ -1565,7 +1565,7 @@ td code {
 }
 
 .passport-table {
-  min-width: 1360px;
+  min-width: 1580px;
 }
 
 .passport-controls {
@@ -2824,6 +2824,13 @@ td code {
   margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.passport-description-cell {
+  min-width: 280px;
+  max-width: 420px;
+  color: #475569;
+  line-height: 1.45;
 }
 
 .score-badge {

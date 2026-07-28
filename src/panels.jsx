@@ -3219,6 +3219,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
               >
                 Название
               </SortableHeader>
+              <th>Краткое описание</th>
               <th>CVE</th>
               <SortableHeader
                 column="severity"
@@ -3275,6 +3276,12 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                       {row.name || row.external_id || "Без названия"}
                     </strong>
                     <span>{row.external_id}</span>
+                  </td>
+                  <td
+                    className="passport-description-cell"
+                    title={row.short_description || undefined}
+                  >
+                    {row.short_description || "нет данных"}
                   </td>
                   <td>
                     {(row.cves || [])
@@ -3335,7 +3342,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
               ))
             ) : (
               <tr>
-                <td colSpan={8} className="empty-cell">
+                <td colSpan={9} className="empty-cell">
                   {passportTotal
                     ? "На этой странице нет записей."
                     : "Выполните PDQL или загрузите паспорта из БД."}
