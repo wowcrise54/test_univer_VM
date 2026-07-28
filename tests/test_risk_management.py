@@ -13,6 +13,12 @@ def test_risk_model_is_versioned_and_bounded():
     assert "criticality" in sql
     assert "exposure" in sql
     assert "due_at<NOW()" in sql
+    assert "SIMILAR TO '%%(exploit|exploited|эксплуат)%%'" in sql
+
+
+def test_risk_queue_escapes_percent_signs_for_psycopg():
+    source = inspect.getsource(RiskRepository.queue)
+    assert "SIMILAR TO '%%(exploit|exploited|эксплуат)%%'" in source
 
 
 def test_context_rejects_unknown_classification_before_database_access():

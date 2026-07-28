@@ -259,7 +259,7 @@ def _filtered_findings_cte(
                 CASE
                     WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
                         NULLIF(finding.vulnerability_json::jsonb ->> 'container_name', ''),
-                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_container,container_name}', ''),
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{{docker_container,container_name}}', ''),
                         NULLIF(vulnerability_group.group_json::jsonb ->> 'container_name', ''),
                         NULLIF(vulnerability_group.name, '')
                     )
@@ -267,10 +267,10 @@ def _filtered_findings_cte(
                 END AS container_name,
                 CASE
                     WHEN vulnerability_group.source_type = 'docker' THEN COALESCE(
-                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_image,image_name}', ''),
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{{docker_image,image_name}}', ''),
                         NULLIF(vulnerability_group.group_json::jsonb ->> 'image_name', ''),
                         NULLIF(finding.vulnerability_json::jsonb ->> 'image_id', ''),
-                        NULLIF(finding.vulnerability_json::jsonb #>> '{docker_image,image_key}', '')
+                        NULLIF(finding.vulnerability_json::jsonb #>> '{{docker_image,image_key}}', '')
                     )
                     ELSE NULL
                 END AS image_name,
