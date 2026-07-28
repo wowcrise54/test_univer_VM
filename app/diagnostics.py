@@ -244,6 +244,14 @@ class ChannelFilter(logging.Filter):
         return getattr(record, "channel", "app") == self.channel
 
 
+class ConsoleFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return (
+            record.levelno >= logging.ERROR
+            or getattr(record, "channel", "app") == "app"
+        )
+
+
 class JsonLinesFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -318,8 +326,8 @@ def configure_diagnostics(
         errors.setFormatter(formatter)
         handlers.append(errors)
         console_errors = logging.StreamHandler()
-        console_errors.setLevel(logging.ERROR)
-        console_errors.addFilter(ChannelFilter("console-errors", errors_only=True))
+        console_errors.setLevel(level)
+        console_errors.addFilter(ConsoleFilter())
         console_errors.setFormatter(formatter)
         handlers.append(console_errors)
         _QUEUE = queue.Queue()
