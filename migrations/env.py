@@ -11,7 +11,7 @@ config = context.config
 sqlalchemy_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 config.set_main_option("sqlalchemy.url", sqlalchemy_url.replace("%", "%%"))
 if config.config_file_name:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = None
 
