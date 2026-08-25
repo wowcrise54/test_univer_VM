@@ -8,6 +8,7 @@ from .remediation import CoverageService, RemediationService
 from .risk import RiskService
 from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
+from .compliance import ComplianceService
 
 if TYPE_CHECKING:
     from ..core.runtime import OperationRunner
@@ -93,6 +94,7 @@ class ServiceBundle:
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)
         self.vulnerabilities = VulnerabilityAnalyticsService(repositories.vulnerabilities)
+        self.compliance = ComplianceService(repositories.compliance)
         self.remediation = RemediationService(
             repositories.remediation,
             stale_days=coverage_stale_days,

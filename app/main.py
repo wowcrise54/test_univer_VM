@@ -4139,6 +4139,12 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         summary = db.refresh_scan_postprocess_counts(run_id) or {}
         failed_count = int(summary.get("failed_count") or 0)
         completed_count = int(summary.get("completed_count") or 0)
+        if completed_count and scan_finished_at:
+            db.record_completed_scan_evidence(
+                run_id,
+                mp_task_id=task_id,
+                scanned_at=scan_finished_at,
+            )
         refresh_result = finalize_asset_card_refresh(run_id, options) if completed_count else None
         final_status = "completed_with_errors" if failed_count else "completed"
         message = f"Completed {completed_count} asset(s); failures: {failed_count}."

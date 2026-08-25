@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-08-25T04:45:58.458935+00:00",
+  "nodes": {
+    "app_main_assetcardrequestexecutor": {
+      "code_fingerprint": "907a1016fcd248d3716ded7a0f7cf926fb04205f24a7e38b8430c6f4564e367b",
+      "label": "AssetCardRequestExecutor",
+      "last": "2026-08-25T04:45:15.695979+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-25T04:45:15.695979+00:00",
+          "outcome": "useful",
+          "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
+        }
+      ],
+      "score": 0.999988564,
+      "source_file": "app/main.py",
+      "status": "tentative",
+      "uses": 1
+    },
+    "app_mpvm_client_mpvmclient": {
+      "code_fingerprint": "38815469cdfb929580d5e48e4df5456002329f281cd051ab3f22a26536cefce2",
+      "label": "MpVmClient",
+      "last": "2026-08-25T04:45:15.695979+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-25T04:45:15.695979+00:00",
+          "outcome": "useful",
+          "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
+        }
+      ],
+      "score": 0.999988564,
+      "source_file": "app/mpvm_client.py",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
+  "version": 1
+}

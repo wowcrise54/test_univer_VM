@@ -504,6 +504,15 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS asset_scan_evidence (
+            asset_id TEXT PRIMARY KEY REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            postprocess_run_id TEXT NOT NULL,
+            mp_task_id TEXT NOT NULL,
+            scanned_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS app_users (
             id BIGSERIAL PRIMARY KEY,
             username TEXT NOT NULL UNIQUE,
@@ -712,6 +721,7 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_severity_lower ON asset_card_vulnerabilities((CASE WHEN LOWER(TRIM(COALESCE(severity, ''))) IN ('critical', 'high', 'medium', 'low') THEN LOWER(TRIM(severity)) ELSE 'unknown' END))",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_source ON asset_card_vulnerability_groups(source_type)",
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_last_seen ON asset_cards(last_seen DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_scan_evidence_scanned_at ON asset_scan_evidence(scanned_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
     ]
 
@@ -1284,6 +1294,35 @@ def get_active_asset_card_refresh(asset_id: str) -> dict[str, Any] | None:
 
 SCAN_POSTPROCESS_ACTIVE_STATUSES = {"monitoring", "resolving", "processing", "waiting", "cancelling"}
 SCAN_POSTPROCESS_FAILED_ITEM_STATUSES = {"resolution_failed", "build_failed", "removal_failed"}
+
+
+def record_completed_scan_evidence(
+    postprocess_run_id: str,
+    *,
+    mp_task_id: str,
+    scanned_at: str,
+) -> int:
+    with connect() as conn:
+        result = conn.execute(
+            """
+            INSERT INTO asset_scan_evidence (
+                asset_id, postprocess_run_id, mp_task_id, scanned_at, updated_at
+            )
+            SELECT DISTINCT asset_id, %s, %s, %s, NOW()
+            FROM scan_postprocess_items
+            WHERE postprocess_run_id = %s
+              AND status = 'completed'
+              AND NULLIF(asset_id, '') IS NOT NULL
+            ON CONFLICT (asset_id) DO UPDATE SET
+                postprocess_run_id = EXCLUDED.postprocess_run_id,
+                mp_task_id = EXCLUDED.mp_task_id,
+                scanned_at = EXCLUDED.scanned_at,
+                updated_at = NOW()
+            WHERE EXCLUDED.scanned_at >= asset_scan_evidence.scanned_at
+            """,
+            (postprocess_run_id, mp_task_id, scanned_at, postprocess_run_id),
+        )
+    return int(result.rowcount or 0)
 
 
 def create_scan_postprocess_run(

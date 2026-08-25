@@ -8,6 +8,7 @@ import {
   useVulnerabilityDashboard,
   VULNERABILITY_PAGE_SIZE,
 } from "./useVulnerabilityDashboard.js";
+import { ComplianceDashboard } from "./ComplianceDashboard.jsx";
 
 const EMPTY_FILTERS = { q: "", host_q: "", severity: "", source: "" };
 const DEFAULT_VULNERABILITY_SORT = {
@@ -157,6 +158,7 @@ export function VulnerabilitiesDashboard({
   };
 
   const refresh = () => {
+    if (workspace === "compliance") return;
     if (workspace === "resolved") {
       resolutionQuery.refetch();
       return;
@@ -283,7 +285,9 @@ export function VulnerabilitiesDashboard({
         }}
       />
 
-      {workspace === "resolved" ? (
+      {workspace === "compliance" ? (
+        <ComplianceDashboard enabled showAlert={showAlert} />
+      ) : workspace === "resolved" ? (
         <ResolutionStats
           query={resolutionQuery}
           periodDays={resolutionDays}
@@ -446,6 +450,14 @@ function VulnerabilityWorkspaceTabs({ value, canReadRemediation, onChange }) {
         onClick={() => onChange("current")}
       >
         Текущие уязвимости
+      </button>
+      <button
+        type="button"
+        className={value === "compliance" ? "is-active" : ""}
+        aria-current={value === "compliance" ? "page" : undefined}
+        onClick={() => onChange("compliance")}
+      >
+        Контроль и отчёты
       </button>
       {canReadRemediation ? (
         <button
