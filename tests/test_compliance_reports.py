@@ -53,4 +53,9 @@ def test_xlsx_report_has_required_sheets_and_escapes_formulas():
 def test_pdf_report_is_readable_and_contains_sections():
     data = render_compliance_pdf(_dataset())
     assert data.startswith(b"%PDF")
-    assert len(PdfReader(BytesIO(data)).pages) >= 1
+    reader = PdfReader(BytesIO(data))
+    assert len(reader.pages) >= 1
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert "Отчет по критическим уязвимостям" in text
+    assert "Не соответствует требованиям по свежести" in text
+    assert "Критическая уязвимость" in text

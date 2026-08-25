@@ -74,15 +74,11 @@ def render_compliance_xlsx(dataset: ComplianceDataset) -> bytes:
 
 
 def _pdf_font() -> str:
-    candidates = (
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path("C:/Windows/Fonts/arial.ttf"),
-    )
-    for path in candidates:
-        if path.exists():
-            pdfmetrics.registerFont(TTFont("ComplianceFont", str(path)))
-            return "ComplianceFont"
-    return "Helvetica"
+    font_name = "ComplianceNotoSans"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        path = Path(__file__).parent / "fonts" / "NotoSans-Regular.ttf"
+        pdfmetrics.registerFont(TTFont(font_name, str(path)))
+    return font_name
 
 
 def _paragraph(value: Any, style: ParagraphStyle) -> Paragraph:
