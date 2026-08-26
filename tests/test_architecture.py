@@ -19,6 +19,7 @@ EXPECTED_API_PATHS = {
     "/api/exports/pdql",
     "/api/reports/vulnerabilities/{report_type}/csv",
     "/api/assets",
+    "/api/asset-groups",
     "/api/asset-cards/local",
     "/api/asset-card-query",
     "/api/vulnerability-passports/local",
@@ -58,6 +59,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(schema["paths"]["/api/session"]["get"]["tags"], ["session"])
         self.assertEqual(schema["paths"]["/api/operations"]["get"]["tags"], ["operations"])
         self.assertEqual(schema["paths"]["/api/asset-card-query"]["post"]["tags"], ["asset-query"])
+        self.assertEqual(schema["paths"]["/api/asset-groups"]["get"]["tags"], ["asset-groups"])
 
     def test_baseline_schema_is_idempotent_and_non_destructive(self):
         statements = db.schema_statements()

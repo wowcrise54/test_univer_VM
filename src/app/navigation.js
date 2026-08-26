@@ -11,7 +11,7 @@ export const navigationGroups = [
 
 export const workflowSteps = [
   { id: "overview", label: "Обзор", hint: "VM-контур", path: "/vm", routes: ["vm"] },
-  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "operations"] },
+  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "asset-groups", "operations"] },
   { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "assets", "passports", "asset-query"] },
   { id: "fix", label: "Устранение", hint: "SLA и проверка", path: "/remediation", routes: ["remediation"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
@@ -53,6 +53,16 @@ export const routes = [
     label: "Задачи",
     title: "Задачи сканирования",
     description: "Создание, запуск и контроль задач сканирования в MP VM.",
+  },
+  {
+    id: "asset-groups",
+    requiredPermission: "asset_groups.read",
+    group: "scan",
+    icon: "▤",
+    path: "/asset-groups",
+    label: "Группы активов",
+    title: "Группы активов MP VM",
+    description: "Просмотр и управление иерархией групп активов в MP VM.",
   },
   {
     id: "operations",

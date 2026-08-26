@@ -12,7 +12,7 @@ describe("guided application shell", () => {
         activeOperations={2}
         activePath="/tasks"
         onNavigate={vi.fn()}
-        currentUser={{ permissions: ["connection.read", "tasks.read", "operations.read", "assets.read", "imports_exports.read"] }}
+        currentUser={{ permissions: ["connection.read", "tasks.read", "asset_groups.read", "operations.read", "assets.read", "imports_exports.read"] }}
       />,
     );
 
@@ -21,6 +21,7 @@ describe("guided application shell", () => {
     expect(screen.getByRole("heading", { name: "Находки" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Уязвимости" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Группы активов" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();
   });
 

@@ -20,6 +20,7 @@ import { useRouter } from "./router.js";
 import { AuthGate } from "../features/auth/AuthGate.jsx";
 import { UsersPage } from "../features/auth/UsersPage.jsx";
 import { VmManagementPage } from "../pages/VmManagementPage.jsx";
+import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
 
 export function App() {
   return <AuthGate>{(auth) => <AuthenticatedApp auth={auth} />}</AuthGate>;
@@ -131,6 +132,9 @@ function ActivePage({ routeId, ...props }) {
         systemStatus={props.systemStatus}
       />
     );
+  }
+  if (routeId === "asset-groups") {
+    return <AssetGroupsPage currentUser={props.currentUser} showAlert={props.showAlert} />;
   }
   if (routeId === "operations") {
     return (

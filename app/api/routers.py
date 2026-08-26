@@ -14,6 +14,7 @@ tasks_router = APIRouter(tags=["scanner-tasks"])
 operations_router = APIRouter(tags=["operations"])
 imports_router = APIRouter(tags=["imports-exports"])
 assets_router = APIRouter(tags=["assets"])
+asset_groups_router = APIRouter(prefix="/api/asset-groups", tags=["asset-groups"])
 asset_cards_router = APIRouter(tags=["asset-cards"])
 asset_query_router = APIRouter(tags=["asset-query"])
 passports_router = APIRouter(tags=["vulnerability-passports"])
@@ -31,6 +32,7 @@ API_ROUTERS = (
     operations_router,
     imports_router,
     assets_router,
+    asset_groups_router,
     asset_cards_router,
     asset_query_router,
     passports_router,

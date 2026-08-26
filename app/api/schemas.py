@@ -42,6 +42,29 @@ class ScannerTaskRequest(BaseModel):
     raw_payload: dict[str, Any] | None = None
 
 
+class AssetGroupCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    predicate: str = Field(min_length=1, max_length=16000)
+    parent_id: str = Field(default="00000000-0000-0000-0000-000000000002", min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    timeout_seconds: float = Field(default=120, gt=0, le=900)
+    poll_seconds: float = Field(default=2, gt=0, le=30)
+
+    @field_validator("name", "predicate", "parent_id")
+    @classmethod
+    def strip_required_value(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("value must not be blank")
+        return clean
+
+
+class AssetGroupDeleteRequest(BaseModel):
+    confirm_name: str = Field(min_length=1, max_length=255)
+    timeout_seconds: float = Field(default=120, gt=0, le=900)
+    poll_seconds: float = Field(default=2, gt=0, le=30)
+
+
 class DeleteScannerTaskRequest(BaseModel):
     mode: Literal["delete_v3", "put_v4"] = "delete_v3"
     put_payload: dict[str, Any] | None = None

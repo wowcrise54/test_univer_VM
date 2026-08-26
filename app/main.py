@@ -52,6 +52,7 @@ from . import auth as app_auth
 from .api.routers import (
     API_ROUTERS,
     asset_cards_router,
+    asset_groups_router,
     asset_query_router,
     assets_router,
     diagnostics_router,
@@ -73,6 +74,8 @@ from .api.schemas import (
     AssetCardFieldQueryRequest,
     AssetCardRefreshScanRequest,
     AssetCardUpdateRequest,
+    AssetGroupCreateRequest,
+    AssetGroupDeleteRequest,
     ConnectionRequest,
     CsvTextImportRequest,
     DeleteScannerTaskRequest,
@@ -1987,6 +1990,8 @@ def resolve_asset_card_refresh_template(
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
+
+
     selected = next(
         (item for item in remote if not template_task_id or item["mp_task_id"] == template_task_id),
         None,
@@ -2008,6 +2013,73 @@ def resolve_asset_card_refresh_template(
         status="imported_as_refresh_template",
         remote_response={"source": "remote_scanner_tasks"},
     )
+
+
+@asset_groups_router.get("")
+def asset_group_hierarchy() -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        return {"rows": client.get_asset_group_hierarchy(token)}
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+
+@asset_groups_router.post("", status_code=201)
+def create_asset_group(payload: AssetGroupCreateRequest) -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        operation_id = client.create_dynamic_asset_group(
+            token,
+            name=payload.name,
+            predicate=payload.predicate,
+            parent_id=payload.parent_id,
+            description=payload.description,
+        )
+        group_id = client.wait_for_asset_group_creation(
+            token,
+            operation_id,
+            timeout_seconds=payload.timeout_seconds,
+            poll_seconds=payload.poll_seconds,
+        )
+        hierarchy = client.get_asset_group_hierarchy(token)
+        return {
+            "id": group_id,
+            "operation_id": operation_id,
+            "group": client.find_asset_group(hierarchy, group_id=group_id),
+        }
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+
+@asset_groups_router.post("/{group_id}/delete")
+def delete_asset_group(group_id: str, payload: AssetGroupDeleteRequest) -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        hierarchy = client.get_asset_group_hierarchy(token)
+        group = client.find_asset_group(hierarchy, group_id=group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Asset group not found.")
+        actual_name = str(group.get("name") or "")
+        if payload.confirm_name != actual_name:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "ASSET_GROUP_CONFIRMATION_MISMATCH",
+                    "message": "The confirmation name does not match the asset group.",
+                },
+            )
+        operation_id = client.remove_asset_groups(token, [group_id])
+        client.wait_for_asset_group_absent(
+            token,
+            group_id,
+            timeout_seconds=payload.timeout_seconds,
+            poll_seconds=payload.poll_seconds,
+        )
+        return {"id": group_id, "name": actual_name, "operation_id": operation_id, "deleted": True}
+    except HTTPException:
+        raise
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
 
 
 @asset_cards_router.get("/api/asset-cards/refresh-scan/templates")

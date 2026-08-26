@@ -35,6 +35,8 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "saved_views.read": ("Представления", "Просмотр сохранённых представлений"),
     "saved_views.manage": ("Представления", "Изменение сохранённых представлений"),
     "assets.read": ("Активы", "Просмотр активов и уязвимостей"),
+    "asset_groups.read": ("Группы активов", "Просмотр групп активов MP VM"),
+    "asset_groups.manage": ("Группы активов", "Создание и удаление групп активов MP VM"),
     "asset_cards.read": ("Карточки активов", "Просмотр и запрос карточек"),
     "asset_cards.build": ("Карточки активов", "Построение и обновление карточек"),
     "asset_cards.manage": ("Карточки активов", "Редактирование и удаление карточек"),
@@ -67,6 +69,7 @@ VIEWER_PERMISSIONS = {
 } | {"diagnostics.write"}
 OPERATOR_PERMISSIONS = VIEWER_PERMISSIONS | {
     "tasks.manage", "tasks.execute", "operations.cancel", "operations.retry",
+    "asset_groups.manage",
     "saved_views.manage", "asset_cards.build", "asset_cards.manage",
     "passports.manage", "imports_exports.manage", "notifications.manage",
     "risk.manage", "remediation.manage",
@@ -449,6 +452,7 @@ def required_permission(method:str,path:str)->str|None:
     if path.startswith("/api/import") or path.startswith("/api/exports/pdql"): return "imports_exports.manage"
     if path.startswith("/api/risk"): return "risk.read"
     if path.startswith("/api/assets/context"): return "risk.read" if method in {"GET","HEAD"} else "risk.manage"
+    if path.startswith("/api/asset-groups"): return "asset_groups.read" if method in {"GET","HEAD"} else "asset_groups.manage"
     if path.startswith("/api/assets") or path.startswith("/api/vulnerabilities") or path.startswith("/api/coverage"): return "assets.read"
     if path.startswith("/api/asset-card-query"): return "asset_cards.read"
     if path.startswith("/api/asset-cards"):
