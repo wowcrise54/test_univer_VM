@@ -1351,24 +1351,25 @@ def evaluate_local_asset_group(group_id: str) -> dict[str, Any]:
             current = now_utc()
             conn.execute("DELETE FROM asset_group_members WHERE group_id = %s", (group_id,))
             if rule_rows:
-                conn.executemany(
-                    """
-                    INSERT INTO asset_group_members (
-                        group_id, asset_id, evaluation_id, membership_source, evidence_json, evaluated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    [
-                        (
-                            group_id,
-                            asset_id,
-                            evaluation_id,
-                            row.get("membership_source") or "rule",
-                            json.dumps(row.get("matches") or [], ensure_ascii=False, default=str),
-                            current,
-                        )
-                        for asset_id, row in rule_rows.items()
-                    ],
-                )
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO asset_group_members (
+                            group_id, asset_id, evaluation_id, membership_source, evidence_json, evaluated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                group_id,
+                                asset_id,
+                                evaluation_id,
+                                row.get("membership_source") or "rule",
+                                json.dumps(row.get("matches") or [], ensure_ascii=False, default=str),
+                                current,
+                            )
+                            for asset_id, row in rule_rows.items()
+                        ],
+                    )
             counts = (len(rule_rows), int(result["indexed_cards"]), int(result["total_cards"]))
             conn.execute(
                 """
