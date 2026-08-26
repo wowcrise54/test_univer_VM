@@ -44,13 +44,11 @@ class ScannerTaskRequest(BaseModel):
 
 class AssetGroupCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    predicate: str = Field(min_length=1, max_length=16000)
-    parent_id: str = Field(default="00000000-0000-0000-0000-000000000002", min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=2000)
-    timeout_seconds: float = Field(default=120, gt=0, le=900)
-    poll_seconds: float = Field(default=2, gt=0, le=30)
+    description: str = Field(default="", max_length=2000)
+    parent_id: str | None = None
+    query: dict[str, Any]
 
-    @field_validator("name", "predicate", "parent_id")
+    @field_validator("name")
     @classmethod
     def strip_required_value(cls, value: str) -> str:
         clean = value.strip()
@@ -59,10 +57,20 @@ class AssetGroupCreateRequest(BaseModel):
         return clean
 
 
-class AssetGroupDeleteRequest(BaseModel):
-    confirm_name: str = Field(min_length=1, max_length=255)
-    timeout_seconds: float = Field(default=120, gt=0, le=900)
-    poll_seconds: float = Field(default=2, gt=0, le=30)
+class AssetGroupUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    parent_id: str | None = None
+    query: dict[str, Any] | None = None
+
+
+class AssetGroupPreviewRequest(BaseModel):
+    query: dict[str, Any]
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class AssetGroupOverrideRequest(BaseModel):
+    action: Literal["include", "exclude"]
 
 
 class DeleteScannerTaskRequest(BaseModel):

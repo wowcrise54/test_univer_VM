@@ -5,22 +5,22 @@ import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
 
 function renderPage(permissions = ["asset_groups.read", "asset_groups.manage"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <AssetGroupsPage currentUser={{ permissions }} showAlert={vi.fn()} />
-    </QueryClientProvider>,
-  );
+  return render(<QueryClientProvider client={queryClient}><AssetGroupsPage currentUser={{ permissions }} showAlert={vi.fn()} /></QueryClientProvider>);
+}
+
+function response(payload) {
+  return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("asset groups management", () => {
-  it("renders and filters the remote hierarchy", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      rows: [{ id: "root-1", name: "Infrastructure", groupType: "static", children: [
-        { id: "group-1", name: "Production Linux", groupType: "dynamic", predicate: "(ImageSet)", children: [] },
-      ] }],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+describe("local asset groups management", () => {
+  it("renders and filters the calculated hierarchy", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => String(input).includes("/fields")
+      ? response({ rows: [] })
+      : response({ rows: [{ group_id: "root-1", name: "Infrastructure", status: "ready", member_count: 12, children: [
+        { group_id: "group-1", name: "Production Linux", status: "ready", member_count: 4, children: [] },
+      ] }] }));
 
     renderPage();
     expect(await screen.findByRole("button", { name: /Infrastructure/ })).toBeInTheDocument();
@@ -29,13 +29,10 @@ describe("asset groups management", () => {
   });
 
   it("hides mutation controls from read-only users", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ rows: [] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => response({ rows: [] }));
 
     renderPage(["asset_groups.read"]);
-    await waitFor(() => expect(screen.getByText("Группы не найдены.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Групп пока нет.")).toBeInTheDocument());
     expect(screen.queryByRole("heading", { name: "Новая динамическая группа" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Создать группу" })).not.toBeInTheDocument();
   });

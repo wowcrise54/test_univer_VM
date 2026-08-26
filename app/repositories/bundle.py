@@ -9,6 +9,7 @@ from .risk import RiskRepository
 from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 from .compliance import ComplianceRepository
+from .asset_groups import AssetGroupRepository
 
 
 class OperationsRepository:
@@ -81,6 +82,7 @@ class RepositoryBundle:
         self.passports = PassportsRepository()
         self.imports = ImportsRepository()
         self.asset_query = AssetQueryRepository()
+        self.asset_groups = AssetGroupRepository()
         self.vulnerabilities = VulnerabilityAnalyticsRepository()
         self.compliance = ComplianceRepository()
         self.remediation = RemediationRepository()

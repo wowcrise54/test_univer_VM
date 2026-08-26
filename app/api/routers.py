@@ -7,6 +7,7 @@ from .vm import router as vm_router
 from .vulnerabilities import router as vulnerabilities_router
 from .compliance import dashboard_router as compliance_dashboard_router
 from .compliance import report_router as compliance_report_router
+from .asset_groups import router as asset_groups_router
 
 system_router = APIRouter(tags=["system"])
 session_router = APIRouter(tags=["session"])
@@ -14,7 +15,6 @@ tasks_router = APIRouter(tags=["scanner-tasks"])
 operations_router = APIRouter(tags=["operations"])
 imports_router = APIRouter(tags=["imports-exports"])
 assets_router = APIRouter(tags=["assets"])
-asset_groups_router = APIRouter(prefix="/api/asset-groups", tags=["asset-groups"])
 asset_cards_router = APIRouter(tags=["asset-cards"])
 asset_query_router = APIRouter(tags=["asset-query"])
 passports_router = APIRouter(tags=["vulnerability-passports"])

@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from typing import Any
+
+from ..repositories.asset_groups import AssetGroupRepository
+
+
+class AssetGroupService:
+    def __init__(self, repository: AssetGroupRepository) -> None:
+        self._repository = repository
+
+    def tree(self) -> dict[str, Any]:
+        groups = self._repository.list()
+        nodes = {item["group_id"]: {**item, "children": []} for item in groups}
+        roots = []
+        for item in nodes.values():
+            parent = nodes.get(item.get("parent_id"))
+            if parent:
+                parent["children"].append(item)
+            else:
+                roots.append(item)
+        return {"rows": roots, "total": len(groups)}
+
+    def get(self, group_id: str) -> dict[str, Any] | None:
+        return self._repository.get(group_id)
+
+    def create(self, *, actor: str | None = None, **values: Any) -> dict[str, Any]:
+        group = self._repository.create(created_by=actor, **values)
+        evaluation = self._repository.evaluate(group["group_id"])
+        refreshed = self._repository.get(group["group_id"])
+        if not refreshed:
+            raise LookupError("Asset group not found after creation.")
+        return {**refreshed, "evaluation": evaluation}
+
+    def update(self, group_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
+        return self._repository.update(group_id, changes)
+
+    def archive(self, group_id: str) -> bool:
+        return self._repository.archive(group_id)
+
+    def preview(self, query: dict[str, Any], *, limit: int) -> dict[str, Any]:
+        return self._repository.preview(query, limit=limit)
+
+    def evaluate(self, group_id: str) -> dict[str, Any]:
+        return self._repository.evaluate(group_id)
+
+    def members(self, group_id: str, **pagination: Any) -> dict[str, Any]:
+        if not self._repository.get(group_id):
+            raise LookupError("Asset group not found.")
+        return self._repository.members(group_id, **pagination)
+
+    def set_override(self, group_id: str, asset_id: str, action: str, *, actor: str | None) -> dict[str, Any]:
+        if not self._repository.get(group_id):
+            raise LookupError("Asset group not found.")
+        return self._repository.set_override(group_id, asset_id, action, actor=actor)
+
+    def delete_override(self, group_id: str, asset_id: str) -> bool:
+        return self._repository.delete_override(group_id, asset_id)

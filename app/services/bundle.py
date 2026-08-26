@@ -9,6 +9,7 @@ from .risk import RiskService
 from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
 from .compliance import ComplianceService
+from .asset_groups import AssetGroupService
 
 if TYPE_CHECKING:
     from ..core.runtime import OperationRunner
@@ -93,6 +94,7 @@ class ServiceBundle:
         self.asset_cards = AssetCardsService(repositories)
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)
+        self.asset_groups = AssetGroupService(repositories.asset_groups)
         self.vulnerabilities = VulnerabilityAnalyticsService(repositories.vulnerabilities)
         self.compliance = ComplianceService(repositories.compliance)
         self.remediation = RemediationService(
