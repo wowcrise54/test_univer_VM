@@ -593,6 +593,29 @@ describe("vulnerability dashboard", () => {
     ).toBe(true);
   });
 
+  it("creates an asset group from the selected vulnerability", async () => {
+    api.mockImplementation((path, options) => {
+      if (path === "/api/asset-groups/from-vulnerability" && options?.method === "POST") {
+        return Promise.resolve({ group_id: "group-1", name: "Уязвимость: CVE-2026-1001", member_count: 1 });
+      }
+      return Promise.resolve(responseFor(path));
+    });
+    renderDashboard({ permissions: ["assets.read", "asset_groups.manage"] });
+    const selectors = await screen.findAllByRole("button", {
+      name: "Показать хосты с уязвимостью Удалённое выполнение кода",
+    });
+    fireEvent.click(selectors[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Создать группу" }));
+
+    await waitFor(() => expect(api).toHaveBeenCalledWith(
+      "/api/asset-groups/from-vulnerability",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining(VULNERABILITY.selector),
+      }),
+    ));
+  });
+
   it("hides remediation data and actions without remediation permissions", async () => {
     renderDashboard({ permissions: ["assets.read"] });
 

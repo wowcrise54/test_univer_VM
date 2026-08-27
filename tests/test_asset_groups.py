@@ -61,6 +61,29 @@ def test_service_evaluates_group_immediately_after_creation() -> None:
     assert result["evaluation"]["evaluation_id"] == "evaluation-1"
 
 
+def test_service_creates_vulnerability_group_from_explicit_asset_ids() -> None:
+    repository = MagicMock()
+    repository.create.return_value = {"group_id": "group-1"}
+    repository.evaluate.return_value = {"status": "completed"}
+    repository.get.return_value = {"group_id": "group-1", "name": "CVE group", "member_count": 2}
+
+    AssetGroupService(repository).create_from_asset_ids(
+        name="CVE group", description="", parent_id=None,
+        asset_ids=["asset-1", "asset-2", "asset-1"], actor="operator",
+    )
+
+    assert repository.create.call_args.kwargs["query"]["rules"][0] == {
+        "field_path": "asset.assetId", "operator": "in", "value": ["asset-1", "asset-2"],
+    }
+
+
+def test_service_rejects_empty_vulnerability_group() -> None:
+    with pytest.raises(ValueError, match="No affected assets"):
+        AssetGroupService(MagicMock()).create_from_asset_ids(
+            name="CVE group", description="", parent_id=None, asset_ids=[], actor="operator",
+        )
+
+
 def test_asset_group_permissions_are_explicit_and_role_appropriate() -> None:
     assert auth.required_permission("GET", "/api/asset-groups/tree") == "asset_groups.read"
     assert auth.required_permission("POST", "/api/asset-groups/preview") == "asset_groups.manage"
@@ -68,6 +91,7 @@ def test_asset_group_permissions_are_explicit_and_role_appropriate() -> None:
     assert "asset_groups.read" in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" not in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" in auth.BUILTIN_ROLE_PERMISSIONS["operator"]
+    assert auth.required_permission("POST", "/api/scanner-tasks/precheck-1/retry-false") == "tasks.execute"
 
 
 def test_service_runs_bulk_group_action_and_reports_each_result() -> None:
@@ -128,3 +152,21 @@ def test_precheck_statistics_keep_legacy_runs_without_counters_unknown(monkeypat
     assert "successful_target_count" in sql
     assert "false_target_count" in sql
     assert "precheck_validation_failed" in sql
+
+
+def test_false_precheck_runs_expose_targets_and_retry_capability(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = MagicMock()
+    connection.execute.return_value.fetchall.return_value = [{
+        "mp_task_id": "precheck-1", "name": "Precheck", "status": "precheck_failed",
+        "updated_at": None,
+        "last_remote_response_json": '{"audit_task_id":"audit-1","false_targets":["10.0.0.2"],"false_target_count":1}',
+    }]
+    context = MagicMock()
+    context.__enter__.return_value = connection
+    monkeypatch.setattr(db, "init_db", MagicMock())
+    monkeypatch.setattr(db, "connect", MagicMock(return_value=context))
+
+    result = db.list_precheck_false_runs(limit=20)
+
+    assert result["rows"][0]["false_targets"] == ["10.0.0.2"]
+    assert result["rows"][0]["retryable"] is True

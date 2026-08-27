@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from .schemas import (
     AssetGroupBulkActionRequest,
     AssetGroupCreateRequest,
+    AssetGroupFromVulnerabilityRequest,
     AssetGroupOverrideRequest,
     AssetGroupPreviewRequest,
     AssetGroupUpdateRequest,
@@ -50,6 +51,11 @@ def precheck_stats(request: Request) -> dict:
     return _service(request).precheck_stats()
 
 
+@router.get("/precheck-runs")
+def precheck_runs(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 20) -> dict:
+    return _service(request).precheck_runs(limit=limit)
+
+
 @router.post("/bulk-action")
 def bulk_action(request: Request, payload: AssetGroupBulkActionRequest) -> dict:
     return _service(request).bulk_action(payload.group_ids, payload.action)
@@ -67,6 +73,30 @@ def preview(request: Request, payload: AssetGroupPreviewRequest) -> dict:
 def create_group(request: Request, payload: AssetGroupCreateRequest) -> dict:
     try:
         return _service(request).create(actor=_actor(request), **payload.model_dump())
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
+@router.post("/from-vulnerability", status_code=201)
+def create_group_from_vulnerability(request: Request, payload: AssetGroupFromVulnerabilityRequest) -> dict:
+    try:
+        asset_ids: list[str] = []
+        offset = 0
+        while True:
+            page = request.app.state.container.services.vulnerabilities.hosts(
+                selector=payload.selector, limit=500, offset=offset,
+            )
+            asset_ids.extend(str(row["asset_id"]) for row in page.get("rows", []) if row.get("asset_id"))
+            offset += len(page.get("rows", []))
+            if offset >= int(page.get("total") or 0) or not page.get("rows"):
+                break
+        return _service(request).create_from_asset_ids(
+            name=payload.name,
+            description=payload.description,
+            parent_id=payload.parent_id,
+            asset_ids=asset_ids,
+            actor=_actor(request),
+        )
     except Exception as exc:
         _raise_domain_error(exc)
 

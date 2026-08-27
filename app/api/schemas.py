@@ -78,6 +78,13 @@ class AssetGroupBulkActionRequest(BaseModel):
     action: Literal["evaluate", "archive"]
 
 
+class AssetGroupFromVulnerabilityRequest(BaseModel):
+    selector: str = Field(min_length=1, max_length=2000)
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=2000)
+    parent_id: str | None = None
+
+
 class DeleteScannerTaskRequest(BaseModel):
     mode: Literal["delete_v3", "put_v4"] = "delete_v3"
     put_payload: dict[str, Any] | None = None

@@ -68,4 +68,27 @@ describe("local asset groups management", () => {
     await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Обработано: 1; ошибок: 0.", "success"));
     expect(screen.getByRole("checkbox", { name: "Выбрать группу Production" })).not.toBeChecked();
   });
+
+  it("shows false targets and retries only the selected precheck run", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, options) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) return response({ runs: 1, success: 1, false: 1, unknown: 0 });
+      if (url.includes("/precheck-runs")) return response({ rows: [{ mp_task_id: "precheck-1", name: "Precheck", false_targets: ["10.0.0.2"], false_target_count: 1, retryable: true }] });
+      if (url.includes("/retry-false") && options?.method === "POST") return response({ requested_target_count: 1, false_target_count: 0 });
+      if (url.includes("/fields")) return response({ rows: [] });
+      return response({ rows: [] });
+    });
+    const showAlert = vi.fn();
+
+    renderPage(["asset_groups.read", "tasks.execute"], showAlert);
+    fireEvent.click(await screen.findByText("False targets · 1"));
+    expect(screen.getByText("10.0.0.2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить false" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/scanner-tasks/precheck-1/retry-false"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Повторено: 1; false: 0.", "success"));
+  });
 });

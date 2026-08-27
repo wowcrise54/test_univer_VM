@@ -9,7 +9,8 @@ const EMPTY_QUERY = () => ({ combinator: "and", match_scope: "host", rules: [EMP
 export function AssetGroupsPage({ currentUser, showAlert }) {
   const queryClient = useQueryClient();
   const canManage = new Set(currentUser?.permissions || []).has("asset_groups.manage");
-  const [selectedId, setSelectedId] = useState(null);
+  const canRetryPrecheck = new Set(currentUser?.permissions || []).has("tasks.execute");
+  const [selectedId, setSelectedId] = useState(() => typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("group"));
   const [search, setSearch] = useState("");
   const [archiveTarget, setArchiveTarget] = useState(null);
   const [form, setForm] = useState({ name: "", description: "", parent_id: "", query: EMPTY_QUERY() });
@@ -19,6 +20,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
 
   const groupsQuery = useQuery({ queryKey: ["asset-groups"], queryFn: () => api("/api/asset-groups/tree") });
   const precheckStatsQuery = useQuery({ queryKey: ["precheck-stats"], queryFn: () => api("/api/asset-groups/precheck-stats") });
+  const precheckRunsQuery = useQuery({ queryKey: ["precheck-runs"], queryFn: () => api("/api/asset-groups/precheck-runs?limit=20") });
   const fieldsQuery = useQuery({ queryKey: ["asset-group-fields"], queryFn: () => api("/api/asset-card-query/fields?limit=500") });
   const membersQuery = useQuery({
     queryKey: ["asset-group-members", selectedId],
@@ -98,6 +100,14 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
       await refresh();
     },
   });
+  const retryFalseMutation = useMutation({
+    mutationFn: perform((taskId) => api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/retry-false`, { method: "POST" })),
+    onSuccess: async (result) => {
+      showAlert(`Повторено: ${result.requested_target_count}; false: ${result.false_target_count}.`, result.false_target_count ? "warning" : "success");
+      await queryClient.invalidateQueries({ queryKey: ["precheck-stats"] });
+      await queryClient.invalidateQueries({ queryKey: ["precheck-runs"] });
+    },
+  });
   const toggleSelected = (groupId) => setSelectedIds((current) => current.includes(groupId)
     ? current.filter((value) => value !== groupId) : [...current, groupId]);
   const stats = precheckStatsQuery.data || {};
@@ -111,6 +121,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
           <Metric label="False" value={stats.false} />
           <Metric label="Без детализации" value={stats.unknown} />
         </div>
+        {(precheckRunsQuery.data?.rows || []).length ? <details className="precheck-false-runs"><summary>False targets · {stats.false || 0}</summary><div>{precheckRunsQuery.data.rows.map((run) => <article key={run.mp_task_id || run.group_id}><div><strong>{run.name || run.mp_task_id}</strong><small>{formatDate(run.updated_at)} · {run.false_target_count || 0} целей</small><code>{(run.false_targets || []).join(", ")}</code></div>{canRetryPrecheck ? <Button variant="tiny" busy={retryFalseMutation.isPending} disabled={!run.retryable} onClick={() => retryFalseMutation.mutate(run.mp_task_id)}>Повторить false</Button> : null}</article>)}</div></details> : null}
       </Panel>
       <Panel
         title="Группы активов"

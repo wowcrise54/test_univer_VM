@@ -5265,6 +5265,38 @@ def get_precheck_statistics() -> dict[str, int]:
     return {key: int((row or {}).get(key) or 0) for key in ("runs", "success", "false", "unknown")}
 
 
+def list_precheck_false_runs(*, limit: int = 20) -> dict[str, Any]:
+    init_db()
+    limit = max(1, min(100, int(limit)))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT mp_task_id, name, status, updated_at, last_remote_response_json
+            FROM scan_tasks
+            WHERE status IN ('precheck_finished', 'precheck_failed')
+              AND last_remote_response_json::jsonb ? 'false_targets'
+              AND jsonb_array_length(last_remote_response_json::jsonb -> 'false_targets') > 0
+            ORDER BY updated_at DESC, id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    decoded = []
+    for raw in rows:
+        row = dict(raw)
+        result = json_loads(row.pop("last_remote_response_json", "{}"), {})
+        false_targets = result.get("false_targets") if isinstance(result, dict) else []
+        decoded.append({
+            **row,
+            "updated_at": row["updated_at"].isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at"),
+            "false_targets": false_targets if isinstance(false_targets, list) else [],
+            "false_target_count": int(result.get("false_target_count") or len(false_targets or [])),
+            "audit_task_id": result.get("audit_task_id"),
+            "retryable": bool(result.get("audit_task_id") and false_targets),
+        })
+    return {"rows": decoded, "total": len(decoded)}
+
+
 def validate_asset_query_tree(node: Any, *, depth: int = 0, parent_scope: str | None = None) -> int:
     if not isinstance(node, dict):
         raise ValueError("Query node must be an object.")

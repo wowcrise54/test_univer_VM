@@ -43,7 +43,35 @@ def test_precheck_persists_requested_successful_and_false_targets() -> None:
     assert result["successful_target_count"] == 1
     assert result["false_target_count"] == 1
     assert result["false_targets"] == ["10.0.0.2"]
+    assert result["audit_task_id"] == "audit-1"
     assert update_status.call_args_list[-1].args == ("precheck-1", "precheck_finished", result)
+
+
+def test_retry_false_precheck_only_requests_previous_false_targets() -> None:
+    client = MagicMock()
+    client.create_scanner_task.return_value = "precheck-2"
+    client.start_connection_check_with_retry.return_value = {"started": True}
+    client.wait_for_connection_check_targets.return_value = (["10.0.0.2"], "completed")
+    source = {
+        "payload": {"name": "Precheck", "include": {"targets": ["10.0.0.1", "10.0.0.2"]}},
+        "last_remote_response": {
+            "audit_task_id": "audit-1", "false_targets": ["10.0.0.2", "10.0.0.3"],
+        },
+    }
+    with (
+        patch.object(main.db, "get_scan_task", return_value=source),
+        patch.object(main.db, "record_scan_task") as record,
+        patch.object(main.db, "update_scan_task_status"),
+    ):
+        result = main.run_false_targets_precheck(
+            client=client, token="token", source_precheck_task_id="precheck-1",
+            options=main.StartScannerTaskRequest(skip_validation=True),
+        )
+
+    assert record.call_args.kwargs["payload"]["include"]["targets"] == ["10.0.0.2", "10.0.0.3"]
+    assert result["successful_targets"] == ["10.0.0.2"]
+    assert result["false_targets"] == ["10.0.0.3"]
+    client.update_scanner_task.assert_not_called()
 
 
 class PagingClient(mpvm_client.MpVmClient):

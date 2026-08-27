@@ -32,6 +32,7 @@ class CampaignCreate(BaseModel):
     assignee: str | None = Field(default=None, max_length=200)
     due_at: datetime | None = None
     comment: str | None = Field(default=None, max_length=4000)
+    asset_group_id: str | None = None
 
 
 class CampaignUpdate(BaseModel):
@@ -40,6 +41,7 @@ class CampaignUpdate(BaseModel):
     due_at: datetime | None = None
     comment: str | None = Field(default=None, max_length=4000)
     status: Literal["draft", "active", "completed", "cancelled"] | None = None
+    asset_group_id: str | None = None
 
 
 def service(request: Request):

@@ -38,3 +38,6 @@ class AssetGroupRepository:
 
     def precheck_stats(self) -> dict[str, int]:
         return db.get_precheck_statistics()
+
+    def precheck_runs(self, *, limit: int) -> dict[str, Any]:
+        return db.list_precheck_false_runs(limit=limit)

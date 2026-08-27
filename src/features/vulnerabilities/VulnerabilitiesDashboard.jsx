@@ -55,6 +55,7 @@ export function VulnerabilitiesDashboard({
     permissions.has("assets.read") &&
     canReadRemediation &&
     permissions.has("remediation.manage");
+  const canManageAssetGroups = permissions.has("asset_groups.manage");
   const [workspace, setWorkspace] = useState("current");
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -73,6 +74,7 @@ export function VulnerabilitiesDashboard({
   const [passportError, setPassportError] = useState(null);
   const [hostFinding, setHostFinding] = useState(null);
   const [remediationBusyAssetId, setRemediationBusyAssetId] = useState(null);
+  const [assetGroupBusy, setAssetGroupBusy] = useState(false);
   const [resolutionDays, setResolutionDays] = useState(30);
   const hostHeadingRef = useRef(null);
   const drilldownTriggerRef = useRef(null);
@@ -247,6 +249,27 @@ export function VulnerabilitiesDashboard({
     }
   };
 
+  const createAssetGroup = async () => {
+    if (!selected?.selector) return;
+    setAssetGroupBusy(true);
+    try {
+      const label = vulnerabilityLabel(selected);
+      const group = await api("/api/asset-groups/from-vulnerability", {
+        method: "POST",
+        body: JSON.stringify({
+          selector: selected.selector,
+          name: `Уязвимость: ${label}`,
+          description: `Активы с уязвимостью ${label}`,
+        }),
+      });
+      showAlert(`Группа «${group.name}» создана: ${group.member_count || 0} активов.`, "success");
+    } catch (error) {
+      showAlert(error.operatorMessage || error.message, "error");
+    } finally {
+      setAssetGroupBusy(false);
+    }
+  };
+
   const summary = summaryQuery.data || {};
   const vulnerabilityRows = resultRows(vulnerabilitiesQuery.data);
   const vulnerabilityTotal = resultTotal(
@@ -384,6 +407,8 @@ export function VulnerabilitiesDashboard({
               headingRef={hostHeadingRef}
               canReadRemediation={canReadRemediation}
               canManageRemediation={canManageRemediation}
+              canManageAssetGroups={canManageAssetGroups}
+              assetGroupBusy={assetGroupBusy}
               remediationBusyAssetId={remediationBusyAssetId}
               onRetry={hostsQuery.refetch}
               onSort={changeHostSort}
@@ -392,6 +417,7 @@ export function VulnerabilitiesDashboard({
               onOpenPassport={openPassport}
               onOpenFinding={setHostFinding}
               onStartRemediation={startRemediation}
+              onCreateAssetGroup={createAssetGroup}
             />
           ) : null}
           <RiskTrendSection
@@ -1830,6 +1856,8 @@ function HostDrilldown({
   headingRef,
   canReadRemediation,
   canManageRemediation,
+  canManageAssetGroups,
+  assetGroupBusy,
   remediationBusyAssetId,
   onRetry,
   onSort,
@@ -1838,6 +1866,7 @@ function HostDrilldown({
   onOpenPassport,
   onOpenFinding,
   onStartRemediation,
+  onCreateAssetGroup,
 }) {
   const label = vulnerabilityLabel(selected);
   const hasPassport = Boolean(selected.passports?.[0]?.internal_id);
@@ -1858,6 +1887,11 @@ function HostDrilldown({
           </p>
         </div>
         <div className="host-drilldown__actions">
+          {canManageAssetGroups ? (
+            <Button busy={assetGroupBusy} onClick={onCreateAssetGroup}>
+              Создать группу
+            </Button>
+          ) : null}
           {hasPassport ? (
             <Button
               variant="secondary"

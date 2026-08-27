@@ -43,3 +43,10 @@ def test_existing_remediation_queue_does_not_require_risk_schema():
     source = inspect.getsource(RemediationRepository.list) + inspect.getsource(RemediationRepository.get)
     assert "asset_contexts" not in source
     assert "remediation_campaigns" not in source
+
+
+def test_campaign_query_includes_linked_asset_group():
+    sql = RiskRepository()._campaign_sql()
+    assert "asset_group_id" in sql
+    assert "asset_group_name" in sql
+    assert "LEFT JOIN asset_groups" in sql

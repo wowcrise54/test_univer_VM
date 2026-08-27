@@ -199,14 +199,15 @@ class RiskRepository:
         case_ids = list(dict.fromkeys(values["case_ids"]))
         with db.connect() as conn:
             row = conn.execute(
-                """INSERT INTO remediation_campaigns(campaign_id,name,assignee,due_at,comment,created_by)
-                VALUES(%s,%s,%s,%s,%s,%s) RETURNING *""",
+                """INSERT INTO remediation_campaigns(campaign_id,name,assignee,due_at,comment,asset_group_id,created_by)
+                VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                 (
                     campaign_id,
                     values["name"],
                     values.get("assignee"),
                     values.get("due_at"),
                     values.get("comment"),
+                    values.get("asset_group_id"),
                     actor,
                 ),
             ).fetchone()
@@ -217,7 +218,7 @@ class RiskRepository:
                 )
             conn.execute(
                 "INSERT INTO remediation_campaign_events(campaign_id,actor_username,event_type,changes_json) VALUES(%s,%s,'created',%s)",
-                (campaign_id, actor, json.dumps({"case_ids": case_ids})),
+                (campaign_id, actor, json.dumps({"case_ids": case_ids, "asset_group_id": values.get("asset_group_id")})),
             )
             if values.get("assignee") or values.get("due_at"):
                 conn.execute(
@@ -230,13 +231,13 @@ class RiskRepository:
 
     def list_campaigns(self) -> dict[str, Any]:
         with db.connect() as conn:
-            rows = conn.execute(self._campaign_sql() + " GROUP BY c.campaign_id ORDER BY c.created_at DESC").fetchall()
+            rows = conn.execute(self._campaign_sql() + " GROUP BY c.campaign_id,g.name ORDER BY c.created_at DESC").fetchall()
         return {"rows": [self._campaign(dict(r)) for r in rows], "total": len(rows)}
 
     def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
         with db.connect() as conn:
             row = conn.execute(
-                self._campaign_sql() + " WHERE c.campaign_id=%s GROUP BY c.campaign_id", (campaign_id,)
+                self._campaign_sql() + " WHERE c.campaign_id=%s GROUP BY c.campaign_id,g.name", (campaign_id,)
             ).fetchone()
             cases = (
                 conn.execute(
@@ -270,7 +271,7 @@ class RiskRepository:
         return result
 
     def update_campaign(self, campaign_id: str, values: dict[str, Any], actor: str | None) -> dict[str, Any] | None:
-        allowed = {"name", "assignee", "due_at", "comment", "status"}
+        allowed = {"name", "assignee", "due_at", "comment", "status", "asset_group_id"}
         clean = {k: v for k, v in values.items() if k in allowed}
         if not clean:
             return self.get_campaign(campaign_id)
@@ -313,13 +314,14 @@ class RiskRepository:
         }
 
     def _campaign_sql(self) -> str:
-        return """SELECT c.*,COUNT(cc.case_id)::int total,
+        return """SELECT c.*,g.name AS asset_group_name,COUNT(cc.case_id)::int total,
           COUNT(*) FILTER(WHERE rc.status='in_progress')::int in_progress,
           COUNT(*) FILTER(WHERE rc.status IN ('open','in_progress') AND rc.due_at<NOW())::int overdue,
           COUNT(*) FILTER(WHERE rc.status='risk_accepted')::int risk_accepted,
           COUNT(*) FILTER(WHERE rc.status IN ('open','in_progress'))::int awaiting_verification,
           COUNT(*) FILTER(WHERE rc.status='resolved')::int resolved
-          FROM remediation_campaigns c LEFT JOIN remediation_campaign_cases cc ON cc.campaign_id=c.campaign_id
+          FROM remediation_campaigns c LEFT JOIN asset_groups g ON g.group_id=c.asset_group_id
+          LEFT JOIN remediation_campaign_cases cc ON cc.campaign_id=c.campaign_id
           LEFT JOIN remediation_cases rc ON rc.case_id=cc.case_id"""
 
     def _campaign(self, row: dict[str, Any]) -> dict[str, Any]:

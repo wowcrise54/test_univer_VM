@@ -446,7 +446,7 @@ def required_permission(method:str,path:str)->str|None:
         return "operations.read"
     if path.startswith("/api/saved-views"): return "saved_views.read" if method in {"GET","HEAD"} else "saved_views.manage"
     if path.startswith("/api/scanner-tasks"):
-        if any(path.endswith(s) for s in ("/start","/stop","/validate")): return "tasks.execute"
+        if any(path.endswith(s) for s in ("/start","/stop","/validate","/retry-false")): return "tasks.execute"
         return "tasks.read" if method in {"GET","HEAD"} else "tasks.manage"
     if path.startswith("/api/reports/") or path.startswith("/api/asset-card-query/export") or (path.startswith("/api/exports/") and method=="GET"): return "imports_exports.read"
     if path.startswith("/api/import") or path.startswith("/api/exports/pdql"): return "imports_exports.manage"

@@ -1388,6 +1388,23 @@ def start_scanner_task(
     return result
 
 
+@tasks_router.post("/api/scanner-tasks/{task_id}/retry-false", status_code=202)
+def retry_false_precheck(
+    task_id: str,
+    payload: StartScannerTaskRequest | None = None,
+) -> dict[str, Any]:
+    client, token = require_mpvm()
+    try:
+        return run_false_targets_precheck(
+            client=client,
+            token=token,
+            source_precheck_task_id=task_id,
+            options=payload or StartScannerTaskRequest(),
+        )
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+
 def _start_scanner_task_request(
     task_id: str, options: StartScannerTaskRequest, clean_idempotency_key: str | None,
     *, background_tasks: BackgroundTasks | None = None,
@@ -3682,9 +3699,15 @@ def run_precheck_for_scanner_task(
             poll_seconds=min(options.precheck_poll_seconds, 5),
         )
         if not valid:
-            response = {"id": precheck_task_id, "valid": False, "error": error}
+            requested_targets = precheck_payload.get("include", {}).get("targets", []) if isinstance(precheck_payload.get("include"), dict) else []
+            response = {
+                "id": precheck_task_id, "task_id": precheck_task_id, "audit_task_id": task_id,
+                "valid": False, "error": error, "successful_targets": [],
+                "successful_target_count": 0, "false_targets": requested_targets,
+                "false_target_count": len(requested_targets), "requested_target_count": len(requested_targets),
+            }
             db.update_scan_task_status(precheck_task_id, "precheck_validation_failed", response)
-            return {"task_id": precheck_task_id, "successful_targets": [], "message": error, "valid": False}
+            return {**response, "message": error}
 
     started_from = datetime.now(timezone.utc).isoformat()
     start_response = client.start_connection_check_with_retry(
@@ -3711,6 +3734,7 @@ def run_precheck_for_scanner_task(
     status = "precheck_finished" if targets else "precheck_failed"
     precheck_result = {
         "task_id": precheck_task_id,
+        "audit_task_id": task_id,
         "successful_targets": targets,
         "successful_target_count": len(targets),
         "false_targets": false_targets,
@@ -3733,6 +3757,69 @@ def run_precheck_for_scanner_task(
         )
 
     return precheck_result
+
+
+def run_false_targets_precheck(
+    *, client: MpVmClient, token: str, source_precheck_task_id: str,
+    options: StartScannerTaskRequest,
+) -> dict[str, Any]:
+    source = db.get_scan_task(source_precheck_task_id)
+    result = source.get("last_remote_response") if source else None
+    if not source or not isinstance(result, dict):
+        raise HTTPException(status_code=404, detail="Precheck run not found.")
+    false_targets = result.get("false_targets")
+    audit_task_id = result.get("audit_task_id")
+    if not isinstance(false_targets, list) or not false_targets:
+        raise HTTPException(status_code=422, detail="This precheck run has no false targets.")
+    if not audit_task_id:
+        raise HTTPException(status_code=422, detail="The source audit task is unavailable for this precheck run.")
+
+    retry_payload = copy.deepcopy(source.get("payload") or {})
+    include = retry_payload.get("include") if isinstance(retry_payload.get("include"), dict) else {}
+    include["targets"] = [str(value).strip() for value in false_targets if str(value).strip()]
+    retry_payload["include"] = include
+    retry_payload["name"] = build_precheck_task_name("MP VM false retry", str(retry_payload.get("name") or audit_task_id))
+    retry_task_id = client.create_scanner_task(token, retry_payload)
+    lineage = {"audit_task_id": audit_task_id, "parent_precheck_task_id": source_precheck_task_id}
+    db.record_scan_task(mp_task_id=retry_task_id, payload=retry_payload, status="precheck_created", remote_response=lineage)
+
+    if not options.skip_validation:
+        valid, error = client.validate_scanner_task_with_retry(
+            token, retry_task_id, timeout_seconds=options.create_settle_seconds,
+            poll_seconds=min(options.precheck_poll_seconds, 5),
+        )
+        if not valid:
+            failed = {
+                **lineage, "task_id": retry_task_id, "valid": False, "error": error,
+                "successful_targets": [], "successful_target_count": 0,
+                "false_targets": include["targets"], "false_target_count": len(include["targets"]),
+                "requested_target_count": len(include["targets"]),
+            }
+            db.update_scan_task_status(retry_task_id, "precheck_validation_failed", failed)
+            return {**failed, "message": error}
+
+    started_from = datetime.now(timezone.utc).isoformat()
+    started = client.start_connection_check_with_retry(
+        token, retry_task_id, timeout_seconds=options.create_settle_seconds,
+        poll_seconds=min(options.precheck_poll_seconds, 5),
+    )
+    db.update_scan_task_status(retry_task_id, "precheck_started", {**lineage, "start": started})
+    successful_targets, message = client.wait_for_connection_check_targets(
+        token, retry_task_id, time_from=started_from,
+        timeout_seconds=options.precheck_timeout_minutes * 60,
+        stop_after_seconds=options.precheck_max_runtime_minutes * 60,
+        poll_seconds=options.precheck_poll_seconds, jobs_limit=options.precheck_jobs_limit,
+    )
+    successful_set = set(successful_targets)
+    remaining_false = [value for value in include["targets"] if value not in successful_set]
+    retry_result = {
+        **lineage, "task_id": retry_task_id, "successful_targets": successful_targets,
+        "successful_target_count": len(successful_targets), "false_targets": remaining_false,
+        "false_target_count": len(remaining_false), "requested_target_count": len(include["targets"]),
+        "message": message,
+    }
+    db.update_scan_task_status(retry_task_id, "precheck_finished" if successful_targets else "precheck_failed", retry_result)
+    return retry_result
 
 
 def build_precheck_task_name(prefix: str, audit_task_name: str) -> str:

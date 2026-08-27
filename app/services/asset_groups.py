@@ -32,6 +32,25 @@ class AssetGroupService:
             raise LookupError("Asset group not found after creation.")
         return {**refreshed, "evaluation": evaluation}
 
+    def create_from_asset_ids(
+        self, *, name: str, description: str, parent_id: str | None,
+        asset_ids: list[str], actor: str | None,
+    ) -> dict[str, Any]:
+        unique_ids = list(dict.fromkeys(value.strip() for value in asset_ids if value.strip()))
+        if not unique_ids:
+            raise ValueError("No affected assets were found for this vulnerability.")
+        return self.create(
+            actor=actor,
+            name=name,
+            description=description,
+            parent_id=parent_id,
+            query={
+                "combinator": "and",
+                "match_scope": "host",
+                "rules": [{"field_path": "asset.assetId", "operator": "in", "value": unique_ids}],
+            },
+        )
+
     def update(self, group_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         return self._repository.update(group_id, changes)
 
@@ -78,3 +97,6 @@ class AssetGroupService:
 
     def precheck_stats(self) -> dict[str, int]:
         return self._repository.precheck_stats()
+
+    def precheck_runs(self, *, limit: int) -> dict[str, Any]:
+        return self._repository.precheck_runs(limit=limit)

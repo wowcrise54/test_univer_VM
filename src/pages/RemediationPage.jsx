@@ -99,6 +99,8 @@ function RiskWorkspace({ showAlert, onRefresh }) {
   const [data, setData] = useState({ rows: [], total: 0 });
   const [summary, setSummary] = useState({});
   const [campaigns, setCampaigns] = useState([]);
+  const [assetGroups, setAssetGroups] = useState([]);
+  const [assetGroupId, setAssetGroupId] = useState("");
   const [level, setLevel] = useState("");
   const [checked, setChecked] = useState([]);
   const [context, setContext] = useState({ criticality: "medium", environment: "production", exposure: "internal" });
@@ -109,10 +111,12 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     setError("");
     try {
       const suffix = level ? `?level=${level}` : "";
-      const [queue, totals, campaignData] = await Promise.all([
+      const [queue, totals, campaignData, groupData] = await Promise.all([
         api(`/api/risk/queue${suffix}`), api("/api/risk/summary"), api("/api/remediation/campaigns"),
+        api("/api/asset-groups/tree").catch(() => ({ rows: [] })),
       ]);
       setData(queue); setSummary(totals); setCampaigns(campaignData.rows || []);
+      setAssetGroups(flattenGroups(groupData.rows || []));
       setChecked((value) => value.filter((id) => (queue.rows || []).some((row) => row.case_id === id)));
     } catch (error) {
       setError(error.code === "DATABASE_UNAVAILABLE"
@@ -126,7 +130,7 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     const name = window.prompt("Название кампании");
     if (!name) return;
     try {
-      await api("/api/remediation/campaigns", { method: "POST", body: JSON.stringify({ name, case_ids: checked }) });
+      await api("/api/remediation/campaigns", { method: "POST", body: JSON.stringify({ name, case_ids: checked, asset_group_id: assetGroupId || null }) });
       setChecked([]); showAlert("Кампания создана.", "success"); await load(); await onRefresh();
     } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
   };
@@ -152,14 +156,14 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     {error ? <div className="inline-error" role="alert">{error} <button onClick={load}>Повторить</button></div> : null}
     <div className="metric-grid risk-metrics"><Metric label="Срочно" value={summary.urgent} danger /><Metric label="Высокий" value={summary.high} /><Metric label="Средний" value={summary.medium} /><Metric label="Низкий" value={summary.low} /></div>
     <div className="risk-context-controls"><select aria-label="Критичность актива" value={context.criticality} onChange={(event) => setContext({...context,criticality:event.target.value})}><option value="critical">Критичный</option><option value="high">Высокий</option><option value="medium">Средний</option><option value="low">Низкий</option></select><select aria-label="Среда" value={context.environment} onChange={(event) => setContext({...context,environment:event.target.value})}><option value="production">Production</option><option value="test">Test</option><option value="development">Development</option></select><select aria-label="Доступность" value={context.exposure} onChange={(event) => setContext({...context,exposure:event.target.value})}><option value="external">Внешний</option><option value="internal">Внутренний</option><option value="isolated">Изолированный</option></select><button disabled={!checked.length} onClick={updateContext}>Применить к активам</button><label className="button button--secondary">Импорт контекста CSV<input hidden type="file" accept=".csv,text/csv" onChange={importContext} /></label></div>
-    <div className="action-row"><button disabled={!checked.length} onClick={createCampaign}>Создать кампанию ({checked.length})</button><span>Найдено: {data.total || 0}</span></div>
+    <div className="action-row"><select aria-label="Группа активов кампании" value={assetGroupId} onChange={(event) => setAssetGroupId(event.target.value)}><option value="">Без группы активов</option>{assetGroups.map((group) => <option key={group.group_id} value={group.group_id}>{group.name}</option>)}</select><button disabled={!checked.length} onClick={createCampaign}>Создать кампанию ({checked.length})</button><span>Найдено: {data.total || 0}</span></div>
     <div className="table-shell"><table><thead><tr><th></th><th>Риск</th><th>Уязвимость</th><th>Актив</th><th>Контекст</th><th>Почему</th></tr></thead><tbody>
       {loading ? <tr><td colSpan="6" className="empty-cell">Расчёт приоритета…</td></tr> : (data.rows || []).map((row) => <tr key={row.case_id}>
         <td><input type="checkbox" aria-label={`Выбрать ${row.cve || row.title}`} checked={checked.includes(row.case_id)} onChange={(event) => setChecked(event.target.checked ? [...checked,row.case_id] : checked.filter((id) => id !== row.case_id))} /></td>
         <td><strong className={`risk-score risk-score--${row.risk_level}`}>{row.risk_score}</strong><small>{row.risk_level}</small></td><td>{row.cve || row.title}<small>{row.severity} · CVSS {row.cvss_score ?? "—"}</small></td>
         <td>{row.display_name || row.asset_id}<small>{row.ip_address || row.fqdn}</small></td><td>{row.criticality} · {row.environment}<small>{row.exposure} · {row.owner || "владелец не указан"}</small></td><td><small>{row.risk_explanation}</small></td>
       </tr>)}</tbody></table></div>
-    {campaigns.length ? <details className="settings-card"><summary>Кампании устранения ({campaigns.length})</summary><div className="campaign-grid">{campaigns.map((item) => <article key={item.campaign_id}><strong>{item.name}</strong><span>{item.resolved}/{item.total} подтверждено</span><small>В работе: {item.in_progress} · просрочено: {item.overdue} · риск принят: {item.risk_accepted}</small></article>)}</div></details> : null}
+    {campaigns.length ? <details className="settings-card"><summary>Кампании устранения ({campaigns.length})</summary><div className="campaign-grid">{campaigns.map((item) => <article key={item.campaign_id}><strong>{item.name}</strong><span>{item.resolved}/{item.total} подтверждено</span><small>В работе: {item.in_progress} · просрочено: {item.overdue} · риск принят: {item.risk_accepted}</small>{item.asset_group_id ? <a href={`/asset-groups?group=${encodeURIComponent(item.asset_group_id)}`}>{item.asset_group_name || "Группа активов"}</a> : null}</article>)}</div></details> : null}
   </section>;
 }
 
@@ -186,3 +190,4 @@ function PolicyEditor({ policy, setPolicy, onSaved, showAlert }) {
 
 function formatDate(value) { return value ? new Intl.DateTimeFormat("ru-RU", { dateStyle:"short", timeStyle:"short" }).format(new Date(value)) : "—"; }
 function toInputDate(value) { if (!value) return ""; const date=new Date(value); return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16); }
+function flattenGroups(groups) { return groups.flatMap((group) => [group, ...flattenGroups(group.children || [])]); }
