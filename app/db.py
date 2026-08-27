@@ -3465,12 +3465,23 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
     write_started = datetime.now(timezone.utc)
     root = card.get("root") if isinstance(card.get("root"), dict) else {}
     data = root.get("data") if isinstance(root.get("data"), dict) else {}
-    asset_id = clean_value(first_non_empty(card.get("asset_id"), root.get("objectId")))
-    if not asset_id:
+    remote_asset_id = clean_value(first_non_empty(card.get("asset_id"), root.get("objectId")))
+    if not remote_asset_id:
         return None
+
+    fqdn = clean_value(data.get("fqdn"))
+    hostname = clean_value(data.get("hostname"))
+    ip_address = clean_value(data.get("ipAddress"))
 
     current = now_utc()
     with connect() as conn:
+        asset_id = canonical_asset_card_id(
+            conn,
+            remote_asset_id=remote_asset_id,
+            fqdn=fqdn,
+            hostname=hostname,
+            ip_address=ip_address,
+        )
         row = conn.execute(
             """
             INSERT INTO asset_cards (
@@ -3509,9 +3520,9 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 asset_id,
                 clean_value(first_non_empty(card.get("display_name"), root.get("displayName"))),
                 clean_value(first_non_empty(card.get("asset_type"), root.get("type"))),
-                clean_value(data.get("fqdn")),
-                clean_value(data.get("hostname")),
-                clean_value(data.get("ipAddress")),
+                fqdn,
+                hostname,
+                ip_address,
                 clean_value(data.get("osName")),
                 clean_value(data.get("osVersion")),
                 clean_value(first_non_empty(card.get("vulnerability_level"), root.get("vulnerabilityLevel"))),
@@ -5245,6 +5256,43 @@ def collect_asset_query_rules(node: Any) -> list[dict[str, Any]]:
     for child in node.get("rules") or []:
         result.extend(collect_asset_query_rules(child))
     return result
+
+
+def canonical_asset_card_id(
+    conn: psycopg.Connection[dict[str, Any]],
+    *, remote_asset_id: str, fqdn: str | None, hostname: str | None, ip_address: str | None,
+) -> str:
+    """Keep one local card when MP VM recreates the same host with a new object id."""
+    row = conn.execute(
+        """
+        SELECT asset_id
+        FROM asset_cards
+        WHERE asset_id <> %s
+          AND (
+            (%s IS NOT NULL AND LOWER(NULLIF(TRIM(fqdn), '')) = LOWER(%s)) OR
+            (%s IS NULL AND %s IS NOT NULL AND NULLIF(TRIM(ip_address), '') = %s) OR
+            (%s IS NULL AND %s IS NULL AND %s IS NOT NULL
+              AND LOWER(NULLIF(TRIM(hostname), '')) = LOWER(%s))
+          )
+        ORDER BY last_seen DESC, id DESC
+        LIMIT 1
+        """,
+        (
+            remote_asset_id,
+            fqdn, fqdn,
+            fqdn, ip_address, ip_address,
+            fqdn, ip_address, hostname, hostname,
+        ),
+    ).fetchone()
+    return str(row["asset_id"]) if row else remote_asset_id
+
+
+def rebind_scan_postprocess_asset(build_job_id: str, canonical_asset_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE scan_postprocess_items SET asset_id = %s, updated_at = %s WHERE build_job_id = %s",
+            (canonical_asset_id, now_utc(), build_job_id),
+        )
 
 
 def get_precheck_statistics() -> dict[str, int]:

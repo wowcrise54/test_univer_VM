@@ -521,8 +521,72 @@ class AssetCardJobApiTests(unittest.TestCase):
         self.assertEqual(finish.call_args.kwargs["status"], "completed")
         capture_snapshot.assert_called_once_with("asset_card_build", "job-progress")
 
+    def test_repeated_scan_rebinds_postprocess_to_existing_local_card(self):
+        card = {
+            "asset_id": "new-remote-asset-id",
+            "stats": {"nodes": 1, "collections": 1, "warnings": []},
+            "vulnerabilities": {"stats": {"findings": 0}},
+        }
+
+        with (
+            patch.object(main.db, "start_asset_card_build_job", return_value={"status": "running"}),
+            patch.object(main.db, "update_asset_card_build_job"),
+            patch.object(main.db, "upsert_asset_card", return_value={"asset_id": "existing-local-asset-id"}),
+            patch.object(main.db, "rebind_scan_postprocess_asset") as rebind,
+            patch.object(main.db, "finish_asset_card_build_job") as finish,
+            patch.object(main, "build_asset_card", return_value=card),
+            patch.object(main.CONTAINER.services.remediation, "reconcile_asset") as reconcile,
+            patch.object(main, "capture_vulnerability_snapshot") as capture_snapshot,
+        ):
+            main.run_asset_card_build_job(
+                job_id="job-repeat-scan",
+                auth=SimpleNamespace(api_url="https://fixture"),
+                token="token",
+                request={
+                    "asset_id": "new-remote-asset-id",
+                    "parent_operation_id": "scan-run-2",
+                },
+                cancel_event=threading.Event(),
+            )
+
+        rebind.assert_called_once_with("job-repeat-scan", "existing-local-asset-id")
+        reconcile.assert_called_once_with("existing-local-asset-id")
+        self.assertEqual(finish.call_args.kwargs["status"], "completed")
+        capture_snapshot.assert_not_called()
+
 
 class AssetCardDatabaseTests(unittest.TestCase):
+    def test_recreated_mpvm_asset_reuses_existing_local_card_identity(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {"asset_id": "old-asset-id"}
+
+        result = db.canonical_asset_card_id(
+            connection,
+            remote_asset_id="new-asset-id",
+            fqdn="server-01.example.test",
+            hostname="server-01",
+            ip_address="10.0.0.10",
+        )
+
+        self.assertEqual(result, "old-asset-id")
+        sql = connection.execute.call_args.args[0]
+        self.assertIn("LOWER(NULLIF(TRIM(fqdn)", sql)
+        self.assertIn("NULLIF(TRIM(ip_address)", sql)
+
+    def test_new_host_keeps_remote_asset_identity(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = None
+
+        result = db.canonical_asset_card_id(
+            connection,
+            remote_asset_id="new-asset-id",
+            fqdn="new.example.test",
+            hostname="new",
+            ip_address="10.0.0.20",
+        )
+
+        self.assertEqual(result, "new-asset-id")
+
     def test_build_job_rejects_invalid_docker_pdql_with_api_error_code(self):
         with patch.object(
             main.app_auth, "get_session_user", return_value={"id": 1, "role": "operator"}

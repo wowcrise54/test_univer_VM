@@ -1800,7 +1800,7 @@ def build_asset_card_endpoint(payload: AssetCardBuildRequest) -> dict[str, Any]:
 
     saved_card = db.upsert_asset_card(card) if payload.save_to_db else None
     if saved_card is not None:
-        CONTAINER.services.remediation.reconcile_asset(asset_id)
+        CONTAINER.services.remediation.reconcile_asset(str(saved_card["asset_id"]))
         capture_vulnerability_snapshot(
             "asset_card_build",
             current_trace_id() or str(uuid.uuid4()),
@@ -2601,7 +2601,10 @@ def _run_asset_card_build_job(
         saved = db.upsert_asset_card(card)
         if not saved:
             raise RuntimeError("Asset card could not be saved.")
-        CONTAINER.services.remediation.reconcile_asset(str(request["asset_id"]))
+        canonical_asset_id = str(saved["asset_id"])
+        if canonical_asset_id != str(request["asset_id"]) and request.get("parent_operation_id"):
+            db.rebind_scan_postprocess_asset(job_id, canonical_asset_id)
+        CONTAINER.services.remediation.reconcile_asset(canonical_asset_id)
         set_stage("completed", card=card)
         db.finish_asset_card_build_job(
             job_id,
@@ -2840,7 +2843,7 @@ def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> d
     saved_card = db.upsert_asset_card(card)
     if not saved_card:
         raise HTTPException(status_code=500, detail="Updated asset card could not be saved.")
-    CONTAINER.services.remediation.reconcile_asset(asset_id)
+    CONTAINER.services.remediation.reconcile_asset(str(saved_card["asset_id"]))
     capture_vulnerability_snapshot(
         "asset_card_update",
         current_trace_id() or str(uuid.uuid4()),
