@@ -36,4 +36,27 @@ describe("local asset groups management", () => {
     expect(screen.queryByRole("heading", { name: "Новая динамическая группа" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Создать группу" })).not.toBeInTheDocument();
   });
+
+  it("selects groups for a bulk recalculation and shows precheck statistics", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, options) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) return response({ runs: 4, success: 9, false: 3, unknown: 1 });
+      if (url.includes("/fields")) return response({ rows: [] });
+      if (url.endsWith("/bulk-action") && options?.method === "POST") {
+        return response({ processed: 1, succeeded: 1, failed: 0, results: [] });
+      }
+      return response({ rows: [{ group_id: "group-1", name: "Production", status: "ready", member_count: 4, children: [] }] });
+    });
+
+    renderPage();
+    expect(await screen.findByText("Успешные цели")).toBeInTheDocument();
+    expect(screen.getByText("9")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать группу Production" }));
+    fireEvent.click(screen.getByRole("button", { name: "Пересчитать выбранные" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/asset-groups/bulk-action"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ group_ids: ["group-1"], action: "evaluate" }) }),
+    ));
+  });
 });

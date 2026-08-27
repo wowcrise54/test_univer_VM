@@ -5247,6 +5247,24 @@ def collect_asset_query_rules(node: Any) -> list[dict[str, Any]]:
     return result
 
 
+def get_precheck_statistics() -> dict[str, int]:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS runs,
+              COALESCE(SUM(CASE WHEN last_remote_response_json::jsonb ? 'successful_target_count'
+                THEN (last_remote_response_json::jsonb ->> 'successful_target_count')::int ELSE 0 END), 0) AS success,
+              COALESCE(SUM(CASE WHEN last_remote_response_json::jsonb ? 'false_target_count'
+                THEN (last_remote_response_json::jsonb ->> 'false_target_count')::int ELSE 0 END), 0) AS false,
+              COUNT(*) FILTER (WHERE NOT (last_remote_response_json::jsonb ? 'successful_target_count')) AS unknown
+            FROM scan_tasks
+            WHERE status IN ('precheck_finished', 'precheck_failed', 'precheck_validation_failed')
+            """
+        ).fetchone()
+    return {key: int((row or {}).get(key) or 0) for key in ("runs", "success", "false", "unknown")}
+
+
 def validate_asset_query_tree(node: Any, *, depth: int = 0, parent_scope: str | None = None) -> int:
     if not isinstance(node, dict):
         raise ValueError("Query node must be an object.")

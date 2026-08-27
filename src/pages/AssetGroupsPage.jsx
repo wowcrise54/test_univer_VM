@@ -15,8 +15,10 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
   const [form, setForm] = useState({ name: "", description: "", parent_id: "", query: EMPTY_QUERY() });
   const [preview, setPreview] = useState(null);
   const [manualAssetId, setManualAssetId] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
 
   const groupsQuery = useQuery({ queryKey: ["asset-groups"], queryFn: () => api("/api/asset-groups/tree") });
+  const precheckStatsQuery = useQuery({ queryKey: ["precheck-stats"], queryFn: () => api("/api/asset-groups/precheck-stats") });
   const fieldsQuery = useQuery({ queryKey: ["asset-group-fields"], queryFn: () => api("/api/asset-card-query/fields?limit=500") });
   const membersQuery = useQuery({
     queryKey: ["asset-group-members", selectedId],
@@ -85,19 +87,41 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
       await refresh();
     },
   });
+  const bulkMutation = useMutation({
+    mutationFn: perform((action) => api("/api/asset-groups/bulk-action", {
+      method: "POST",
+      body: JSON.stringify({ group_ids: selectedIds, action }),
+    })),
+    onSuccess: async (result) => {
+      showAlert(`Обработано групп: ${result.succeeded}; ошибок: ${result.failed}.`, result.failed ? "warning" : "success");
+      setSelectedIds([]);
+      await refresh();
+    },
+  });
+  const toggleSelected = (groupId) => setSelectedIds((current) => current.includes(groupId)
+    ? current.filter((value) => value !== groupId) : [...current, groupId]);
+  const stats = precheckStatsQuery.data || {};
 
   return (
     <div className="asset-groups-page">
+      <Panel title="Статистика precheck" description="Результаты проверок доступности по сохранённым precheck-задачам.">
+        <div className="metric-grid" aria-label="Статистика precheck">
+          <Metric label="Запуски" value={stats.runs} />
+          <Metric label="Успешные цели" value={stats.success} />
+          <Metric label="False" value={stats.false} />
+          <Metric label="Без детализации" value={stats.unknown} />
+        </div>
+      </Panel>
       <Panel
         title="Собственные группы активов"
         description="Группы рассчитываются по локальному индексу карточек. MP VM не используется как хранилище групп."
-        action={<Button variant="secondary" busy={groupsQuery.isFetching} onClick={() => groupsQuery.refetch()}>Обновить</Button>}
+        action={<div className="action-row">{canManage ? <><Button busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("evaluate")}>Пересчитать выбранные</Button><Button variant="danger" busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("archive")}>Архивировать выбранные</Button></> : null}<Button variant="secondary" busy={groupsQuery.isFetching} onClick={() => groupsQuery.refetch()}>Обновить</Button></div>}
       >
         <div className="asset-groups-layout">
           <section className="asset-groups-tree" aria-label="Иерархия групп активов">
             <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск групп" aria-label="Поиск групп" />
             <div className="asset-group-tree-list">
-              {visibleRoots.map((group) => <GroupNode key={group.group_id} group={group} selectedId={selectedId} onSelect={setSelectedId} />)}
+              {visibleRoots.map((group) => <GroupNode key={group.group_id} group={group} selectedId={selectedId} onSelect={setSelectedId} selectedIds={selectedIds} onToggle={toggleSelected} canManage={canManage} />)}
               {!groupsQuery.isLoading && !visibleRoots.length ? <p className="empty-cell">Групп пока нет.</p> : null}
             </div>
           </section>
@@ -206,9 +230,11 @@ function Preview({ result }) {
   return <section className="asset-group-preview"><strong>Совпало: {result.total}</strong><span>Индекс: {result.indexed_cards} из {result.total_cards}</span><div>{(result.rows || []).map((row) => <article key={row.asset_id}><b>{row.display_name || row.asset_id}</b><small>{row.ip_address || row.fqdn || "Без адреса"}</small></article>)}</div></section>;
 }
 
-function GroupNode({ group, selectedId, onSelect, level = 0 }) {
-  return <div><button type="button" className={`asset-group-node asset-group-node--button${selectedId === group.group_id ? " is-selected" : ""}`} style={{ "--tree-level": level }} onClick={() => onSelect(group.group_id)}><span>{group.children?.length ? "▾" : "·"}</span><span><strong>{group.name}</strong><small>{group.member_count || 0} активов · {statusLabel(group.status)}</small></span></button>{(group.children || []).map((child) => <GroupNode key={child.group_id} group={child} selectedId={selectedId} onSelect={onSelect} level={level + 1} />)}</div>;
+function GroupNode({ group, selectedId, onSelect, selectedIds, onToggle, canManage, level = 0 }) {
+  return <div><div className="asset-group-node-row" style={{ "--tree-level": level }}>{canManage ? <input type="checkbox" checked={selectedIds.includes(group.group_id)} onChange={() => onToggle(group.group_id)} aria-label={`Выбрать группу ${group.name}`} /> : null}<button type="button" className={`asset-group-node asset-group-node--button${selectedId === group.group_id ? " is-selected" : ""}`} onClick={() => onSelect(group.group_id)}><span>{group.children?.length ? "▾" : "·"}</span><span><strong>{group.name}</strong><small>{group.member_count || 0} активов · {statusLabel(group.status)}</small></span></button></div>{(group.children || []).map((child) => <GroupNode key={child.group_id} group={child} selectedId={selectedId} onSelect={onSelect} selectedIds={selectedIds} onToggle={onToggle} canManage={canManage} level={level + 1} />)}</div>;
 }
+
+function Metric({ label, value }) { return <article className="metric-card"><span>{label}</span><strong>{value ?? 0}</strong></article>; }
 
 function operatorOptions(fieldPath) { return fieldPath === "asset.ipAddress" ? [["in_cidr", "входит в подсеть"], ["equals", "равно"], ["in", "в списке"]] : [["contains", "содержит"], ["starts_with", "начинается с"], ["equals", "равно"], ["not_equals", "не равно"], ["in", "в списке"]]; }
 function defaultOperator(fieldPath) { return fieldPath === "asset.ipAddress" ? "in_cidr" : "contains"; }

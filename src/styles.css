@@ -1591,11 +1591,18 @@ td code {
 .asset-groups-tree > input { width: 100%; }
 .asset-group-tree-list { margin-top: 12px; }
 
+.asset-group-node-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  margin-left: calc(var(--tree-level) * 18px);
+}
+
 .asset-group-node {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
-  margin-left: calc(var(--tree-level) * 18px);
   border-radius: 8px;
 }
 
@@ -1603,7 +1610,7 @@ td code {
 .asset-group-node.is-selected { background: #dcecff; }
 
 .asset-group-node--button {
-  width: calc(100% - (var(--tree-level) * 18px));
+  width: 100%;
   border: 0;
   padding: 8px 10px;
   color: var(--text);

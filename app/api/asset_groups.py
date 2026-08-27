@@ -6,6 +6,7 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from .schemas import (
+    AssetGroupBulkActionRequest,
     AssetGroupCreateRequest,
     AssetGroupOverrideRequest,
     AssetGroupPreviewRequest,
@@ -42,6 +43,16 @@ def tree(request: Request) -> dict:
 @router.get("")
 def list_groups(request: Request) -> dict:
     return _service(request).tree()
+
+
+@router.get("/precheck-stats")
+def precheck_stats(request: Request) -> dict:
+    return _service(request).precheck_stats()
+
+
+@router.post("/bulk-action")
+def bulk_action(request: Request, payload: AssetGroupBulkActionRequest) -> dict:
+    return _service(request).bulk_action(payload.group_ids, payload.action)
 
 
 @router.post("/preview")

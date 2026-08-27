@@ -73,6 +73,11 @@ class AssetGroupOverrideRequest(BaseModel):
     action: Literal["include", "exclude"]
 
 
+class AssetGroupBulkActionRequest(BaseModel):
+    group_ids: list[str] = Field(min_length=1, max_length=200)
+    action: Literal["evaluate", "archive"]
+
+
 class DeleteScannerTaskRequest(BaseModel):
     mode: Literal["delete_v3", "put_v4"] = "delete_v3"
     put_payload: dict[str, Any] | None = None

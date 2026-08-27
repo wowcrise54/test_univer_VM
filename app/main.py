@@ -3704,11 +3704,18 @@ def run_precheck_for_scanner_task(
         poll_seconds=options.precheck_poll_seconds,
         jobs_limit=options.precheck_jobs_limit,
     )
+    requested_targets = audit_payload.get("include", {}).get("targets", []) if isinstance(audit_payload.get("include"), dict) else []
+    requested_targets = [str(value).strip() for value in requested_targets if str(value).strip()]
+    successful_set = set(targets)
+    false_targets = [value for value in requested_targets if value not in successful_set]
     status = "precheck_finished" if targets else "precheck_failed"
     precheck_result = {
         "task_id": precheck_task_id,
         "successful_targets": targets,
         "successful_target_count": len(targets),
+        "false_targets": false_targets,
+        "false_target_count": len(false_targets),
+        "requested_target_count": len(requested_targets),
         "message": message,
     }
     db.update_scan_task_status(precheck_task_id, status, precheck_result)

@@ -66,3 +66,30 @@ def test_asset_group_permissions_are_explicit_and_role_appropriate() -> None:
     assert "asset_groups.read" in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" not in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" in auth.BUILTIN_ROLE_PERMISSIONS["operator"]
+
+
+def test_service_runs_bulk_group_action_and_reports_each_result() -> None:
+    repository = MagicMock()
+    repository.evaluate.side_effect = [
+        {"evaluation_id": "evaluation-1", "status": "completed"},
+        RuntimeError("index unavailable"),
+    ]
+
+    result = AssetGroupService(repository).bulk_action(["group-1", "group-2"], "evaluate")
+
+    assert result["processed"] == 2
+    assert result["succeeded"] == 1
+    assert result["failed"] == 1
+    assert result["results"][1]["group_id"] == "group-2"
+    assert result["results"][1]["success"] is False
+
+
+def test_service_returns_persisted_precheck_statistics() -> None:
+    repository = MagicMock()
+    repository.precheck_stats.return_value = {
+        "runs": 3, "success": 7, "false": 2, "unknown": 1,
+    }
+
+    result = AssetGroupService(repository).precheck_stats()
+
+    assert result == {"runs": 3, "success": 7, "false": 2, "unknown": 1}

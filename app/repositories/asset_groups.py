@@ -35,3 +35,6 @@ class AssetGroupRepository:
 
     def delete_override(self, group_id: str, asset_id: str) -> bool:
         return db.delete_local_asset_group_override(group_id, asset_id)
+
+    def precheck_stats(self) -> dict[str, int]:
+        return db.get_precheck_statistics()
