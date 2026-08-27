@@ -11,6 +11,7 @@ from .schemas import (
     AssetGroupFromVulnerabilityRequest,
     AssetGroupOverrideRequest,
     AssetGroupPreviewRequest,
+    AssetGroupWorkflowRequest,
     AssetGroupUpdateRequest,
 )
 
@@ -124,6 +125,50 @@ def update_group(request: Request, group_id: str, payload: AssetGroupUpdateReque
 def evaluate_group(request: Request, group_id: str) -> dict:
     try:
         return _service(request).evaluate(group_id)
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
+@router.post("/{group_id}/scan", status_code=202)
+def scan_group(
+    request: Request,
+    group_id: str,
+    payload: AssetGroupWorkflowRequest | None = None,
+) -> dict:
+    try:
+        asset_ids = _service(request).target_asset_ids(group_id)
+        workflow, replay = request.app.state.container.services.vm_workflows.start_asset_group_scan(
+            asset_group_id=group_id,
+            asset_ids=asset_ids,
+            options=(payload or AssetGroupWorkflowRequest()).model_dump(mode="json"),
+            actor=_actor(request),
+            idempotency_key=request.headers.get("X-Idempotency-Key"),
+        )
+        return {"workflow": workflow, "workflow_id": workflow["workflow_id"], "asset_count": len(asset_ids), "idempotent_replay": replay}
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": str(exc)}) from exc
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
+@router.post("/{group_id}/verify", status_code=202)
+def verify_group(
+    request: Request,
+    group_id: str,
+    payload: AssetGroupWorkflowRequest | None = None,
+) -> dict:
+    try:
+        asset_ids = _service(request).target_asset_ids(group_id)
+        workflow, replay = request.app.state.container.services.vm_workflows.start_asset_group_verification(
+            asset_group_id=group_id,
+            asset_ids=asset_ids,
+            options=(payload or AssetGroupWorkflowRequest()).model_dump(mode="json"),
+            actor=_actor(request),
+            idempotency_key=request.headers.get("X-Idempotency-Key"),
+        )
+        return {"workflow": workflow, "workflow_id": workflow["workflow_id"], "asset_count": len(asset_ids), "idempotent_replay": replay}
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": str(exc)}) from exc
     except Exception as exc:
         _raise_domain_error(exc)
 

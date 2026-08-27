@@ -111,6 +111,11 @@ class AssetCardRefreshScanRequest(BaseModel):
     start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
 
 
+class AssetGroupWorkflowRequest(BaseModel):
+    template_task_id: str | None = None
+    start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
+
+
 class AssetCardBulkRefreshRequest(BaseModel):
     selection: Literal["all", "stale"] = "all"
     template_task_id: str | None = None

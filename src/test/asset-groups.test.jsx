@@ -91,4 +91,34 @@ describe("local asset groups management", () => {
     ));
     await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Повторено: 1; false: 0.", "success"));
   });
+
+  it("starts group scan and remediation verification for executable users", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, options) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) return response({ runs: 0, success: 0, false: 0, unknown: 0 });
+      if (url.includes("/precheck-runs")) return response({ rows: [] });
+      if (url.includes("/fields")) return response({ rows: [] });
+      if (url.includes("/members")) return response({ rows: [], total: 2 });
+      if (url.endsWith("/scan") && options?.method === "POST") return response({ workflow_id: "wf-scan", asset_count: 2 });
+      if (url.endsWith("/verify") && options?.method === "POST") return response({ workflow_id: "wf-verify", asset_count: 2 });
+      return response({ rows: [{ group_id: "group-1", name: "Production", status: "ready", member_count: 2, children: [] }] });
+    });
+    const showAlert = vi.fn();
+
+    renderPage(["asset_groups.read", "tasks.execute"], showAlert);
+    fireEvent.click(await screen.findByRole("button", { name: /Production/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Сканировать группу" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить устранение" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/asset-groups/group-1/scan"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Сканирование запущено: 2 активов.", "success"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/asset-groups/group-1/verify"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(showAlert).toHaveBeenCalledWith("Проверка запущена: 2 активов.", "success");
+  });
 });

@@ -452,6 +452,7 @@ def required_permission(method:str,path:str)->str|None:
     if path.startswith("/api/import") or path.startswith("/api/exports/pdql"): return "imports_exports.manage"
     if path.startswith("/api/risk"): return "risk.read"
     if path.startswith("/api/assets/context"): return "risk.read" if method in {"GET","HEAD"} else "risk.manage"
+    if path.startswith("/api/asset-groups") and any(path.endswith(s) for s in ("/scan","/verify")): return "tasks.execute"
     if path.startswith("/api/asset-groups"): return "asset_groups.read" if method in {"GET","HEAD"} else "asset_groups.manage"
     if path.startswith("/api/assets") or path.startswith("/api/vulnerabilities") or path.startswith("/api/coverage"): return "assets.read"
     if path.startswith("/api/asset-card-query"): return "asset_cards.read"

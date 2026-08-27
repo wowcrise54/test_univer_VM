@@ -88,10 +88,33 @@ def test_asset_group_permissions_are_explicit_and_role_appropriate() -> None:
     assert auth.required_permission("GET", "/api/asset-groups/tree") == "asset_groups.read"
     assert auth.required_permission("POST", "/api/asset-groups/preview") == "asset_groups.manage"
     assert auth.required_permission("POST", "/api/asset-groups/group-1/evaluate") == "asset_groups.manage"
+    assert auth.required_permission("POST", "/api/asset-groups/group-1/scan") == "tasks.execute"
+    assert auth.required_permission("POST", "/api/asset-groups/group-1/verify") == "tasks.execute"
     assert "asset_groups.read" in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" not in auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
     assert "asset_groups.manage" in auth.BUILTIN_ROLE_PERMISSIONS["operator"]
     assert auth.required_permission("POST", "/api/scanner-tasks/precheck-1/retry-false") == "tasks.execute"
+
+
+def test_service_returns_group_targets_only_for_ready_group() -> None:
+    repository = MagicMock()
+    repository.get.return_value = {"group_id": "group-1", "status": "ready"}
+    repository.member_ids.return_value = ["asset-1", "asset-2"]
+
+    result = AssetGroupService(repository).target_asset_ids("group-1")
+
+    repository.evaluate.assert_not_called()
+    assert result == ["asset-1", "asset-2"]
+
+
+def test_service_rejects_group_workflow_for_stale_group() -> None:
+    repository = MagicMock()
+    repository.get.return_value = {"group_id": "group-1", "status": "stale"}
+
+    with pytest.raises(ValueError, match="Recalculate"):
+        AssetGroupService(repository).target_asset_ids("group-1")
+
+    repository.member_ids.assert_not_called()
 
 
 def test_service_runs_bulk_group_action_and_reports_each_result() -> None:

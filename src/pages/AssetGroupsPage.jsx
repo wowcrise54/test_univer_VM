@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client.js";
+import { api, createIdempotencyKey } from "../api/client.js";
 import { Button, ConfirmDialog, Field, Panel } from "../shared/ui.jsx";
 
 const EMPTY_RULE = () => ({ field_path: "asset.ipAddress", operator: "in_cidr", value: "" });
@@ -10,6 +10,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
   const queryClient = useQueryClient();
   const canManage = new Set(currentUser?.permissions || []).has("asset_groups.manage");
   const canRetryPrecheck = new Set(currentUser?.permissions || []).has("tasks.execute");
+  const canExecuteTasks = canRetryPrecheck;
   const [selectedId, setSelectedId] = useState(() => typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("group"));
   const [search, setSearch] = useState("");
   const [archiveTarget, setArchiveTarget] = useState(null);
@@ -108,6 +109,18 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
       await queryClient.invalidateQueries({ queryKey: ["precheck-runs"] });
     },
   });
+  const groupWorkflowMutation = useMutation({
+    mutationFn: perform(({ groupId, action }) => api(`/api/asset-groups/${encodeURIComponent(groupId)}/${action}`, {
+      method: "POST",
+      headers: { "X-Idempotency-Key": createIdempotencyKey(`asset-group-${action}`) },
+      body: JSON.stringify({}),
+    })),
+    onSuccess: async (result, variables) => {
+      const label = variables.action === "verify" ? "Проверка запущена" : "Сканирование запущено";
+      showAlert(`${label}: ${result.asset_count || 0} активов.`, "success");
+      await queryClient.invalidateQueries({ queryKey: ["vm-overview"] });
+    },
+  });
   const toggleSelected = (groupId) => setSelectedIds((current) => current.includes(groupId)
     ? current.filter((value) => value !== groupId) : [...current, groupId]);
   const stats = precheckStatsQuery.data || {};
@@ -144,9 +157,13 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
                 canManage={canManage}
                 manualAssetId={manualAssetId}
                 setManualAssetId={setManualAssetId}
+                canExecuteTasks={canExecuteTasks}
                 evaluating={evaluateMutation.isPending}
                 overriding={overrideMutation.isPending}
+                workflowBusy={groupWorkflowMutation.isPending}
                 onEvaluate={() => evaluateMutation.mutate(selected.group_id)}
+                onScan={() => groupWorkflowMutation.mutate({ groupId: selected.group_id, action: "scan" })}
+                onVerify={() => groupWorkflowMutation.mutate({ groupId: selected.group_id, action: "verify" })}
                 onExclude={(assetId) => overrideMutation.mutate({ groupId: selected.group_id, assetId, action: "exclude" })}
                 onInclude={() => overrideMutation.mutate({ groupId: selected.group_id, assetId: manualAssetId.trim(), action: "include" })}
                 onArchive={() => setArchiveTarget(selected)}
@@ -217,8 +234,9 @@ function RuleBuilder({ query, fields, onChange }) {
   );
 }
 
-function GroupDetails({ group, members, loading, canManage, manualAssetId, setManualAssetId, evaluating, overriding, onEvaluate, onExclude, onInclude, onArchive }) {
+function GroupDetails({ group, members, loading, canManage, canExecuteTasks, manualAssetId, setManualAssetId, evaluating, overriding, workflowBusy, onEvaluate, onScan, onVerify, onExclude, onInclude, onArchive }) {
   const coverage = `${group.indexed_cards || 0} из ${group.total_cards || 0}`;
+  const canRunGroupWorkflow = group.status === "ready" && Boolean(group.member_count);
   return <>
     <div className="asset-group-details__header"><div><span className={`asset-group-status is-${group.status}`}>{statusLabel(group.status)}</span><h3>{group.name}</h3></div>{canManage ? <Button variant="tiny-danger" onClick={onArchive}>Архивировать</Button> : null}</div>
     <dl className="asset-group-facts">
@@ -229,7 +247,11 @@ function GroupDetails({ group, members, loading, canManage, manualAssetId, setMa
     </dl>
     <pre className="asset-group-predicate">{JSON.stringify(group.query, null, 2)}</pre>
     {group.last_error ? <p className="inline-error">{group.last_error}</p> : null}
-    {canManage ? <div className="action-row"><Button busy={evaluating} onClick={onEvaluate}>Пересчитать</Button><input value={manualAssetId} onChange={(event) => setManualAssetId(event.target.value)} placeholder="Asset ID для включения" /><Button variant="secondary" busy={overriding} disabled={!manualAssetId.trim()} onClick={onInclude}>Включить вручную</Button></div> : null}
+    <div className="action-row">
+      {canManage ? <Button busy={evaluating} onClick={onEvaluate}>Пересчитать</Button> : null}
+      {canExecuteTasks ? <><Button variant="secondary" busy={workflowBusy} disabled={!canRunGroupWorkflow} onClick={onScan}>Сканировать группу</Button><Button variant="secondary" busy={workflowBusy} disabled={!canRunGroupWorkflow} onClick={onVerify}>Проверить устранение</Button></> : null}
+      {canManage ? <><input value={manualAssetId} onChange={(event) => setManualAssetId(event.target.value)} placeholder="Asset ID для включения" /><Button variant="secondary" busy={overriding} disabled={!manualAssetId.trim()} onClick={onInclude}>Включить вручную</Button></> : null}
+    </div>
     <h4 className="asset-group-members-title">Состав · {members?.total || 0}</h4>
     {loading ? <p className="empty-cell">Загрузка состава...</p> : null}
     <div className="asset-group-member-list">{(members?.rows || []).map((member) => <article key={member.asset_id}><div><strong>{member.display_name || member.hostname || member.asset_id}</strong><small>{member.ip_address || "IP не указан"} · {member.os_name || "ОС не указана"}</small></div><span>{member.membership_source === "manual_include" ? "вручную" : "по правилу"}</span>{canManage ? <Button variant="tiny-danger" onClick={() => onExclude(member.asset_id)}>Исключить</Button> : null}</article>)}</div>

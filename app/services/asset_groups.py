@@ -68,6 +68,14 @@ class AssetGroupService:
             raise LookupError("Asset group not found.")
         return self._repository.members(group_id, **pagination)
 
+    def target_asset_ids(self, group_id: str) -> list[str]:
+        group = self._repository.get(group_id)
+        if not group or group.get("archived_at"):
+            raise LookupError("Asset group not found.")
+        if group.get("status") != "ready":
+            raise ValueError("Recalculate the asset group before starting a workflow.")
+        return self._repository.member_ids(group_id)
+
     def set_override(self, group_id: str, asset_id: str, action: str, *, actor: str | None) -> dict[str, Any]:
         if not self._repository.get(group_id):
             raise LookupError("Asset group not found.")

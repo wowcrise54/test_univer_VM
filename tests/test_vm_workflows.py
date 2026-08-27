@@ -113,6 +113,88 @@ def test_repeated_start_returns_idempotent_workflow_before_new_preflight():
     assert runner.submitted == []
 
 
+def test_asset_group_scan_uses_verification_steps_without_reconcile():
+    repository, runner = FakeRepository(), FakeRunner()
+    repository.by_idempotency_key = lambda _key: None
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+
+    workflow, replay = service.start_asset_group_scan(
+        asset_group_id="group-1",
+        asset_ids=["asset-1", "asset-1", "asset-2"],
+        options={"template_task_id": "template-1"},
+        actor="operator",
+        idempotency_key="group-scan",
+    )
+
+    assert replay is False
+    assert workflow["kind"] == "verification"
+    assert workflow["request"]["asset_group_id"] == "group-1"
+    assert workflow["request"]["asset_ids"] == ["asset-1", "asset-2"]
+    assert workflow["request"]["options"]["reconcile"] is False
+    assert workflow["request"]["options"]["mode"] == "group_scan"
+    assert runner.submitted[0][0] == "vm-workflow"
+
+
+def test_asset_group_verification_keeps_reconcile_enabled():
+    repository, runner = FakeRepository(), FakeRunner()
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+
+    workflow, _ = service.start_asset_group_verification(
+        asset_group_id="group-1",
+        asset_ids=["asset-1"],
+        options={},
+        actor="operator",
+        idempotency_key=None,
+    )
+
+    assert workflow["request"]["options"]["reconcile"] is True
+    assert workflow["request"]["options"]["mode"] == "group_verification"
+
+
+def test_group_scan_reconcile_step_is_skipped_after_postprocess():
+    repository = MagicMock()
+    runner = MagicMock()
+    remediation = MagicMock()
+    service = VmWorkflowService(repository, runner, remediation=remediation)
+    workflow = {
+        "workflow_id": "wf-group-scan",
+        "kind": "verification",
+        "campaign_id": None,
+        "request": {"asset_ids": ["asset-1"], "options": {"reconcile": False}},
+        "result": {},
+    }
+
+    service._reconcile("wf-group-scan", workflow, [{"operation_id": "op-1", "status": "completed"}], [])
+
+    remediation.reconcile_asset.assert_not_called()
+    reconcile_call = [call for call in repository.update_step.call_args_list if call.args[1] == "reconcile"][-1]
+    assert reconcile_call.kwargs["status"] == "skipped"
+    assert repository.update_run.call_args.kwargs["status"] == "completed"
+
+
+def test_retry_group_verification_does_not_require_campaign_id():
+    repository = MagicMock()
+    runner = MagicMock()
+    source = {
+        "workflow_id": "wf-source",
+        "kind": "verification",
+        "status": "failed",
+        "can_retry": True,
+        "request": {"asset_group_id": "group-1", "asset_ids": ["asset-1"], "options": {"mode": "group_verification"}},
+        "steps": [],
+    }
+    retried = {**source, "workflow_id": "wf-retry", "status": "queued", "can_retry": False}
+    repository.get.side_effect = [source, retried]
+    repository.create.return_value = (retried, False)
+    service = VmWorkflowService(repository, runner, remediation=object())
+
+    result, replay = service.retry("wf-source", "operator", "retry-key")
+
+    assert replay is False
+    assert result["workflow_id"] == "wf-retry"
+    repository.set_campaign_verification.assert_not_called()
+
+
 def test_vm_migration_is_additive_and_links_verification():
     source = Path("migrations/versions/20260714_0011_vm_workflows.py").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS vm_workflow_runs" in source

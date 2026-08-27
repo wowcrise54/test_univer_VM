@@ -176,7 +176,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     <section className="panel" id="vm-workflows">
       <div className="panel__header"><div><h2>Последние процессы</h2><p>Состояние сохраняется после обновления страницы и перезапуска приложения.</p></div><Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button></div>
       <div className="vm-workflow-list">{(data.recent_workflows || []).map((item) => <button type="button" onClick={() => openWorkflow(item.workflow_id)} key={item.workflow_id}>
-        <Status value={item.status} /><div><strong>{item.kind === "verification" ? "Проверка кампании" : "Полное сканирование"}</strong><small>{item.task_id || item.campaign_id || item.workflow_id} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
+        <Status value={item.status} /><div><strong>{workflowTitle(item)}</strong><small>{workflowSubject(item)} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
       </button>)}</div>
     </section>
 
@@ -217,7 +217,7 @@ function Progress({ value = 0 }) { return <span className="vm-progress" role="pr
 
 function WorkflowDrawer({ item, loading, onClose, onCancel, onRetry }) {
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-workflow-title">
-    <header><div><span>VM workflow</span><h2 id="vm-workflow-title">{item?.kind === "verification" ? "Проверка кампании" : "Полное сканирование"}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <header><div><span>VM workflow</span><h2 id="vm-workflow-title">{workflowTitle(item)}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     {loading || !item ? <p>Загрузка процесса…</p> : <><div className="vm-drawer-summary"><Status value={item.status} /><strong>{item.progress_percent}%</strong><span>{item.workflow_id}</span></div><Progress value={item.progress_percent} /><p className="vm-workflow-time">Запущен: {date(item.created_at)} · обновлён: {date(item.updated_at)}</p>
       <ol className="vm-step-list">{item.steps.map((step) => <li className={`is-${step.status}`} key={step.step_key}><span>{step.status === "completed" ? "✓" : step.position}</span><div><strong>{stepLabels[step.step_key] || step.step_key}</strong><small>{step.message || workflowStatus[step.status] || step.status}</small>{step.error?.message ? <em>{step.error.message}</em> : null}</div><b>{step.progress_percent}%</b></li>)}</ol>
       {item.error?.message ? <div className="inline-error" role="alert">{item.error.message}</div> : null}
@@ -246,6 +246,15 @@ function setQuery(values) { if (typeof window === "undefined") return; const par
 function date(value) { if (!value) return "без срока"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU"); }
 function inputDate(value) { if (!value) return ""; const parsed = new Date(value); return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
 function campaignLabel(value) { return { draft: "Черновик", active: "Активна", completed: "Завершена", cancelled: "Отменена" }[value] || value; }
+function workflowTitle(item) {
+  const request = item?.request || {};
+  if (request.asset_group_id) return request.options?.mode === "group_scan" ? "Сканирование группы" : "Проверка группы";
+  return item?.kind === "verification" ? "Проверка кампании" : "Полное сканирование";
+}
+function workflowSubject(item) {
+  const request = item?.request || {};
+  return item?.task_id || item?.campaign_id || request.asset_group_id || item?.workflow_id || "";
+}
 function readPreferences(key) {
   if (typeof localStorage === "undefined") return {};
   try {

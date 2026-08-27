@@ -1429,6 +1429,22 @@ def list_local_asset_group_members(group_id: str, *, limit: int = 100, offset: i
     return {"rows": decoded, "total": int(total or 0), "limit": limit, "offset": offset}
 
 
+def list_local_asset_group_member_ids(group_id: str) -> list[str]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT member.asset_id
+            FROM asset_group_members member
+            JOIN asset_cards card ON card.asset_id = member.asset_id
+            WHERE member.group_id = %s
+            ORDER BY LOWER(card.display_name) NULLS LAST, member.asset_id
+            """,
+            (group_id,),
+        ).fetchall()
+    return [str(row["asset_id"]) for row in rows]
+
+
 def set_local_asset_group_override(group_id: str, asset_id: str, action: str, *, actor: str | None) -> dict[str, Any]:
     if action not in {"include", "exclude"}:
         raise ValueError("Unsupported asset group override action.")

@@ -211,6 +211,64 @@ class VmWorkflowService:
             self._schedule(workflow["workflow_id"])
         return self.repository.get(workflow["workflow_id"]), replay, targets
 
+    def start_asset_group_scan(
+        self, *, asset_group_id: str, asset_ids: builtins.list[str], options: dict[str, Any],
+        actor: str | None, idempotency_key: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        return self._start_asset_group_workflow(
+            asset_group_id=asset_group_id,
+            asset_ids=asset_ids,
+            options={**options, "reconcile": False, "mode": "group_scan"},
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+
+    def start_asset_group_verification(
+        self, *, asset_group_id: str, asset_ids: builtins.list[str], options: dict[str, Any],
+        actor: str | None, idempotency_key: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        return self._start_asset_group_workflow(
+            asset_group_id=asset_group_id,
+            asset_ids=asset_ids,
+            options={**options, "reconcile": True, "mode": "group_verification"},
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+
+    def _start_asset_group_workflow(
+        self, *, asset_group_id: str, asset_ids: builtins.list[str], options: dict[str, Any],
+        actor: str | None, idempotency_key: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        if idempotency_key and hasattr(self.repository, "by_idempotency_key"):
+            replay = self.repository.by_idempotency_key(idempotency_key)
+            if replay:
+                if replay.get("kind") != "verification":
+                    raise ValueError("Idempotency key belongs to another workflow kind.")
+                return replay, True
+        targets = builtins.list(dict.fromkeys(str(value) for value in asset_ids if value))
+        workflow, replay = self.repository.create(
+            kind="verification",
+            request={"asset_group_id": asset_group_id, "asset_ids": targets, "options": options},
+            requested_by=actor,
+            idempotency_key=idempotency_key,
+        )
+        if not replay:
+            if not targets:
+                self.repository.update_step(
+                    workflow["workflow_id"], "targets", status="completed", progress_percent=100,
+                    message="В группе нет активов для запуска.",
+                )
+                self.repository.update_step(workflow["workflow_id"], "scan", status="skipped")
+                self.repository.update_step(workflow["workflow_id"], "postprocess", status="skipped")
+                self.repository.update_step(workflow["workflow_id"], "reconcile", status="skipped")
+                self.repository.update_run(
+                    workflow["workflow_id"], status="completed", stage="completed", progress_percent=100,
+                    result={"asset_ids": [], "message": "Nothing to scan."},
+                )
+                return self.repository.get(workflow["workflow_id"]) or workflow, False
+            self._schedule(workflow["workflow_id"])
+        return self.repository.get(workflow["workflow_id"]) or workflow, replay
+
     def cancel(self, workflow_id: str) -> dict[str, Any] | None:
         workflow = self.repository.request_cancel(workflow_id)
         if not workflow:
@@ -235,8 +293,10 @@ class VmWorkflowService:
         )
         if not replay:
             if source["kind"] == "verification":
-                self.repository.update_run(workflow["workflow_id"], campaign_id=request.get("campaign_id"))
-                self.repository.set_campaign_verification(request["campaign_id"], workflow["workflow_id"], "queued")
+                campaign_id = request.get("campaign_id")
+                if campaign_id:
+                    self.repository.update_run(workflow["workflow_id"], campaign_id=campaign_id)
+                    self.repository.set_campaign_verification(campaign_id, workflow["workflow_id"], "queued")
             failed_step = next(
                 (step for step in source.get("steps") or [] if step.get("status") == "failed"), None,
             )
@@ -433,8 +493,11 @@ class VmWorkflowService:
         self.repository.update_step(workflow_id, "reconcile", status="running", message="Сверка находок и пересчёт состояния.")
         request = workflow.get("request") or {}
         assets = builtins.list(dict.fromkeys(request.get("asset_ids") or []))
+        should_reconcile = (request.get("options") or {}).get("reconcile", True) is not False
         reconciliation_errors: builtins.list[dict[str, str]] = []
-        if assets:
+        if not should_reconcile:
+            totals = {"created": 0, "reopened": 0, "resolved": 0}
+        elif assets:
             totals = {"created": 0, "reopened": 0, "resolved": 0}
             worker_count = min(self.reconciliation_workers, len(assets))
             pending: dict[Future[dict[str, Any]], str] = {}
@@ -466,11 +529,15 @@ class VmWorkflowService:
             reconciliation_errors.sort(key=lambda item: item["asset_id"])
         else:
             totals = self.remediation.reconcile_all()
-        self.repository.update_step(
-            workflow_id, "reconcile", status="failed" if reconciliation_errors else "completed", progress_percent=100,
-            result={**totals, "errors": reconciliation_errors},
-            error={"assets": reconciliation_errors} if reconciliation_errors else {},
-        )
+        reconcile_update = {
+            "status": "skipped" if not should_reconcile else "failed" if reconciliation_errors else "completed",
+            "progress_percent": 100,
+            "result": {**totals, "errors": reconciliation_errors},
+            "error": {"assets": reconciliation_errors} if reconciliation_errors else {},
+        }
+        if not should_reconcile:
+            reconcile_update["message"] = "Сверка отключена для группового сканирования."
+        self.repository.update_step(workflow_id, "reconcile", **reconcile_update)
         start_errors = (workflow.get("result") or {}).get("start_errors") or []
         failed_assets = [str(item.get("subject", {}).get("id") or "") for item in failed]
         failed_assets.extend(str(item.get("asset_id") or "") for item in start_errors)
