@@ -1568,6 +1568,22 @@ td code {
   min-width: 1580px;
 }
 
+.precheck-metrics {
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.precheck-metrics .metric-card {
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-muted);
+}
+
+.precheck-metrics .metric-card strong {
+  margin-top: 3px;
+  font-size: 22px;
+}
+
 .asset-groups-layout {
   display: grid;
   grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.15fr);

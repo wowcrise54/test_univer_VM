@@ -3,9 +3,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
 
-function renderPage(permissions = ["asset_groups.read", "asset_groups.manage"]) {
+function renderPage(permissions = ["asset_groups.read", "asset_groups.manage"], showAlert = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}><AssetGroupsPage currentUser={{ permissions }} showAlert={vi.fn()} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><AssetGroupsPage currentUser={{ permissions }} showAlert={showAlert} /></QueryClientProvider>);
 }
 
 function response(payload) {
@@ -35,6 +35,8 @@ describe("local asset groups management", () => {
     await waitFor(() => expect(screen.getByText("Групп пока нет.")).toBeInTheDocument());
     expect(screen.queryByRole("heading", { name: "Новая динамическая группа" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Создать группу" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Пересчитать выбранные" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Архивировать выбранные" })).not.toBeInTheDocument();
   });
 
   it("selects groups for a bulk recalculation and shows precheck statistics", async () => {
@@ -48,9 +50,14 @@ describe("local asset groups management", () => {
       return response({ rows: [{ group_id: "group-1", name: "Production", status: "ready", member_count: 4, children: [] }] });
     });
 
-    renderPage();
+    const showAlert = vi.fn();
+    renderPage(undefined, showAlert);
     expect(await screen.findByText("Успешные цели")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument();
+    expect(screen.getByText("False")).toBeInTheDocument();
+    expect(screen.getByText("Без детализации")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Пересчитать выбранные" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Архивировать выбранные" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать группу Production" }));
     fireEvent.click(screen.getByRole("button", { name: "Пересчитать выбранные" }));
 
@@ -58,5 +65,7 @@ describe("local asset groups management", () => {
       expect.stringContaining("/api/asset-groups/bulk-action"),
       expect.objectContaining({ method: "POST", body: JSON.stringify({ group_ids: ["group-1"], action: "evaluate" }) }),
     ));
+    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Обработано: 1; ошибок: 0.", "success"));
+    expect(screen.getByRole("checkbox", { name: "Выбрать группу Production" })).not.toBeChecked();
   });
 });

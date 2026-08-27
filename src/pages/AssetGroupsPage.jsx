@@ -93,7 +93,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
       body: JSON.stringify({ group_ids: selectedIds, action }),
     })),
     onSuccess: async (result) => {
-      showAlert(`Обработано групп: ${result.succeeded}; ошибок: ${result.failed}.`, result.failed ? "warning" : "success");
+      showAlert(`Обработано: ${result.processed}; ошибок: ${result.failed}.`, result.failed ? "warning" : "success");
       setSelectedIds([]);
       await refresh();
     },
@@ -104,8 +104,8 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
 
   return (
     <div className="asset-groups-page">
-      <Panel title="Статистика precheck" description="Результаты проверок доступности по сохранённым precheck-задачам.">
-        <div className="metric-grid" aria-label="Статистика precheck">
+      <Panel title="Статистика precheck">
+        <div className="metric-grid precheck-metrics" aria-label="Статистика precheck">
           <Metric label="Запуски" value={stats.runs} />
           <Metric label="Успешные цели" value={stats.success} />
           <Metric label="False" value={stats.false} />
@@ -113,8 +113,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
         </div>
       </Panel>
       <Panel
-        title="Собственные группы активов"
-        description="Группы рассчитываются по локальному индексу карточек. MP VM не используется как хранилище групп."
+        title="Группы активов"
         action={<div className="action-row">{canManage ? <><Button busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("evaluate")}>Пересчитать выбранные</Button><Button variant="danger" busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("archive")}>Архивировать выбранные</Button></> : null}<Button variant="secondary" busy={groupsQuery.isFetching} onClick={() => groupsQuery.refetch()}>Обновить</Button></div>}
       >
         <div className="asset-groups-layout">
@@ -147,7 +146,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
       </Panel>
 
       {canManage ? (
-        <Panel title="Новая динамическая группа" description="Сначала проверьте правило на текущем индексе, затем сохраните группу.">
+        <Panel title="Новая динамическая группа">
           <div className="form-grid form-grid--two">
             <Field label="Название"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
             <Field label="Родительская группа">

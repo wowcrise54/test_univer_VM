@@ -3,8 +3,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from app import auth, db
+from app.api.schemas import AssetGroupBulkActionRequest
 from app.services.asset_groups import AssetGroupService
 
 
@@ -84,6 +86,21 @@ def test_service_runs_bulk_group_action_and_reports_each_result() -> None:
     assert result["results"][1]["success"] is False
 
 
+def test_service_rejects_unsupported_bulk_action_before_processing_groups() -> None:
+    repository = MagicMock()
+
+    with pytest.raises(ValueError, match="Unsupported bulk action"):
+        AssetGroupService(repository).bulk_action(["group-1"], "delete")
+
+    repository.evaluate.assert_not_called()
+    repository.archive.assert_not_called()
+
+
+def test_bulk_action_schema_only_accepts_supported_actions() -> None:
+    with pytest.raises(ValidationError):
+        AssetGroupBulkActionRequest(group_ids=["group-1"], action="delete")
+
+
 def test_service_returns_persisted_precheck_statistics() -> None:
     repository = MagicMock()
     repository.precheck_stats.return_value = {
@@ -93,3 +110,21 @@ def test_service_returns_persisted_precheck_statistics() -> None:
     result = AssetGroupService(repository).precheck_stats()
 
     assert result == {"runs": 3, "success": 7, "false": 2, "unknown": 1}
+
+
+def test_precheck_statistics_keep_legacy_runs_without_counters_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = {"runs": 4, "success": 9, "false": 3, "unknown": 1}
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = row
+    context = MagicMock()
+    context.__enter__.return_value = connection
+    monkeypatch.setattr(db, "init_db", MagicMock())
+    monkeypatch.setattr(db, "connect", MagicMock(return_value=context))
+
+    result = db.get_precheck_statistics()
+
+    assert result == row
+    sql = connection.execute.call_args.args[0]
+    assert "successful_target_count" in sql
+    assert "false_target_count" in sql
+    assert "precheck_validation_failed" in sql

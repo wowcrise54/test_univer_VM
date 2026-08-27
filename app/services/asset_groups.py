@@ -58,17 +58,18 @@ class AssetGroupService:
         return self._repository.delete_override(group_id, asset_id)
 
     def bulk_action(self, group_ids: list[str], action: str) -> dict[str, Any]:
+        if action not in {"evaluate", "archive"}:
+            raise ValueError("Unsupported bulk action.")
+
         results = []
         for group_id in dict.fromkeys(group_ids):
             try:
                 if action == "evaluate":
                     value = self._repository.evaluate(group_id)
-                elif action == "archive":
+                else:
                     if not self._repository.archive(group_id):
                         raise LookupError("Asset group not found.")
                     value = {"archived": True}
-                else:
-                    raise ValueError("Unsupported bulk action.")
                 results.append({"group_id": group_id, "success": True, "result": value})
             except Exception as exc:
                 results.append({"group_id": group_id, "success": False, "error": str(exc)})

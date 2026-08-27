@@ -19,6 +19,33 @@ class FakeSession:
         pass
 
 
+def test_precheck_persists_requested_successful_and_false_targets() -> None:
+    client = MagicMock()
+    client.create_scanner_task.return_value = "precheck-1"
+    client.start_connection_check_with_retry.return_value = {"started": True}
+    client.wait_for_connection_check_targets.return_value = (["10.0.0.1"], "completed")
+    options = main.StartScannerTaskRequest(precheck_enabled=True, skip_validation=True)
+    payload = {"name": "Audit", "include": {"targets": ["10.0.0.1", "10.0.0.2"]}}
+
+    with (
+        patch.object(main.db, "get_scan_task", return_value={"payload": payload}),
+        patch.object(main.db, "record_scan_task"),
+        patch.object(main.db, "update_scan_task_status") as update_status,
+    ):
+        result = main.run_precheck_for_scanner_task(
+            client=client,
+            token="token",
+            task_id="audit-1",
+            options=options,
+        )
+
+    assert result["requested_target_count"] == 2
+    assert result["successful_target_count"] == 1
+    assert result["false_target_count"] == 1
+    assert result["false_targets"] == ["10.0.0.2"]
+    assert update_status.call_args_list[-1].args == ("precheck-1", "precheck_finished", result)
+
+
 class PagingClient(mpvm_client.MpVmClient):
     def __init__(self) -> None:
         self.auth = SimpleNamespace()
