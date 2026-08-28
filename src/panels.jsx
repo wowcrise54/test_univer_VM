@@ -809,6 +809,120 @@ function startSuccessText(result) {
   return `Старт запрошен для ${result.id}.${precheckText}`;
 }
 
+function jobDuration(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) return "—";
+  const milliseconds = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const seconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes} мин ${remainder} с` : `${remainder} с`;
+}
+
+function jobSucceeded(value) {
+  return ["success", "ok", "succeeded"].includes(String(value || "").toLowerCase());
+}
+
+function JobResultStatus({ job }) {
+  const finished = String(job.status || "").toLowerCase() === "finished";
+  const successful = jobSucceeded(job.errorStatus);
+  return (
+    <span className={`job-result-status job-result-status--${successful ? "success" : finished ? "fail" : "pending"}`}>
+      <span aria-hidden="true">{successful ? "✓" : finished ? "⚠" : "•"}</span>
+      {finished ? "Завершена" : job.status || "Неизвестно"}
+    </span>
+  );
+}
+
+function ConnectionCheckCell({ results }) {
+  const checks = Array.isArray(results) ? results : [];
+  if (!checks.length) return <span className="muted-text">—</span>;
+  const successful = checks.filter((check) => jobSucceeded(check.status)).length;
+  return (
+    <details className="connection-checks">
+      <summary>{successful} из {checks.length}</summary>
+      <div className="connection-checks__list">
+        {checks.map((check, index) => {
+          const ok = jobSucceeded(check.status);
+          const errors = Array.isArray(check.errors) ? check.errors : [];
+          return (
+            <div className={`connection-check connection-check--${ok ? "success" : "fail"}`} key={`${check.transport || "check"}-${index}`}>
+              <strong>{check.transport || `Проверка ${index + 1}`}</strong>
+              <span>{ok ? "Успешно" : "Ошибка"}</span>
+              {errors.length ? <small>{errors.join(", ")}</small> : null}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function TaskResultsDialog({ state, onClose, onRetry }) {
+  const open = Boolean(state);
+  const dialogRef = useDialogAccessibility(open, onClose);
+  if (!open || typeof document === "undefined") return null;
+  const items = Array.isArray(state.data?.items) ? state.data.items : [];
+  const isPrecheck = Boolean(state.data?.is_precheck) || items.some((job) => job.runMode === "connectionCheck");
+  return createPortal(
+    <div className="passport-modal task-results-modal" role="presentation">
+      <div className="passport-modal__backdrop" onMouseDown={onClose} />
+      <section ref={dialogRef} className="passport-modal__window task-results-modal__window" role="dialog" aria-modal="true" aria-label="Результаты задачи" tabIndex={-1}>
+        <div className="passport-modal__bar">
+          <div>
+            <strong>Результаты задачи</strong>
+            <small>{state.task?.name || state.task?.mp_task_id}</small>
+          </div>
+          <Button variant="ghost" onClick={onClose}>Закрыть</Button>
+        </div>
+        <div className="task-results-modal__body">
+          {state.loading ? <div className="query-state" role="status">Загрузка результатов…</div> : null}
+          {state.error ? (
+            <div className="query-state query-state--error" role="alert">
+              <span>Не удалось загрузить результаты: {state.error.message || String(state.error)}</span>
+              <Button variant="tiny" onClick={onRetry}>Повторить</Button>
+            </div>
+          ) : null}
+          {!state.loading && !state.error ? (
+            <>
+              <div className="task-results-summary">
+                <span>Подзадач <strong>{state.data?.total ?? items.length}</strong></span>
+                <span>Тип <strong>{isPrecheck ? "Precheck" : "Сканирование"}</strong></span>
+                <span>Run <strong>{state.data?.run?.id || "—"}</strong></span>
+              </div>
+              {items.length ? (
+                <div className="mpvm-table-shell task-results-table-shell">
+                  <table className="task-results-table">
+                    <thead><tr>
+                      <th>Статус</th>
+                      {isPrecheck ? <th>Проверки</th> : null}
+                      <th>Начало сбора</th><th>Окончание сбора</th><th>Длительность</th>
+                      <th>Коллектор</th><th>Цели</th><th>Профиль</th>
+                    </tr></thead>
+                    <tbody>{items.map((job) => (
+                      <tr key={job.id}>
+                        <td><JobResultStatus job={job} /></td>
+                        {isPrecheck ? <td><ConnectionCheckCell results={job.connectionCheckResults} /></td> : null}
+                        <td>{formatDateTime(job.startedAt)}</td>
+                        <td>{formatDateTime(job.finishedAt)}</td>
+                        <td>{jobDuration(job.startedAt, job.finishedAt)}</td>
+                        <td>{job.agent?.name || "—"}</td>
+                        <td>{formatList(job.targets)}</td>
+                        <td>{job.profile?.name || "—"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : <div className="empty-cell">У задачи пока нет результатов запуска.</div>}
+            </>
+          ) : null}
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function TaskListPanel({
   tasks,
   lookups,
@@ -831,6 +945,7 @@ function TaskListPanel({
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [postprocessDetail, setPostprocessDetail] = useState(null);
+  const [resultsState, setResultsState] = useState(null);
   const profilesById = useMemo(
     () => mapById(lookups.scanner_profiles),
     [lookups.scanner_profiles],
@@ -897,6 +1012,18 @@ function TaskListPanel({
       setPendingDeleteId(null);
     }
   };
+
+  const openTaskResults = useCallback(async (task) => {
+    const taskId = task.mp_task_id;
+    setSelectedTaskId(taskId);
+    setResultsState({ task, loading: true, error: null, data: null });
+    try {
+      const data = await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/results`);
+      setResultsState({ task, loading: false, error: null, data });
+    } catch (error) {
+      setResultsState({ task, loading: false, error, data: null });
+    }
+  }, [setSelectedTaskId]);
 
   return (
     <>
@@ -1002,11 +1129,11 @@ function TaskListPanel({
                       key={taskId}
                       tabIndex={0}
                       aria-selected={isSelected}
-                      onClick={() => setSelectedTaskId(taskId)}
+                      onClick={() => openTaskResults(task)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
-                          setSelectedTaskId(taskId);
+                          openTaskResults(task);
                         }
                       }}
                     >
@@ -1072,6 +1199,11 @@ function TaskListPanel({
         busy={Boolean(deletingId)}
         onClose={() => setPendingDeleteId(null)}
         onConfirm={() => deleteTask(pendingDeleteId)}
+      />
+      <TaskResultsDialog
+        state={resultsState}
+        onClose={() => setResultsState(null)}
+        onRetry={() => resultsState?.task && openTaskResults(resultsState.task)}
       />
     </>
   );

@@ -1299,6 +1299,111 @@
   background: #d9edf9;
 }
 
+.task-results-modal {
+  z-index: 60;
+}
+
+.task-results-modal__window {
+  width: min(1460px, calc(100vw - 48px));
+}
+
+.task-results-modal .passport-modal__bar > div {
+  display: grid;
+  gap: 2px;
+}
+
+.task-results-modal .passport-modal__bar small {
+  color: #718096;
+}
+
+.task-results-modal__body {
+  padding: 16px;
+}
+
+.task-results-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin-bottom: 14px;
+  color: #718096;
+  font-size: 12px;
+}
+
+.task-results-summary strong {
+  margin-left: 4px;
+  color: #243246;
+}
+
+.task-results-table-shell {
+  max-height: calc(100dvh - 190px);
+  border: 1px solid #e6edf5;
+  border-radius: 12px;
+}
+
+.task-results-table {
+  min-width: 1080px;
+  font-size: 12px;
+}
+
+.task-results-table th,
+.task-results-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #edf2f7;
+  text-align: left;
+  vertical-align: top;
+}
+
+.task-results-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #7a8797;
+  background: #fbfdff;
+}
+
+.job-result-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.job-result-status--success { color: #238b57; }
+.job-result-status--fail { color: #d34b4b; }
+.job-result-status--pending { color: #6b7b8d; }
+
+.connection-checks summary {
+  cursor: pointer;
+  color: #3979a8;
+  white-space: nowrap;
+}
+
+.connection-checks__list {
+  display: grid;
+  gap: 6px;
+  min-width: 280px;
+  margin-top: 8px;
+}
+
+.connection-check {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 2px 10px;
+  border-left: 3px solid #d34b4b;
+  padding: 6px 8px;
+  background: #fff7f7;
+}
+
+.connection-check--success {
+  border-left-color: #2aa56b;
+  background: #f3fbf7;
+}
+
+.connection-check small {
+  grid-column: 1 / -1;
+  color: #a33d3d;
+}
+
 .task-name-cell {
   min-width: 0;
 }

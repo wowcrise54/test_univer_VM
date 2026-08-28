@@ -1,35 +1,61 @@
 {
-  "generated_at": "2026-08-25T04:45:58.458935+00:00",
+  "generated_at": "2026-08-28T10:31:25.623061+00:00",
   "nodes": {
     "app_main_assetcardrequestexecutor": {
-      "code_fingerprint": "907a1016fcd248d3716ded7a0f7cf926fb04205f24a7e38b8430c6f4564e367b",
+      "code_fingerprint": "36d09fdd78658d290caf8c66fcac1639b96a7e755e6b94d7cbbe13d3e7845568",
       "label": "AssetCardRequestExecutor",
-      "last": "2026-08-25T04:45:15.695979+00:00",
+      "last": "2026-08-25T04:47:09.619147+00:00",
       "provenance": [
+        {
+          "date": "2026-08-25T04:47:09.619147+00:00",
+          "outcome": "useful",
+          "q": "Собери информацию обо всех трассах MpVmClient"
+        },
         {
           "date": "2026-08-25T04:45:15.695979+00:00",
           "outcome": "useful",
           "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
         }
       ],
-      "score": 0.999988564,
+      "score": 1.855758384,
       "source_file": "app/main.py",
-      "status": "tentative",
-      "uses": 1
+      "status": "preferred",
+      "uses": 2
     },
     "app_mpvm_client_mpvmclient": {
-      "code_fingerprint": "38815469cdfb929580d5e48e4df5456002329f281cd051ab3f22a26536cefce2",
+      "code_fingerprint": "b32e3557c1ed2ed1fe148285d03a7dfc14db3347f68929645a7febdca611911d",
       "label": "MpVmClient",
-      "last": "2026-08-25T04:45:15.695979+00:00",
+      "last": "2026-08-25T04:47:09.619147+00:00",
       "provenance": [
+        {
+          "date": "2026-08-25T04:47:09.619147+00:00",
+          "outcome": "useful",
+          "q": "Собери информацию обо всех трассах MpVmClient"
+        },
         {
           "date": "2026-08-25T04:45:15.695979+00:00",
           "outcome": "useful",
           "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
         }
       ],
-      "score": 0.999988564,
+      "score": 1.855758384,
       "source_file": "app/mpvm_client.py",
+      "status": "preferred",
+      "uses": 2
+    },
+    "tests_test_connection_connectiontokentests": {
+      "code_fingerprint": "6a67be17e0db86fec957d69baf8250e3f8fdcb6915dcec00d042aad71e8ddb21",
+      "label": "ConnectionTokenTests",
+      "last": "2026-08-25T04:47:09.619147+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-25T04:47:09.619147+00:00",
+          "outcome": "useful",
+          "q": "Собери информацию обо всех трассах MpVmClient"
+        }
+      ],
+      "score": 0.927893326,
+      "source_file": "tests/test_connection.py",
       "status": "tentative",
       "uses": 1
     }

@@ -74,6 +74,46 @@ def test_retry_false_precheck_only_requests_previous_false_targets() -> None:
     client.update_scanner_task.assert_not_called()
 
 
+def test_scanner_task_results_returns_all_jobs_and_detects_precheck() -> None:
+    client = MagicMock()
+    client.get_task_runs.return_value = [{"id": "run-1", "status": "finished"}]
+    client.get_all_run_jobs.return_value = [
+        {
+            "id": "job-1",
+            "runMode": "connectionCheck",
+            "connectionCheckResults": [{"transport": "RPC", "status": "fail", "errors": ["connection"]}],
+        }
+    ]
+    with (
+        patch.object(main.db, "get_scan_task", return_value={"name": "Precheck", "status": "started"}),
+        patch.object(main, "require_mpvm", return_value=(client, "token")),
+    ):
+        result = main.scanner_task_results("task-1")
+
+    assert result["run"]["id"] == "run-1"
+    assert result["items"][0]["id"] == "job-1"
+    assert result["total"] == 1
+    assert result["is_precheck"] is True
+    client.get_all_run_jobs.assert_called_once_with(
+        "token", "run-1", target_pattern="", orderby="startedAt desc", batch_size=1000,
+    )
+
+
+def test_scanner_task_results_returns_empty_when_task_has_no_runs() -> None:
+    client = MagicMock()
+    client.get_task_runs.return_value = []
+    with (
+        patch.object(main.db, "get_scan_task", return_value={"name": "Audit", "status": "created"}),
+        patch.object(main, "require_mpvm", return_value=(client, "token")),
+    ):
+        result = main.scanner_task_results("task-1")
+
+    assert result["run"] is None
+    assert result["items"] == []
+    assert result["total"] == 0
+    client.get_all_run_jobs.assert_not_called()
+
+
 class PagingClient(mpvm_client.MpVmClient):
     def __init__(self) -> None:
         self.auth = SimpleNamespace()

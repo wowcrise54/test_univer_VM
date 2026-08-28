@@ -1320,6 +1320,55 @@ def local_scanner_tasks() -> list[dict[str, Any]]:
     return CONTAINER.services.tasks.list()
 
 
+@tasks_router.get("/api/scanner-tasks/{task_id}/results")
+def scanner_task_results(task_id: str) -> dict[str, Any]:
+    local_task = db.get_scan_task(task_id)
+    if not local_task:
+        raise HTTPException(status_code=404, detail="Local scanner task not found.")
+
+    client, token = require_mpvm()
+    try:
+        runs = client.get_task_runs(token, task_id)
+        if not runs:
+            return {
+                "task_id": task_id,
+                "task_name": local_task.get("name") or task_id,
+                "task_status": local_task.get("status"),
+                "is_precheck": str(local_task.get("status") or "").startswith("precheck_"),
+                "run": None,
+                "items": [],
+                "total": 0,
+            }
+
+        run = runs[0]
+        run_id = str(run.get("id") or "").strip()
+        if not run_id:
+            raise HTTPException(status_code=502, detail="MP VM returned a scanner run without an id.")
+        jobs = client.get_all_run_jobs(
+            token,
+            run_id,
+            target_pattern="",
+            orderby="startedAt desc",
+            batch_size=1000,
+        )
+        is_precheck = str(local_task.get("status") or "").startswith("precheck_") or any(
+            str(job.get("runMode") or "") == "connectionCheck" for job in jobs
+        )
+        return {
+            "task_id": task_id,
+            "task_name": local_task.get("name") or task_id,
+            "task_status": local_task.get("status"),
+            "is_precheck": is_precheck,
+            "run": run,
+            "items": jobs,
+            "total": len(jobs),
+        }
+    except HTTPException:
+        raise
+    except (MpVmApiError, requests.RequestException) as exc:
+        raise http_error(exc) from exc
+
+
 @tasks_router.post("/api/scanner-tasks")
 def create_scanner_task(payload: ScannerTaskRequest) -> dict[str, Any]:
     client, token = require_mpvm()
