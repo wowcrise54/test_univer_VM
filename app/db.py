@@ -5285,10 +5285,10 @@ def canonical_asset_card_id(
         FROM asset_cards
         WHERE asset_id <> %s
           AND (
-            (%s IS NOT NULL AND LOWER(NULLIF(TRIM(fqdn), '')) = LOWER(%s)) OR
-            (%s IS NULL AND %s IS NOT NULL AND NULLIF(TRIM(ip_address), '') = %s) OR
-            (%s IS NULL AND %s IS NULL AND %s IS NOT NULL
-              AND LOWER(NULLIF(TRIM(hostname), '')) = LOWER(%s))
+            (%s::text IS NOT NULL AND LOWER(NULLIF(TRIM(fqdn), '')) = LOWER(%s::text)) OR
+            (%s::text IS NULL AND %s::text IS NOT NULL AND NULLIF(TRIM(ip_address), '') = %s::text) OR
+            (%s::text IS NULL AND %s::text IS NULL AND %s::text IS NOT NULL
+              AND LOWER(NULLIF(TRIM(hostname), '')) = LOWER(%s::text))
           )
         ORDER BY last_seen DESC, id DESC
         LIMIT 1
