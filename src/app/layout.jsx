@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { navigationGroups, routes, workflowSteps } from "./navigation.js";
+import { routes, workflowSteps } from "./navigation.js";
 
 function shouldHandleLinkClick(event) {
   return (
@@ -21,6 +21,15 @@ export function Sidebar({
 }) {
   const navRef = useRef(null);
   const permissions = new Set(currentUser?.permissions || []);
+  const visibleRoutes = routes.filter(
+    (route) =>
+      (!route.requiredPermission || permissions.has(route.requiredPermission)) &&
+      (!route.requiredAnyPermission ||
+        route.requiredAnyPermission.some((item) => permissions.has(item))),
+  );
+  const primaryRoutes = visibleRoutes.filter((route) => route.group === "primary");
+  const secondaryRoutes = visibleRoutes.filter((route) => route.group !== "primary");
+  const secondaryActive = secondaryRoutes.some((route) => route.path === activePath);
 
   useEffect(() => {
     if (
@@ -42,55 +51,33 @@ export function Sidebar({
         </div>
       </div>
       <nav ref={navRef} className="nav" aria-label="Основная навигация">
-        {navigationGroups.map((group) => {
-          const groupRoutes = routes.filter(
-            (route) => route.group === group.id &&
-              (!route.requiredPermission || permissions.has(route.requiredPermission)) &&
-              (!route.requiredAnyPermission || route.requiredAnyPermission.some((item) => permissions.has(item))),
-          );
-          return (
-            <section
-              className="nav-group"
-              aria-labelledby={`nav-group-${group.id}`}
-              key={group.id}
-            >
-              <h2 id={`nav-group-${group.id}`}>{group.label}</h2>
-              <div className="nav-group__items">
-                {groupRoutes.map((route) => (
-                  <a
-                    href={route.path}
-                    title={route.label}
-                    aria-label={
-                      route.id === "operations" && activeOperations
-                        ? `Операции — активных: ${activeOperations}`
-                        : undefined
-                    }
-                    className={activePath === route.path ? "is-active" : ""}
-                    aria-current={
-                      activePath === route.path ? "page" : undefined
-                    }
-                    onClick={(event) => {
-                      if (!shouldHandleLinkClick(event)) return;
-                      event.preventDefault();
-                      onNavigate(route.path);
-                    }}
-                    key={route.id}
-                  >
-                    <span className="nav-icon" aria-hidden="true">
-                      {route.icon}
-                    </span>
-                    <span className="nav-label">{route.label}</span>
-                    {route.id === "operations" && activeOperations ? (
-                      <em className="nav-badge" aria-hidden="true">
-                        {activeOperations}
-                      </em>
-                    ) : null}
-                  </a>
-                ))}
-              </div>
-            </section>
-          );
-        })}
+        <div className="nav-group__items">
+          {primaryRoutes.map((route) => (
+            <NavLink
+              route={route}
+              activePath={activePath}
+              activeOperations={activeOperations}
+              onNavigate={onNavigate}
+              key={route.id}
+            />
+          ))}
+        </div>
+        {secondaryRoutes.length ? (
+          <details className="nav-more" open={secondaryActive}>
+            <summary>Ещё</summary>
+            <div className="nav-group__items">
+              {secondaryRoutes.map((route) => (
+                <NavLink
+                  route={route}
+                  activePath={activePath}
+                  activeOperations={activeOperations}
+                  onNavigate={onNavigate}
+                  key={route.id}
+                />
+              ))}
+            </div>
+          </details>
+        ) : null}
         <span className="nav-scroll-hint" aria-hidden="true">
           ›
         </span>
@@ -99,6 +86,37 @@ export function Sidebar({
         <div className="sidebar-warning">PostgreSQL недоступен</div>
       ) : null}
     </aside>
+  );
+}
+
+function NavLink({ route, activePath, activeOperations, onNavigate }) {
+  return (
+    <a
+      href={route.path}
+      title={route.label}
+      aria-label={
+        route.id === "operations" && activeOperations
+          ? `Операции — активных: ${activeOperations}`
+          : undefined
+      }
+      className={activePath === route.path ? "is-active" : ""}
+      aria-current={activePath === route.path ? "page" : undefined}
+      onClick={(event) => {
+        if (!shouldHandleLinkClick(event)) return;
+        event.preventDefault();
+        onNavigate(route.path);
+      }}
+    >
+      <span className="nav-icon" aria-hidden="true">
+        {route.icon}
+      </span>
+      <span className="nav-label">{route.label}</span>
+      {route.id === "operations" && activeOperations ? (
+        <em className="nav-badge" aria-hidden="true">
+          {activeOperations}
+        </em>
+      ) : null}
+    </a>
   );
 }
 
@@ -195,10 +213,6 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
         <h1 ref={headingRef} tabIndex={-1}>
           {route?.title || "MP VM REST Client"}
         </h1>
-        <p>
-          {route?.description ||
-            "Единый клиент для задач сканирования, PDQL-экспорта и локального анализа уязвимостей."}
-        </p>
       </div>
       <div className="topbar__actions">
         <div

@@ -4,7 +4,7 @@ import { Sidebar, Topbar, WorkflowRail } from "../app/layout.jsx";
 import { routeById } from "../app/navigation.js";
 
 describe("guided application shell", () => {
-  it("groups navigation around the operator workflow", () => {
+  it("keeps primary navigation focused and moves tools behind disclosure", () => {
     render(
       <Sidebar
         session={{ connected: false }}
@@ -16,10 +16,9 @@ describe("guided application shell", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Обзор" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Сканирования" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Находки" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "VM Management" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Уязвимости" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ещё" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Группы активов" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();

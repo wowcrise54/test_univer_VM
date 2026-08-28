@@ -1,11 +1,8 @@
-export const defaultRoutePath = "/connection";
+export const defaultRoutePath = "/vm";
 
 export const navigationGroups = [
-  { id: "overview", label: "Обзор" },
-  { id: "scan", label: "Сканирования" },
-  { id: "findings", label: "Находки" },
-  { id: "remediation", label: "Устранение" },
-  { id: "report", label: "Отчётность" },
+  { id: "primary", label: "Основное" },
+  { id: "tools", label: "Инструменты" },
   { id: "admin", label: "Администрирование" },
 ];
 
@@ -19,7 +16,7 @@ export const workflowSteps = [
 
 export const routes = [
   {
-    id: "vm", requiredPermission: "operations.read", group: "overview", icon: "◆", path: "/vm",
+    id: "vm", requiredPermission: "operations.read", group: "primary", icon: "◆", path: "/vm",
     label: "VM Management", title: "VM Management",
     description: "Единый цикл сканирования, приоритизации, устранения и подтверждения результата.",
   },
@@ -36,7 +33,7 @@ export const routes = [
   {
     id: "connection",
     requiredPermission: "connection.read",
-    group: "scan",
+    group: "tools",
     icon: "⌁",
     path: "/connection",
     label: "Подключение",
@@ -47,7 +44,7 @@ export const routes = [
   {
     id: "tasks",
     requiredPermission: "tasks.read",
-    group: "scan",
+    group: "tools",
     icon: "◎",
     path: "/tasks",
     label: "Задачи",
@@ -57,7 +54,7 @@ export const routes = [
   {
     id: "asset-groups",
     requiredPermission: "asset_groups.read",
-    group: "scan",
+    group: "tools",
     icon: "▤",
     path: "/asset-groups",
     label: "Группы активов",
@@ -67,7 +64,7 @@ export const routes = [
   {
     id: "operations",
     requiredPermission: "operations.read",
-    group: "scan",
+    group: "tools",
     icon: "◔",
     path: "/operations",
     label: "Операции",
@@ -78,7 +75,7 @@ export const routes = [
   {
     id: "export",
     requiredPermission: "imports_exports.read",
-    group: "report",
+    group: "primary",
     icon: "⇩",
     path: "/export",
     label: "PDQL экспорт",
@@ -89,7 +86,7 @@ export const routes = [
   {
     id: "vulnerabilities",
     requiredPermission: "assets.read",
-    group: "findings",
+    group: "primary",
     icon: "◈",
     path: "/vulnerabilities",
     label: "Уязвимости",
@@ -98,13 +95,13 @@ export const routes = [
       "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
   },
   {
-    id: "remediation", requiredPermission: "remediation.read", group: "remediation", icon: "✓", path: "/remediation", label: "Устранение",
+    id: "remediation", requiredPermission: "remediation.read", group: "primary", icon: "✓", path: "/remediation", label: "Устранение",
     title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
   },
   {
     id: "asset-cards",
     requiredPermission: "asset_cards.read",
-    group: "findings",
+    group: "tools",
     icon: "▦",
     path: "/asset-cards",
     label: "Карточки активов",
@@ -115,7 +112,7 @@ export const routes = [
   {
     id: "automations",
     requiredPermission: "automations.read",
-    group: "report",
+    group: "tools",
     icon: "⎇",
     path: "/automations",
     label: "Автоматизация",
@@ -126,7 +123,7 @@ export const routes = [
   {
     id: "asset-query",
     requiredPermission: "asset_cards.read",
-    group: "findings",
+    group: "tools",
     icon: "⌕",
     path: "/asset-query",
     label: "Выборки активов",
@@ -137,7 +134,7 @@ export const routes = [
   {
     id: "passports",
     requiredPermission: "passports.read",
-    group: "findings",
+    group: "tools",
     icon: "◇",
     path: "/passports",
     label: "Паспорта",
@@ -148,7 +145,7 @@ export const routes = [
   {
     id: "assets",
     requiredPermission: "assets.read",
-    group: "findings",
+    group: "tools",
     icon: "◫",
     path: "/assets",
     label: "Активы",

@@ -14,6 +14,7 @@ import {
   Sidebar,
   SystemBanner,
   Topbar,
+  WorkflowRail,
 } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
@@ -68,6 +69,9 @@ function AppShell({ navigate, path, route, auth }) {
           onRetry={appData.refreshSystemStatus}
           onNavigate={navigate}
         />
+        {route?.id === "vm" ? (
+          <WorkflowRail activeRouteId={route.id} onNavigate={navigate} />
+        ) : null}
         <AlertStack alerts={appData.alerts} />
         <ActivePage
           routeId={route?.id}
