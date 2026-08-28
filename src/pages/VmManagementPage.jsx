@@ -129,7 +129,6 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
   const data = overview.data || {};
   return <div className="vm-page">
     <Panel id="vm-overview" eyebrow="VM" title="Единый контур VM Management"
-      description="Сканирование, приоритизация, устранение и подтверждение результата в одном рабочем процессе."
       action={<Button variant="secondary" busy={overview.isFetching} onClick={refresh}>Обновить</Button>}>
       {!session.connected ? <div className="vm-callout vm-callout--warning"><div><strong>MP VM не подключён</strong><span>Для запуска сканирования установите рабочую сессию.</span></div><Button onClick={() => onNavigate("/connection")}>Настроить</Button></div> : null}
       {overview.error ? <div className="inline-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
@@ -143,7 +142,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 
     <div className="vm-grid">
       <section className="panel vm-launcher">
-        <div className="panel__header"><div><h2>Безопасный запуск</h2><p>Выберите задачу, проверьте условия и подтвердите запуск.</p></div></div>
+        <div className="panel__header"><div><h2>Запуск сканирования</h2></div></div>
         <ol className="vm-launch-steps" aria-label="Этапы запуска">
           <li className={taskId ? "is-complete" : "is-active"}><span>1</span>Задача</li>
           <li className={preflight ? "is-complete" : taskId ? "is-active" : ""}><span>2</span>Проверка</li>
@@ -165,7 +164,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
       </section>
 
       <section className="panel vm-attention">
-        <div className="panel__header"><div><h2>Требуют внимания</h2><p>Сначала просроченные, затем наиболее критичные находки.</p></div></div>
+        <div className="panel__header"><div><h2>Требуют внимания</h2></div></div>
         <div className="vm-attention-list">{(data.attention || []).length ? data.attention.map((item) =>
           <a href={`/remediation?case=${encodeURIComponent(item.case_id)}`} key={item.case_id}>
             <span className={`severity severity--${item.severity}`}>{item.severity}</span><div><strong>{item.cve || item.title}</strong><small>{item.asset_id} · {date(item.due_at)}</small></div><b aria-hidden="true">→</b>
@@ -174,14 +173,14 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     </div>
 
     <section className="panel" id="vm-workflows">
-      <div className="panel__header"><div><h2>Последние процессы</h2><p>Состояние сохраняется после обновления страницы и перезапуска приложения.</p></div><Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button></div>
+      <div className="panel__header"><div><h2>Последние процессы</h2></div><Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button></div>
       <div className="vm-workflow-list">{(data.recent_workflows || []).map((item) => <button type="button" onClick={() => openWorkflow(item.workflow_id)} key={item.workflow_id}>
         <Status value={item.status} /><div><strong>{workflowTitle(item)}</strong><small>{workflowSubject(item)} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
       </button>)}</div>
     </section>
 
     <section className="panel" id="vm-campaigns">
-      <div className="panel__header"><div><h2>Кампании устранения</h2><p>Ответственные, сроки и проверка результата повторным сканированием.</p></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button></div>
+      <div className="panel__header"><div><h2>Кампании устранения</h2></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button></div>
       <div className="vm-campaign-grid">{(campaigns.data?.rows || []).map((item) => <button type="button" onClick={() => openCampaign(item.campaign_id)} key={item.campaign_id}>
         <span className={`campaign-state campaign-state--${item.status}`}>{campaignLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
       </button>)}</div>
