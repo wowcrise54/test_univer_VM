@@ -37,7 +37,19 @@ output/playwright/
 
 # Logs and scratch files
 *.log
+*.jsonl
+*.tar.gz
+*.tgz
 test.sql
+
+# Local diagnostic bundles and extracted support logs
+mpvm-support-*/
+support-logs/
+
+# Graphify runtime/cache artifacts (keep the checked-in graph/report if used)
+graphify-out/cache/
+graphify-out/memory/
+graphify-out/.graphify_*
 
 # Editors and operating systems
 .idea/
