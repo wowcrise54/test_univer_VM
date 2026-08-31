@@ -184,6 +184,9 @@ def _sensitive_key(key: Any) -> bool:
 def sanitize_text(value: str, *, max_length: int = MAX_LOG_STRING) -> str:
     text = BEARER_PATTERN.sub("Bearer [REDACTED]", value)
     text = URL_CREDENTIAL_PATTERN.sub(r"\1***:***@", text)
+    # Exception strings often contain the fully rendered MP VM URL, bypassing
+    # structured query-parameter redaction. Remove token-like query values too.
+    text = re.sub(r"(?i)([?&](?:access_)?token=)[^&\s]+", r"\1[REDACTED]", text)
     for name in ("MPVM_PASSWORD", "MPVM_CLIENT_SECRET", "MPVM_ACCESS_TOKEN"):
         secret = os.getenv(name)
         if secret and len(secret) >= 4:

@@ -149,3 +149,29 @@ MP VM Client — операторский интерфейс для работы
 ## Связанные реализации
 
 Маршруты и права: [src/app/navigation.js](../src/app/navigation.js). Управляемый VM-конвейер: [src/pages/VmManagementPage.jsx](../src/pages/VmManagementPage.jsx) и [app/services/vm_workflows.py](../app/services/vm_workflows.py). Задачи, результаты, карточки и паспорта: [src/panels.jsx](../src/panels.jsx). Автоматизация и центр операций: [src/pages/AutomationsPage.jsx](../src/pages/AutomationsPage.jsx) и [src/pages/OperationsPage.jsx](../src/pages/OperationsPage.jsx).
+# Сбор логов контейнера на Linux
+
+Скрипт `scripts/collect-container-logs.sh` запускается непосредственно на
+Linux-машине с контейнерами. Он сохраняет Docker Compose logs, безопасную часть
+состояния контейнера и JSONL-логи приложения в один архив. Переменные окружения
+контейнера не выгружаются.
+
+```sh
+chmod +x scripts/collect-container-logs.sh
+./scripts/collect-container-logs.sh \
+  --compose-dir /opt/mpvm-client \
+  --service mpvm-client \
+  --since 24h \
+  --output-dir /opt/mpvm-client/output/support-bundles
+```
+
+Последняя строка stdout содержит абсолютный путь к созданному архиву:
+
+```text
+/opt/mpvm-client/output/support-bundles/mpvm-support-20260831-123000.tar.gz
+```
+
+Архив можно скачать с машины через `scp`, приложить к задаче Codex либо
+положить в общую рабочую папку и попросить проанализировать конкретный путь.
+Для запуска нужны `docker`, Docker Compose plugin, `tar`, `mktemp` и права на
+чтение контейнера.

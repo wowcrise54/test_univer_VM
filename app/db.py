@@ -1661,7 +1661,7 @@ def record_completed_scan_evidence(
             INSERT INTO asset_scan_evidence (
                 asset_id, postprocess_run_id, mp_task_id, scanned_at, updated_at
             )
-            SELECT DISTINCT asset_id, %s, %s, %s, NOW()
+            SELECT DISTINCT asset_id, %s, %s, %s::timestamptz, NOW()
             FROM scan_postprocess_items
             WHERE postprocess_run_id = %s
               AND status = 'completed'
