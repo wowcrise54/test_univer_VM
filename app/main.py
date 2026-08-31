@@ -68,6 +68,7 @@ from .api.routers import (
 )
 from .api.schemas import (
     AssetCardAssetQueryRequest,
+    AssetCardBuildBatchJobRequest,
     AssetCardBuildJobRequest,
     AssetCardBuildRequest,
     AssetCardBulkRefreshRequest,
@@ -196,6 +197,8 @@ DOCKER_GROUP_CLEANUP_FUTURES: dict[str, Future[Any]] = {}
 DOCKER_GROUP_CLEANUP_FUTURES_LOCK = threading.Lock()
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
 ASSET_CARD_REFRESH_SEMAPHORE = CONTAINER.asset_card_refresh_semaphore
+ASSET_CARD_BUILD_WORKERS = 4
+ASSET_CARD_BUILD_SEMAPHORE = threading.BoundedSemaphore(ASSET_CARD_BUILD_WORKERS)
 ASSET_METADATA_CACHE = CONTAINER.asset_metadata_cache
 ASSET_METADATA_INFLIGHT = CONTAINER.asset_metadata_inflight
 ASSET_METADATA_CACHE_LOCK = CONTAINER.asset_metadata_cache_lock
@@ -1935,6 +1938,100 @@ def create_asset_card_build_job(
     return {"job": job, "operation_id": job_id}
 
 
+@asset_cards_router.post("/api/asset-cards/build-jobs/batch", status_code=202)
+def create_asset_card_build_jobs_batch(
+    payload: AssetCardBuildBatchJobRequest,
+    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    clean_idempotency_key = idempotency_key if isinstance(idempotency_key, str) else None
+    replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
+    if replay and replay.get("kind") == "asset_card_build_batch":
+        job_ids = (replay.get("result") or {}).get("job_ids") or []
+        jobs = [db.get_asset_card_build_job(str(job_id)) for job_id in job_ids]
+        if all(jobs):
+            return {"jobs": jobs, "idempotent_replay": True}
+
+    client, token = require_mpvm()
+    docker_pdql = validate_docker_vulnerability_pdql(payload.docker_vulnerability_pdql)
+    batch_id = str(uuid.uuid4())
+    trace_id = current_trace_id() or new_trace_id()
+    base_request = payload.model_dump(exclude={"asset_ids"})
+    base_request["docker_vulnerability_pdql"] = docker_pdql
+    specs: list[dict[str, Any]] = []
+    requests_by_job_id: dict[str, dict[str, Any]] = {}
+    for asset_id in payload.asset_ids:
+        job_id = str(uuid.uuid4())
+        request = {**base_request, "asset_id": asset_id, "batch_id": batch_id}
+        requests_by_job_id[job_id] = request
+        specs.append(
+            {
+                "job_id": job_id,
+                "trace_id": trace_id,
+                "asset_id": asset_id,
+                "operation": "refresh" if db.asset_card_exists(asset_id) else "create",
+                "request": request,
+            }
+        )
+
+    try:
+        jobs = db.create_asset_card_build_jobs(
+            specs,
+            batch_operation={
+                "operation_id": batch_id,
+                "source_id": batch_id,
+                "trace_id": trace_id,
+                "idempotency_key": clean_idempotency_key,
+                "request": {**base_request, "asset_ids": payload.asset_ids},
+            },
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
+        if replay and replay.get("kind") == "asset_card_build_batch":
+            job_ids = (replay.get("result") or {}).get("job_ids") or []
+            replay_jobs = [db.get_asset_card_build_job(str(job_id)) for job_id in job_ids]
+            if all(replay_jobs):
+                return {"jobs": replay_jobs, "idempotent_replay": True}
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ASSET_CARD_BUILD_CAPACITY_EXCEEDED",
+                "message": "Asset card build capacity is unavailable.",
+            },
+        ) from exc
+    if not jobs or len(jobs) != len(specs):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ASSET_CARD_BUILD_CAPACITY_EXCEEDED",
+                "message": "Asset card build capacity is unavailable.",
+            },
+        )
+
+    cancel_events = {
+        spec["job_id"]: register_asset_card_build_job(spec["job_id"])
+        for spec in specs
+    }
+    background_tasks.add_task(
+        run_asset_card_build_jobs,
+        jobs=specs,
+        auth=client.auth,
+        token=token,
+        requests=[requests_by_job_id[spec["job_id"]] for spec in specs],
+        cancel_events=cancel_events,
+        trace_id=trace_id,
+    )
+    log_event(
+        "asset-card-build",
+        "batch.scheduled",
+        trace_id=trace_id,
+        batch_id=batch_id,
+        job_ids=[spec["job_id"] for spec in specs],
+        asset_ids=payload.asset_ids,
+    )
+    return {"jobs": jobs}
+
+
 @asset_cards_router.get("/api/asset-cards/build-jobs/active")
 def active_asset_card_build_job() -> dict[str, Any]:
     return {"job": db.get_active_asset_card_build_job()}
@@ -2505,19 +2602,64 @@ def run_asset_card_build_job(
     cancel_event: threading.Event,
     trace_id: str | None = None,
 ) -> None:
-    with diagnostic_context(
-        trace_id=trace_id or new_trace_id(),
-        job_id=job_id,
-        asset_id=request.get("asset_id"),
-        stage="starting",
-    ):
-        _run_asset_card_build_job(
+    acquired = False
+    try:
+        while not cancel_event.is_set():
+            acquired = ASSET_CARD_BUILD_SEMAPHORE.acquire(timeout=0.25)
+            if acquired:
+                break
+        with diagnostic_context(
+            trace_id=trace_id or new_trace_id(),
             job_id=job_id,
-            auth=auth,
-            token=token,
-            request=request,
-            cancel_event=cancel_event,
-        )
+            asset_id=request.get("asset_id"),
+            stage="starting",
+        ):
+            _run_asset_card_build_job(
+                job_id=job_id,
+                auth=auth,
+                token=token,
+                request=request,
+                cancel_event=cancel_event,
+            )
+    finally:
+        if acquired:
+            ASSET_CARD_BUILD_SEMAPHORE.release()
+
+
+def run_asset_card_build_jobs(
+    *,
+    jobs: list[dict[str, Any]],
+    auth: AuthConfig,
+    token: str,
+    requests: list[dict[str, Any]],
+    cancel_events: dict[str, threading.Event] | None = None,
+    trace_id: str | None = None,
+) -> None:
+    if len(jobs) != len(requests):
+        raise ValueError("jobs and requests must contain the same number of items")
+    events = cancel_events or {
+        str(job["job_id"]): register_asset_card_build_job(str(job["job_id"]))
+        for job in jobs
+    }
+    worker_count = min(ASSET_CARD_BUILD_WORKERS, len(jobs))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="asset-card-batch") as executor:
+        futures = {
+            executor.submit(
+                run_asset_card_build_job,
+                job_id=str(job["job_id"]),
+                auth=auth,
+                token=token,
+                request=request,
+                cancel_event=events[str(job["job_id"])],
+                trace_id=trace_id,
+            ): str(job["job_id"])
+            for job, request in zip(jobs, requests, strict=True)
+        }
+        for future, job_id in futures.items():
+            try:
+                future.result()
+            except Exception:
+                log_exception("asset-card-build", "batch.worker.failed", job_id=job_id)
 
 
 def _run_asset_card_build_job(

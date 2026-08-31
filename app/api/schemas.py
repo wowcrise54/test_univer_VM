@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from ..mpvm_client import (
     ASSET_CARD_PDQL,
@@ -207,6 +208,42 @@ class AssetCardBuildJobRequest(BaseModel):
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
     max_depth: int = Field(default=8, ge=0, le=8)
     docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
+
+
+class AssetCardBuildBatchJobRequest(BaseModel):
+    asset_ids: list[str]
+    timeline_timestamp: int | None = None
+    limit_per_collection: int = Field(default=5000, ge=1, le=5000)
+    max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
+    max_depth: int = Field(default=8, ge=0, le=8)
+    docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
+
+    @field_validator("asset_ids", mode="before")
+    @classmethod
+    def normalize_asset_ids(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            raise PydanticCustomError("asset_ids_type", "asset_ids must be a list")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            if not isinstance(raw, str):
+                raise PydanticCustomError("asset_ids_item_type", "asset_ids must contain strings")
+            asset_id = raw.strip()
+            if not asset_id or asset_id in seen:
+                continue
+            seen.add(asset_id)
+            normalized.append(asset_id)
+        if not normalized:
+            raise PydanticCustomError(
+                "asset_ids_empty",
+                "asset_ids must contain at least one non-empty value",
+            )
+        if len(normalized) > 4:
+            raise PydanticCustomError(
+                "asset_ids_limit",
+                "asset_ids must contain no more than 4 unique values",
+            )
+        return normalized
 
 
 class AssetCardUpdateRequest(BaseModel):

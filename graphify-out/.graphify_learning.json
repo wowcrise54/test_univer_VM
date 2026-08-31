@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-28T10:31:25.623061+00:00",
+  "generated_at": "2026-08-30T07:31:53.118033+00:00",
   "nodes": {
     "app_main_assetcardrequestexecutor": {
-      "code_fingerprint": "36d09fdd78658d290caf8c66fcac1639b96a7e755e6b94d7cbbe13d3e7845568",
+      "code_fingerprint": "57bdbd09059ea5811a045d7fbf99e7840eee7504bcc282ec8134b0e1b859ca8b",
       "label": "AssetCardRequestExecutor",
       "last": "2026-08-25T04:47:09.619147+00:00",
       "provenance": [
@@ -17,7 +17,7 @@
           "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
         }
       ],
-      "score": 1.855758384,
+      "score": 1.777067251,
       "source_file": "app/main.py",
       "status": "preferred",
       "uses": 2
@@ -25,8 +25,13 @@
     "app_mpvm_client_mpvmclient": {
       "code_fingerprint": "b32e3557c1ed2ed1fe148285d03a7dfc14db3347f68929645a7febdca611911d",
       "label": "MpVmClient",
-      "last": "2026-08-25T04:47:09.619147+00:00",
+      "last": "2026-08-28T10:32:37.729918+00:00",
       "provenance": [
+        {
+          "date": "2026-08-28T10:32:37.729918+00:00",
+          "outcome": "useful",
+          "q": "Уточнение UI результатов задач по примерам MP VM jobs для обычного скана и precheck."
+        },
         {
           "date": "2026-08-25T04:47:09.619147+00:00",
           "outcome": "useful",
@@ -38,10 +43,47 @@
           "q": "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
         }
       ],
-      "score": 1.855758384,
+      "score": 2.734681956,
       "source_file": "app/mpvm_client.py",
       "status": "preferred",
+      "uses": 3
+    },
+    "src_app_navigation_navigationgroups": {
+      "code_fingerprint": "9d625c0cabe51eb903efa30e7c5ad0104c144d18c98543d0ea2f8a0eef5a0025",
+      "label": "navigationGroups",
+      "last": "2026-08-28T11:25:25.705087+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T11:25:25.705087+00:00",
+          "outcome": "useful",
+          "q": "Удалить вкладку Активы, оставить Уязвимости, Карточки активов и Группы активов, перенаправлять /assets."
+        },
+        {
+          "date": "2026-08-28T11:23:24.813691+00:00",
+          "outcome": "useful",
+          "q": "Можно ли удалить вкладку Активы и использовать Уязвимости, Карточки активов и Группы активов?"
+        }
+      ],
+      "score": 1.916821645,
+      "source_file": "src/app/navigation.js",
+      "status": "preferred",
       "uses": 2
+    },
+    "src_app_navigation_routes": {
+      "code_fingerprint": "9d625c0cabe51eb903efa30e7c5ad0104c144d18c98543d0ea2f8a0eef5a0025",
+      "label": "routes",
+      "last": "2026-08-28T11:25:25.705087+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T11:25:25.705087+00:00",
+          "outcome": "useful",
+          "q": "Удалить вкладку Активы, оставить Уязвимости, Карточки активов и Группы активов, перенаправлять /assets."
+        }
+      ],
+      "score": 0.958426314,
+      "source_file": "src/app/navigation.js",
+      "status": "tentative",
+      "uses": 1
     },
     "tests_test_connection_connectiontokentests": {
       "code_fingerprint": "6a67be17e0db86fec957d69baf8250e3f8fdcb6915dcec00d042aad71e8ddb21",
@@ -54,7 +96,7 @@
           "q": "Собери информацию обо всех трассах MpVmClient"
         }
       ],
-      "score": 0.927893326,
+      "score": 0.88854716,
       "source_file": "tests/test_connection.py",
       "status": "tentative",
       "uses": 1

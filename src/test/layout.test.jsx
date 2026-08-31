@@ -1,9 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Sidebar, Topbar, WorkflowRail } from "../app/layout.jsx";
-import { routeById } from "../app/navigation.js";
+import { normalizeRoutePath, routeById, routeByPath } from "../app/navigation.js";
 
 describe("guided application shell", () => {
+  it("redirects the retired assets route to asset cards", () => {
+    expect(normalizeRoutePath("/assets")).toBe("/asset-cards");
+    expect(routeByPath("/assets")?.id).toBe("asset-cards");
+    expect(routeById("assets")).toBeNull();
+  });
+
   it("keeps primary navigation focused and moves tools behind disclosure", () => {
     render(
       <Sidebar
@@ -22,6 +28,7 @@ describe("guided application shell", () => {
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Группы активов" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Операции — активных: 2" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Активы" })).not.toBeInTheDocument();
   });
 
   it("hides navigation sections without effective permissions", () => {

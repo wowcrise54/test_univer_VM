@@ -13,7 +13,6 @@ const ROUTES = [
   "/automations",
   "/asset-query",
   "/passports",
-  "/assets",
 ];
 
 const EMPTY_TRENDS = {
@@ -367,7 +366,7 @@ test.describe("mobile shell", () => {
   }) => {
     await installApiMock(page);
     await page.goto("/assets");
-    await expectRoute(page, "/assets");
+    await expectRoute(page, "/asset-cards");
 
     const activeItem = page.locator('.nav a[aria-current="page"]');
     await expect

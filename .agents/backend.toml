@@ -1,0 +1,9 @@
+name = "backend"
+description = "FastAPI backend, services, schemas, background jobs, diagnostics, and MP VM integration."
+model = "gpt-5.6-sol"
+model_reasoning_effort = "low"
+developer_instructions = """
+Use only the graphify skill. Query the existing graph before broad exploration.
+Scope: app/main.py, app/api/, app/services/, app/mpvm_client.py, and backend tests.
+Trace endpoint to schema, service, persistence, and external client before editing. Preserve API contracts, structured errors, correlation IDs, authentication, RBAC, cancellation, retries, and partial failures. Add focused regression tests. Coordinate database and frontend contract changes with their owning agents. Report changed behavior, files, tests, and risks.
+"""

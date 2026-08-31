@@ -43,6 +43,12 @@ _DB_CIRCUIT_REASON: str | None = None
 # prevents concurrent sync, trend, and detail batches from locking passport
 # rows in conflicting orders while keeping readers fully concurrent.
 _VULNERABILITY_PASSPORT_WRITE_LOCK = (1297106509, 1448301139)
+ASSET_CARD_BUILD_JOB_LIMIT = 4
+_ASSET_CARD_BUILD_ADMISSION_LOCK = (1297106509, 1094927172)
+
+
+class _AssetCardBuildAdmissionConflict(Exception):
+    pass
 
 
 def database_label() -> str:
@@ -733,7 +739,8 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_created ON vulnerability_passport_detail_jobs(created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerability_passport_detail_jobs_single_active ON vulnerability_passport_detail_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_build_jobs_created ON asset_card_build_jobs(created_at DESC)",
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_card_build_jobs_single_active ON asset_card_build_jobs ((1)) WHERE status IN ('queued', 'running', 'cancelling')",
+        "DROP INDEX IF EXISTS idx_asset_card_build_jobs_single_active",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_build_jobs_active ON asset_card_build_jobs(status, asset_id) WHERE status IN ('queued', 'running', 'cancelling')",
         "CREATE INDEX IF NOT EXISTS idx_operations_status_created ON operations(status, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_operations_kind_created ON operations(kind, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_operations_updated ON operations(updated_at DESC)",
@@ -3289,38 +3296,142 @@ def create_asset_card_build_job(
     request: dict[str, Any],
     idempotency_key: str | None = None,
 ) -> dict[str, Any] | None:
+    jobs = create_asset_card_build_jobs(
+        [
+            {
+                "job_id": job_id,
+                "trace_id": trace_id,
+                "asset_id": asset_id,
+                "operation": operation,
+                "request": request,
+                "idempotency_key": idempotency_key,
+            }
+        ]
+    )
+    return jobs[0] if jobs else None
+
+
+def create_asset_card_build_jobs(
+    jobs: list[dict[str, Any]],
+    *,
+    batch_operation: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | None:
+    """Atomically admit and register one to four independent asset-card jobs."""
+    if not 1 <= len(jobs) <= ASSET_CARD_BUILD_JOB_LIMIT:
+        raise ValueError(f"jobs must contain between 1 and {ASSET_CARD_BUILD_JOB_LIMIT} items")
+
+    normalized: list[dict[str, Any]] = []
+    for item in jobs:
+        job_id = str(item.get("job_id") or "").strip()
+        asset_id = str(item.get("asset_id") or "").strip()
+        operation = str(item.get("operation") or "").strip()
+        request = item.get("request")
+        if not job_id or not asset_id or not operation or not isinstance(request, dict):
+            raise ValueError("each job requires non-empty job_id, asset_id, operation and a request object")
+        normalized.append(
+            {
+                "job_id": job_id,
+                "trace_id": item.get("trace_id"),
+                "asset_id": asset_id,
+                "operation": operation,
+                "request": request,
+                "idempotency_key": item.get("idempotency_key"),
+            }
+        )
+
+    job_ids = [item["job_id"] for item in normalized]
+    asset_ids = [item["asset_id"] for item in normalized]
+    if len(set(job_ids)) != len(job_ids):
+        raise ValueError("job_id values must be unique within the batch")
+    if len(set(asset_ids)) != len(asset_ids):
+        raise ValueError("asset_id values must be unique within the batch")
+
     init_db()
     current = now_utc()
-    with connect() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO asset_card_build_jobs (
-                job_id, trace_id, asset_id, operation, status, stage, request_json, created_at, updated_at
+    admitted: list[dict[str, Any]] = []
+    try:
+        with connect() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                _ASSET_CARD_BUILD_ADMISSION_LOCK,
             )
-            VALUES (%s, %s, %s, %s, 'queued', 'queued', %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            RETURNING *
-            """,
-            (job_id, trace_id, asset_id, operation, json.dumps(request, ensure_ascii=False), current, current),
-        ).fetchone()
-        if row:
-            register_operation(
-                job_id,
-                kind="asset_card_build",
-                source_id=job_id,
-                status="queued",
-                stage="queued",
-                subject_type="asset",
-                subject_id=asset_id,
-                subject_label=asset_id,
-                request=request,
-                trace_id=trace_id,
-                idempotency_key=idempotency_key,
-                created_at=current,
-                updated_at=current,
-                _conn=conn,
-            )
-    return decode_asset_card_build_job(dict(row)) if row else None
+            capacity = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS active_count,
+                    COUNT(*) FILTER (WHERE asset_id = ANY(%s::text[])) AS duplicate_asset_count
+                FROM asset_card_build_jobs
+                WHERE status IN ('queued', 'running', 'cancelling')
+                """,
+                (asset_ids,),
+            ).fetchone()
+            active_count = int((capacity or {}).get("active_count") or 0)
+            duplicate_asset_count = int((capacity or {}).get("duplicate_asset_count") or 0)
+            if duplicate_asset_count or active_count + len(normalized) > ASSET_CARD_BUILD_JOB_LIMIT:
+                return None
+
+            for item in normalized:
+                row = conn.execute(
+                    """
+                    INSERT INTO asset_card_build_jobs (
+                        job_id, trace_id, asset_id, operation, status, stage,
+                        request_json, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, 'queued', 'queued', %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    RETURNING *
+                    """,
+                    (
+                        item["job_id"],
+                        item["trace_id"],
+                        item["asset_id"],
+                        item["operation"],
+                        json.dumps(item["request"], ensure_ascii=False),
+                        current,
+                        current,
+                    ),
+                ).fetchone()
+                if not row:
+                    raise _AssetCardBuildAdmissionConflict
+                admitted.append(dict(row))
+                register_operation(
+                    item["job_id"],
+                    kind="asset_card_build",
+                    source_id=item["job_id"],
+                    status="queued",
+                    stage="queued",
+                    subject_type="asset",
+                    subject_id=item["asset_id"],
+                    subject_label=item["asset_id"],
+                    request=item["request"],
+                    trace_id=item["trace_id"],
+                    idempotency_key=item["idempotency_key"],
+                    created_at=current,
+                    updated_at=current,
+                    _conn=conn,
+                )
+            if batch_operation:
+                register_operation(
+                    str(batch_operation["operation_id"]),
+                    kind="asset_card_build_batch",
+                    source_id=str(batch_operation["source_id"]),
+                    status="completed",
+                    stage="scheduled",
+                    progress_percent=100,
+                    subject_type="assets",
+                    subject_label="Asset card batch build",
+                    request=batch_operation.get("request"),
+                    result={"job_ids": job_ids},
+                    trace_id=batch_operation.get("trace_id"),
+                    idempotency_key=batch_operation.get("idempotency_key"),
+                    finished_at=current,
+                    created_at=current,
+                    updated_at=current,
+                    _conn=conn,
+                )
+    except _AssetCardBuildAdmissionConflict:
+        return None
+    return [decode_asset_card_build_job(row) for row in admitted]
 
 
 def get_asset_card_build_job(job_id: str) -> dict[str, Any] | None:

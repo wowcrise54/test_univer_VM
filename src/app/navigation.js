@@ -9,7 +9,7 @@ export const navigationGroups = [
 export const workflowSteps = [
   { id: "overview", label: "Обзор", hint: "VM-контур", path: "/vm", routes: ["vm"] },
   { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "asset-groups", "operations"] },
-  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "assets", "passports", "asset-query"] },
+  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "passports", "asset-query"] },
   { id: "fix", label: "Устранение", hint: "SLA и проверка", path: "/remediation", routes: ["remediation"] },
   { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
 ];
@@ -142,18 +142,9 @@ export const routes = [
     description:
       "Поиск паспортов уязвимостей и просмотр подробной информации из MP VM.",
   },
-  {
-    id: "assets",
-    requiredPermission: "assets.read",
-    group: "tools",
-    icon: "◫",
-    path: "/assets",
-    label: "Активы",
-    title: "Активы и уязвимости",
-    description:
-      "Локальный снимок активов, установленного ПО и найденных уязвимостей.",
-  },
 ];
+
+const legacyRouteRedirects = new Map([["/assets", "/asset-cards"]]);
 
 export function routeById(id) {
   return routes.find((route) => route.id === id) || null;
@@ -170,5 +161,6 @@ export function normalizeRoutePath(pathname) {
     .split("#")[0];
   if (!value || value === "/") return defaultRoutePath;
   const normalized = value.startsWith("/") ? value : "/" + value;
-  return normalized.replace(/\/+$/, "") || defaultRoutePath;
+  const cleanPath = normalized.replace(/\/+$/, "") || defaultRoutePath;
+  return legacyRouteRedirects.get(cleanPath) || cleanPath;
 }

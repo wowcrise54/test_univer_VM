@@ -1681,6 +1681,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     batch_size: "5000",
     include_nested_groups: true,
     selected_asset_id: "",
+    batch_asset_ids: "",
     timeline_timestamp: "",
     limit_per_collection: "5000",
     max_items_per_collection: "5000",
@@ -1701,6 +1702,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetPassportError, setAssetPassportError] = useState("");
   const [assetPassportWindowOpen, setAssetPassportWindowOpen] = useState(false);
   const [assetCardJob, setAssetCardJob] = useState(null);
+  const [assetCardBatchJobs, setAssetCardBatchJobs] = useState([]);
   const [assetRefreshRun, setAssetRefreshRun] = useState(null);
   const [assetBulkRefreshOperation, setAssetBulkRefreshOperation] = useState(null);
   const [assetRefreshTemplates, setAssetRefreshTemplates] = useState([]);
@@ -1835,6 +1837,54 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     refreshLocalCards,
     showAlert,
   ]);
+
+  useEffect(() => {
+    const activeJobs = assetCardBatchJobs.filter(
+      (job) => job.job_id && ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status),
+    );
+    if (!activeJobs.length) return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      const settled = await Promise.allSettled(
+        activeJobs.map((job) =>
+          api(`/api/asset-cards/build-jobs/${encodeURIComponent(job.job_id)}`),
+        ),
+      );
+      if (!alive) return;
+      const updates = new Map();
+      settled.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          updates.set(activeJobs[index].job_id, result.value);
+        }
+      });
+      const nextJobs = assetCardBatchJobs.map(
+        (job) => updates.get(job.job_id) || job,
+      );
+      setAssetCardBatchJobs(nextJobs);
+      const stillActive = nextJobs.some((job) =>
+        ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status),
+      );
+      if (stillActive) {
+        timerId = window.setTimeout(poll, 1000);
+        return;
+      }
+      await refreshLocalCards();
+      if (!alive) return;
+      const completed = nextJobs.filter(
+        (job) => job.status === "completed",
+      ).length;
+      showAlert(
+        `Пакетная сборка завершена: ${formatCount(completed)} из ${formatCount(nextJobs.length)} карточек сохранено.`,
+        completed === nextJobs.length ? "success" : "error",
+      );
+    };
+    timerId = window.setTimeout(poll, 500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [assetCardBatchJobs, refreshLocalCards, showAlert]);
 
   useEffect(() => {
     if (
@@ -2044,6 +2094,65 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       );
     });
 
+  const batchAssetIds = useMemo(
+    () => [...new Set(splitTokens(form.batch_asset_ids))],
+    [form.batch_asset_ids],
+  );
+  const batchAssetIdsValid =
+    batchAssetIds.length >= 1 && batchAssetIds.length <= 4;
+
+  const toggleBatchAsset = (assetId) => {
+    if (!assetId) return;
+    const selected = new Set(batchAssetIds);
+    if (selected.has(assetId)) selected.delete(assetId);
+    else if (selected.size < 4) selected.add(assetId);
+    update("batch_asset_ids", [...selected].join("\n"));
+  };
+
+  const buildCardBatch = () =>
+    runBusy("assetCardBatchBuild", async () => {
+      if (!batchAssetIdsValid) {
+        throw new Error("Укажите от одного до четырёх уникальных asset_id.");
+      }
+      const result = await api("/api/asset-cards/build-jobs/batch", {
+        method: "POST",
+        headers: {
+          "X-Idempotency-Key": createIdempotencyKey("asset-card-batch"),
+        },
+        body: JSON.stringify({
+          asset_ids: batchAssetIds,
+          timeline_timestamp: form.timeline_timestamp
+            ? Number(form.timeline_timestamp)
+            : null,
+          limit_per_collection: clampNumber(
+            form.limit_per_collection,
+            5000,
+            1,
+            5000,
+          ),
+          max_items_per_collection: clampNumber(
+            form.max_items_per_collection,
+            5000,
+            1,
+            50000,
+          ),
+          max_depth: clampNumber(form.max_depth, 8, 0, 8),
+          docker_vulnerability_pdql: form.docker_vulnerability_pdql,
+        }),
+      });
+      const responseJobs =
+        result.jobs || result.items || result.batch?.jobs || [];
+      if (!Array.isArray(responseJobs) || responseJobs.length === 0) {
+        throw new Error("Backend не вернул задачи пакетной сборки.");
+      }
+      const jobs = responseJobs.map((item) => item.job || item);
+      setAssetCardBatchJobs(jobs);
+      showAlert(
+        `Запущена сборка ${formatCount(jobs.length)} карточек активов.`,
+        "info",
+      );
+    });
+
   const loadLocalCards = () =>
     runBusy("assetCardsLocal", async () => {
       const result = await refreshLocalCards();
@@ -2200,6 +2309,18 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const assetCardJobActive = ACTIVE_ASSET_CARD_JOB_STATUSES.has(
     assetCardJob?.status,
   );
+  const assetCardBatchActive = assetCardBatchJobs.some((job) =>
+    ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status),
+  );
+  const assetCardBatchCompletedCount = assetCardBatchJobs.filter(
+    (job) => job.status === "completed",
+  ).length;
+  const assetCardBatchFailedCount = assetCardBatchJobs.filter(
+    (job) => ["failed", "cancelled", "interrupted"].includes(job.status),
+  ).length;
+  const assetCardBatchActiveCount = assetCardBatchJobs.filter((job) =>
+    ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status),
+  ).length;
   const assetRefreshActive = ACTIVE_SCAN_POSTPROCESS_STATUSES.has(
     assetRefreshRun?.status,
   );
@@ -2417,13 +2538,102 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         <div className="action-row">
           <Button
             busy={busy.assetCardBuild}
-            disabled={assetCardJobActive}
+            disabled={assetCardJobActive || assetCardBatchActive}
             onClick={buildCard}
           >
             Собрать карточку
           </Button>
         </div>
       </div>
+
+      <section
+        className="options-card"
+        aria-labelledby="asset-card-batch-title"
+      >
+        <div>
+          <h3 id="asset-card-batch-title">Пакетная сборка карточек</h3>
+          <p>Одновременно создаются и сохраняются в БД от 1 до 4 карточек.</p>
+        </div>
+        <Field label="Asset ID для пакетной сборки" wide>
+          <textarea
+            rows={4}
+            value={form.batch_asset_ids}
+            onChange={(event) => update("batch_asset_ids", event.target.value)}
+            placeholder="До четырёх Asset ID, каждый с новой строки"
+            aria-describedby="asset-card-batch-help"
+          />
+        </Field>
+        <small
+          id="asset-card-batch-help"
+          className={batchAssetIds.length > 4 ? "error-text" : undefined}
+        >
+          Выбрано: {formatCount(batchAssetIds.length)} из 4
+          {batchAssetIds.length > 4 ? ". Удалите лишние значения." : ""}
+        </small>
+        <div className="action-row">
+          <Button
+            busy={busy.assetCardBatchBuild}
+            disabled={
+              !batchAssetIdsValid || assetCardJobActive || assetCardBatchActive
+            }
+            onClick={buildCardBatch}
+          >
+            Собрать выбранные карточки
+          </Button>
+        </div>
+      </section>
+
+      {assetCardBatchJobs.length ? (
+        <section className="passport-job asset-card-job" aria-live="polite">
+          <div className="passport-job__header">
+            <strong>Пакетная сборка карточек</strong>
+            <span>
+              Готово: {formatCount(assetCardBatchCompletedCount)} · Ошибки: {" "}
+              {formatCount(assetCardBatchFailedCount)} · В работе: {" "}
+              {formatCount(assetCardBatchActiveCount)}
+            </span>
+          </div>
+          {assetCardBatchJobs.map((job, index) => {
+            const progress = Math.max(
+              0,
+              Math.min(100, Number(job.progress_percent) || 0),
+            );
+            return (
+              <div key={job.job_id || job.asset_id || index}>
+                <div className="asset-local-header">
+                  <div>
+                    <strong>{job.asset_id || `Карточка ${index + 1}`}</strong>
+                    <small>
+                      {assetCardJobStatusLabel(job.status)} ·{" "}
+                      {assetCardJobStageLabel(job.stage)} ·{" "}
+                      {formatCount(progress)}%
+                    </small>
+                  </div>
+                  <span
+                    className={`status-pill ${ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status) ? "status-pill--running" : ""}`}
+                  >
+                    {assetCardJobStatusLabel(job.status)}
+                  </span>
+                </div>
+                <div
+                  className="passport-job__track"
+                  role="progressbar"
+                  aria-label={`Прогресс сборки карточки ${
+                    job.asset_id || index + 1
+                  }`}
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={progress}
+                  aria-valuetext={`${progress}% — ${assetCardJobStageLabel(job.stage)}`}
+                >
+                  <span style={{ width: `${progress}%` }} />
+                </div>
+                {job.message ? <small>{job.message}</small> : null}
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
 
       {assetCardJob ? (
         <section
@@ -2618,6 +2828,20 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                         }
                       >
                         Выбрать
+                      </Button>
+                      <Button
+                        variant="tiny"
+                        disabled={
+                          !row.asset_id ||
+                          (!batchAssetIds.includes(row.asset_id) &&
+                            batchAssetIds.length >= 4)
+                        }
+                        aria-pressed={batchAssetIds.includes(row.asset_id)}
+                        onClick={() => toggleBatchAsset(row.asset_id)}
+                      >
+                        {batchAssetIds.includes(row.asset_id)
+                          ? "Убрать из пакета"
+                          : "В пакет"}
                       </Button>
                     </td>
                   </tr>

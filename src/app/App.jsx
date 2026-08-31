@@ -1,6 +1,5 @@
 import { AssetCardsPage } from "../pages/AssetCardsPage.jsx";
 import { AssetQueryPage } from "../pages/AssetQueryPage.jsx";
-import { AssetsPage } from "../pages/AssetsPage.jsx";
 import { ConnectionPage } from "../pages/ConnectionPage.jsx";
 import { ExportPage } from "../pages/ExportPage.jsx";
 import { PassportsPage } from "../pages/PassportsPage.jsx";
@@ -211,21 +210,6 @@ function ActivePage({ routeId, ...props }) {
     return (
       <PassportsPage
         defaults={props.defaults}
-        busy={props.busy}
-        runBusy={props.runBusy}
-        showAlert={props.showAlert}
-      />
-    );
-  }
-  if (routeId === "assets") {
-    return (
-      <AssetsPage
-        summary={props.summary}
-        rows={props.assetRows}
-        total={props.assetTotal}
-        loading={props.assetsLoading}
-        error={props.assetsError}
-        refreshAssets={props.refreshAssets}
         busy={props.busy}
         runBusy={props.runBusy}
         showAlert={props.showAlert}

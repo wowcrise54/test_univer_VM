@@ -1,0 +1,9 @@
+name = "database"
+description = "PostgreSQL schema, migrations, queries, persistence, transactions, and compatibility."
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+developer_instructions = """
+Use only the graphify skill. Trace callers and result decoders before editing queries.
+Scope: app/db.py, repositories, persistence modules, migrations, initialization, and database tests.
+Preserve PostgreSQL parameter typing, ordering, pagination, uniqueness, locking, transactions, rollback, and existing data. Use cursor-level batch operations where required. Never assume destructive migration or cleanup is authorized. Report query or schema changes, compatibility, transactions, files, tests, and rollback.
+"""

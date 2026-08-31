@@ -555,6 +555,266 @@ class AssetCardJobApiTests(unittest.TestCase):
         capture_snapshot.assert_not_called()
 
 
+class AssetCardBatchJobApiTests(unittest.TestCase):
+    endpoint = "/api/asset-cards/build-jobs/batch"
+
+    def post_batch(self, asset_ids, *, headers=None):
+        with patch.object(
+            main.app_auth,
+            "get_session_user",
+            return_value={"id": 1, "role": "operator"},
+        ):
+            return TestClient(main.app, raise_server_exceptions=False).post(
+                self.endpoint,
+                json={"asset_ids": asset_ids},
+                headers=headers,
+            )
+
+    def test_batch_accepts_four_unique_assets_and_returns_one_job_per_asset(self):
+        jobs = [
+            {
+                "job_id": f"job-{index}",
+                "asset_id": f"asset-{index}",
+                "status": "queued",
+                "stage": "queued",
+            }
+            for index in range(1, 5)
+        ]
+        with (
+            patch.object(
+                main,
+                "require_mpvm",
+                return_value=(SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture")), "token"),
+            ),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "create_asset_card_build_jobs", return_value=jobs, create=True),
+            patch.object(main, "run_asset_card_build_jobs", create=True),
+        ):
+            response = self.post_batch(["asset-1", "asset-2", "asset-3", "asset-4"])
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), {"jobs": jobs})
+
+    def test_batch_deduplicates_ids_in_first_seen_order(self):
+        jobs = [
+            {"job_id": "job-1", "asset_id": "asset-1", "status": "queued", "stage": "queued"},
+            {"job_id": "job-2", "asset_id": "asset-2", "status": "queued", "stage": "queued"},
+        ]
+        create_jobs = MagicMock(return_value=jobs)
+        with (
+            patch.object(
+                main,
+                "require_mpvm",
+                return_value=(SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture")), "token"),
+            ),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "create_asset_card_build_jobs", create_jobs, create=True),
+            patch.object(main, "run_asset_card_build_jobs", create=True),
+        ):
+            response = self.post_batch([" asset-1 ", "asset-2", "asset-1", "asset-2"])
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual([job["asset_id"] for job in response.json()["jobs"]], ["asset-1", "asset-2"])
+        requested_ids = create_jobs.call_args.args[0]
+        self.assertEqual([item["asset_id"] for item in requested_ids], ["asset-1", "asset-2"])
+
+    def test_batch_sets_create_or_refresh_per_asset(self):
+        jobs = [
+            {"job_id": "job-1", "asset_id": "asset-1", "status": "queued", "stage": "queued"},
+            {"job_id": "job-2", "asset_id": "asset-2", "status": "queued", "stage": "queued"},
+        ]
+        create_jobs = MagicMock(return_value=jobs)
+        with (
+            patch.object(
+                main,
+                "require_mpvm",
+                return_value=(SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture")), "token"),
+            ),
+            patch.object(main.db, "get_operation_by_idempotency_key", return_value=None),
+            patch.object(main.db, "asset_card_exists", side_effect=[False, True]),
+            patch.object(main.db, "create_asset_card_build_jobs", create_jobs, create=True),
+            patch.object(main, "run_asset_card_build_jobs", create=True),
+        ):
+            response = self.post_batch(["asset-1", "asset-2"])
+
+        self.assertEqual(response.status_code, 202)
+        specs = create_jobs.call_args.args[0]
+        self.assertEqual([item["operation"] for item in specs], ["create", "refresh"])
+
+    def test_batch_replays_idempotency_key_without_scheduling_duplicates(self):
+        jobs = [
+            {"job_id": "job-1", "asset_id": "asset-1", "status": "queued", "stage": "queued"},
+            {"job_id": "job-2", "asset_id": "asset-2", "status": "queued", "stage": "queued"},
+        ]
+        batch_operation = {
+            "kind": "asset_card_build_batch",
+            "result": {"job_ids": ["job-1", "job-2"]},
+        }
+        create_jobs = MagicMock(return_value=jobs)
+        run_batch = MagicMock()
+        with (
+            patch.object(
+                main,
+                "require_mpvm",
+                return_value=(SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture")), "token"),
+            ),
+            patch.object(main.db, "get_operation_by_idempotency_key", side_effect=[None, batch_operation]),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "create_asset_card_build_jobs", create_jobs, create=True),
+            patch.object(main.db, "get_asset_card_build_job", side_effect=jobs),
+            patch.object(main, "run_asset_card_build_jobs", run_batch, create=True),
+        ):
+            first = self.post_batch(["asset-1", "asset-2"], headers={"X-Idempotency-Key": "batch-key"})
+            second = self.post_batch(["asset-1", "asset-2"], headers={"X-Idempotency-Key": "batch-key"})
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(second.json(), {"jobs": jobs, "idempotent_replay": True})
+        create_jobs.assert_called_once()
+        self.assertEqual(
+            create_jobs.call_args.kwargs["batch_operation"]["idempotency_key"],
+            "batch-key",
+        )
+        self.assertEqual(run_batch.call_count, 1)
+
+    def test_batch_rejects_empty_ids_and_more_than_four_unique_assets(self):
+        invalid_payloads = (
+            [],
+            [""],
+            ["asset-1", "asset-2", "asset-3", "asset-4", "asset-5"],
+        )
+        for asset_ids in invalid_payloads:
+            with self.subTest(asset_ids=asset_ids):
+                response = self.post_batch(asset_ids)
+                self.assertEqual(response.status_code, 422)
+
+    def test_capacity_conflict_is_atomic_and_schedules_nothing(self):
+        create_jobs = MagicMock(return_value=None)
+        run_batch = MagicMock()
+        with (
+            patch.object(
+                main,
+                "require_mpvm",
+                return_value=(SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture")), "token"),
+            ),
+            patch.object(main.db, "create_asset_card_build_jobs", create_jobs, create=True),
+            patch.object(
+                main.db,
+                "get_active_asset_card_build_job",
+                return_value={"job_id": "active-1", "status": "running"},
+            ),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main, "run_asset_card_build_jobs", run_batch, create=True),
+        ):
+            response = self.post_batch(["asset-1", "asset-2", "asset-3", "asset-4"])
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], "ASSET_CARD_BUILD_CAPACITY_EXCEEDED")
+        create_jobs.assert_called_once()
+        run_batch.assert_not_called()
+
+    def test_batch_runs_four_card_builds_concurrently(self):
+        active = 0
+        peak_active = 0
+        lock = threading.Lock()
+        all_started = threading.Event()
+        release = threading.Event()
+
+        def blocking_build(**_kwargs):
+            nonlocal active, peak_active
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+                if active == 4:
+                    all_started.set()
+            release.wait(timeout=2)
+            with lock:
+                active -= 1
+
+        jobs = [
+            {"job_id": f"job-{index}", "asset_id": f"asset-{index}", "status": "queued", "stage": "queued"}
+            for index in range(1, 5)
+        ]
+        coordinator = getattr(main, "run_asset_card_build_jobs", None)
+        self.assertTrue(callable(coordinator), "Batch coordinator run_asset_card_build_jobs is required")
+
+        thread = threading.Thread(
+            target=coordinator,
+            kwargs={
+                "jobs": jobs,
+                "auth": SimpleNamespace(api_url="https://fixture"),
+                "token": "token",
+                "requests": [{"asset_id": job["asset_id"]} for job in jobs],
+                "cancel_events": {job["job_id"]: threading.Event() for job in jobs},
+            },
+            daemon=True,
+        )
+        with patch.object(main, "run_asset_card_build_job", side_effect=blocking_build):
+            thread.start()
+            try:
+                self.assertTrue(all_started.wait(timeout=2), "Four builds did not start concurrently")
+            finally:
+                release.set()
+                thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(peak_active, 4)
+
+    def test_partial_failure_keeps_independent_terminal_states(self):
+        terminal_states = {}
+        lock = threading.Lock()
+
+        def independent_build(*, job_id, request, **_kwargs):
+            status = "failed" if request["asset_id"] == "asset-2" else "completed"
+            with lock:
+                terminal_states[job_id] = status
+            if status == "failed":
+                raise RuntimeError("fixture build failure")
+
+        jobs = [
+            {"job_id": f"job-{index}", "asset_id": f"asset-{index}", "status": "queued", "stage": "queued"}
+            for index in range(1, 5)
+        ]
+        coordinator = getattr(main, "run_asset_card_build_jobs", None)
+        self.assertTrue(callable(coordinator), "Batch coordinator run_asset_card_build_jobs is required")
+
+        with patch.object(main, "run_asset_card_build_job", side_effect=independent_build):
+            coordinator(
+                jobs=jobs,
+                auth=SimpleNamespace(api_url="https://fixture"),
+                token="token",
+                requests=[{"asset_id": job["asset_id"]} for job in jobs],
+                cancel_events={job["job_id"]: threading.Event() for job in jobs},
+            )
+
+        self.assertEqual(
+            terminal_states,
+            {"job-1": "completed", "job-2": "failed", "job-3": "completed", "job-4": "completed"},
+        )
+
+    def test_single_card_endpoint_contract_is_unchanged(self):
+        client = SimpleNamespace(auth=SimpleNamespace(api_url="https://fixture"))
+        job = {"job_id": "single-job", "asset_id": "asset-1", "status": "queued", "stage": "queued"}
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "get_active_asset_card_build_job", return_value=None),
+            patch.object(main.db, "asset_card_exists", return_value=False),
+            patch.object(main.db, "create_asset_card_build_job", return_value=job),
+            patch.object(main, "run_asset_card_build_job"),
+        ):
+            with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "operator"}):
+                result = TestClient(main.app).post(
+                    "/api/asset-cards/build-jobs",
+                    json={"asset_id": "asset-1"},
+                )
+        main.unregister_asset_card_build_job("single-job")
+
+        self.assertEqual(result.status_code, 202)
+        self.assertEqual(result.json()["job"], job)
+        self.assertIsInstance(result.json()["operation_id"], str)
+        self.assertTrue(result.json()["operation_id"])
+
+
 class AssetCardDatabaseTests(unittest.TestCase):
     def test_recreated_mpvm_asset_reuses_existing_local_card_identity(self):
         connection = MagicMock()

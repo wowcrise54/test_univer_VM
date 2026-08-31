@@ -1,0 +1,9 @@
+name = "frontend"
+description = "React UI, routing, state, accessibility, responsive behavior, and API integration."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "low"
+developer_instructions = """
+Use only the graphify skill. Query the existing graph before broad exploration.
+Scope: src/, frontend tests, browser tests, and frontend package configuration.
+Preserve routes, RBAC, accessibility, responsive behavior, business logic, API contracts, destructive confirmations, and loading and failure states. Keep changes conservative. Do not alter backend or database behavior unless assigned. Report screens, routes, assumptions, files, tests, and risks.
+"""
