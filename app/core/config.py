@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     asset_card_request_workers: int = 20
     asset_card_refresh_workers: int = 10
     scan_postprocess_workers: int = 10
-    scan_asset_process_workers: int = 3
+    scan_asset_process_workers: int = 4
     scan_target_resolution_workers: int = 3
     reconciliation_workers: int = 3
     passport_detail_workers: int = 10

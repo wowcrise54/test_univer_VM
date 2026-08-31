@@ -4732,13 +4732,11 @@ def monitor_successful_scan_jobs(
         executor: ThreadPoolExecutor,
         item: dict[str, Any],
     ) -> None:
-        # Keep only a small sliding window instead of queueing every discovered
-        # asset in ThreadPoolExecutor's unbounded internal queue.
-        while len(asset_futures) >= max(1, SCAN_ASSET_PROCESS_WORKERS * 2):
-            completed, _ = wait(tuple(asset_futures), return_when=FIRST_COMPLETED)
-            for completed_future in completed:
-                asset_futures.remove(completed_future)
-                completed_future.result()
+        # Scanner-task assets are built in discrete waves. Do not queue the next
+        # wave until every card in the current group has reached a terminal
+        # state; this keeps task processing predictable and bounds DB/MP VM load.
+        if len(asset_futures) >= SCAN_ASSET_PROCESS_WORKERS:
+            drain_asset_batch()
         asset_futures.add(
             executor.submit(
                 process_scanned_asset_item_with_progress,
@@ -4748,6 +4746,12 @@ def monitor_successful_scan_jobs(
                 postprocess_run_id=postprocess_run_id,
             )
         )
+
+    def drain_asset_batch() -> None:
+        batch = tuple(asset_futures)
+        for future in batch:
+            future.result()
+        asset_futures.difference_update(batch)
 
     with ThreadPoolExecutor(
         max_workers=SCAN_ASSET_PROCESS_WORKERS,
@@ -5056,8 +5060,7 @@ def monitor_successful_scan_jobs(
                 target=target,
                 error=target_errors.get(target, "Asset resolution timed out."),
             )
-        for future in asset_futures:
-            future.result()
+        drain_asset_batch()
 
     resolution_http = {"requests": 0, "retries": 0, "errors": 0, "rate_limited": 0}
     for resolution_worker_client in resolution_clients:

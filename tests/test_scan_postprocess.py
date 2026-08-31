@@ -1736,6 +1736,78 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
         self.assertEqual(peak_active, 3)
         self.assertLess(elapsed, 0.11)
 
+    def test_task_assets_are_built_in_consecutive_groups_of_four(self):
+        finished = {
+            "id": "run-1",
+            "status": "finished",
+            "errorStatus": "success",
+            "startedAt": "2026-01-01T00:00:00+00:00",
+            "finishedAt": "2026-01-01T00:01:00+00:00",
+        }
+        job = {
+            "id": "job-1",
+            "status": "finished",
+            "errorStatus": "success",
+            "runMode": "default",
+            "targets": ["10.0.0.0/24"],
+        }
+        assets = [
+            {
+                "asset_id": f"asset-{index}",
+                "target": "10.0.0.0/24",
+                "mp_job_id": "job-1",
+                "display_name": f"Host {index}",
+            }
+            for index in range(1, 9)
+        ]
+        client = MagicMock()
+        client.get_task_runs.return_value = [finished]
+        client.split_successful_run_jobs.return_value = ([job], [job])
+        intervals: dict[str, dict[str, float]] = {}
+        interval_lock = threading.Lock()
+
+        def save_item(_run_id, **values):
+            index = int(str(values["asset_id"]).rsplit("-", 1)[-1])
+            return {"id": index, "postprocess_run_id": "post-1", **values}
+
+        def process_item(*, item, **_kwargs):
+            asset_id = str(item["asset_id"])
+            with interval_lock:
+                intervals[asset_id] = {"started": time.perf_counter()}
+            time.sleep(0.03)
+            with interval_lock:
+                intervals[asset_id]["finished"] = time.perf_counter()
+
+        with (
+            patch.object(main, "SCAN_ASSET_PROCESS_WORKERS", 4),
+            patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
+            patch.object(main.db, "upsert_scan_postprocess_item", side_effect=save_item),
+            patch.object(main.db, "update_scan_postprocess_run"),
+            patch.object(main.db, "refresh_scan_postprocess_counts"),
+            patch.object(main, "resolve_scanned_target_once", return_value=(assets, "")),
+            patch.object(main, "process_scanned_asset_item", side_effect=process_item),
+        ):
+            result = main.monitor_successful_scan_jobs(
+                client=client,
+                auth=SimpleNamespace(),
+                token="token",
+                task_id="task-1",
+                started_from="2026-01-01T00:00:00+00:00",
+                timeout_seconds=60,
+                poll_seconds=1,
+                postprocess_run_id="post-1",
+                require_clean_jobs=False,
+            )
+
+        first_group_finished = max(
+            intervals[f"asset-{index}"]["finished"] for index in range(1, 5)
+        )
+        second_group_started = min(
+            intervals[f"asset-{index}"]["started"] for index in range(5, 9)
+        )
+        self.assertEqual(result["asset_count"], 8)
+        self.assertLessEqual(first_group_finished, second_group_started)
+
 
 if __name__ == "__main__":
     unittest.main()
