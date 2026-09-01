@@ -3785,6 +3785,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
     ["summary", "Сводка"],
     ["vulnerabilities", "Уязвимости"],
     ["configuration", "Конфигурация"],
+    ["history", "История"],
   ];
   const assetId = firstFilled(card?.asset_id, raw.asset_id, root.objectId);
   const assetType = firstFilled(card?.asset_type, raw.asset_type, root.type);
@@ -3893,6 +3894,7 @@ function AssetCard({ card, loading, onOpenPassport }) {
           />
         </div>
       ) : null}
+      {activeTab === "history" ? <AssetHistoryTab assetId={assetId} /> : null}
       {activeTab === "vulnerabilities" ? (
         <div
           className="asset-tabpanel"
@@ -3936,6 +3938,25 @@ function AssetSectionLoading({ loading }) {
         : "Раздел будет загружен при открытии."}
     </div>
   );
+}
+
+function AssetHistoryTab({ assetId }) {
+  const [state, setState] = useState({ loading: true, items: [], error: null });
+  useEffect(() => {
+    let active = true;
+    api(`/api/asset-cards/${encodeURIComponent(assetId)}/history`)
+      .then((data) => active && setState({ loading: false, items: data.items || [], error: null }))
+      .catch((error) => active && setState({ loading: false, items: [], error }));
+    return () => { active = false; };
+  }, [assetId]);
+  if (state.loading) return <div className="muted-text">Загрузка истории…</div>;
+  if (state.error) return <div className="error-text">История пока недоступна.</div>;
+  return <div className="asset-history-list">{state.items.length ? state.items.map((item) => (
+    <PassportSection key={item.captured_at} title={new Date(item.captured_at).toLocaleString()}>
+      <KeyValue label="Качество" value={`${item.quality?.status || "—"} (${item.quality?.score ?? "—"})`} />
+      <KeyValue label="Изменений" value={formatCount(item.changes?.length || 0)} />
+    </PassportSection>
+  )) : <span className="muted-text">История появится после следующего обновления карточки.</span>}</div>;
 }
 
 function AssetSummaryTab({

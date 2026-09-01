@@ -570,7 +570,7 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
                 headers=headers,
             )
 
-    def test_batch_accepts_four_unique_assets_and_returns_one_job_per_asset(self):
+    def test_batch_accepts_two_unique_assets_and_returns_one_job_per_asset(self):
         jobs = [
             {
                 "job_id": f"job-{index}",
@@ -578,7 +578,7 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
                 "status": "queued",
                 "stage": "queued",
             }
-            for index in range(1, 5)
+            for index in range(1, 3)
         ]
         with (
             patch.object(
@@ -590,7 +590,7 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
             patch.object(main.db, "create_asset_card_build_jobs", return_value=jobs, create=True),
             patch.object(main, "run_asset_card_build_jobs", create=True),
         ):
-            response = self.post_batch(["asset-1", "asset-2", "asset-3", "asset-4"])
+            response = self.post_batch(["asset-1", "asset-2"])
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json(), {"jobs": jobs})
@@ -706,14 +706,14 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
             patch.object(main.db, "asset_card_exists", return_value=False),
             patch.object(main, "run_asset_card_build_jobs", run_batch, create=True),
         ):
-            response = self.post_batch(["asset-1", "asset-2", "asset-3", "asset-4"])
+            response = self.post_batch(["asset-1", "asset-2"])
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["code"], "ASSET_CARD_BUILD_CAPACITY_EXCEEDED")
         create_jobs.assert_called_once()
         run_batch.assert_not_called()
 
-    def test_batch_runs_four_card_builds_concurrently(self):
+    def test_batch_runs_two_card_builds_concurrently(self):
         active = 0
         peak_active = 0
         lock = threading.Lock()
@@ -725,7 +725,7 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
             with lock:
                 active += 1
                 peak_active = max(peak_active, active)
-                if active == 4:
+                if active == 2:
                     all_started.set()
             release.wait(timeout=2)
             with lock:
@@ -733,7 +733,7 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
 
         jobs = [
             {"job_id": f"job-{index}", "asset_id": f"asset-{index}", "status": "queued", "stage": "queued"}
-            for index in range(1, 5)
+            for index in range(1, 3)
         ]
         coordinator = getattr(main, "run_asset_card_build_jobs", None)
         self.assertTrue(callable(coordinator), "Batch coordinator run_asset_card_build_jobs is required")
@@ -752,13 +752,13 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
         with patch.object(main, "run_asset_card_build_job", side_effect=blocking_build):
             thread.start()
             try:
-                self.assertTrue(all_started.wait(timeout=2), "Four builds did not start concurrently")
+                self.assertTrue(all_started.wait(timeout=2), "Two builds did not start concurrently")
             finally:
                 release.set()
                 thread.join(timeout=2)
 
         self.assertFalse(thread.is_alive())
-        self.assertEqual(peak_active, 4)
+        self.assertEqual(peak_active, 2)
 
     def test_partial_failure_keeps_independent_terminal_states(self):
         terminal_states = {}

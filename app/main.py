@@ -2942,6 +2942,11 @@ def local_asset_card_summary(asset_id: str) -> dict[str, Any]:
     return card
 
 
+@asset_cards_router.get("/api/asset-cards/{asset_id}/history")
+def local_asset_card_history(asset_id: str, limit: int = 20) -> dict[str, Any]:
+    return {"asset_id": asset_id, "items": db.get_asset_card_history(asset_id, limit=limit)}
+
+
 @asset_cards_router.get("/api/asset-cards/{asset_id}/configuration/tree")
 def local_asset_card_configuration_tree(
     asset_id: str,
@@ -5875,7 +5880,26 @@ def build_asset_card(
 
     def warn(message: str) -> None:
         stats["warnings"].append(message)
-        log_event("asset-card-build", "build.warning", level=logging.WARNING, warning=message)
+        lowered = message.casefold()
+        if "connection pool" in lowered:
+            warning_code = "mpvm_connection_pool_exhausted"
+        elif "timed out" in lowered or "timeout" in lowered:
+            warning_code = "mpvm_request_timeout"
+        elif "http 4" in lowered or "http 5" in lowered:
+            warning_code = "mpvm_http_error"
+        elif "certificate_verify_failed" in lowered or "ssl" in lowered:
+            warning_code = "mpvm_tls_error"
+        else:
+            warning_code = "asset_card_collection_warning"
+        endpoint_match = re.search(r"(?:GET|POST|PUT|DELETE|PATCH)\s+(\/api\/[^\s:]+)", message)
+        log_event(
+            "asset-card-build",
+            "build.warning",
+            level=logging.WARNING,
+            warning=message,
+            warning_code=warning_code,
+            endpoint=endpoint_match.group(1) if endpoint_match else None,
+        )
 
     def metadata_for_types(asset_types: list[str]) -> None:
         ordered_types = list(dict.fromkeys(item for item in asset_types if item and item not in metadata_cache))

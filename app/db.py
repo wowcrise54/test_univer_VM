@@ -443,6 +443,16 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS asset_card_history (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            captured_at TEXT NOT NULL,
+            quality_json TEXT NOT NULL DEFAULT '{}',
+            changes_json TEXT NOT NULL DEFAULT '[]',
+            summary_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS asset_card_nodes (
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
@@ -3678,6 +3688,8 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 (json.dumps(stats, ensure_ascii=False), asset_id),
             )
     result = decode_asset_card_summary(dict(row)) if row else None
+    if result:
+        record_asset_card_history(result, card)
     log_event(
         "database",
         "db.write.completed",
@@ -3689,6 +3701,36 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
         table_row_count=len(card.get("table_rows") or []),
     )
     return result
+
+
+def asset_card_quality(card: dict[str, Any]) -> dict[str, Any]:
+    stats = card.get("stats") if isinstance(card.get("stats"), dict) else {}
+    warnings = stats.get("warnings") if isinstance(stats.get("warnings"), list) else []
+    http = stats.get("http") if isinstance(stats.get("http"), dict) else {}
+    errors = int(http.get("errors") or 0)
+    score = max(0, 100 - min(70, len(warnings) * 5) - min(30, errors * 10))
+    return {"score": score, "status": "good" if score >= 90 else "warning" if score >= 60 else "poor", "warning_count": len(warnings), "http_error_count": errors}
+
+
+def record_asset_card_history(summary: dict[str, Any], card: dict[str, Any]) -> None:
+    asset_id = str(summary.get("asset_id") or "")
+    if not asset_id:
+        return
+    compact = {k: summary.get(k) for k in ("display_name", "asset_type", "fqdn", "hostname", "ip_address", "os_name", "os_version", "vulnerability_level")}
+    compact.update({k: len(card.get(k) or []) for k in ("nodes", "collections", "table_rows")})
+    quality = asset_card_quality(card)
+    with connect() as conn:
+        previous = conn.execute("SELECT summary_json FROM asset_card_history WHERE asset_id=%s ORDER BY captured_at DESC LIMIT 1", (asset_id,)).fetchone()
+        before = json_loads(previous["summary_json"], {}) if previous else {}
+        changes = [{"field": k, "before": before.get(k), "after": v} for k, v in compact.items() if k in before and before.get(k) != v]
+        conn.execute("INSERT INTO asset_card_history (asset_id,captured_at,quality_json,changes_json,summary_json) VALUES (%s,%s,%s,%s,%s)", (asset_id, now_utc(), json.dumps(quality), json.dumps(changes, ensure_ascii=False), json.dumps(compact, ensure_ascii=False)))
+    log_event("database", "asset_card.history_recorded", asset_id=asset_id, quality=quality, change_count=len(changes))
+
+
+def get_asset_card_history(asset_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT captured_at,quality_json,changes_json,summary_json FROM asset_card_history WHERE asset_id=%s ORDER BY captured_at DESC LIMIT %s", (asset_id, max(1, min(limit, 100)))).fetchall()
+    return [{"captured_at": r["captured_at"], "quality": json_loads(r["quality_json"], {}), "changes": json_loads(r["changes_json"], []), "summary": json_loads(r["summary_json"], {})} for r in rows]
 
 
 def replace_asset_card_cache(
