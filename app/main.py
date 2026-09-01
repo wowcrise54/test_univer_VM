@@ -5271,11 +5271,10 @@ def refresh_docker_containers_for_scanned_asset(
         scan_log(
             logging.INFO,
             "docker_container_probe_started",
-            postprocess_run_id=parent_operation_id,
-            item_id=item_id,
-            asset_id=asset_id,
-            canonical_asset_id=canonical_asset_id,
-            attempt=attempt,
+                postprocess_run_id=parent_operation_id,
+                item_id=item_id,
+                asset_id=asset_id,
+                attempt=attempt,
             iterations=iterations,
         )
         try:
