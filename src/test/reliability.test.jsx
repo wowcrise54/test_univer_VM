@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemBanner } from "../app/layout.jsx";
 import { api, normalizeApiError } from "../api/client.js";
-import { Button, ConfirmDialog } from "../shared/ui.jsx";
+import { ActionMenu, Button, ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import {
   AssetCard,
@@ -25,7 +25,9 @@ describe("reliability UI", () => {
   });
 
   it("keeps a two-day-old asset card fresh with a fourteen-day window", () => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const twoDaysAgo = new Date(
+      Date.now() - 2 * 24 * 60 * 60 * 1000,
+    ).toISOString();
     render(
       <FreshnessBadge
         value={twoDaysAgo}
@@ -95,7 +97,7 @@ describe("reliability UI", () => {
     expect(confirm).toHaveBeenCalledOnce();
   });
 
-  it("shows normalized operations and attention count", () => {
+  it("shows normalized operations and keeps subject sorting available", async () => {
     const operations = [
       {
         operation_id: "one",
@@ -117,13 +119,14 @@ describe("reliability UI", () => {
         can_retry: true,
       },
     ];
+    const refreshOperations = vi.fn();
     render(
       <OperationsPage
         operations={operations}
         total={2}
         updatedAt="2026-07-04T10:02:00Z"
         stale={false}
-        refreshOperations={vi.fn()}
+        refreshOperations={refreshOperations}
         runBusy={(_key, fn) => fn()}
         busy={{}}
         showAlert={vi.fn()}
@@ -132,8 +135,33 @@ describe("reliability UI", () => {
     expect(screen.getByText("host-1")).toBeInTheDocument();
     expect(screen.getByText("Passports")).toBeInTheDocument();
     expect(
-      screen.getByText("требуют внимания").previousSibling,
+      screen.getByText(/требуют внимания/i).previousSibling,
     ).toHaveTextContent("1");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Сортировать «Объект» по возрастанию/,
+      }),
+    );
+    await waitFor(() =>
+      expect(refreshOperations).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sort_by: "subject", sort_dir: "asc" }),
+      ),
+    );
+  });
+
+  it("restores focus to an action menu after choosing an item", () => {
+    render(
+      <ActionMenu>
+        <Button>Повторить</Button>
+      </ActionMenu>,
+    );
+    const summary = screen.getByText("Ещё");
+    fireEvent.click(summary);
+    const action = screen.getByRole("button", { name: "Повторить" });
+    action.focus();
+    fireEvent.click(action);
+    expect(summary).toHaveFocus();
+    expect(summary.closest("details")).not.toHaveAttribute("open");
   });
 
   it("blocks busy buttons and deduplicates promise-backed clicks", async () => {
@@ -457,9 +485,7 @@ describe("reliability UI", () => {
       expect.objectContaining({ internal_id: "os-passport" }),
     );
 
-    fireEvent.click(
-      screen.getByRole("tab", { name: "Docker-контейнеры · 1" }),
-    );
+    fireEvent.click(screen.getByRole("tab", { name: "Docker-контейнеры · 1" }));
     expect(
       screen.getByText("Уязвимости Docker-контейнеров"),
     ).toBeInTheDocument();

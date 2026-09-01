@@ -1,29 +1,29 @@
 :root {
   color-scheme: light;
-  --bg: #eef3f8;
-  --bg-soft: #f7fafc;
+  --bg: #f5f6f7;
+  --bg-soft: #fafafa;
   --panel: #ffffff;
-  --panel-muted: #f8fbff;
-  --text: #102033;
-  --muted: #64748b;
-  --line: #d9e4f0;
-  --line-strong: #c7d5e6;
+  --panel-muted: #f7f7f8;
+  --text: #1b1d22;
+  --muted: #686d76;
+  --line: #e3e4e7;
+  --line-strong: #d0d2d7;
   --border: var(--line);
   --ink: var(--text);
   --accent: var(--blue);
-  --navy: #0b1f35;
-  --navy-2: #12304d;
-  --blue: #2563eb;
-  --blue-soft: #e6f0ff;
-  --teal: #0d9488;
-  --green: #15803d;
-  --orange: #b45309;
-  --red: #dc2626;
-  --shadow: 0 22px 60px rgba(15, 35, 56, 0.11);
-  --radius-xl: 24px;
-  --radius-lg: 18px;
-  --radius-md: 12px;
-  --control-height: 40px;
+  --navy: #20232a;
+  --navy-2: #30343b;
+  --blue: #315efb;
+  --blue-soft: #edf1ff;
+  --teal: #315efb;
+  --green: #237a52;
+  --orange: #9a6516;
+  --red: #c43d4b;
+  --shadow: 0 12px 36px rgba(18, 22, 33, 0.08);
+  --radius-xl: 14px;
+  --radius-lg: 12px;
+  --radius-md: 9px;
+  --control-height: 38px;
   font-family:
     Inter,
     ui-sans-serif,

@@ -3,7 +3,7 @@ import { api } from "../../api/client.js";
 import { PassportCard, PassportModal } from "../../panels.jsx";
 import { formatCount } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
-import { Button, Field, Panel } from "../../shared/ui.jsx";
+import { Button, Disclosure, Field, Panel } from "../../shared/ui.jsx";
 import {
   useVulnerabilityDashboard,
   VULNERABILITY_PAGE_SIZE,
@@ -262,7 +262,10 @@ export function VulnerabilitiesDashboard({
           description: `Активы с уязвимостью ${label}`,
         }),
       });
-      showAlert(`Группа «${group.name}» создана: ${group.member_count || 0} активов.`, "success");
+      showAlert(
+        `Группа «${group.name}» создана: ${group.member_count || 0} активов.`,
+        "success",
+      );
     } catch (error) {
       showAlert(error.operatorMessage || error.message, "error");
     } finally {
@@ -289,9 +292,8 @@ export function VulnerabilitiesDashboard({
   return (
     <Panel
       id="vulnerabilities"
-      eyebrow="08"
-      title="Общий обзор уязвимостей"
-      description="Оцените масштаб риска, найдите наиболее распространённые уязвимости и откройте список затронутых хостов. Все показатели строятся по локальным данным."
+      title="Уязвимости"
+      description="Оцените риск и перейдите к затронутым хостам."
       className="vulnerability-dashboard"
       action={
         <Button variant="secondary" busy={refreshing} onClick={refresh}>
@@ -339,18 +341,16 @@ export function VulnerabilitiesDashboard({
             />
           ) : (
             <>
-              <DashboardContext summary={summary} />
               {summary.coverage?.complete === false ? (
                 <div className="vulnerability-coverage-warning" role="note">
-                  <strong>Показатели неполные.</strong>
+                  <strong>Неполные данные.</strong>
                   <span>
-                    Найдены усечённые группы: значения ниже являются нижней
-                    оценкой текущего риска.
+                    Часть групп усечена; значения показывают нижнюю оценку.
                   </span>
                 </div>
               ) : null}
               <KpiGrid totals={summary.totals || {}} />
-              <div className="vulnerability-insights-grid">
+              <div className="vulnerability-primary-insight">
                 <SeverityBreakdown
                   rows={summary.by_severity || []}
                   selectedSeverity={filters.severity}
@@ -361,22 +361,28 @@ export function VulnerabilitiesDashboard({
                     })
                   }
                 />
-                <TopVulnerabilities
-                  rows={summary.top_vulnerabilities || []}
-                  selectedSelector={selected?.selector}
-                  onSelect={selectVulnerability}
-                />
-                <TopHosts rows={summary.top_hosts || []} />
               </div>
+              <Disclosure
+                title="Охват и приоритеты"
+                description="Свежесть данных и лидеры по риску"
+                meta={
+                  summary.coverage?.complete === false
+                    ? "Неполный охват"
+                    : "Актуальный срез"
+                }
+              >
+                <DashboardContext summary={summary} />
+                <div className="vulnerability-insights-grid">
+                  <TopVulnerabilities
+                    rows={summary.top_vulnerabilities || []}
+                    selectedSelector={selected?.selector}
+                    onSelect={selectVulnerability}
+                  />
+                  <TopHosts rows={summary.top_hosts || []} />
+                </div>
+              </Disclosure>
             </>
           )}
-
-          <TrendingVulnerabilities
-            query={trendingPassportsQuery}
-            context={trendingContext}
-            onContextChange={setTrendingContext}
-            onOpenPassport={openPassport}
-          />
 
           <VulnerabilityTable
             rows={vulnerabilityRows}
@@ -420,11 +426,29 @@ export function VulnerabilitiesDashboard({
               onCreateAssetGroup={createAssetGroup}
             />
           ) : null}
-          <RiskTrendSection
-            query={trendsQuery}
-            periodDays={trendDays}
-            onPeriodChange={setTrendDays}
-          />
+          <Disclosure
+            title="Новые сигналы"
+            description="Трендовые уязвимости и паспорта"
+            meta="Дополнительно"
+          >
+            <TrendingVulnerabilities
+              query={trendingPassportsQuery}
+              context={trendingContext}
+              onContextChange={setTrendingContext}
+              onOpenPassport={openPassport}
+            />
+          </Disclosure>
+          <Disclosure
+            title="История риска"
+            description="Динамика, дельты и полнота срезов"
+            meta={`${trendDays} дней`}
+          >
+            <RiskTrendSection
+              query={trendsQuery}
+              periodDays={trendDays}
+              onPeriodChange={setTrendDays}
+            />
+          </Disclosure>
           {hostFinding ? (
             <HostFindingModal
               selected={selected}
@@ -1277,13 +1301,21 @@ function DashboardContext({ summary }) {
 }
 
 function KpiGrid({ totals }) {
-  const cards = [
+  const primaryCards = [
     {
       label: "Хосты с уязвимостями",
       value: totals.affected_hosts,
       note: `из ${formatCount(totals.hosts_total)} хостов`,
     },
+    {
+      label: "Высокий риск",
+      value: totals.high_risk_hosts,
+      note: "хостов с Critical / High",
+      tone: "danger",
+    },
     { label: "Findings", value: totals.findings, note: "обнаружений" },
+  ];
+  const secondaryCards = [
     {
       label: "Уникальные уязвимости",
       value: totals.unique_vulnerabilities,
@@ -1295,12 +1327,6 @@ function KpiGrid({ totals }) {
       note: "идентификаторов",
     },
     {
-      label: "Высокий риск",
-      value: totals.high_risk_hosts,
-      note: "хостов с Critical / High",
-      tone: "danger",
-    },
-    {
       label: "Без оценки",
       value: totals.unrated_vulnerabilities,
       note: "уязвимостей без критичности",
@@ -1308,21 +1334,39 @@ function KpiGrid({ totals }) {
     },
   ];
   return (
-    <section
-      className="vulnerability-kpi-grid"
-      aria-label="Ключевые показатели"
+    <>
+      <section
+        className="vulnerability-kpi-grid vulnerability-kpi-grid--primary"
+        aria-label="Ключевые показатели"
+      >
+        {primaryCards.map((card) => (
+          <VulnerabilityKpi key={card.label} {...card} />
+        ))}
+      </section>
+      <Disclosure
+        className="vulnerability-kpi-more"
+        title="Дополнительные показатели"
+        description="Уникальные записи и данные без оценки"
+      >
+        <section className="vulnerability-kpi-grid">
+          {secondaryCards.map((card) => (
+            <VulnerabilityKpi key={card.label} {...card} />
+          ))}
+        </section>
+      </Disclosure>
+    </>
+  );
+}
+
+function VulnerabilityKpi({ label, value, note, tone }) {
+  return (
+    <article
+      className={`vulnerability-kpi ${tone ? `vulnerability-kpi--${tone}` : ""}`}
     >
-      {cards.map((card) => (
-        <article
-          className={`vulnerability-kpi ${card.tone ? `vulnerability-kpi--${card.tone}` : ""}`}
-          key={card.label}
-        >
-          <span>{card.label}</span>
-          <strong>{formatCount(card.value)}</strong>
-          <small>{card.note}</small>
-        </article>
-      ))}
-    </section>
+      <span>{label}</span>
+      <strong>{formatCount(value)}</strong>
+      <small>{note}</small>
+    </article>
   );
 }
 
@@ -1712,8 +1756,6 @@ function VulnerabilityTable({
               <SortableHeader column="name" sort={sort} onSort={onSort}>
                 Уязвимость
               </SortableHeader>
-              <th>Краткое описание</th>
-              <th>CVE</th>
               <SortableHeader column="severity" sort={sort} onSort={onSort}>
                 Критичность
               </SortableHeader>
@@ -1741,24 +1783,21 @@ function VulnerabilityTable({
               >
                 Findings
               </SortableHeader>
-              <th>Объекты</th>
-              <th>Тип</th>
-              <th>Контейнер / компонент</th>
-              <th>Паспорт</th>
               <SortableHeader
                 column="last_seen"
                 sort={sort}
                 onSort={onSort}
                 initialDirection="desc"
               >
-                Последнее обновление
+                Обновлено
               </SortableHeader>
+              <th>Действие</th>
             </tr>
           </thead>
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={12} className="empty-cell">
+                <td colSpan={7} className="empty-cell">
                   Загружаю уязвимости…
                 </td>
               </tr>
@@ -1788,24 +1827,43 @@ function VulnerabilityTable({
                       {row.vulnerability_id ? (
                         <code>{row.vulnerability_id}</code>
                       ) : null}
+                      {row.cve ? (
+                        <span className="vulnerability-row-cve">{row.cve}</span>
+                      ) : null}
+                      <details className="table-row-details vulnerability-row-details">
+                        <summary>Подробнее</summary>
+                        <div>
+                          <VulnerabilityShortDescription row={row} />
+                          <dl>
+                            <div>
+                              <dt>Объекты</dt>
+                              <dd>{formatList(row.affected_objects)}</dd>
+                            </div>
+                            <div>
+                              <dt>Тип</dt>
+                              <dd>
+                                <VulnerabilitySourceBadge
+                                  sources={row.sources}
+                                />
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Компонент</dt>
+                              <dd>
+                                <VulnerabilityComponent row={row} />
+                              </dd>
+                            </div>
+                          </dl>
+                        </div>
+                      </details>
                     </td>
-                    <td>
-                      <VulnerabilityShortDescription row={row} />
-                    </td>
-                    <td>{row.cve || "—"}</td>
                     <td>
                       <SeverityBadge value={row.severity} />
                     </td>
                     <td>{formatScore(row.max_cvss ?? row.cvss_score)}</td>
                     <td>{formatCount(row.affected_hosts)}</td>
                     <td>{formatCount(row.findings)}</td>
-                    <td>{formatList(row.affected_objects)}</td>
-                    <td>
-                      <VulnerabilitySourceBadge sources={row.sources} />
-                    </td>
-                    <td>
-                      <VulnerabilityComponent row={row} />
-                    </td>
+                    <td>{formatDate(row.last_seen)}</td>
                     <td>
                       {hasPassport ? (
                         <Button
@@ -1819,13 +1877,12 @@ function VulnerabilityTable({
                         <span className="muted-text">Не сопоставлен</span>
                       )}
                     </td>
-                    <td>{formatDate(row.last_seen)}</td>
                   </tr>
                 );
               })
             ) : (
               <tr>
-                <td colSpan={12} className="empty-cell">
+                <td colSpan={7} className="empty-cell">
                   Уязвимости с такими фильтрами не найдены.
                 </td>
               </tr>

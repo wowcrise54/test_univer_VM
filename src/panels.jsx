@@ -15,8 +15,10 @@ import {
   splitTokens,
 } from "./shared/format.js";
 import {
+  ActionMenu,
   Button,
   ConfirmDialog,
+  Disclosure,
   Field,
   Panel,
   Toggle,
@@ -124,33 +126,27 @@ function ConnectionPanel({
   return (
     <Panel
       id="connection"
-      eyebrow="01"
       title="Подключение к MP VM"
-      description="Пароль и Bearer token используются только в памяти процесса приложения. После подключения загрузите справочники для выбора scope, профиля и учётной записи."
+      description="Укажите адрес и способ авторизации. Секреты хранятся только в памяти."
       action={
-        <Button
-          variant="secondary"
-          busy={busy.lookups}
-          disabled={busy.session}
-          onClick={loadLookups}
-        >
-          Загрузить справочники
-        </Button>
+        session.connected ? (
+          <Button
+            variant="secondary"
+            busy={busy.lookups}
+            disabled={busy.session}
+            onClick={loadLookups}
+          >
+            Обновить справочники
+          </Button>
+        ) : null
       }
     >
-      <div className="form-grid form-grid--four">
+      <div className="form-grid form-grid--two connection-primary-fields">
         <Field label="Корневой URL API">
           <input
             value={form.api_url}
             onChange={(event) => update("api_url", event.target.value)}
             placeholder="https://srv-siem.local"
-          />
-        </Field>
-        <Field label="Token URL">
-          <input
-            value={form.token_url}
-            onChange={(event) => update("token_url", event.target.value)}
-            placeholder="https://srv-siem.local:3334/connect/token"
           />
         </Field>
         <Field label="Username">
@@ -168,51 +164,70 @@ function ConnectionPanel({
             autoComplete="current-password"
           />
         </Field>
-        <Field label="Client ID">
-          <input
-            value={form.client_id}
-            onChange={(event) => update("client_id", event.target.value)}
-          />
-        </Field>
-        <Field label="Client Secret">
-          <input
-            value={form.client_secret}
-            onChange={(event) => update("client_secret", event.target.value)}
-            type="password"
-          />
-        </Field>
-        <Field label="Scope" wide>
-          <input
-            value={form.scope}
-            onChange={(event) => update("scope", event.target.value)}
-          />
-        </Field>
-        <Field label="Bearer token" wide>
-          <input
-            value={form.access_token}
-            onChange={(event) => update("access_token", event.target.value)}
-            type="password"
-            placeholder="Можно вместо username/password/client_secret"
-          />
-        </Field>
-        <Toggle
-          label="Проверять TLS-сертификат"
-          checked={form.verify_tls}
-          onChange={(value) => update("verify_tls", value)}
-        />
       </div>
+      <Disclosure
+        title="Дополнительная авторизация"
+        description="Bearer token, OAuth client и параметры TLS"
+        meta={form.access_token ? "Bearer token" : "OAuth / TLS"}
+      >
+        <div className="form-grid form-grid--two">
+          <Field label="Token URL">
+            <input
+              value={form.token_url}
+              onChange={(event) => update("token_url", event.target.value)}
+              placeholder="https://srv-siem.local:3334/connect/token"
+            />
+          </Field>
+          <Field label="Client ID">
+            <input
+              value={form.client_id}
+              onChange={(event) => update("client_id", event.target.value)}
+            />
+          </Field>
+          <Field label="Client Secret">
+            <input
+              value={form.client_secret}
+              onChange={(event) => update("client_secret", event.target.value)}
+              type="password"
+            />
+          </Field>
+          <Field label="Scope" wide>
+            <input
+              value={form.scope}
+              onChange={(event) => update("scope", event.target.value)}
+            />
+          </Field>
+          <Field label="Bearer token" wide>
+            <input
+              value={form.access_token}
+              onChange={(event) => update("access_token", event.target.value)}
+              type="password"
+              placeholder="Можно вместо username/password/client_secret"
+            />
+          </Field>
+          <Toggle
+            label="Проверять TLS-сертификат"
+            checked={form.verify_tls}
+            onChange={(value) => update("verify_tls", value)}
+          />
+        </div>
+      </Disclosure>
       <div className="action-row">
         <Button busy={busy.session} onClick={connect}>
           Подключиться
         </Button>
-        <Button variant="ghost" busy={busy.session} onClick={disconnect}>
-          Отключиться
-        </Button>
-        <div className="inline-metric">
-          <span>{lookups.credentials.length}</span> credentials ·{" "}
-          <span>{lookups.scopes.length}</span> scopes ·{" "}
-          <span>{lookups.scanner_profiles.length}</span> profiles
-        </div>
+        {session.connected ? (
+          <Button variant="ghost" busy={busy.session} onClick={disconnect}>
+            Отключиться
+          </Button>
+        ) : null}
+        {session.connected ? (
+          <div className="inline-metric">
+            Справочники: <span>{lookups.credentials.length}</span> учётных
+            записей · <span>{lookups.scopes.length}</span> scopes ·{" "}
+            <span>{lookups.scanner_profiles.length}</span> профилей
+          </div>
+        ) : null}
         <div
           className={
             session.connected ? "mini-state mini-state--ok" : "mini-state"
@@ -512,26 +527,14 @@ function TaskBuilderPanel({
     <Panel
       id="task-builder"
       title="Конструктор задачи сканирования"
-      description="Создание и повторное изменение задач через REST API. Учётные записи выбираются из справочника credentials."
+      description="Основные параметры задачи и запуск сканирования."
     >
-      <div className="form-grid form-grid--two">
+      <div className="form-grid form-grid--two task-primary-fields">
         <Field label="Название задачи">
           <input
             value={form.name}
             onChange={(event) => update("name", event.target.value)}
             placeholder="Windows audit 10.104.103.0/24"
-          />
-        </Field>
-        <Field label="Time zone">
-          <input
-            value={form.time_zone}
-            onChange={(event) => update("time_zone", event.target.value)}
-          />
-        </Field>
-        <Field label="Описание" wide>
-          <input
-            value={form.description}
-            onChange={(event) => update("description", event.target.value)}
           />
         </Field>
         <Field label="Инфраструктура / scope">
@@ -569,48 +572,7 @@ function TaskBuilderPanel({
             emptyLabel="Выберите профиль"
           />
         </Field>
-        <Field label="Тип подключения">
-          <select
-            value={form.credential_transport}
-            onChange={(event) =>
-              update("credential_transport", event.target.value)
-            }
-          >
-            <option value="windows">Windows (WMI/RPC)</option>
-            <option value="ssh">Linux/Unix (SSH + sudo)</option>
-          </select>
-        </Field>
-        <Field label="Учётная запись">
-          <select
-            value={form.credential_id}
-            onChange={(event) => update("credential_id", event.target.value)}
-          >
-            <option value="">Без credential override</option>
-            {lookups.credentials.map((item) => (
-              <option value={item.id || ""} key={item.id || item.name}>
-                {optionLabel(item)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="HostDiscovery profile">
-          <ProfileSelect
-            value={form.host_discovery_profile_id}
-            onChange={(value) => update("host_discovery_profile_id", value)}
-            profiles={lookups.scanner_profiles}
-            emptyLabel="Без HostDiscovery profile"
-            searchLabel="Поиск HostDiscovery-профиля"
-          />
-        </Field>
-        <Field label="Коллекторы / agents" wide>
-          <textarea
-            rows={3}
-            value={form.agent_ids}
-            onChange={(event) => update("agent_ids", event.target.value)}
-            placeholder="UUID коллекторов через запятую или с новой строки"
-          />
-        </Field>
-        <Field label="Include targets">
+        <Field label="Цели сканирования">
           <textarea
             rows={4}
             value={form.include_targets}
@@ -618,33 +580,110 @@ function TaskBuilderPanel({
             placeholder="10.104.103.0/24"
           />
         </Field>
-        <Field label="Exclude targets">
-          <textarea
-            rows={4}
-            value={form.exclude_targets}
-            onChange={(event) => update("exclude_targets", event.target.value)}
-            placeholder="Опционально"
-          />
-        </Field>
-        <Toggle
-          label="Включить hostDiscovery"
-          checked={form.host_discovery_enabled}
-          onChange={(value) => update("host_discovery_enabled", value)}
-        />
-        <Toggle
-          label="FQDN priority"
-          checked={form.is_fqdn_priority}
-          onChange={(value) => update("is_fqdn_priority", value)}
-        />
       </div>
-      <div className="options-card">
-        <div>
-          <h3>Precheck и таймер выполнения</h3>
-          <p>
-            Precheck запускает connection check, оставляет для основной задачи
-            только успешные targets и затем стартует сканирование.
-          </p>
+
+      <Disclosure
+        title="Описание и охват"
+        description="Исключения, часовой пояс и коллекторы"
+        meta={
+          splitTokens(form.exclude_targets).length
+            ? "Есть исключения"
+            : "По умолчанию"
+        }
+      >
+        <div className="form-grid form-grid--two">
+          <Field label="Описание" wide>
+            <input
+              value={form.description}
+              onChange={(event) => update("description", event.target.value)}
+            />
+          </Field>
+          <Field label="Исключить цели">
+            <textarea
+              rows={3}
+              value={form.exclude_targets}
+              onChange={(event) =>
+                update("exclude_targets", event.target.value)
+              }
+              placeholder="Опционально"
+            />
+          </Field>
+          <Field label="Часовой пояс">
+            <input
+              value={form.time_zone}
+              onChange={(event) => update("time_zone", event.target.value)}
+            />
+          </Field>
+          <Field label="Коллекторы / agents" wide>
+            <textarea
+              rows={3}
+              value={form.agent_ids}
+              onChange={(event) => update("agent_ids", event.target.value)}
+              placeholder="UUID через запятую или с новой строки"
+            />
+          </Field>
         </div>
+      </Disclosure>
+
+      <Disclosure
+        title="Подключение и обнаружение"
+        description="Учётная запись, transport и HostDiscovery"
+        meta={
+          form.host_discovery_enabled ? "HostDiscovery включён" : "Стандартно"
+        }
+      >
+        <div className="form-grid form-grid--two">
+          <Field label="Тип подключения">
+            <select
+              value={form.credential_transport}
+              onChange={(event) =>
+                update("credential_transport", event.target.value)
+              }
+            >
+              <option value="windows">Windows (WMI/RPC)</option>
+              <option value="ssh">Linux/Unix (SSH + sudo)</option>
+            </select>
+          </Field>
+          <Field label="Учётная запись">
+            <select
+              value={form.credential_id}
+              onChange={(event) => update("credential_id", event.target.value)}
+            >
+              <option value="">Без credential override</option>
+              {lookups.credentials.map((item) => (
+                <option value={item.id || ""} key={item.id || item.name}>
+                  {optionLabel(item)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="HostDiscovery profile">
+            <ProfileSelect
+              value={form.host_discovery_profile_id}
+              onChange={(value) => update("host_discovery_profile_id", value)}
+              profiles={lookups.scanner_profiles}
+              emptyLabel="Без HostDiscovery profile"
+              searchLabel="Поиск HostDiscovery-профиля"
+            />
+          </Field>
+          <Toggle
+            label="Включить hostDiscovery"
+            checked={form.host_discovery_enabled}
+            onChange={(value) => update("host_discovery_enabled", value)}
+          />
+          <Toggle
+            label="Приоритет FQDN"
+            checked={form.is_fqdn_priority}
+            onChange={(value) => update("is_fqdn_priority", value)}
+          />
+        </div>
+      </Disclosure>
+
+      <Disclosure
+        title="Precheck и таймеры"
+        description="Проверка доступности и лимиты фонового запуска"
+        meta={form.precheck_enabled ? "Precheck включён" : "Выключено"}
+      >
         <div className="form-grid form-grid--two">
           <Toggle
             label="Выполнить precheck перед запуском"
@@ -719,74 +758,87 @@ function TaskBuilderPanel({
             onChange={(value) => update("require_clean_jobs", value)}
           />
         </div>
-      </div>
-      <section
-        className={`task-preflight ${preflightReady ? "task-preflight--ready" : ""}`}
+      </Disclosure>
+
+      <Disclosure
+        title="Готовность к запуску"
+        description="Черновик сохраняется автоматически"
+        meta={preflightReady ? "Готово" : "Есть замечания"}
+        defaultOpen={!preflightReady}
       >
-        <div>
-          <strong>Проверка перед запуском</strong>
-          <span>
-            {preflightReady
-              ? "Все условия выполнены"
-              : "Запуск заблокирован до устранения замечаний"}{" "}
-            · черновик сохраняется автоматически
-          </span>
-        </div>
-        <ul>
-          {preflight.map((item) => (
-            <li className={item.ok ? "is-ok" : "is-error"} key={item.label}>
-              <span>{item.ok ? "✓" : "!"}</span>
-              <div>
-                <strong>{item.label}</strong>
-                <small>{item.ok ? "Готово" : item.detail}</small>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
+        <section
+          className={`task-preflight ${preflightReady ? "task-preflight--ready" : ""}`}
+        >
+          <ul>
+            {preflight.map((item) => (
+              <li className={item.ok ? "is-ok" : "is-error"} key={item.label}>
+                <span>{item.ok ? "✓" : "!"}</span>
+                <div>
+                  <strong>{item.label}</strong>
+                  <small>{item.ok ? "Готово" : item.detail}</small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </Disclosure>
+
       <div className="action-row">
-        <Button busy={busy.createTask} onClick={createTask}>
-          Создать
-        </Button>
-        <Button variant="secondary" busy={busy.updateTask} onClick={updateTask}>
-          Изменить выбранную
-        </Button>
-        <Button
-          variant="ghost"
-          busy={busy.validateTask}
-          onClick={() =>
-            actionTask("validate", "validateTask", (result) =>
-              result.valid
-                ? "Validation пройдена."
-                : `Validation failed: ${result.error}`,
-            )
-          }
-        >
-          Проверить
-        </Button>
-        <Button
-          variant="success"
-          disabled={!preflightReady}
-          busy={busy.startTask}
-          onClick={() =>
-            actionTask("start", "startTask", startSuccessText, startPayload())
-          }
-        >
-          Запустить
-        </Button>
-        <Button
-          variant="ghost"
-          busy={busy.stopTask}
-          onClick={() =>
-            actionTask(
-              "stop",
-              "stopTask",
-              () => `Остановка запрошена для ${selectedTaskId}`,
-            )
-          }
-        >
-          Остановить
-        </Button>
+        {selectedTaskId ? (
+          <Button
+            disabled={!preflightReady}
+            busy={busy.startTask}
+            onClick={() =>
+              actionTask("start", "startTask", startSuccessText, startPayload())
+            }
+          >
+            Запустить сканирование
+          </Button>
+        ) : (
+          <Button busy={busy.createTask} onClick={createTask}>
+            Создать задачу
+          </Button>
+        )}
+        {selectedTaskId ? (
+          <ActionMenu label="Ещё">
+            <Button
+              variant="secondary"
+              busy={busy.updateTask}
+              onClick={updateTask}
+            >
+              Сохранить изменения
+            </Button>
+            <Button busy={busy.createTask} onClick={createTask}>
+              Создать копию
+            </Button>
+            <Button
+              variant="ghost"
+              busy={busy.validateTask}
+              onClick={() =>
+                actionTask("validate", "validateTask", (result) =>
+                  result.valid
+                    ? "Validation пройдена."
+                    : `Validation failed: ${result.error}`,
+                )
+              }
+            >
+              Проверить
+            </Button>
+            <Button
+              variant="tiny-danger"
+              busy={busy.stopTask}
+              onClick={() =>
+                actionTask(
+                  "stop",
+                  "stopTask",
+                  () => `Остановка запрошена для ${selectedTaskId}`,
+                )
+              }
+            >
+              Остановить
+            </Button>
+          </ActionMenu>
+        ) : null}
       </div>
     </Panel>
   );
@@ -811,7 +863,8 @@ function startSuccessText(result) {
 
 function jobDuration(startedAt, finishedAt) {
   if (!startedAt || !finishedAt) return "—";
-  const milliseconds = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+  const milliseconds =
+    new Date(finishedAt).getTime() - new Date(startedAt).getTime();
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
   const seconds = Math.round(milliseconds / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -820,14 +873,18 @@ function jobDuration(startedAt, finishedAt) {
 }
 
 function jobSucceeded(value) {
-  return ["success", "ok", "succeeded"].includes(String(value || "").toLowerCase());
+  return ["success", "ok", "succeeded"].includes(
+    String(value || "").toLowerCase(),
+  );
 }
 
 function JobResultStatus({ job }) {
   const finished = String(job.status || "").toLowerCase() === "finished";
   const successful = jobSucceeded(job.errorStatus);
   return (
-    <span className={`job-result-status job-result-status--${successful ? "success" : finished ? "fail" : "pending"}`}>
+    <span
+      className={`job-result-status job-result-status--${successful ? "success" : finished ? "fail" : "pending"}`}
+    >
       <span aria-hidden="true">{successful ? "✓" : finished ? "⚠" : "•"}</span>
       {finished ? "Завершена" : job.status || "Неизвестно"}
     </span>
@@ -837,16 +894,23 @@ function JobResultStatus({ job }) {
 function ConnectionCheckCell({ results }) {
   const checks = Array.isArray(results) ? results : [];
   if (!checks.length) return <span className="muted-text">—</span>;
-  const successful = checks.filter((check) => jobSucceeded(check.status)).length;
+  const successful = checks.filter((check) =>
+    jobSucceeded(check.status),
+  ).length;
   return (
     <details className="connection-checks">
-      <summary>{successful} из {checks.length}</summary>
+      <summary>
+        {successful} из {checks.length}
+      </summary>
       <div className="connection-checks__list">
         {checks.map((check, index) => {
           const ok = jobSucceeded(check.status);
           const errors = Array.isArray(check.errors) ? check.errors : [];
           return (
-            <div className={`connection-check connection-check--${ok ? "success" : "fail"}`} key={`${check.transport || "check"}-${index}`}>
+            <div
+              className={`connection-check connection-check--${ok ? "success" : "fail"}`}
+              key={`${check.transport || "check"}-${index}`}
+            >
               <strong>{check.transport || `Проверка ${index + 1}`}</strong>
               <span>{ok ? "Успешно" : "Ошибка"}</span>
               {errors.length ? <small>{errors.join(", ")}</small> : null}
@@ -863,57 +927,104 @@ function TaskResultsDialog({ state, onClose, onRetry }) {
   const dialogRef = useDialogAccessibility(open, onClose);
   if (!open || typeof document === "undefined") return null;
   const items = Array.isArray(state.data?.items) ? state.data.items : [];
-  const isPrecheck = Boolean(state.data?.is_precheck) || items.some((job) => job.runMode === "connectionCheck");
+  const isPrecheck =
+    Boolean(state.data?.is_precheck) ||
+    items.some((job) => job.runMode === "connectionCheck");
   return createPortal(
     <div className="passport-modal task-results-modal" role="presentation">
       <div className="passport-modal__backdrop" onMouseDown={onClose} />
-      <section ref={dialogRef} className="passport-modal__window task-results-modal__window" role="dialog" aria-modal="true" aria-label="Результаты задачи" tabIndex={-1}>
+      <section
+        ref={dialogRef}
+        className="passport-modal__window task-results-modal__window"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Результаты задачи"
+        tabIndex={-1}
+      >
         <div className="passport-modal__bar">
           <div>
             <strong>Результаты задачи</strong>
             <small>{state.task?.name || state.task?.mp_task_id}</small>
           </div>
-          <Button variant="ghost" onClick={onClose}>Закрыть</Button>
+          <Button variant="ghost" onClick={onClose}>
+            Закрыть
+          </Button>
         </div>
         <div className="task-results-modal__body">
-          {state.loading ? <div className="query-state" role="status">Загрузка результатов…</div> : null}
+          {state.loading ? (
+            <div className="query-state" role="status">
+              Загрузка результатов…
+            </div>
+          ) : null}
           {state.error ? (
             <div className="query-state query-state--error" role="alert">
-              <span>Не удалось загрузить результаты: {state.error.message || String(state.error)}</span>
-              <Button variant="tiny" onClick={onRetry}>Повторить</Button>
+              <span>
+                Не удалось загрузить результаты:{" "}
+                {state.error.message || String(state.error)}
+              </span>
+              <Button variant="tiny" onClick={onRetry}>
+                Повторить
+              </Button>
             </div>
           ) : null}
           {!state.loading && !state.error ? (
             <>
               <div className="task-results-summary">
-                <span>Подзадач <strong>{state.data?.total ?? items.length}</strong></span>
-                <span>Тип <strong>{isPrecheck ? "Precheck" : "Сканирование"}</strong></span>
-                <span>Run <strong>{state.data?.run?.id || "—"}</strong></span>
+                <span>
+                  Подзадач <strong>{state.data?.total ?? items.length}</strong>
+                </span>
+                <span>
+                  Тип{" "}
+                  <strong>{isPrecheck ? "Precheck" : "Сканирование"}</strong>
+                </span>
+                <span>
+                  Run <strong>{state.data?.run?.id || "—"}</strong>
+                </span>
               </div>
               {items.length ? (
                 <div className="mpvm-table-shell task-results-table-shell">
                   <table className="task-results-table">
-                    <thead><tr>
-                      <th>Статус</th>
-                      {isPrecheck ? <th>Проверки</th> : null}
-                      <th>Начало сбора</th><th>Окончание сбора</th><th>Длительность</th>
-                      <th>Коллектор</th><th>Цели</th><th>Профиль</th>
-                    </tr></thead>
-                    <tbody>{items.map((job) => (
-                      <tr key={job.id}>
-                        <td><JobResultStatus job={job} /></td>
-                        {isPrecheck ? <td><ConnectionCheckCell results={job.connectionCheckResults} /></td> : null}
-                        <td>{formatDateTime(job.startedAt)}</td>
-                        <td>{formatDateTime(job.finishedAt)}</td>
-                        <td>{jobDuration(job.startedAt, job.finishedAt)}</td>
-                        <td>{job.agent?.name || "—"}</td>
-                        <td>{formatList(job.targets)}</td>
-                        <td>{job.profile?.name || "—"}</td>
+                    <thead>
+                      <tr>
+                        <th>Статус</th>
+                        {isPrecheck ? <th>Проверки</th> : null}
+                        <th>Начало сбора</th>
+                        <th>Окончание сбора</th>
+                        <th>Длительность</th>
+                        <th>Коллектор</th>
+                        <th>Цели</th>
+                        <th>Профиль</th>
                       </tr>
-                    ))}</tbody>
+                    </thead>
+                    <tbody>
+                      {items.map((job) => (
+                        <tr key={job.id}>
+                          <td>
+                            <JobResultStatus job={job} />
+                          </td>
+                          {isPrecheck ? (
+                            <td>
+                              <ConnectionCheckCell
+                                results={job.connectionCheckResults}
+                              />
+                            </td>
+                          ) : null}
+                          <td>{formatDateTime(job.startedAt)}</td>
+                          <td>{formatDateTime(job.finishedAt)}</td>
+                          <td>{jobDuration(job.startedAt, job.finishedAt)}</td>
+                          <td>{job.agent?.name || "—"}</td>
+                          <td>{formatList(job.targets)}</td>
+                          <td>{job.profile?.name || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
                   </table>
                 </div>
-              ) : <div className="empty-cell">У задачи пока нет результатов запуска.</div>}
+              ) : (
+                <div className="empty-cell">
+                  У задачи пока нет результатов запуска.
+                </div>
+              )}
             </>
           ) : null}
         </div>
@@ -1013,25 +1124,29 @@ function TaskListPanel({
     }
   };
 
-  const openTaskResults = useCallback(async (task) => {
-    const taskId = task.mp_task_id;
-    setSelectedTaskId(taskId);
-    setResultsState({ task, loading: true, error: null, data: null });
-    try {
-      const data = await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/results`);
-      setResultsState({ task, loading: false, error: null, data });
-    } catch (error) {
-      setResultsState({ task, loading: false, error, data: null });
-    }
-  }, [setSelectedTaskId]);
+  const openTaskResults = useCallback(
+    async (task) => {
+      const taskId = task.mp_task_id;
+      setSelectedTaskId(taskId);
+      setResultsState({ task, loading: true, error: null, data: null });
+      try {
+        const data = await api(
+          `/api/scanner-tasks/${encodeURIComponent(taskId)}/results`,
+        );
+        setResultsState({ task, loading: false, error: null, data });
+      } catch (error) {
+        setResultsState({ task, loading: false, error, data: null });
+      }
+    },
+    [setSelectedTaskId],
+  );
 
   return (
     <>
       <Panel
         id="tasks"
-        eyebrow="02"
-        title="Все задачи"
-        description="Таблица локально сохранённых задач MP VM. Строка удаляется из списка только после успешного удаления задачи в MP VM."
+        title="Задачи сканирования"
+        description="Выберите задачу, чтобы открыть результат и продолжить работу."
         action={
           <TaskToolbar
             mode={mode}
@@ -1068,38 +1183,33 @@ function TaskListPanel({
                   Профиль
                 </SortableHeader>
                 <SortableHeader
-                  column="created_at"
-                  sort={tableSort}
-                  onSort={toggleTableSort}
-                  initialDirection="desc"
-                >
-                  Создана
-                </SortableHeader>
-                <th>Коллектор</th>
-                <th>Учётные записи</th>
-                <th>Последний запуск</th>
-                <th>Следующий запуск</th>
-                <SortableHeader
                   column="status"
                   sort={tableSort}
                   onSort={toggleTableSort}
                 >
                   Статус
                 </SortableHeader>
+                <SortableHeader
+                  column="created_at"
+                  sort={tableSort}
+                  onSort={toggleTableSort}
+                  initialDirection="desc"
+                >
+                  Активность
+                </SortableHeader>
                 <th>Обработка</th>
-                <th>Собираемые данные</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="empty-cell" role="status">
+                  <td colSpan={6} className="empty-cell" role="status">
                     Загрузка задач…
                   </td>
                 </tr>
               ) : error ? (
                 <tr>
-                  <td colSpan={11} className="empty-cell">
+                  <td colSpan={6} className="empty-cell">
                     <div
                       className="query-state query-state--error"
                       role="alert"
@@ -1140,27 +1250,43 @@ function TaskListPanel({
                       <td className="task-name-cell" title={taskId}>
                         <strong>{task.name || taskId}</strong>
                         <span>{taskId}</span>
+                        <details
+                          className="table-row-details"
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <summary>Подробнее</summary>
+                          <dl>
+                            <div>
+                              <dt>Создана</dt>
+                              <dd>{formatDateTime(task.created_at)}</dd>
+                            </div>
+                            <div>
+                              <dt>Коллекторы</dt>
+                              <dd>{formatList(task.agent_ids)}</dd>
+                            </div>
+                            <div>
+                              <dt>Учётная запись</dt>
+                              <dd>{credential || task.credential_id || "—"}</dd>
+                            </div>
+                          </dl>
+                        </details>
                       </td>
                       <td>{formatList(task.include_targets)}</td>
                       <td>{profile || task.profile_id || "—"}</td>
-                      <td>{formatDateTime(task.created_at)}</td>
-                      <td>{formatList(task.agent_ids)}</td>
-                      <td>{credential || task.credential_id || "—"}</td>
-                      <td>{lastRunText(task)}</td>
-                      <td>—</td>
                       <td>
                         <TaskStatus status={task.status} />
                       </td>
+                      <td>{lastRunText(task)}</td>
                       <td>
                         <PostprocessSummary run={task.postprocess} />
                       </td>
-                      <td>Активы</td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={11} className="empty-cell">
+                  <td colSpan={6} className="empty-cell">
                     Локально сохранённых задач пока нет.
                   </td>
                 </tr>
@@ -1170,16 +1296,20 @@ function TaskListPanel({
         </div>
         <div className="task-table-footer">
           <span>
-            Выбранная задача: <strong>{selectedTaskId || "нет"}</strong>
+            Выбрано:{" "}
+            <strong>{selectedTask?.name || selectedTaskId || "нет"}</strong>
           </span>
-          <Button
-            variant="danger"
-            busy={Boolean(deletingId && deletingId === selectedTaskId)}
-            disabled={!selectedTaskId}
-            onClick={() => setPendingDeleteId(selectedTaskId)}
-          >
-            Удалить выбранную
-          </Button>
+          {selectedTaskId ? (
+            <ActionMenu label="Действия">
+              <Button
+                variant="tiny-danger"
+                busy={Boolean(deletingId && deletingId === selectedTaskId)}
+                onClick={() => setPendingDeleteId(selectedTaskId)}
+              >
+                Удалить задачу
+              </Button>
+            </ActionMenu>
+          ) : null}
         </div>
         {visiblePostprocess ? (
           <TaskPostprocessPanel run={visiblePostprocess} />
@@ -1560,14 +1690,8 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
   return (
     <Panel
       id="export"
-      eyebrow="03"
-      title="PDQL экспорт и сохранение в PostgreSQL"
-      description="Запрос создаёт PDQL token, скачивает CSV, импортирует строки в PostgreSQL и при необходимости удаляет активы из MP VM."
-      action={
-        <Button variant="secondary" busy={busy.sample} onClick={importSample}>
-          Импортировать пример CSV
-        </Button>
-      }
+      title="PDQL экспорт"
+      description="Выгрузите данные и при необходимости сохраните их в PostgreSQL."
     >
       <Field label="PDQL запрос">
         <textarea
@@ -1577,63 +1701,82 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
           onChange={(event) => update("pdql", event.target.value)}
         />
       </Field>
-      <div className="form-grid form-grid--four form-grid--spaced">
-        <Field label="UTC offset">
-          <input
-            value={form.utc_offset}
-            onChange={(event) => update("utc_offset", event.target.value)}
+      <Disclosure
+        className={form.delete_assets_after_export ? "disclosure--danger" : ""}
+        title="Параметры экспорта"
+        description="Группы, активы и обработка результата"
+        meta={
+          form.delete_assets_after_export
+            ? "Удаление в MP VM включено"
+            : "Без удаления"
+        }
+      >
+        <div className="form-grid form-grid--four">
+          <Field label="UTC offset">
+            <input
+              value={form.utc_offset}
+              onChange={(event) => update("utc_offset", event.target.value)}
+            />
+          </Field>
+          <Field label="Group IDs">
+            <input
+              value={form.group_ids}
+              onChange={(event) => update("group_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Field label="Asset IDs">
+            <input
+              value={form.asset_ids}
+              onChange={(event) => update("asset_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Toggle
+            label="Include nested groups"
+            checked={form.include_nested_groups}
+            onChange={(value) => update("include_nested_groups", value)}
           />
-        </Field>
-        <Field label="Group IDs">
-          <input
-            value={form.group_ids}
-            onChange={(event) => update("group_ids", event.target.value)}
-            placeholder="uuid, uuid"
+          <Toggle
+            label="Сохранить в БД"
+            checked={form.import_results}
+            onChange={(value) => update("import_results", value)}
           />
-        </Field>
-        <Field label="Asset IDs">
-          <input
-            value={form.asset_ids}
-            onChange={(event) => update("asset_ids", event.target.value)}
-            placeholder="uuid, uuid"
+          <Toggle
+            label="Удалить активы в MP VM после импорта"
+            checked={form.delete_assets_after_export}
+            onChange={(value) => update("delete_assets_after_export", value)}
           />
-        </Field>
-        <Toggle
-          label="Include nested groups"
-          checked={form.include_nested_groups}
-          onChange={(value) => update("include_nested_groups", value)}
-        />
-        <Toggle
-          label="Сохранить в БД"
-          checked={form.import_results}
-          onChange={(value) => update("import_results", value)}
-        />
-        <Toggle
-          label="Удалить активы в MP VM после импорта"
-          checked={form.delete_assets_after_export}
-          onChange={(value) => update("delete_assets_after_export", value)}
-        />
-      </div>
+        </div>
+        {form.delete_assets_after_export ? (
+          <p className="danger-note">
+            После успешного импорта выбранные активы будут удалены из MP VM.
+          </p>
+        ) : null}
+      </Disclosure>
       <div className="action-row">
         <Button busy={busy.export} onClick={runExport}>
           Выполнить экспорт
         </Button>
-        <label className="upload-button">
-          Импорт CSV файла
-          <input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
-        </label>
+        <ActionMenu label="Импорт">
+          <label className="upload-button">
+            Импорт CSV файла
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={importCsvFile}
+            />
+          </label>
+          <Button variant="secondary" busy={busy.sample} onClick={importSample}>
+            Импортировать пример CSV
+          </Button>
+        </ActionMenu>
       </div>
-      <section
-        className="options-card"
-        aria-labelledby="vulnerability-reports-title"
+      <Disclosure
+        title="Отчётность по уязвимостям"
+        description="CSV по ОС, ПО и Docker"
+        meta="Дополнительно"
       >
-        <div>
-          <h3 id="vulnerability-reports-title">Отчётность по уязвимостям</h3>
-          <p>
-            Детальные CSV формируются по локально сохранённым карточкам хостов.
-            Пустой список включает все хосты.
-          </p>
-        </div>
         <Field label="Asset ID для отчёта" wide>
           <textarea
             rows={3}
@@ -1665,8 +1808,12 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
             Скачать уязвимости Docker
           </Button>
         </div>
-      </section>
-      {result ? <pre className="result-box">{result}</pre> : null}
+      </Disclosure>
+      {result ? (
+        <Disclosure title="Результат операции" meta="JSON">
+          <pre className="result-box">{result}</pre>
+        </Disclosure>
+      ) : null}
     </Panel>
   );
 }
@@ -1704,10 +1851,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [assetCardJob, setAssetCardJob] = useState(null);
   const [assetCardBatchJobs, setAssetCardBatchJobs] = useState([]);
   const [assetRefreshRun, setAssetRefreshRun] = useState(null);
-  const [assetBulkRefreshOperation, setAssetBulkRefreshOperation] = useState(null);
+  const [assetBulkRefreshOperation, setAssetBulkRefreshOperation] =
+    useState(null);
   const [assetRefreshTemplates, setAssetRefreshTemplates] = useState([]);
-  const [selectedRefreshTemplateId, setSelectedRefreshTemplateId] = useState("");
-  const [assetRefreshTemplatesError, setAssetRefreshTemplatesError] = useState("");
+  const [selectedRefreshTemplateId, setSelectedRefreshTemplateId] =
+    useState("");
+  const [assetRefreshTemplatesError, setAssetRefreshTemplatesError] =
+    useState("");
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
@@ -1757,27 +1907,26 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     Promise.allSettled([
       api("/api/asset-cards/build-jobs/active"),
       api("/api/asset-cards/refresh-scan/templates"),
-    ])
-      .then(([activeRequest, templatesRequest]) => {
-        if (!alive) return;
-        if (activeRequest.status === "fulfilled" && activeRequest.value.job) {
-          setAssetCardJob(activeRequest.value.job);
-        }
-        if (templatesRequest.status === "rejected") {
-          const error = templatesRequest.reason;
-          setAssetRefreshTemplatesError(
-            error?.operatorMessage || error?.message || String(error),
-          );
-          return;
-        }
-        const templatesResult = templatesRequest.value;
-        const rows = templatesResult.rows || [];
-        setAssetRefreshTemplates(rows);
-        setSelectedRefreshTemplateId(
-          templatesResult.recommended_task_id || rows[0]?.mp_task_id || "",
+    ]).then(([activeRequest, templatesRequest]) => {
+      if (!alive) return;
+      if (activeRequest.status === "fulfilled" && activeRequest.value.job) {
+        setAssetCardJob(activeRequest.value.job);
+      }
+      if (templatesRequest.status === "rejected") {
+        const error = templatesRequest.reason;
+        setAssetRefreshTemplatesError(
+          error?.operatorMessage || error?.message || String(error),
         );
-        setAssetRefreshTemplatesError("");
-      });
+        return;
+      }
+      const templatesResult = templatesRequest.value;
+      const rows = templatesResult.rows || [];
+      setAssetRefreshTemplates(rows);
+      setSelectedRefreshTemplateId(
+        templatesResult.recommended_task_id || rows[0]?.mp_task_id || "",
+      );
+      setAssetRefreshTemplatesError("");
+    });
     return () => {
       alive = false;
     };
@@ -2168,12 +2317,19 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   };
 
   useEffect(() => {
-    const assetId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("asset");
+    const assetId =
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("asset");
     if (!assetId) return;
-    api(`/api/asset-cards/${encodeURIComponent(assetId)}/summary`).then((card) => {
-      setSelectedCard(card);
-      setAssetWindowOpen(true);
-    }).catch((error) => showAlert(error.operatorMessage || error.message, "error"));
+    api(`/api/asset-cards/${encodeURIComponent(assetId)}/summary`)
+      .then((card) => {
+        setSelectedCard(card);
+        setAssetWindowOpen(true);
+      })
+      .catch((error) =>
+        showAlert(error.operatorMessage || error.message, "error"),
+      );
   }, [showAlert]);
 
   const updateLocalCard = (row) =>
@@ -2209,9 +2365,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       const result = await api("/api/asset-cards/refresh-scan/bulk", {
         method: "POST",
         headers: {
-          "X-Idempotency-Key": createIdempotencyKey(
-            "asset-cards-bulk-refresh",
-          ),
+          "X-Idempotency-Key": createIdempotencyKey("asset-cards-bulk-refresh"),
         },
         body: JSON.stringify({
           selection: "all",
@@ -2225,7 +2379,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         }),
       });
       if (!result.operation_id || !result.operation) {
-        throw new Error("Массовое обновление карточек не было поставлено в очередь.");
+        throw new Error(
+          "Массовое обновление карточек не было поставлено в очередь.",
+        );
       }
       setAssetBulkRefreshOperation(result.operation);
       showAlert(
@@ -2315,8 +2471,8 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const assetCardBatchCompletedCount = assetCardBatchJobs.filter(
     (job) => job.status === "completed",
   ).length;
-  const assetCardBatchFailedCount = assetCardBatchJobs.filter(
-    (job) => ["failed", "cancelled", "interrupted"].includes(job.status),
+  const assetCardBatchFailedCount = assetCardBatchJobs.filter((job) =>
+    ["failed", "cancelled", "interrupted"].includes(job.status),
   ).length;
   const assetCardBatchActiveCount = assetCardBatchJobs.filter((job) =>
     ACTIVE_ASSET_CARD_JOB_STATUSES.has(job.status),
@@ -2331,43 +2487,39 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   return (
     <Panel
       id="asset-cards"
-      eyebrow="04"
       title="Карточки активов"
-      description="Сборка карточки создаёт timeline token по asset_id, забирает root, metadata, вложенные узлы и коллекции asset tree, затем сохраняет полный снимок в PostgreSQL."
+      description="Найдите актив, соберите карточку и откройте сохранённые данные."
       action={
-        <div className="action-row">
+        <div className="row-actions">
           <Button
             variant="secondary"
             busy={busy.assetCardsLocal}
             onClick={loadLocalCards}
           >
-            Из БД
+            Сохранённые карточки
           </Button>
-          <Button
-            variant="success"
-            busy={busy.assetCardsBulkRefresh}
-            disabled={
-              !selectedRefreshTemplateId ||
-              assetCardJobActive ||
-              assetRefreshActive ||
-              assetBulkRefreshActive
-            }
-            onClick={updateAllLocalCards}
-          >
-            Обновить все карточки активов
-          </Button>
+          <ActionMenu label="Ещё">
+            <Button
+              busy={busy.assetCardsBulkRefresh}
+              disabled={
+                !selectedRefreshTemplateId ||
+                assetCardJobActive ||
+                assetRefreshActive ||
+                assetBulkRefreshActive
+              }
+              onClick={updateAllLocalCards}
+            >
+              Обновить все из MP VM
+            </Button>
+          </ActionMenu>
         </div>
       }
     >
-      <div className="options-card">
-        <div>
-          <h3>Шаблон повторного сканирования</h3>
-          <p>
-            Scope, scanner profile, коллекторы и учётные данные берутся из
-            выбранной существующей задачи MP VM. Цель каждой временной задачи
-            заменяется на IP обновляемой карточки.
-          </p>
-        </div>
+      <Disclosure
+        title="Обновление карточек из MP VM"
+        description="Шаблон сканирования и параллельность"
+        meta={selectedRefreshTemplateId ? "Шаблон выбран" : "Не настроено"}
+      >
         <Field label="Задача MP VM для обновления карточек">
           <select
             value={selectedRefreshTemplateId}
@@ -2404,7 +2556,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             Создайте такую задачу перед массовым обновлением карточек.
           </small>
         ) : null}
-      </div>
+      </Disclosure>
       <Field label="PDQL для получения asset_id">
         <textarea
           className="code-input"
@@ -2413,51 +2565,59 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           onChange={(event) => update("pdql", event.target.value)}
         />
       </Field>
-      <div className="form-grid form-grid--four form-grid--spaced">
-        <Field label="UTC offset">
-          <input
-            value={form.utc_offset}
-            onChange={(event) => update("utc_offset", event.target.value)}
+      <Disclosure
+        title="Параметры поиска"
+        description="Группы, фильтры и лимиты PDQL"
+        meta={
+          form.group_ids || form.asset_ids ? "Есть ограничения" : "По умолчанию"
+        }
+      >
+        <div className="form-grid form-grid--four">
+          <Field label="UTC offset">
+            <input
+              value={form.utc_offset}
+              onChange={(event) => update("utc_offset", event.target.value)}
+            />
+          </Field>
+          <Field label="Group IDs">
+            <input
+              value={form.group_ids}
+              onChange={(event) => update("group_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Field label="Asset filter IDs">
+            <input
+              value={form.asset_ids}
+              onChange={(event) => update("asset_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Field label="Сколько загрузить">
+            <input
+              value={form.asset_limit}
+              onChange={(event) => update("asset_limit", event.target.value)}
+              type="number"
+              min="1"
+              max="50000"
+            />
+          </Field>
+          <Field label="Размер пачки">
+            <input
+              value={form.batch_size}
+              onChange={(event) => update("batch_size", event.target.value)}
+              type="number"
+              min="1"
+              max="10000"
+            />
+          </Field>
+          <Toggle
+            label="Include nested groups"
+            checked={form.include_nested_groups}
+            onChange={(value) => update("include_nested_groups", value)}
           />
-        </Field>
-        <Field label="Group IDs">
-          <input
-            value={form.group_ids}
-            onChange={(event) => update("group_ids", event.target.value)}
-            placeholder="uuid, uuid"
-          />
-        </Field>
-        <Field label="Asset filter IDs">
-          <input
-            value={form.asset_ids}
-            onChange={(event) => update("asset_ids", event.target.value)}
-            placeholder="uuid, uuid"
-          />
-        </Field>
-        <Field label="Сколько загрузить">
-          <input
-            value={form.asset_limit}
-            onChange={(event) => update("asset_limit", event.target.value)}
-            type="number"
-            min="1"
-            max="50000"
-          />
-        </Field>
-        <Field label="Размер пачки">
-          <input
-            value={form.batch_size}
-            onChange={(event) => update("batch_size", event.target.value)}
-            type="number"
-            min="1"
-            max="10000"
-          />
-        </Field>
-        <Toggle
-          label="Include nested groups"
-          checked={form.include_nested_groups}
-          onChange={(value) => update("include_nested_groups", value)}
-        />
-      </div>
+        </div>
+      </Disclosure>
       <div className="action-row">
         <Button busy={busy.assetCandidateQuery} onClick={queryAssets}>
           Получить asset_id
@@ -2468,17 +2628,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       </div>
 
       <div className="asset-card-builder">
-        <Field label="PDQL уязвимостей Docker-контейнеров">
-          <textarea
-            className="code-input"
-            rows={8}
-            value={form.docker_vulnerability_pdql}
-            onChange={(event) =>
-              update("docker_vulnerability_pdql", event.target.value)
-            }
-          />
-        </Field>
-        <div className="form-grid form-grid--two">
+        <div className="asset-card-build-primary">
           <Field label="Выбранный asset_id">
             <input
               value={form.selected_asset_id}
@@ -2488,54 +2638,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               placeholder="1e41d857-9d80-0001-0000-000000000009"
             />
           </Field>
-          <Field label="Timeline datetime, Unix timestamp">
-            <input
-              value={form.timeline_timestamp}
-              onChange={(event) =>
-                update("timeline_timestamp", event.target.value)
-              }
-              type="number"
-              placeholder="пусто = сейчас"
-            />
-          </Field>
-          <Field label="Лимит запроса коллекции">
-            <input
-              value={form.limit_per_collection}
-              onChange={(event) =>
-                update("limit_per_collection", event.target.value)
-              }
-              type="number"
-              min="1"
-              max="5000"
-            />
-          </Field>
-          <Field label="Максимум элементов коллекции">
-            <input
-              value={form.max_items_per_collection}
-              onChange={(event) =>
-                update("max_items_per_collection", event.target.value)
-              }
-              type="number"
-              min="1"
-              max="50000"
-            />
-          </Field>
-          <Field label="Глубина обхода">
-            <input
-              value={form.max_depth}
-              onChange={(event) => update("max_depth", event.target.value)}
-              type="number"
-              min="0"
-              max="8"
-            />
-          </Field>
-          <Toggle
-            label="Сохранить карточку в БД"
-            checked={form.save_to_db}
-            onChange={(value) => update("save_to_db", value)}
-          />
-        </div>
-        <div className="action-row">
           <Button
             busy={busy.assetCardBuild}
             disabled={assetCardJobActive || assetCardBatchActive}
@@ -2544,16 +2646,81 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             Собрать карточку
           </Button>
         </div>
+        <Disclosure
+          title="Параметры сборки"
+          description="Docker PDQL, timeline и лимиты обхода"
+          meta={form.save_to_db ? "Сохранить в БД" : "Без сохранения"}
+        >
+          <Field label="PDQL уязвимостей Docker-контейнеров">
+            <textarea
+              className="code-input"
+              rows={6}
+              value={form.docker_vulnerability_pdql}
+              onChange={(event) =>
+                update("docker_vulnerability_pdql", event.target.value)
+              }
+            />
+          </Field>
+          <div className="form-grid form-grid--two form-grid--spaced">
+            <Field label="Timeline datetime, Unix timestamp">
+              <input
+                value={form.timeline_timestamp}
+                onChange={(event) =>
+                  update("timeline_timestamp", event.target.value)
+                }
+                type="number"
+                placeholder="пусто = сейчас"
+              />
+            </Field>
+            <Field label="Лимит запроса коллекции">
+              <input
+                value={form.limit_per_collection}
+                onChange={(event) =>
+                  update("limit_per_collection", event.target.value)
+                }
+                type="number"
+                min="1"
+                max="5000"
+              />
+            </Field>
+            <Field label="Максимум элементов коллекции">
+              <input
+                value={form.max_items_per_collection}
+                onChange={(event) =>
+                  update("max_items_per_collection", event.target.value)
+                }
+                type="number"
+                min="1"
+                max="50000"
+              />
+            </Field>
+            <Field label="Глубина обхода">
+              <input
+                value={form.max_depth}
+                onChange={(event) => update("max_depth", event.target.value)}
+                type="number"
+                min="0"
+                max="8"
+              />
+            </Field>
+            <Toggle
+              label="Сохранить карточку в БД"
+              checked={form.save_to_db}
+              onChange={(value) => update("save_to_db", value)}
+            />
+          </div>
+        </Disclosure>
       </div>
 
-      <section
-        className="options-card"
-        aria-labelledby="asset-card-batch-title"
+      <Disclosure
+        title="Пакетная сборка"
+        description="До двух карточек одновременно"
+        meta={
+          batchAssetIds.length
+            ? `Выбрано: ${batchAssetIds.length}`
+            : "Не выбрано"
+        }
       >
-        <div>
-          <h3 id="asset-card-batch-title">Пакетная сборка карточек</h3>
-          <p>Одновременно создаются и сохраняются в БД одна или две карточки.</p>
-        </div>
         <Field label="Asset ID для пакетной сборки" wide>
           <textarea
             rows={4}
@@ -2581,15 +2748,15 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             Собрать выбранные карточки
           </Button>
         </div>
-      </section>
+      </Disclosure>
 
       {assetCardBatchJobs.length ? (
         <section className="passport-job asset-card-job" aria-live="polite">
           <div className="passport-job__header">
             <strong>Пакетная сборка карточек</strong>
             <span>
-              Готово: {formatCount(assetCardBatchCompletedCount)} · Ошибки: {" "}
-              {formatCount(assetCardBatchFailedCount)} · В работе: {" "}
+              Готово: {formatCount(assetCardBatchCompletedCount)} · Ошибки:{" "}
+              {formatCount(assetCardBatchFailedCount)} · В работе:{" "}
               {formatCount(assetCardBatchActiveCount)}
             </span>
           </div>
@@ -2712,7 +2879,8 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             <div>
               <strong>Массовое обновление карточек активов</strong>
               <small>
-                {assetBulkRefreshOperation.message || "Операция поставлена в очередь."}
+                {assetBulkRefreshOperation.message ||
+                  "Операция поставлена в очередь."}
               </small>
             </div>
             <span
@@ -2727,7 +2895,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             aria-label="Прогресс массового обновления карточек"
             aria-valuemin="0"
             aria-valuemax="100"
-            aria-valuenow={Number(assetBulkRefreshOperation.progress_percent) || 0}
+            aria-valuenow={
+              Number(assetBulkRefreshOperation.progress_percent) || 0
+            }
           >
             <span
               style={{
@@ -2834,7 +3004,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                         disabled={
                           !row.asset_id ||
                           (!batchAssetIds.includes(row.asset_id) &&
-                            batchAssetIds.length >= 4)
+                            batchAssetIds.length >= 2)
                         }
                         aria-pressed={batchAssetIds.includes(row.asset_id)}
                         onClick={() => toggleBatchAsset(row.asset_id)}
@@ -2895,16 +3065,8 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                 sort={cardSort}
                 onSort={changeCardSort}
               >
-                ОС
+                Платформа
               </SortableHeader>
-              <SortableHeader
-                column="asset_type"
-                sort={cardSort}
-                onSort={changeCardSort}
-              >
-                Type
-              </SortableHeader>
-              <th>Data</th>
               <SortableHeader
                 column="last_seen"
                 sort={cardSort}
@@ -2938,11 +3100,11 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                       {[row.os_name, row.os_version]
                         .filter(Boolean)
                         .join(" ") || "—"}
-                    </td>
-                    <td>{row.asset_type || "—"}</td>
-                    <td>
-                      {formatCount(stats.table_rows)} строк ·{" "}
-                      {formatCount(stats.collections)} коллекций
+                      <small className="table-cell-meta">
+                        {row.asset_type || "Тип не указан"} ·{" "}
+                        {formatCount(stats.table_rows)} строк ·{" "}
+                        {formatCount(stats.collections)} коллекций
+                      </small>
                     </td>
                     <td>
                       <FreshnessBadge
@@ -2964,21 +3126,23 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                         >
                           Открыть
                         </Button>
-                        <Button
-                          variant="tiny"
-                          disabled={assetCardJobActive || assetRefreshActive}
-                          busy={busy[`assetCardUpdate:${row.asset_id}`]}
-                          onClick={() => updateLocalCard(row)}
-                        >
-                          Обновить
-                        </Button>
-                        <Button
-                          variant="tiny-danger"
-                          busy={busy[`assetCardDelete:${row.asset_id}`]}
-                          onClick={() => setPendingCardDelete(row)}
-                        >
-                          Удалить
-                        </Button>
+                        <ActionMenu label="Ещё">
+                          <Button
+                            variant="tiny"
+                            disabled={assetCardJobActive || assetRefreshActive}
+                            busy={busy[`assetCardUpdate:${row.asset_id}`]}
+                            onClick={() => updateLocalCard(row)}
+                          >
+                            Обновить
+                          </Button>
+                          <Button
+                            variant="tiny-danger"
+                            busy={busy[`assetCardDelete:${row.asset_id}`]}
+                            onClick={() => setPendingCardDelete(row)}
+                          >
+                            Удалить
+                          </Button>
+                        </ActionMenu>
                       </div>
                     </td>
                   </tr>
@@ -2986,7 +3150,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
               })
             ) : (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={5} className="empty-cell">
                   Соберите карточку или загрузите сохранённые из БД.
                 </td>
               </tr>
@@ -3323,14 +3487,24 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     });
 
   useEffect(() => {
-    const passportId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("passport");
+    const passportId =
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("passport");
     if (!passportId) return;
-    api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`).then((result) => {
-      const row = result.passport || { internal_id: passportId, raw_detail: result.raw || null };
-      setSelected(row);
-      setDetail(result.raw || row.raw_detail || {});
-      setPassportWindowOpen(true);
-    }).catch((error) => showAlert(error.operatorMessage || error.message, "error"));
+    api(`/api/vulnerability-passports/${encodeURIComponent(passportId)}`)
+      .then((result) => {
+        const row = result.passport || {
+          internal_id: passportId,
+          raw_detail: result.raw || null,
+        };
+        setSelected(row);
+        setDetail(result.raw || row.raw_detail || {});
+        setPassportWindowOpen(true);
+      })
+      .catch((error) =>
+        showAlert(error.operatorMessage || error.message, "error"),
+      );
   }, [showAlert]);
 
   const updatePassport = (row) =>
@@ -3398,18 +3572,8 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   return (
     <Panel
       id="passports"
-      eyebrow="05"
       title="Паспорта уязвимостей"
-      description="PDQL получает список паспортов, затем карточка открывается прямым REST API запросом по internalId."
-      action={
-        <Button
-          variant="secondary"
-          busy={busy.passportQuery}
-          onClick={queryPassports}
-        >
-          Получить паспорта
-        </Button>
-      }
+      description="Найдите паспорт и откройте его подробные данные."
     >
       <Field label="PDQL запрос">
         <textarea
@@ -3419,56 +3583,62 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           onChange={(event) => update("pdql", event.target.value)}
         />
       </Field>
-      <div className="form-grid form-grid--four form-grid--spaced">
-        <Field label="UTC offset">
-          <input
-            value={form.utc_offset}
-            onChange={(event) => update("utc_offset", event.target.value)}
+      <Disclosure
+        title="Параметры PDQL"
+        description="Группы, активы, лимиты и загрузка деталей"
+        meta={form.load_details ? "С деталями" : "Только список"}
+      >
+        <div className="form-grid form-grid--four">
+          <Field label="UTC offset">
+            <input
+              value={form.utc_offset}
+              onChange={(event) => update("utc_offset", event.target.value)}
+            />
+          </Field>
+          <Field label="Group IDs">
+            <input
+              value={form.group_ids}
+              onChange={(event) => update("group_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Field label="Asset IDs">
+            <input
+              value={form.asset_ids}
+              onChange={(event) => update("asset_ids", event.target.value)}
+              placeholder="uuid, uuid"
+            />
+          </Field>
+          <Field label="Сколько загрузить (пусто = все)">
+            <input
+              value={form.passport_limit}
+              onChange={(event) => update("passport_limit", event.target.value)}
+              type="number"
+              min="1"
+              placeholder="Без лимита"
+            />
+          </Field>
+          <Field label="Размер пачки">
+            <input
+              value={form.batch_size}
+              onChange={(event) => update("batch_size", event.target.value)}
+              type="number"
+              min="1"
+              max="10000"
+            />
+          </Field>
+          <Toggle
+            label="Include nested groups"
+            checked={form.include_nested_groups}
+            onChange={(value) => update("include_nested_groups", value)}
           />
-        </Field>
-        <Field label="Group IDs">
-          <input
-            value={form.group_ids}
-            onChange={(event) => update("group_ids", event.target.value)}
-            placeholder="uuid, uuid"
+          <Toggle
+            label="Сразу загрузить детали в БД"
+            checked={form.load_details}
+            onChange={(value) => update("load_details", value)}
           />
-        </Field>
-        <Field label="Asset IDs">
-          <input
-            value={form.asset_ids}
-            onChange={(event) => update("asset_ids", event.target.value)}
-            placeholder="uuid, uuid"
-          />
-        </Field>
-        <Field label="Сколько загрузить (пусто = все)">
-          <input
-            value={form.passport_limit}
-            onChange={(event) => update("passport_limit", event.target.value)}
-            type="number"
-            min="1"
-            placeholder="Без лимита"
-          />
-        </Field>
-        <Field label="Размер пачки">
-          <input
-            value={form.batch_size}
-            onChange={(event) => update("batch_size", event.target.value)}
-            type="number"
-            min="1"
-            max="10000"
-          />
-        </Field>
-        <Toggle
-          label="Include nested groups"
-          checked={form.include_nested_groups}
-          onChange={(value) => update("include_nested_groups", value)}
-        />
-        <Toggle
-          label="Сразу загрузить детали в БД"
-          checked={form.load_details}
-          onChange={(value) => update("load_details", value)}
-        />
-      </div>
+        </div>
+      </Disclosure>
       <div className="action-row">
         <Button busy={busy.passportQuery} onClick={queryPassports}>
           Выполнить PDQL
@@ -3478,7 +3648,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           busy={busy.passportLocal}
           onClick={loadAllLocalPassports}
         >
-          Из БД
+          Сохранённые
         </Button>
         <div className="inline-metric">
           На странице: <span>{formatCount(rows.length)}</span> · всего:{" "}
@@ -3575,8 +3745,6 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
               >
                 Название
               </SortableHeader>
-              <th>Краткое описание</th>
-              <th>CVE</th>
               <SortableHeader
                 column="severity"
                 sort={passportSort}
@@ -3632,18 +3800,18 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                       {row.name || row.external_id || "Без названия"}
                     </strong>
                     <span>{row.external_id}</span>
-                  </td>
-                  <td
-                    className="passport-description-cell"
-                    title={row.short_description || undefined}
-                  >
-                    {row.short_description || "нет данных"}
-                  </td>
-                  <td>
-                    {(row.cves || [])
-                      .map((item) => item.display_name)
-                      .filter(Boolean)
-                      .join(", ") || "n/a"}
+                    <small className="table-cell-meta">
+                      {(row.cves || [])
+                        .map((item) => item.display_name)
+                        .filter(Boolean)
+                        .join(", ") || "CVE не указан"}
+                    </small>
+                    {row.short_description ? (
+                      <details className="table-row-details">
+                        <summary>Описание</summary>
+                        <p>{row.short_description}</p>
+                      </details>
+                    ) : null}
                   </td>
                   <td>
                     <Severity value={row.severity} />
@@ -3678,27 +3846,29 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                       >
                         Открыть
                       </Button>
-                      <Button
-                        variant="tiny"
-                        busy={busy[`passportUpdate:${row.internal_id}`]}
-                        onClick={() => updatePassport(row)}
-                      >
-                        Обновить
-                      </Button>
-                      <Button
-                        variant="tiny-danger"
-                        busy={busy[`passportDelete:${row.internal_id}`]}
-                        onClick={() => setPendingPassportDelete(row)}
-                      >
-                        Удалить
-                      </Button>
+                      <ActionMenu label="Ещё">
+                        <Button
+                          variant="tiny"
+                          busy={busy[`passportUpdate:${row.internal_id}`]}
+                          onClick={() => updatePassport(row)}
+                        >
+                          Обновить
+                        </Button>
+                        <Button
+                          variant="tiny-danger"
+                          busy={busy[`passportDelete:${row.internal_id}`]}
+                          onClick={() => setPendingPassportDelete(row)}
+                        >
+                          Удалить
+                        </Button>
+                      </ActionMenu>
                     </div>
                   </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={9} className="empty-cell">
+                <td colSpan={7} className="empty-cell">
                   {passportTotal
                     ? "На этой странице нет записей."
                     : "Выполните PDQL или загрузите паспорта из БД."}
@@ -3945,18 +4115,46 @@ function AssetHistoryTab({ assetId }) {
   useEffect(() => {
     let active = true;
     api(`/api/asset-cards/${encodeURIComponent(assetId)}/history`)
-      .then((data) => active && setState({ loading: false, items: data.items || [], error: null }))
-      .catch((error) => active && setState({ loading: false, items: [], error }));
-    return () => { active = false; };
+      .then(
+        (data) =>
+          active &&
+          setState({ loading: false, items: data.items || [], error: null }),
+      )
+      .catch(
+        (error) => active && setState({ loading: false, items: [], error }),
+      );
+    return () => {
+      active = false;
+    };
   }, [assetId]);
   if (state.loading) return <div className="muted-text">Загрузка истории…</div>;
-  if (state.error) return <div className="error-text">История пока недоступна.</div>;
-  return <div className="asset-history-list">{state.items.length ? state.items.map((item) => (
-    <PassportSection key={item.captured_at} title={new Date(item.captured_at).toLocaleString()}>
-      <KeyValue label="Качество" value={`${item.quality?.status || "—"} (${item.quality?.score ?? "—"})`} />
-      <KeyValue label="Изменений" value={formatCount(item.changes?.length || 0)} />
-    </PassportSection>
-  )) : <span className="muted-text">История появится после следующего обновления карточки.</span>}</div>;
+  if (state.error)
+    return <div className="error-text">История пока недоступна.</div>;
+  return (
+    <div className="asset-history-list">
+      {state.items.length ? (
+        state.items.map((item) => (
+          <PassportSection
+            key={item.captured_at}
+            title={new Date(item.captured_at).toLocaleString()}
+          >
+            <KeyValue
+              label="Качество"
+              value={`${item.quality?.status || "—"} (${item.quality?.score ?? "—"})`}
+            />
+            <KeyValue
+              label="Изменений"
+              value={formatCount(item.changes?.length || 0)}
+            />
+          </PassportSection>
+        ))
+      ) : (
+        <span className="muted-text">
+          История появится после следующего обновления карточки.
+        </span>
+      )}
+    </div>
+  );
 }
 
 function AssetSummaryTab({
@@ -4177,8 +4375,8 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
               ? "Уязвимости ОС"
               : source.source === "docker"
                 ? "Docker-контейнеры"
-                : "Уязвимости ПО"}:{" "}
-            <strong>{formatCount(sourceCount(source))}</strong>
+                : "Уязвимости ПО"}
+            : <strong>{formatCount(sourceCount(source))}</strong>
           </span>
         ))}
         <span>
@@ -4349,16 +4547,18 @@ function AssetVulnerabilitiesTab({ card, onOpenPassport }) {
                           <td>
                             {passport ? (
                               <span className="asset-vulnerability-passport-auto">
-                              <button
-                                type="button"
-                                className="asset-vulnerability-passport-link"
-                                onClick={() => onOpenPassport?.(passport)}
-                                title={`Открыть паспорт ${assetPassportLabel(passport)}`}
-                              >
-                                {finding.cve_name || "Открыть паспорт"}
-                              </button>
+                                <button
+                                  type="button"
+                                  className="asset-vulnerability-passport-link"
+                                  onClick={() => onOpenPassport?.(passport)}
+                                  title={`Открыть паспорт ${assetPassportLabel(passport)}`}
+                                >
+                                  {finding.cve_name || "Открыть паспорт"}
+                                </button>
                                 {assetPassportMatchLabel(passport) ? (
-                                  <small>{assetPassportMatchLabel(passport)}</small>
+                                  <small>
+                                    {assetPassportMatchLabel(passport)}
+                                  </small>
                                 ) : null}
                               </span>
                             ) : (
@@ -4431,13 +4631,15 @@ function dockerGroupMetadata(group) {
   ].filter(Boolean);
   const isContainerGroup = Boolean(
     group.container_name ||
-      group.container_id ||
-      group.docker_engine ||
-      group.image_id,
+    group.container_id ||
+    group.docker_engine ||
+    group.image_id,
   );
 
   if (isContainerGroup) {
-    return containerMetadata.join(" · ") || "Метаданные контейнера не определены";
+    return (
+      containerMetadata.join(" · ") || "Метаданные контейнера не определены"
+    );
   }
 
   return (
@@ -4596,7 +4798,11 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       className="asset-vulnerability-pane"
       aria-label="Уязвимости актива"
     >
-      <div className="asset-vulnerability-subtabs" role="tablist" aria-label="Тип уязвимостей">
+      <div
+        className="asset-vulnerability-subtabs"
+        role="tablist"
+        aria-label="Тип уязвимостей"
+      >
         <button
           type="button"
           role="tab"
@@ -4623,8 +4829,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
               ? "Уязвимости ОС"
               : source.source === "docker"
                 ? "Docker-контейнеры"
-                : "Уязвимости ПО"}:{" "}
-            <strong>{formatCount(sourceCount(source))}</strong>
+                : "Уязвимости ПО"}
+            : <strong>{formatCount(sourceCount(source))}</strong>
           </span>
         ))}
         {vulnerabilityView === "regular" ? (
@@ -4655,7 +4861,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
           {vulnerabilityView === "docker" &&
           dockerSource?.status === "fallback" ? (
             <span className="asset-docker-source-status">
-              Docker-PDQL недоступен — использованы структурированные данные карточки.
+              Docker-PDQL недоступен — использованы структурированные данные
+              карточки.
             </span>
           ) : null}
         </div>
@@ -4736,8 +4943,8 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                             ? "Docker-контейнеры"
                             : source.title ||
                               (source.source === "os"
-                              ? "Уязвимости ОС"
-                              : "Уязвимости программного обеспечения")}{" "}
+                                ? "Уязвимости ОС"
+                                : "Уязвимости программного обеспечения")}{" "}
                           ({formatCount(sourceCount(source))})
                         </span>
                       </button>
@@ -4822,7 +5029,9 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                           <span className="asset-vulnerability-leaf">
                                             ›
                                           </span>
-                                          <strong>{finding.package_name}</strong>
+                                          <strong>
+                                            {finding.package_name}
+                                          </strong>
                                           {finding.package_version
                                             ? ` ${finding.package_version}`
                                             : ""}
@@ -4882,19 +5091,25 @@ function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                       <td>
                                         {passport ? (
                                           <span className="asset-vulnerability-passport-auto">
-                                          <button
-                                            type="button"
-                                            className="asset-vulnerability-passport-link"
-                                            onClick={() =>
-                                              onOpenPassport?.(passport)
-                                            }
-                                            title={`Открыть паспорт ${assetPassportLabel(passport)}`}
-                                          >
-                                            {finding.cve_name ||
-                                              "Открыть паспорт"}
-                                          </button>
-                                            {assetPassportMatchLabel(passport) ? (
-                                              <small>{assetPassportMatchLabel(passport)}</small>
+                                            <button
+                                              type="button"
+                                              className="asset-vulnerability-passport-link"
+                                              onClick={() =>
+                                                onOpenPassport?.(passport)
+                                              }
+                                              title={`Открыть паспорт ${assetPassportLabel(passport)}`}
+                                            >
+                                              {finding.cve_name ||
+                                                "Открыть паспорт"}
+                                            </button>
+                                            {assetPassportMatchLabel(
+                                              passport,
+                                            ) ? (
+                                              <small>
+                                                {assetPassportMatchLabel(
+                                                  passport,
+                                                )}
+                                              </small>
                                             ) : null}
                                           </span>
                                         ) : (

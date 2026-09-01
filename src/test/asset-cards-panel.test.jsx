@@ -39,7 +39,8 @@ describe("AssetCardsPanel batch builds", () => {
   beforeEach(() => {
     api.mockReset();
     api.mockImplementation((path) => {
-      if (path === "/api/asset-cards/build-jobs/active") return Promise.resolve({ job: null });
+      if (path === "/api/asset-cards/build-jobs/active")
+        return Promise.resolve({ job: null });
       if (path === "/api/asset-cards/refresh-scan/templates") {
         return Promise.resolve({ rows: [], recommended_task_id: null });
       }
@@ -47,20 +48,29 @@ describe("AssetCardsPanel batch builds", () => {
     });
   });
 
-  it("submits up to four deduplicated asset IDs as one batch", async () => {
-    const jobs = [job("asset-1"), job("asset-2"), job("asset-3"), job("asset-4")];
+  it("submits up to two deduplicated asset IDs as one batch", async () => {
+    const jobs = [job("asset-1"), job("asset-2")];
     api.mockImplementation((path) => {
-      if (path === "/api/asset-cards/build-jobs/active") return Promise.resolve({ job: null });
-      if (path === "/api/asset-cards/refresh-scan/templates") return Promise.resolve({ rows: [] });
-      if (path === "/api/asset-cards/build-jobs/batch") return Promise.resolve({ jobs });
+      if (path === "/api/asset-cards/build-jobs/active")
+        return Promise.resolve({ job: null });
+      if (path === "/api/asset-cards/refresh-scan/templates")
+        return Promise.resolve({ rows: [] });
+      if (path === "/api/asset-cards/build-jobs/batch")
+        return Promise.resolve({ jobs });
       return Promise.resolve({ rows: [], total: 0 });
     });
     renderPanel();
+    fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
-    fireEvent.change(await screen.findByLabelText("Asset ID для пакетной сборки"), {
-      target: { value: "asset-1\nasset-2, asset-1\nasset-3 asset-4" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Собрать выбранные карточки" }));
+    fireEvent.change(
+      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      {
+        target: { value: "asset-1\nasset-2, asset-1" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Собрать выбранные карточки" }),
+    );
 
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -69,7 +79,7 @@ describe("AssetCardsPanel batch builds", () => {
           method: "POST",
           headers: { "X-Idempotency-Key": "batch-test-key" },
           body: JSON.stringify({
-            asset_ids: ["asset-1", "asset-2", "asset-3", "asset-4"],
+            asset_ids: ["asset-1", "asset-2"],
             timeline_timestamp: null,
             limit_per_collection: 5000,
             max_items_per_collection: 5000,
@@ -83,19 +93,30 @@ describe("AssetCardsPanel batch builds", () => {
 
   it("includes the visible common build options in a batch request", async () => {
     api.mockImplementation((path) => {
-      if (path === "/api/asset-cards/build-jobs/active") return Promise.resolve({ job: null });
-      if (path === "/api/asset-cards/refresh-scan/templates") return Promise.resolve({ rows: [] });
-      if (path === "/api/asset-cards/build-jobs/batch") return Promise.resolve({ jobs: [job("asset-1")] });
+      if (path === "/api/asset-cards/build-jobs/active")
+        return Promise.resolve({ job: null });
+      if (path === "/api/asset-cards/refresh-scan/templates")
+        return Promise.resolve({ rows: [] });
+      if (path === "/api/asset-cards/build-jobs/batch")
+        return Promise.resolve({ jobs: [job("asset-1")] });
       return Promise.resolve({ rows: [], total: 0 });
     });
     renderPanel();
+    fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
+    fireEvent.click(screen.getByText("Параметры сборки").closest("summary"));
 
-    fireEvent.change(await screen.findByLabelText("Asset ID для пакетной сборки"), {
-      target: { value: "asset-1" },
-    });
-    fireEvent.change(screen.getByLabelText("Timeline datetime, Unix timestamp"), {
-      target: { value: "1712345678" },
-    });
+    fireEvent.change(
+      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      {
+        target: { value: "asset-1" },
+      },
+    );
+    fireEvent.change(
+      screen.getByLabelText("Timeline datetime, Unix timestamp"),
+      {
+        target: { value: "1712345678" },
+      },
+    );
     fireEvent.change(screen.getByLabelText("Лимит запроса коллекции"), {
       target: { value: "123" },
     });
@@ -105,10 +126,15 @@ describe("AssetCardsPanel batch builds", () => {
     fireEvent.change(screen.getByLabelText("Глубина обхода"), {
       target: { value: "4" },
     });
-    fireEvent.change(screen.getByLabelText("PDQL уязвимостей Docker-контейнеров"), {
-      target: { value: "from Docker | group(@Host)" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Собрать выбранные карточки" }));
+    fireEvent.change(
+      screen.getByLabelText("PDQL уязвимостей Docker-контейнеров"),
+      {
+        target: { value: "from Docker | group(@Host)" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Собрать выбранные карточки" }),
+    );
 
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -130,28 +156,41 @@ describe("AssetCardsPanel batch builds", () => {
   it("renders independent progress for every returned card job", async () => {
     const jobs = [job("asset-1", "running", 25), job("asset-2", "running", 70)];
     api.mockImplementation((path) => {
-      if (path === "/api/asset-cards/build-jobs/active") return Promise.resolve({ job: null });
-      if (path === "/api/asset-cards/refresh-scan/templates") return Promise.resolve({ rows: [] });
-      if (path === "/api/asset-cards/build-jobs/batch") return Promise.resolve({ jobs });
-      if (path === "/api/asset-cards/build-jobs/job-asset-1") return Promise.resolve(jobs[0]);
-      if (path === "/api/asset-cards/build-jobs/job-asset-2") return Promise.resolve(jobs[1]);
+      if (path === "/api/asset-cards/build-jobs/active")
+        return Promise.resolve({ job: null });
+      if (path === "/api/asset-cards/refresh-scan/templates")
+        return Promise.resolve({ rows: [] });
+      if (path === "/api/asset-cards/build-jobs/batch")
+        return Promise.resolve({ jobs });
+      if (path === "/api/asset-cards/build-jobs/job-asset-1")
+        return Promise.resolve(jobs[0]);
+      if (path === "/api/asset-cards/build-jobs/job-asset-2")
+        return Promise.resolve(jobs[1]);
       return Promise.resolve({ rows: [], total: 0 });
     });
     renderPanel();
+    fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
-    fireEvent.change(await screen.findByLabelText("Asset ID для пакетной сборки"), {
-      target: { value: "asset-1\nasset-2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Собрать выбранные карточки" }));
+    fireEvent.change(
+      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      {
+        target: { value: "asset-1\nasset-2" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Собрать выбранные карточки" }),
+    );
 
-    expect(await screen.findByRole("progressbar", { name: "Прогресс сборки карточки asset-1" })).toHaveAttribute(
-      "aria-valuenow",
-      "25",
-    );
-    expect(screen.getByRole("progressbar", { name: "Прогресс сборки карточки asset-2" })).toHaveAttribute(
-      "aria-valuenow",
-      "70",
-    );
+    expect(
+      await screen.findByRole("progressbar", {
+        name: "Прогресс сборки карточки asset-1",
+      }),
+    ).toHaveAttribute("aria-valuenow", "25");
+    expect(
+      screen.getByRole("progressbar", {
+        name: "Прогресс сборки карточки asset-2",
+      }),
+    ).toHaveAttribute("aria-valuenow", "70");
   });
 
   it("summarizes completed, failed, and active batch jobs", async () => {
@@ -161,20 +200,32 @@ describe("AssetCardsPanel batch builds", () => {
       job("asset-3", "running", 25),
     ];
     api.mockImplementation((path) => {
-      if (path === "/api/asset-cards/build-jobs/active") return Promise.resolve({ job: null });
-      if (path === "/api/asset-cards/refresh-scan/templates") return Promise.resolve({ rows: [] });
-      if (path === "/api/asset-cards/build-jobs/batch") return Promise.resolve({ jobs });
-      if (path === "/api/asset-cards/build-jobs/job-asset-3") return Promise.resolve(jobs[2]);
+      if (path === "/api/asset-cards/build-jobs/active")
+        return Promise.resolve({ job: null });
+      if (path === "/api/asset-cards/refresh-scan/templates")
+        return Promise.resolve({ rows: [] });
+      if (path === "/api/asset-cards/build-jobs/batch")
+        return Promise.resolve({ jobs });
+      if (path === "/api/asset-cards/build-jobs/job-asset-3")
+        return Promise.resolve(jobs[2]);
       return Promise.resolve({ rows: [], total: 0 });
     });
     renderPanel();
+    fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
-    fireEvent.change(await screen.findByLabelText("Asset ID для пакетной сборки"), {
-      target: { value: "asset-1\nasset-2\nasset-3" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Собрать выбранные карточки" }));
+    fireEvent.change(
+      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      {
+        target: { value: "asset-1\nasset-2" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Собрать выбранные карточки" }),
+    );
 
-    expect(await screen.findByText("Готово: 1 · Ошибки: 1 · В работе: 1")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Готово: 1 · Ошибки: 1 · В работе: 1"),
+    ).toBeInTheDocument();
     expect(screen.getByText("ошибка")).toBeInTheDocument();
   });
 });

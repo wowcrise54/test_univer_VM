@@ -40,43 +40,85 @@ describe("ExportPanel vulnerability reports", () => {
 
   it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
-    fireEvent.change(screen.getByRole("textbox", { name: "Asset ID для отчёта" }), {
-      target: { value: "asset-1, asset-1\nasset-2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Скачать уязвимости ОС" }));
+    fireEvent.click(
+      screen.getByText("Отчётность по уязвимостям").closest("summary"),
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Asset ID для отчёта" }),
+      {
+        target: { value: "asset-1, asset-1\nasset-2" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Скачать уязвимости ОС" }),
+    );
 
-    await waitFor(() => expect(downloadApiFile).toHaveBeenCalledWith(
-      "/api/reports/vulnerabilities/os/csv",
-      { method: "POST", body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }) },
-    ));
+    await waitFor(() =>
+      expect(downloadApiFile).toHaveBeenCalledWith(
+        "/api/reports/vulnerabilities/os/csv",
+        {
+          method: "POST",
+          body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }),
+        },
+      ),
+    );
     expect(runBusy).toHaveBeenCalledWith("report-os", expect.any(Function));
-    expect(showAlert).toHaveBeenCalledWith("CSV-отчёт сформирован: report.csv", "success");
+    expect(showAlert).toHaveBeenCalledWith(
+      "CSV-отчёт сформирован: report.csv",
+      "success",
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "Скачать уязвимости ПО" }));
-    await waitFor(() => expect(downloadApiFile).toHaveBeenLastCalledWith(
-      "/api/reports/vulnerabilities/software/csv",
-      expect.any(Object),
-    ));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Скачать уязвимости ПО" }),
+    );
+    await waitFor(() =>
+      expect(downloadApiFile).toHaveBeenLastCalledWith(
+        "/api/reports/vulnerabilities/software/csv",
+        expect.any(Object),
+      ),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /Docker/ }));
-    await waitFor(() => expect(downloadApiFile).toHaveBeenLastCalledWith(
-      "/api/reports/vulnerabilities/docker/csv",
-      { method: "POST", body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }) },
-    ));
+    await waitFor(() =>
+      expect(downloadApiFile).toHaveBeenLastCalledWith(
+        "/api/reports/vulnerabilities/docker/csv",
+        {
+          method: "POST",
+          body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }),
+        },
+      ),
+    );
     expect(runBusy).toHaveBeenCalledWith("report-docker", expect.any(Function));
   });
 
   it("shows the existing error alert when download fails", async () => {
-    const { showAlert } = renderPanel({ downloadError: new Error("Не удалось сформировать отчёт") });
-    fireEvent.click(screen.getByRole("button", { name: "Скачать уязвимости ОС" }));
-    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Не удалось сформировать отчёт", "error"));
+    const { showAlert } = renderPanel({
+      downloadError: new Error("Не удалось сформировать отчёт"),
+    });
+    fireEvent.click(
+      screen.getByText("Отчётность по уязвимостям").closest("summary"),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Скачать уязвимости ОС" }),
+    );
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith(
+        "Не удалось сформировать отчёт",
+        "error",
+      ),
+    );
   });
 
   it("keeps OS, software, and Docker download states independent", () => {
     renderPanel({ busy: { "report-os": true } });
+    fireEvent.click(
+      screen.getByText("Отчётность по уязвимостям").closest("summary"),
+    );
     const busyButton = screen.getByRole("button", { name: /Выполняю/ });
     expect(busyButton).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Скачать уязвимости ПО" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Скачать уязвимости ПО" }),
+    ).toBeEnabled();
     expect(screen.getByRole("button", { name: /Docker/ })).toBeEnabled();
   });
 });

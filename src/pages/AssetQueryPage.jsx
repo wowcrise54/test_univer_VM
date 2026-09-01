@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client.js";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
-import { Button, Panel } from "../shared/ui.jsx";
+import { ActionMenu, Button, Disclosure, Panel } from "../shared/ui.jsx";
 
 const EMPTY_RULE = () => ({ field_path: "", operator: "equals", value: "" });
 const EMPTY_GROUP = (depth = 0) => ({
@@ -246,9 +246,8 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
   return (
     <Panel
       id="asset-query"
-      eyebrow="07"
       title="Выборки по карточкам активов"
-      description="Задайте понятные условия по данным локальных карточек. Запросы к MP VM при поиске не выполняются."
+      description="Найдите активы по данным локальных карточек."
       action={
         <Button busy={busy.assetQuery} onClick={() => runQuery(0)}>
           Показать активы
@@ -297,6 +296,35 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
             <Button variant="secondary" onClick={startNewView}>
               Новая выборка
             </Button>
+          </div>
+        </div>
+        <Disclosure
+          title="Сохранение выборки"
+          description="Название и управление текущим набором условий"
+          meta={
+            activeView
+              ? activeViewChanged
+                ? "Не сохранено"
+                : activeView.name
+              : "Новая"
+          }
+        >
+          <div className="asset-query-view__save">
+            <label>
+              <span>Название выборки</span>
+              <input
+                value={viewName}
+                onChange={(event) => setViewName(event.target.value)}
+                placeholder="Например, Linux-серверы с портом 443"
+              />
+            </label>
+            <Button
+              variant="secondary"
+              busy={busy.assetQuerySave}
+              onClick={saveView}
+            >
+              {activeView ? "Сохранить изменения" : "Сохранить выборку"}
+            </Button>
             <Button
               variant="tiny-danger"
               disabled={!activeView}
@@ -305,35 +333,18 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
             >
               Удалить выборку
             </Button>
+            <span
+              className={`asset-query-view__state ${activeViewChanged ? "is-dirty" : ""}`}
+              aria-live="polite"
+            >
+              {activeView
+                ? activeViewChanged
+                  ? "Есть несохранённые изменения"
+                  : `Активна «${activeView.name}»`
+                : "Выборка ещё не сохранена"}
+            </span>
           </div>
-        </div>
-        <div className="asset-query-view__save">
-          <label>
-            <span>Название выборки</span>
-            <input
-              value={viewName}
-              onChange={(event) => setViewName(event.target.value)}
-              placeholder="Например, Linux-серверы с открытым портом 443"
-            />
-          </label>
-          <Button
-            variant="secondary"
-            busy={busy.assetQuerySave}
-            onClick={saveView}
-          >
-            {activeView ? "Сохранить изменения" : "Сохранить выборку"}
-          </Button>
-          <span
-            className={`asset-query-view__state ${activeViewChanged ? "is-dirty" : ""}`}
-            aria-live="polite"
-          >
-            {activeView
-              ? activeViewChanged
-                ? "Есть несохранённые изменения"
-                : `Активна выборка «${activeView.name}»`
-              : "Новая выборка ещё не сохранена"}
-          </span>
-        </div>
+        </Disclosure>
       </section>
 
       <QueryGroup
@@ -365,40 +376,45 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         ))}
       </datalist>
 
-      <div className="asset-query-result-options">
-        <div className="asset-query-columns" aria-label="Колонки результата">
-          <span>Показывать в таблице:</span>
-          {RESULT_COLUMNS.map(([key, label]) => (
-            <label key={key}>
-              <input
-                type="checkbox"
-                checked={columns.includes(key)}
-                onChange={() =>
-                  setColumns((current) =>
-                    current.includes(key)
-                      ? current.length > 1
-                        ? current.filter((item) => item !== key)
-                        : current
-                      : [...current, key],
-                  )
-                }
-              />
-              {label}
-            </label>
-          ))}
+      <Disclosure
+        title="Настройки результата"
+        description="Колонки и экспорт"
+        meta={`${columns.length} колонок`}
+      >
+        <div className="asset-query-result-options">
+          <div className="asset-query-columns" aria-label="Колонки результата">
+            <span>Колонки:</span>
+            {RESULT_COLUMNS.map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={columns.includes(key)}
+                  onChange={() =>
+                    setColumns((current) =>
+                      current.includes(key)
+                        ? current.length > 1
+                          ? current.filter((item) => item !== key)
+                          : current
+                        : [...current, key],
+                    )
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <Button
+            variant="secondary"
+            busy={busy.assetQueryExport}
+            onClick={exportCsv}
+          >
+            Скачать CSV
+          </Button>
         </div>
-        <Button
-          variant="secondary"
-          busy={busy.assetQueryExport}
-          onClick={exportCsv}
-        >
-          Скачать CSV
-        </Button>
-      </div>
+      </Disclosure>
 
       <div className="asset-query-result-header">
         <strong>Найдено активов: {result.total || 0}</strong>
-        <span>Подробности совпадения скрыты внутри каждой строки.</span>
       </div>
       <div className="table-shell">
         <table className="asset-query-table">
@@ -578,7 +594,7 @@ function QueryGroup({
       <legend>{depth ? `Группа условий ${depth}` : "Условия выборки"}</legend>
       <div className="query-group__controls">
         <label>
-          <span>Как объединять условия</span>
+          <span>Логика условий</span>
           <select
             value={group.combinator}
             onChange={(event) =>
@@ -589,23 +605,31 @@ function QueryGroup({
             <option value="or">Достаточно одного</option>
           </select>
         </label>
-        <label>
-          <span>Где искать совпадения</span>
-          <select
-            value={group.match_scope}
-            onChange={(event) => changeScope(event.target.value)}
-          >
-            <option value="host" disabled={parentScope === "same_entity"}>
-              Во всей карточке актива
-            </option>
-            <option value="same_entity">В одной записи списка</option>
-          </select>
-        </label>
-        <span className="query-group__hint">
-          {group.match_scope === "same_entity"
-            ? "Используйте этот режим, когда несколько условий должны относиться к одной записи, например к одному firewall-правилу."
-            : "Условия могут находиться в разных разделах карточки одного актива."}
-        </span>
+        <Disclosure
+          className="query-scope-disclosure"
+          title="Область совпадений"
+          meta={
+            group.match_scope === "same_entity" ? "Одна запись" : "Вся карточка"
+          }
+        >
+          <label>
+            <span>Где искать совпадения</span>
+            <select
+              value={group.match_scope}
+              onChange={(event) => changeScope(event.target.value)}
+            >
+              <option value="host" disabled={parentScope === "same_entity"}>
+                Во всей карточке актива
+              </option>
+              <option value="same_entity">В одной записи списка</option>
+            </select>
+          </label>
+          <span className="query-group__hint">
+            {group.match_scope === "same_entity"
+              ? "Несколько условий относятся к одной записи, например к одному firewall-правилу."
+              : "Условия могут находиться в разных разделах карточки одного актива."}
+          </span>
+        </Disclosure>
       </div>
       <div className="query-group__rules">
         {rules.map((item, index) =>
@@ -642,27 +666,29 @@ function QueryGroup({
         >
           Добавить условие
         </Button>
-        <Button
-          variant="tiny"
-          disabled={depth >= 2 || countRules(group) >= 20}
-          onClick={() => add(EMPTY_GROUP(depth + 1))}
-        >
-          Добавить группу условий
-        </Button>
-        {depth ? (
+        <ActionMenu label="Ещё">
           <Button
-            variant="tiny-danger"
-            disabled={!canRemove}
-            title={
-              canRemove
-                ? "Удалить эту группу"
-                : "В родительской группе должно остаться хотя бы одно условие"
-            }
-            onClick={onRemove}
+            variant="tiny"
+            disabled={depth >= 2 || countRules(group) >= 20}
+            onClick={() => add(EMPTY_GROUP(depth + 1))}
           >
-            Удалить группу
+            Добавить группу условий
           </Button>
-        ) : null}
+          {depth ? (
+            <Button
+              variant="tiny-danger"
+              disabled={!canRemove}
+              title={
+                canRemove
+                  ? "Удалить эту группу"
+                  : "В родительской группе должно остаться хотя бы одно условие"
+              }
+              onClick={onRemove}
+            >
+              Удалить группу
+            </Button>
+          ) : null}
+        </ActionMenu>
       </div>
     </fieldset>
   );
@@ -706,8 +732,9 @@ function QueryRule({
   return (
     <div className="query-rule">
       <label>
-        <span>Параметр актива {position}</span>
+        <span>Параметр</span>
         <input
+          aria-label={`Параметр актива ${position}`}
           list="asset-query-fields"
           value={rule.field_path}
           onChange={(event) => changeField(event.target.value)}
@@ -715,8 +742,9 @@ function QueryRule({
         />
       </label>
       <label>
-        <span>Сравнение {position}</span>
+        <span>Сравнение</span>
         <select
+          aria-label={`Сравнение ${position}`}
           value={safeOperator}
           onChange={(event) =>
             onChange({ ...rule, operator: event.target.value })
@@ -730,8 +758,9 @@ function QueryRule({
         </select>
       </label>
       <label>
-        <span>Значение {position}</span>
+        <span>Значение</span>
         <input
+          aria-label={`Значение ${position}`}
           disabled={!needsValue}
           type={field?.value_type === "number" ? "number" : "text"}
           value={needsValue ? rule.value : ""}

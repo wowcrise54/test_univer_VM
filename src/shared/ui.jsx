@@ -201,6 +201,73 @@ export function Panel({
   );
 }
 
+export function Disclosure({
+  title,
+  description,
+  meta,
+  defaultOpen = false,
+  children,
+  className = "",
+  onToggle,
+  ...props
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <details
+      {...props}
+      className={`disclosure ${className}`.trim()}
+      open={open}
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
+        onToggle?.(event);
+      }}
+    >
+      <summary>
+        <span className="disclosure__label">
+          <strong>{title}</strong>
+          {description ? <small>{description}</small> : null}
+        </span>
+        {meta ? <span className="disclosure__meta">{meta}</span> : null}
+        <span className="disclosure__chevron" aria-hidden="true">
+          {open ? "−" : "+"}
+        </span>
+      </summary>
+      <div className="disclosure__content">{children}</div>
+    </details>
+  );
+}
+
+export function ActionMenu({
+  label = "Ещё",
+  children,
+  className = "",
+  align = "end",
+}) {
+  const [open, setOpen] = useState(false);
+  const summaryRef = useRef(null);
+
+  return (
+    <details
+      className={`action-menu action-menu--${align} ${className}`.trim()}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary ref={summaryRef}>{label}</summary>
+      <div
+        className="action-menu__content"
+        onClick={(event) => {
+          if (!event.target.closest("button, a")) return;
+          setOpen(false);
+          summaryRef.current?.focus({ preventScroll: true });
+        }}
+      >
+        {children}
+      </div>
+    </details>
+  );
+}
+
 export function ConfirmDialog({
   open,
   title,

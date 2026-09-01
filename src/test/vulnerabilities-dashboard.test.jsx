@@ -359,6 +359,7 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard();
+    fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
 
     const heading = await screen.findByRole("heading", {
       name: "Трендовые уязвимости",
@@ -473,6 +474,7 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard();
+    fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
 
     expect(
       await screen.findByText("Трендовые паспорта временно недоступны"),
@@ -595,8 +597,15 @@ describe("vulnerability dashboard", () => {
 
   it("creates an asset group from the selected vulnerability", async () => {
     api.mockImplementation((path, options) => {
-      if (path === "/api/asset-groups/from-vulnerability" && options?.method === "POST") {
-        return Promise.resolve({ group_id: "group-1", name: "Уязвимость: CVE-2026-1001", member_count: 1 });
+      if (
+        path === "/api/asset-groups/from-vulnerability" &&
+        options?.method === "POST"
+      ) {
+        return Promise.resolve({
+          group_id: "group-1",
+          name: "Уязвимость: CVE-2026-1001",
+          member_count: 1,
+        });
       }
       return Promise.resolve(responseFor(path));
     });
@@ -605,15 +614,19 @@ describe("vulnerability dashboard", () => {
       name: "Показать хосты с уязвимостью Удалённое выполнение кода",
     });
     fireEvent.click(selectors[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Создать группу" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Создать группу" }),
+    );
 
-    await waitFor(() => expect(api).toHaveBeenCalledWith(
-      "/api/asset-groups/from-vulnerability",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining(VULNERABILITY.selector),
-      }),
-    ));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/asset-groups/from-vulnerability",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining(VULNERABILITY.selector),
+        }),
+      ),
+    );
   });
 
   it("hides remediation data and actions without remediation permissions", async () => {
@@ -757,6 +770,7 @@ describe("vulnerability dashboard", () => {
 
   it("renders historical risk deltas and switches the aggregation period", async () => {
     renderDashboard();
+    fireEvent.click(screen.getByText("История риска").closest("summary"));
 
     const heading = await screen.findByRole("heading", {
       name: "Динамика риска",
@@ -795,6 +809,7 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard();
+    fireEvent.click(screen.getByText("История риска").closest("summary"));
 
     expect(
       await screen.findByText("История временно недоступна"),

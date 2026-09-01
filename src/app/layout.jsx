@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { ActionMenu } from "../shared/ui.jsx";
 import { routes, workflowSteps } from "./navigation.js";
 
 function shouldHandleLinkClick(event) {
@@ -23,13 +24,20 @@ export function Sidebar({
   const permissions = new Set(currentUser?.permissions || []);
   const visibleRoutes = routes.filter(
     (route) =>
-      (!route.requiredPermission || permissions.has(route.requiredPermission)) &&
+      (!route.requiredPermission ||
+        permissions.has(route.requiredPermission)) &&
       (!route.requiredAnyPermission ||
         route.requiredAnyPermission.some((item) => permissions.has(item))),
   );
-  const primaryRoutes = visibleRoutes.filter((route) => route.group === "primary");
-  const secondaryRoutes = visibleRoutes.filter((route) => route.group !== "primary");
-  const secondaryActive = secondaryRoutes.some((route) => route.path === activePath);
+  const primaryRoutes = visibleRoutes.filter(
+    (route) => route.group === "primary",
+  );
+  const secondaryRoutes = visibleRoutes.filter(
+    (route) => route.group !== "primary",
+  );
+  const secondaryActive = secondaryRoutes.some(
+    (route) => route.path === activePath,
+  );
 
   useEffect(() => {
     if (
@@ -45,10 +53,7 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand">
         <div className="brand__mark">MP</div>
-        <div>
-          <strong>MP VM Client</strong>
-          <span>REST API + PostgreSQL</span>
-        </div>
+        <strong>VM Client</strong>
       </div>
       <nav ref={navRef} className="nav" aria-label="Основная навигация">
         <div className="nav-group__items">
@@ -107,9 +112,6 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
         onNavigate(route.path);
       }}
     >
-      <span className="nav-icon" aria-hidden="true">
-        {route.icon}
-      </span>
       <span className="nav-label">{route.label}</span>
       {route.id === "operations" && activeOperations ? (
         <em className="nav-badge" aria-hidden="true">
@@ -129,6 +131,8 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
   const isDown =
     status.state === "down" ||
     components.some(([, value]) => value?.state === "down");
+  const showContextActions =
+    stale || components.some(([key]) => key === "mpvm");
   return (
     <section
       className={`system-banner system-banner--${isDown ? "down" : "degraded"}`}
@@ -146,40 +150,44 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
         {primary?.trace_id ? <code>trace: {primary.trace_id}</code> : null}
       </div>
       <div className="system-banner__actions">
-        {components.some(([key]) => key === "mpvm") ? (
-          <button type="button" onClick={() => onNavigate("/connection")}>
-            Подключение
-          </button>
-        ) : null}
-        {stale ? (
-          <button type="button" onClick={() => onNavigate("/operations")}>
-            Операции
-          </button>
-        ) : null}
         <button type="button" onClick={onRetry}>
-          Проверить снова
+          Проверить
         </button>
+        {showContextActions ? (
+          <ActionMenu label="Подробнее">
+            {components.some(([key]) => key === "mpvm") ? (
+              <button type="button" onClick={() => onNavigate("/connection")}>
+                Подключение
+              </button>
+            ) : null}
+            {stale ? (
+              <button type="button" onClick={() => onNavigate("/operations")}>
+                Операции
+              </button>
+            ) : null}
+          </ActionMenu>
+        ) : null}
       </div>
     </section>
   );
 }
 
 const routeNextActions = {
-  vm: { label: "Запустить сканирование", path: "/tasks" },
+  vm: { label: "Сканировать", path: "/tasks" },
   connection: {
-    connectedLabel: "Открыть VM Management",
-    label: "Настроить подключение",
+    connectedLabel: "К обзору",
+    label: "Подключиться",
     path: "/vm",
   },
-  tasks: { label: "Открыть операции", path: "/operations" },
-  operations: { label: "Смотреть результаты", path: "/vulnerabilities" },
-  vulnerabilities: { label: "Открыть карточки", path: "/asset-cards" },
-  "asset-cards": { label: "Сформировать отчёт", path: "/export" },
-  assets: { label: "Сформировать отчёт", path: "/export" },
-  passports: { label: "Открыть карточки", path: "/asset-cards" },
-  "asset-query": { label: "Открыть карточки", path: "/asset-cards" },
-  export: { label: "Настроить автоматизацию", path: "/automations" },
-  automations: { label: "Открыть операции", path: "/operations" },
+  tasks: { label: "Операции", path: "/operations" },
+  operations: { label: "Результаты", path: "/vulnerabilities" },
+  vulnerabilities: { label: "Карточки", path: "/asset-cards" },
+  "asset-cards": { label: "Отчёт", path: "/export" },
+  assets: { label: "Отчёт", path: "/export" },
+  passports: { label: "Карточки", path: "/asset-cards" },
+  "asset-query": { label: "Карточки", path: "/asset-cards" },
+  export: { label: "Автоматизация", path: "/automations" },
+  automations: { label: "Операции", path: "/operations" },
 };
 
 export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
@@ -221,7 +229,7 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
           }
         >
           <span />
-          {session.connected ? "MP VM подключён" : "MP VM не подключён"}
+          {session.connected ? "Подключено" : "Нет подключения"}
         </div>
         {actionPath && actionLabel ? (
           <button
@@ -233,14 +241,17 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
             <strong aria-hidden="true">→</strong>
           </button>
         ) : null}
-        <button
-          type="button"
-          className="logout-button"
-          title={currentUser?.display_name || currentUser?.username}
-          onClick={onLogout}
+        <ActionMenu
+          className="account-menu"
+          label={
+            currentUser?.display_name || currentUser?.username || "Аккаунт"
+          }
         >
-          Выйти
-        </button>
+          {currentUser?.username ? <span>{currentUser.username}</span> : null}
+          <button type="button" onClick={onLogout}>
+            Выйти
+          </button>
+        </ActionMenu>
       </div>
     </header>
   );
@@ -264,6 +275,8 @@ export function WorkflowRail({ activeRouteId, onNavigate }) {
           <button
             type="button"
             className={`workflow-step workflow-step--${state}`}
+            aria-label={`${step.label}: ${step.hint}`}
+            title={step.hint}
             onClick={() => onNavigate(step.path)}
             key={step.id}
           >
@@ -272,7 +285,6 @@ export function WorkflowRail({ activeRouteId, onNavigate }) {
             </span>
             <span className="workflow-step__copy">
               <strong>{step.label}</strong>
-              <small>{step.hint}</small>
             </span>
           </button>
         );

@@ -8,7 +8,15 @@ import {
   createAutomationStep,
   validateAutomationSteps,
 } from "../features/automations/StepEditor.jsx";
-import { Button, ConfirmDialog, Field, Panel, Toggle } from "../shared/ui.jsx";
+import {
+  ActionMenu,
+  Button,
+  ConfirmDialog,
+  Disclosure,
+  Field,
+  Panel,
+  Toggle,
+} from "../shared/ui.jsx";
 
 export function AutomationsPage({ showAlert }) {
   const [tab, setTab] = useState("runbooks");
@@ -274,9 +282,12 @@ export function AutomationsPage({ showAlert }) {
           role="tabpanel"
           aria-labelledby="automation-tab-runbooks"
         >
-          <Panel
+          <Disclosure
+            key={editingId || "new-runbook"}
             title={editingId ? "Редактирование сценария" : "Новый сценарий"}
-            description="Добавьте действия в нужном порядке. Опубликованная версия остаётся неизменной."
+            description="Название, шаги и шаблоны"
+            meta={editingId ? "Черновик" : "Создать"}
+            defaultOpen={Boolean(editingId)}
           >
             <div className="form-grid form-grid--two">
               <Field label="Название">
@@ -366,32 +377,30 @@ export function AutomationsPage({ showAlert }) {
                 </button>
               ))}
             </div>
-          </Panel>
+          </Disclosure>
           <Panel
             title="Сценарии"
-            description="Публикация фиксирует версию, а дальнейшие изменения сохраняются в новом черновике."
+            description="Опубликованные версии и текущие черновики."
           >
             <div className="table-shell">
               <table>
                 <thead>
                   <tr>
                     <th>Название</th>
-                    <th>Версия</th>
-                    <th>Шаги</th>
-                    <th>Допуск</th>
+                    <th>Состояние</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
                 <tbody>
                   {runbooksQuery.isPending ? (
                     <tr>
-                      <td colSpan="5" className="empty-cell" role="status">
+                      <td colSpan="3" className="empty-cell" role="status">
                         Загрузка сценариев…
                       </td>
                     </tr>
                   ) : runbooksQuery.isError ? (
                     <tr>
-                      <td colSpan="5" className="empty-cell">
+                      <td colSpan="3" className="empty-cell">
                         <AutomationQueryError
                           label="сценарии"
                           query={runbooksQuery}
@@ -405,33 +414,19 @@ export function AutomationsPage({ showAlert }) {
                           <strong>{item.name}</strong>
                           <small>{item.description}</small>
                         </td>
-                        <td>{item.published_version || "Черновик"}</td>
-                        <td>{item.draft?.steps?.length || 0}</td>
                         <td>
-                          {item.allow_destructive
-                            ? "опасные разрешены"
-                            : "безопасный"}
+                          <strong>
+                            {item.published_version || "Черновик"}
+                          </strong>
+                          <small>
+                            {item.draft?.steps?.length || 0} шагов ·{" "}
+                            {item.allow_destructive
+                              ? "разрешены опасные действия"
+                              : "безопасный режим"}
+                          </small>
                         </td>
                         <td>
                           <div className="row-actions">
-                            <Button variant="tiny" onClick={() => edit(item)}>
-                              Изменить
-                            </Button>
-                            <Button
-                              variant="tiny"
-                              busy={busy[`runbook:publish:${item.runbook_id}`]}
-                              onClick={() => publish(item)}
-                            >
-                              Опубликовать
-                            </Button>
-                            <Button
-                              variant="tiny"
-                              disabled={!item.published_version}
-                              busy={busy[`runbook:run:${item.runbook_id}:dry`]}
-                              onClick={() => startRun(item, true)}
-                            >
-                              Проверить
-                            </Button>
                             <Button
                               variant="tiny"
                               disabled={!item.published_version}
@@ -440,6 +435,30 @@ export function AutomationsPage({ showAlert }) {
                             >
                               Запустить
                             </Button>
+                            <ActionMenu label="Ещё">
+                              <Button variant="tiny" onClick={() => edit(item)}>
+                                Изменить
+                              </Button>
+                              <Button
+                                variant="tiny"
+                                busy={
+                                  busy[`runbook:publish:${item.runbook_id}`]
+                                }
+                                onClick={() => publish(item)}
+                              >
+                                Опубликовать
+                              </Button>
+                              <Button
+                                variant="tiny"
+                                disabled={!item.published_version}
+                                busy={
+                                  busy[`runbook:run:${item.runbook_id}:dry`]
+                                }
+                                onClick={() => startRun(item, true)}
+                              >
+                                Проверить
+                              </Button>
+                            </ActionMenu>
                           </div>
                         </td>
                       </tr>
@@ -449,7 +468,7 @@ export function AutomationsPage({ showAlert }) {
                     !runbooksQuery.isError &&
                     !runbooks.length && (
                       <tr>
-                        <td colSpan="5" className="empty-cell">
+                        <td colSpan="3" className="empty-cell">
                           Сценарии ещё не созданы.
                         </td>
                       </tr>
@@ -467,83 +486,91 @@ export function AutomationsPage({ showAlert }) {
           role="tabpanel"
           aria-labelledby="automation-tab-schedules"
           title="Расписания"
-          description="Cron вычисляется в выбранной timezone; пропуски не догоняются."
+          description="Запуски по расписанию и их ближайшее выполнение."
         >
-          <div className="form-grid form-grid--four">
-            <Field label="Сценарий">
-              <select
-                value={scheduleForm.runbook_id}
-                onChange={(event) =>
-                  setScheduleForm({
-                    ...scheduleForm,
-                    runbook_id: event.target.value,
-                  })
+          <Disclosure
+            title="Новое расписание"
+            description="Сценарий, cron и часовой пояс"
+          >
+            <div className="form-grid form-grid--four">
+              <Field label="Сценарий">
+                <select
+                  value={scheduleForm.runbook_id}
+                  onChange={(event) =>
+                    setScheduleForm({
+                      ...scheduleForm,
+                      runbook_id: event.target.value,
+                    })
+                  }
+                >
+                  <option value="">Выберите</option>
+                  {publishedRunbooks.map((item) => (
+                    <option key={item.runbook_id} value={item.runbook_id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Название">
+                <input
+                  value={scheduleForm.name}
+                  onChange={(event) =>
+                    setScheduleForm({
+                      ...scheduleForm,
+                      name: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Cron">
+                <input
+                  value={scheduleForm.cron_expression}
+                  onChange={(event) =>
+                    setScheduleForm({
+                      ...scheduleForm,
+                      cron_expression: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Timezone">
+                <input
+                  value={scheduleForm.timezone}
+                  onChange={(event) =>
+                    setScheduleForm({
+                      ...scheduleForm,
+                      timezone: event.target.value,
+                    })
+                  }
+                />
+              </Field>
+            </div>
+            <div className="action-row">
+              <Toggle
+                label="Активно"
+                checked={scheduleForm.enabled}
+                onChange={(enabled) =>
+                  setScheduleForm({ ...scheduleForm, enabled })
+                }
+              />
+              <Button
+                busy={busy["schedule:create"]}
+                onClick={() =>
+                  perform(
+                    "schedule:create",
+                    () =>
+                      api("/api/automations/schedules", {
+                        method: "POST",
+                        body: JSON.stringify(scheduleForm),
+                      }),
+                    "Расписание создано.",
+                  )
                 }
               >
-                <option value="">Выберите</option>
-                {publishedRunbooks.map((item) => (
-                  <option key={item.runbook_id} value={item.runbook_id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Название">
-              <input
-                value={scheduleForm.name}
-                onChange={(event) =>
-                  setScheduleForm({ ...scheduleForm, name: event.target.value })
-                }
-              />
-            </Field>
-            <Field label="Cron">
-              <input
-                value={scheduleForm.cron_expression}
-                onChange={(event) =>
-                  setScheduleForm({
-                    ...scheduleForm,
-                    cron_expression: event.target.value,
-                  })
-                }
-              />
-            </Field>
-            <Field label="Timezone">
-              <input
-                value={scheduleForm.timezone}
-                onChange={(event) =>
-                  setScheduleForm({
-                    ...scheduleForm,
-                    timezone: event.target.value,
-                  })
-                }
-              />
-            </Field>
-          </div>
-          <div className="action-row">
-            <Toggle
-              label="Активно"
-              checked={scheduleForm.enabled}
-              onChange={(enabled) =>
-                setScheduleForm({ ...scheduleForm, enabled })
-              }
-            />
-            <Button
-              busy={busy["schedule:create"]}
-              onClick={() =>
-                perform(
-                  "schedule:create",
-                  () =>
-                    api("/api/automations/schedules", {
-                      method: "POST",
-                      body: JSON.stringify(scheduleForm),
-                    }),
-                  "Расписание создано.",
-                )
-              }
-            >
-              Создать расписание
-            </Button>
-          </div>
+                Создать расписание
+              </Button>
+            </div>
+          </Disclosure>
           <div className="table-shell">
             <table>
               <thead>

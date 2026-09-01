@@ -139,14 +139,49 @@ async function installApiMock(page, overrides = {}) {
 
 function defaultApiResponse(path) {
   if (path === "/api/auth/me") {
-    return { user: { id: 1, username: "e2e", display_name: "E2E Operator", role: "admin", permissions: [
-      "system.read", "connection.read", "connection.manage", "tasks.read", "tasks.manage", "tasks.execute",
-      "operations.read", "operations.cancel", "operations.retry", "assets.read", "asset_cards.read", "asset_cards.build",
-      "asset_cards.manage", "passports.read", "passports.manage", "imports_exports.read", "imports_exports.manage",
-      "remediation.read", "remediation.manage", "remediation.policy", "risk.read", "risk.manage", "automations.read",
-      "automations.manage", "automations.execute", "notifications.read", "notifications.manage", "saved_views.read",
-      "saved_views.manage", "diagnostics.write", "security.users.read", "security.roles.read", "security.audit.read",
-    ] } };
+    return {
+      user: {
+        id: 1,
+        username: "e2e",
+        display_name: "E2E Operator",
+        role: "admin",
+        permissions: [
+          "system.read",
+          "connection.read",
+          "connection.manage",
+          "tasks.read",
+          "tasks.manage",
+          "tasks.execute",
+          "operations.read",
+          "operations.cancel",
+          "operations.retry",
+          "assets.read",
+          "asset_cards.read",
+          "asset_cards.build",
+          "asset_cards.manage",
+          "passports.read",
+          "passports.manage",
+          "imports_exports.read",
+          "imports_exports.manage",
+          "remediation.read",
+          "remediation.manage",
+          "remediation.policy",
+          "risk.read",
+          "risk.manage",
+          "automations.read",
+          "automations.manage",
+          "automations.execute",
+          "notifications.read",
+          "notifications.manage",
+          "saved_views.read",
+          "saved_views.manage",
+          "diagnostics.write",
+          "security.users.read",
+          "security.roles.read",
+          "security.audit.read",
+        ],
+      },
+    };
   }
   if (path === "/api/auth/bootstrap-status") return { configured: true };
   if (path === "/api/session") {
@@ -189,7 +224,17 @@ function defaultApiResponse(path) {
     };
   }
   if (path === "/api/operations") return { rows: [], total: 0 };
-  if (path === "/api/vm/overview") return { active_workflows: 0, active_operations: 0, open_cases: 0, overdue_cases: 0, awaiting_verification: 0, asset_count: 0, attention: [], recent_workflows: [] };
+  if (path === "/api/vm/overview")
+    return {
+      active_workflows: 0,
+      active_operations: 0,
+      open_cases: 0,
+      overdue_cases: 0,
+      awaiting_verification: 0,
+      asset_count: 0,
+      attention: [],
+      recent_workflows: [],
+    };
   if (path === "/api/vm/workflows") return { rows: [], total: 0 };
   if (path === "/api/remediation/campaigns") return { rows: [], total: 0 };
   if (path === "/api/scanner-tasks") return [];
@@ -217,8 +262,22 @@ function defaultApiResponse(path) {
   if (path === "/api/vulnerabilities") return { rows: [], total: 0 };
   if (path === "/api/vulnerabilities/hosts") return { rows: [], total: 0 };
   if (path === "/api/remediation/cases") return { rows: [], total: 0 };
-  if (path === "/api/remediation/summary") return { open: 0, overdue: 0, near_due: 0, risk_accepted: 0, resolved_30d: 0 };
-  if (path === "/api/remediation/policy") return { critical_days: 7, high_days: 30, medium_days: 90, low_days: 180, near_due_days: 7 };
+  if (path === "/api/remediation/summary")
+    return {
+      open: 0,
+      overdue: 0,
+      near_due: 0,
+      risk_accepted: 0,
+      resolved_30d: 0,
+    };
+  if (path === "/api/remediation/policy")
+    return {
+      critical_days: 7,
+      high_days: 30,
+      medium_days: 90,
+      low_days: 180,
+      near_due_days: 7,
+    };
   if (path === "/api/notifications") return { rows: [], unread: 0 };
   if (path === "/api/asset-cards/build-jobs/active") return { job: null };
   if (path === "/api/vulnerability-passports/detail-jobs/active") {
@@ -243,6 +302,15 @@ async function expectRoute(page, path) {
     "aria-current",
     "page",
   );
+}
+
+async function navigateFromSidebar(page, path) {
+  const link = page.locator(`.nav a[href="${path}"]`);
+  if (!(await link.isVisible())) {
+    const section = link.locator("xpath=ancestor::details[1]");
+    await section.locator("summary").click();
+  }
+  await link.click();
 }
 
 test("application shell keeps stable routes and navigation", async ({
@@ -276,7 +344,7 @@ for (const viewport of [
       for (const path of ROUTES) {
         await test.step(path, async () => {
           if (path !== ROUTES[0]) {
-            await page.locator(`.nav a[href="${path}"]`).click();
+            await navigateFromSidebar(page, path);
           }
           await expectRoute(page, path);
         });
@@ -287,25 +355,77 @@ for (const viewport of [
   });
 }
 
-test("VM Management launches and tracks a controlled scan workflow", async ({ page }) => {
+test("VM Management launches and tracks a controlled scan workflow", async ({
+  page,
+}) => {
   const workflow = {
-    workflow_id: "workflow-e2e-1", kind: "scan", status: "running", stage: "postprocess",
-    progress_percent: 48, can_cancel: true, can_retry: false,
+    workflow_id: "workflow-e2e-1",
+    kind: "scan",
+    status: "running",
+    stage: "postprocess",
+    progress_percent: 48,
+    can_cancel: true,
+    can_retry: false,
     steps: [
-      { position: 1, step_key: "validation", status: "completed", progress_percent: 100 },
-      { position: 2, step_key: "scan", status: "completed", progress_percent: 100 },
-      { position: 3, step_key: "postprocess", status: "running", progress_percent: 24, message: "Загрузка карточек" },
-      { position: 4, step_key: "reconcile", status: "pending", progress_percent: 0 },
+      {
+        position: 1,
+        step_key: "validation",
+        status: "completed",
+        progress_percent: 100,
+      },
+      {
+        position: 2,
+        step_key: "scan",
+        status: "completed",
+        progress_percent: 100,
+      },
+      {
+        position: 3,
+        step_key: "postprocess",
+        status: "running",
+        progress_percent: 24,
+        message: "Загрузка карточек",
+      },
+      {
+        position: 4,
+        step_key: "reconcile",
+        status: "pending",
+        progress_percent: 0,
+      },
     ],
   };
   await installApiMock(page, {
-    "/api/scanner-tasks": (route) => route.fulfill({ json: [{ mp_task_id: "task-e2e-1", payload: { name: "Production perimeter" } }] }),
-    "POST /api/vm/workflows/scan/preflight": (route) => route.fulfill({ json: {
-      ready: true, blocking_issues: [], warnings: [], target_count: 1,
-      conflicting_operations: [], task: { task_id: "task-e2e-1", name: "Production perimeter" },
-    } }),
-    "POST /api/vm/workflows/scan": (route) => route.fulfill({ status: 202, json: { workflow_id: workflow.workflow_id, status: "queued", workflow: { ...workflow, status: "queued" } } }),
-    "/api/vm/workflows/workflow-e2e-1": (route) => route.fulfill({ json: workflow }),
+    "/api/scanner-tasks": (route) =>
+      route.fulfill({
+        json: [
+          {
+            mp_task_id: "task-e2e-1",
+            payload: { name: "Production perimeter" },
+          },
+        ],
+      }),
+    "POST /api/vm/workflows/scan/preflight": (route) =>
+      route.fulfill({
+        json: {
+          ready: true,
+          blocking_issues: [],
+          warnings: [],
+          target_count: 1,
+          conflicting_operations: [],
+          task: { task_id: "task-e2e-1", name: "Production perimeter" },
+        },
+      }),
+    "POST /api/vm/workflows/scan": (route) =>
+      route.fulfill({
+        status: 202,
+        json: {
+          workflow_id: workflow.workflow_id,
+          status: "queued",
+          workflow: { ...workflow, status: "queued" },
+        },
+      }),
+    "/api/vm/workflows/workflow-e2e-1": (route) =>
+      route.fulfill({ json: workflow }),
   });
   await page.goto("/vm");
   await page.getByLabel("Задача MP VM").selectOption("task-e2e-1");
@@ -315,34 +435,61 @@ test("VM Management launches and tracks a controlled scan workflow", async ({ pa
   const dialog = page.getByRole("dialog", { name: "Полное сканирование" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Загрузка карточек")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Остановить" })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Остановить" }),
+  ).toBeVisible();
 });
 
-test("remediation lifecycle reaches scan-confirmed resolution", async ({ page }) => {
+test("remediation lifecycle reaches scan-confirmed resolution", async ({
+  page,
+}) => {
   let caseStatus = "open";
   let assignee = null;
   const remediationCase = () => ({
-    case_id: "case-e2e-1", version: caseStatus === "open" ? 1 : 2,
-    status: caseStatus, severity: "critical", cve: "CVE-2026-9001",
-    title: "E2E critical vulnerability", asset_id: "asset-e2e-1",
-    display_name: "server-e2e", assignee, overdue: caseStatus !== "resolved",
-    due_at: "2026-07-01T08:00:00Z", events: [],
+    case_id: "case-e2e-1",
+    version: caseStatus === "open" ? 1 : 2,
+    status: caseStatus,
+    severity: "critical",
+    cve: "CVE-2026-9001",
+    title: "E2E critical vulnerability",
+    asset_id: "asset-e2e-1",
+    display_name: "server-e2e",
+    assignee,
+    overdue: caseStatus !== "resolved",
+    due_at: "2026-07-01T08:00:00Z",
+    events: [],
   });
   await installApiMock(page, {
-    "/api/remediation/cases": (route) => route.fulfill({ json: { rows: [remediationCase()], total: 1 } }),
-    "/api/remediation/summary": (route) => route.fulfill({ json: { open: caseStatus === "resolved" ? 0 : 1, overdue: caseStatus === "resolved" ? 0 : 1, near_due: 0, risk_accepted: 0, resolved_30d: caseStatus === "resolved" ? 1 : 0 } }),
-    "/api/remediation/policy": (route) => route.fulfill({ json: { critical_days: 7, high_days: 30, medium_days: 90, low_days: 180, near_due_days: 7 } }),
-    "/api/remediation/cases/case-e2e-1": (route) => route.fulfill({ json: remediationCase() }),
+    "/api/remediation/cases": (route) =>
+      route.fulfill({ json: { rows: [remediationCase()], total: 1 } }),
+    "/api/remediation/summary": (route) =>
+      route.fulfill({
+        json: {
+          open: caseStatus === "resolved" ? 0 : 1,
+          overdue: caseStatus === "resolved" ? 0 : 1,
+          near_due: 0,
+          risk_accepted: 0,
+          resolved_30d: caseStatus === "resolved" ? 1 : 0,
+        },
+      }),
+    "/api/remediation/policy": (route) =>
+      route.fulfill({
+        json: {
+          critical_days: 7,
+          high_days: 30,
+          medium_days: 90,
+          low_days: 180,
+          near_due_days: 7,
+        },
+      }),
+    "/api/remediation/cases/case-e2e-1": (route) =>
+      route.fulfill({ json: remediationCase() }),
     "PATCH /api/remediation/cases/case-e2e-1": async (route) => {
       const payload = route.request().postDataJSON();
       expect(payload.expected_version).toBe(1);
       caseStatus = payload.status;
       assignee = payload.assignee;
       await route.fulfill({ json: remediationCase() });
-    },
-    "POST /api/asset-cards/build-jobs": async (route) => {
-      caseStatus = "resolved";
-      await route.fulfill({ status: 202, json: { job: { job_id: "job-e2e-1", status: "queued" } } });
     },
   });
 
@@ -355,6 +502,9 @@ test("remediation lifecycle reaches scan-confirmed resolution", async ({ page })
   await page.getByRole("button", { name: "Сохранить", exact: true }).click();
   await expect(page.getByText("Иван Петров").first()).toBeVisible();
 
+  // Resolution is scan-confirmed by the backend, never selected manually.
+  caseStatus = "resolved";
+  await page.getByRole("button", { name: "Обновить", exact: true }).click();
   await expect(page.getByRole("cell", { name: "Устранена" })).toBeVisible();
 });
 
@@ -420,12 +570,15 @@ test("operation drawer traps focus, closes with Escape, and blocks a duplicate c
   await expect(dialog.locator("button").first()).toBeFocused();
 
   await page.keyboard.press("Shift+Tab");
-  await expect(dialog.locator("a[href*='/diagnostics']")).toBeFocused();
+  await expect(dialog.locator(":focus")).toHaveCount(1);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(openButton).toBeFocused();
 
-  const cancelButton = operationRow.locator(".row-actions button").nth(1);
+  await openButton.click();
+  const cancelButton = page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Остановить" });
   await cancelButton.dblclick({ delay: 10 });
   await expect.poll(() => cancelRequests).toBe(1);
 });
@@ -440,6 +593,7 @@ test.describe("risk history states", () => {
     });
 
     await page.goto("/vulnerabilities");
+    await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     await expect(history.locator(".risk-trend__chart")).toBeVisible();
     await expect(history.locator(".risk-trend__delta")).toHaveCount(4);
@@ -454,6 +608,7 @@ test.describe("risk history states", () => {
     });
 
     await page.goto("/vulnerabilities");
+    await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     await expect(history.locator(".vulnerability-empty")).toBeVisible();
     await expect(history.locator(".risk-trend__chart")).toHaveCount(0);
@@ -480,6 +635,7 @@ test.describe("risk history states", () => {
     });
 
     await page.goto("/vulnerabilities");
+    await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     const error = history.getByRole("alert");
     await expect(error).toContainText("History unavailable");

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, createIdempotencyKey } from "../api/client.js";
-import { Button, Panel, useDialogAccessibility } from "../shared/ui.jsx";
+import {
+  ActionMenu,
+  Button,
+  Disclosure,
+  Panel,
+  useDialogAccessibility,
+} from "../shared/ui.jsx";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
 
 const PAGE_SIZE = 50;
@@ -83,10 +89,19 @@ export function OperationsPage({
   }, [showAlert]);
 
   useEffect(() => {
-    const operationId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("operation");
+    const operationId =
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("operation");
     if (!operationId) return;
-    api(`/api/operations/${encodeURIComponent(operationId)}`).then(setSelected).catch((loadError) =>
-      showAlert?.(`Не удалось открыть операцию: ${loadError.message || String(loadError)}`, "error"));
+    api(`/api/operations/${encodeURIComponent(operationId)}`)
+      .then(setSelected)
+      .catch((loadError) =>
+        showAlert?.(
+          `Не удалось открыть операцию: ${loadError.message || String(loadError)}`,
+          "error",
+        ),
+      );
   }, [showAlert]);
 
   useEffect(() => {
@@ -218,14 +233,21 @@ export function OperationsPage({
   const lastUpdated = summary?.updated_at || updatedAt;
   const firstRow = total ? offset + 1 : 0;
   const lastRow = Math.min(offset + PAGE_SIZE, total);
+  const activeFilterCount = [filters.status, filters.kind].filter(
+    Boolean,
+  ).length;
+
+  const clearFilters = () => {
+    setOffset(0);
+    setFilters({ q: "", status: "", kind: "" });
+  };
 
   return (
     <>
       <Panel
         id="operations"
-        eyebrow="02"
         title="Центр операций"
-        description="Фоновые задания сохраняются в PostgreSQL и остаются видимыми после обновления страницы или перезапуска приложения."
+        description="Активные задания, ошибки и восстановление в одном списке."
         action={
           <Button
             variant="secondary"
@@ -242,19 +264,19 @@ export function OperationsPage({
         >
           <div>
             <strong>{globalTotal}</strong>
-            <span>всего</span>
+            <span>Всего</span>
           </div>
           <div>
             <strong>{globalActive}</strong>
-            <span>активных</span>
+            <span>Активные</span>
           </div>
           <div>
             <strong>{globalAttention}</strong>
-            <span>требуют внимания</span>
+            <span>Требуют внимания</span>
           </div>
           <div className={stale ? "is-stale" : ""}>
             <strong>{stale ? "Устарели" : "Актуальны"}</strong>
-            <span>{formatDate(lastUpdated)}</span>
+            <span>Обновлено {formatDate(lastUpdated)}</span>
           </div>
         </div>
 
@@ -265,79 +287,94 @@ export function OperationsPage({
             onChange={(event) => changeFilter("q", event.target.value)}
             placeholder="Поиск по объекту, operation ID или сообщению"
           />
-          <select
-            aria-label="Статус операции"
-            value={filters.status}
-            onChange={(event) => changeFilter("status", event.target.value)}
-          >
-            <option value="">Все статусы</option>
-            {[
-              "queued",
-              "running",
-              "cancelling",
-              "recovering",
-              "completed",
-              "completed_with_errors",
-              "failed",
-              "cancelled",
-              "interrupted",
-            ].map((status) => (
-              <option value={status} key={status}>
-                {statusLabel(status)}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Тип операции"
-            value={filters.kind}
-            onChange={(event) => changeFilter("kind", event.target.value)}
-          >
-            <option value="">Все типы</option>
-            {[
-              "scan_postprocess",
-              "asset_card_build",
-              "asset_card_bulk_refresh",
-              "asset_search_reindex",
-              "passport_detail_sync",
-              "pdql_export",
-              "asset_removal",
-              "task_delete",
-              "automation_run",
-            ].map((kind) => (
-              <option value={kind} key={kind}>
-                {kindLabel(kind)}
-              </option>
-            ))}
-          </select>
+          {filters.q || activeFilterCount ? (
+            <Button variant="ghost" onClick={clearFilters}>
+              Сбросить
+            </Button>
+          ) : null}
         </div>
 
-        <div className="saved-view-row">
-          <select
-            aria-label="Сохранённое представление"
-            value=""
-            onChange={(event) => applySavedView(event.target.value)}
-          >
-            <option value="">Сохранённые представления</option>
-            {savedViews.map((view) => (
-              <option value={view.id} key={view.id}>
-                {view.name}
-              </option>
-            ))}
-          </select>
-          <input
-            aria-label="Название представления"
-            value={viewName}
-            onChange={(event) => setViewName(event.target.value)}
-            placeholder="Название текущего представления"
-          />
-          <Button
-            variant="secondary"
-            busy={busy.saveOperationView}
-            onClick={saveCurrentView}
-          >
-            Сохранить
-          </Button>
-        </div>
+        <Disclosure
+          title="Фильтры и представления"
+          description="Статус, тип и сохранённые наборы"
+          meta={
+            activeFilterCount ? `Активно: ${activeFilterCount}` : "Без фильтров"
+          }
+        >
+          <div className="operation-filter-grid">
+            <select
+              aria-label="Статус операции"
+              value={filters.status}
+              onChange={(event) => changeFilter("status", event.target.value)}
+            >
+              <option value="">Все статусы</option>
+              {[
+                "queued",
+                "running",
+                "cancelling",
+                "recovering",
+                "completed",
+                "completed_with_errors",
+                "failed",
+                "cancelled",
+                "interrupted",
+              ].map((status) => (
+                <option value={status} key={status}>
+                  {statusLabel(status)}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Тип операции"
+              value={filters.kind}
+              onChange={(event) => changeFilter("kind", event.target.value)}
+            >
+              <option value="">Все типы</option>
+              {[
+                "scan_postprocess",
+                "asset_card_build",
+                "asset_card_bulk_refresh",
+                "asset_search_reindex",
+                "passport_detail_sync",
+                "pdql_export",
+                "asset_removal",
+                "task_delete",
+                "automation_run",
+              ].map((kind) => (
+                <option value={kind} key={kind}>
+                  {kindLabel(kind)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="saved-view-row">
+            <select
+              aria-label="Сохранённое представление"
+              value=""
+              onChange={(event) => applySavedView(event.target.value)}
+            >
+              <option value="">Сохранённые представления</option>
+              {savedViews.map((view) => (
+                <option value={view.id} key={view.id}>
+                  {view.name}
+                </option>
+              ))}
+            </select>
+            <input
+              aria-label="Название представления"
+              value={viewName}
+              onChange={(event) => setViewName(event.target.value)}
+              placeholder="Название текущего представления"
+            />
+            <Button
+              variant="secondary"
+              busy={busy.saveOperationView}
+              onClick={saveCurrentView}
+            >
+              Сохранить
+            </Button>
+          </div>
+        </Disclosure>
 
         <div
           className="table-shell operation-table-shell"
@@ -413,17 +450,17 @@ export function OperationsPage({
                     </td>
                     <td>
                       <strong>{kindLabel(operation.kind)}</strong>
-                      <span>{operation.message || operation.stage}</span>
+                      <small>{operation.message || operation.stage}</small>
+                      <code title={operation.operation_id}>
+                        {shortId(operation.operation_id)}
+                      </code>
                     </td>
                     <td>
-                      <span>
+                      <span className="operation-subject">
                         {operation.subject?.label ||
                           operation.subject?.id ||
                           "—"}
                       </span>
-                      <code title={operation.operation_id}>
-                        {shortId(operation.operation_id)}
-                      </code>
                     </td>
                     <td>
                       <div
@@ -454,27 +491,35 @@ export function OperationsPage({
                         >
                           Открыть
                         </Button>
-                        {operation.can_cancel ? (
-                          <Button
-                            variant="tiny-danger"
-                            busy={
-                              busy[`operationCancel:${operation.operation_id}`]
-                            }
-                            onClick={() => cancelOperation(operation)}
-                          >
-                            Остановить
-                          </Button>
-                        ) : null}
-                        {operation.can_retry ? (
-                          <Button
-                            variant="tiny"
-                            busy={
-                              busy[`operationRetry:${operation.operation_id}`]
-                            }
-                            onClick={() => retryOperation(operation)}
-                          >
-                            Повторить
-                          </Button>
+                        {operation.can_cancel || operation.can_retry ? (
+                          <ActionMenu label="Ещё">
+                            {operation.can_cancel ? (
+                              <Button
+                                variant="tiny-danger"
+                                busy={
+                                  busy[
+                                    `operationCancel:${operation.operation_id}`
+                                  ]
+                                }
+                                onClick={() => cancelOperation(operation)}
+                              >
+                                Остановить
+                              </Button>
+                            ) : null}
+                            {operation.can_retry ? (
+                              <Button
+                                variant="tiny"
+                                busy={
+                                  busy[
+                                    `operationRetry:${operation.operation_id}`
+                                  ]
+                                }
+                                onClick={() => retryOperation(operation)}
+                              >
+                                Повторить
+                              </Button>
+                            ) : null}
+                          </ActionMenu>
                         ) : null}
                       </div>
                     </td>
@@ -580,12 +625,6 @@ function OperationDetail({
         {operation.message ? (
           <p className="operation-message">{operation.message}</p>
         ) : null}
-        {operation.trace_id ? (
-          <div className="trace-box">
-            <span>Trace ID</span>
-            <code>{operation.trace_id}</code>
-          </div>
-        ) : null}
         <div className="operation-detail-actions">
           {operation.can_cancel ? (
             <Button
@@ -612,26 +651,40 @@ function OperationDetail({
             Диагностика
           </a>
         </div>
-        <section className="operation-timeline">
-          <h3>Хронология</h3>
-          {(operation.events || []).map((event) => (
-            <div key={event.id}>
-              <span />
-              <p>
-                <strong>
-                  {statusLabel(event.status)} · {event.stage}
-                </strong>
-                <small>
-                  {event.message || "Изменение состояния"} ·{" "}
-                  {formatDate(event.created_at)}
-                </small>
-              </p>
+        <Disclosure
+          title="Хронология"
+          description="Этапы и изменения состояния"
+          meta={`${(operation.events || []).length} событий`}
+          defaultOpen={ACTIVE_STATUSES.has(operation.status)}
+        >
+          <section className="operation-timeline">
+            {(operation.events || []).map((event) => (
+              <div key={event.id}>
+                <span />
+                <p>
+                  <strong>
+                    {statusLabel(event.status)} · {event.stage}
+                  </strong>
+                  <small>
+                    {event.message || "Изменение состояния"} ·{" "}
+                    {formatDate(event.created_at)}
+                  </small>
+                </p>
+              </div>
+            ))}
+          </section>
+        </Disclosure>
+        <Disclosure
+          title="Технические данные"
+          description="Trace ID, параметры и результат"
+        >
+          {operation.trace_id ? (
+            <div className="trace-box">
+              <span>Trace ID</span>
+              <code>{operation.trace_id}</code>
             </div>
-          ))}
-        </section>
-        <details className="raw-details">
-          <summary>Параметры и результат</summary>
-          <pre>
+          ) : null}
+          <pre className="operation-raw-data">
             {JSON.stringify(
               {
                 request: operation.request,
@@ -642,7 +695,7 @@ function OperationDetail({
               2,
             )}
           </pre>
-        </details>
+        </Disclosure>
       </aside>
     </div>
   );

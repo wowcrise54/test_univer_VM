@@ -161,6 +161,7 @@ describe("asset query UI", () => {
     const evidence = screen.getByText("Почему актив найден").closest("details");
     expect(evidence).not.toHaveAttribute("open");
 
+    fireEvent.click(screen.getByText("Сохранение выборки").closest("summary"));
     fireEvent.click(screen.getByRole("button", { name: "Удалить выборку" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("/api/saved-views/7", {
@@ -188,6 +189,7 @@ describe("asset query UI", () => {
     fireEvent.change(screen.getByLabelText("Значение 1"), {
       target: { value: "Linux" },
     });
+    fireEvent.click(screen.getByText("Сохранение выборки").closest("summary"));
     fireEvent.change(screen.getByLabelText("Название выборки"), {
       target: { value: "Linux-серверы" },
     });
@@ -253,10 +255,12 @@ describe("asset query UI", () => {
     expect(
       screen.getByRole("button", { name: "Удалить условие 1" }),
     ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Ещё" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Добавить группу условий" }),
     );
     expect(screen.getByText("Группа условий 1")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Ещё" })[1]);
     const removeGroup = screen.getByRole("button", { name: "Удалить группу" });
     expect(removeGroup).toBeEnabled();
     fireEvent.click(removeGroup);
