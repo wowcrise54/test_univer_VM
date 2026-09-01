@@ -479,9 +479,13 @@ class DiagnosticSession(requests.Session):
             self._error_count += int(not response.ok)
             self._rate_limit_count += int(response.status_code == 429)
         response_bytes = _response_size(response)
+        # Non-2xx responses are request failures, not successful completions.
+        # Keep a bounded, redacted response hint so pool/auth/TLS issues are
+        # diagnosable without copying credentials or full payloads.
+        response_hint = sanitize_text(response.text, max_length=512) if not response.ok else None
         log_event(
             "mpvm-http",
-            "mpvm.request.completed",
+            "mpvm.request.completed" if response.ok else "mpvm.request.failed",
             level=logging.INFO if response.ok else logging.WARNING,
             remote_request_id=remote_request_id,
             method=method.upper(),
@@ -492,6 +496,7 @@ class DiagnosticSession(requests.Session):
             retries=len(retry_history),
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
             response_bytes=response_bytes,
+            response_error=response_hint,
             worker=threading.current_thread().name,
         )
         if not kwargs.get("stream"):
