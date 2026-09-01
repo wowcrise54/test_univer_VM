@@ -12,6 +12,9 @@ Options:
   --compose-dir PATH   Compose project directory (default: current directory)
   --service NAME       Compose service name (default: mpvm-client)
   --since DURATION     Docker log period, e.g. 6h, 24h, 7d (default: 24h)
+  --from ISO8601        Include application events at/after UTC timestamp
+  --to ISO8601          Include application events before UTC timestamp
+  --last-hour           Automatically collect only the last 60 minutes
   --output-dir PATH    Directory for the resulting archive
                        (default: ./output/support-bundles)
   -h, --help           Show this help
@@ -23,7 +26,10 @@ EOF
 compose_dir=$(pwd)
 service=mpvm-client
 since=24h
+from_time=
+to_time=
 output_dir=./output/support-bundles
+last_hour=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -42,6 +48,21 @@ while [ "$#" -gt 0 ]; do
             since=$2
             shift 2
             ;;
+        --from)
+            [ "$#" -ge 2 ] || { echo "Missing value for --from" >&2; exit 2; }
+            from_time=$2
+            shift 2
+            ;;
+        --to)
+            [ "$#" -ge 2 ] || { echo "Missing value for --to" >&2; exit 2; }
+            to_time=$2
+            shift 2
+            ;;
+        --last-hour)
+            last_hour=true
+            since=1h
+            shift
+            ;;
         --output-dir)
             [ "$#" -ge 2 ] || { echo "Missing value for --output-dir" >&2; exit 2; }
             output_dir=$2
@@ -59,6 +80,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ "$last_hour" = true ]; then
+    from_time=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
+    to_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+fi
+
 case "$service" in
     ''|*[!A-Za-z0-9_.-]*)
         echo "Invalid service name: $service" >&2
@@ -72,6 +98,21 @@ case "$since" in
         exit 2
         ;;
 esac
+
+case "${from_time}${to_time}" in
+    *[!0-9T:+.Z-]*)
+        echo "Invalid --from/--to value; use UTC ISO8601, e.g. 2026-09-01T04:00:00Z" >&2
+        exit 2
+        ;;
+esac
+[ -z "$from_time" ] || [ -n "$to_time" ] || {
+    echo "--from and --to must be provided together" >&2
+    exit 2
+}
+[ -z "$to_time" ] || [ -n "$from_time" ] || {
+    echo "--from and --to must be provided together" >&2
+    exit 2
+}
 
 for command in docker tar mktemp; do
     command -v "$command" >/dev/null 2>&1 || {
@@ -120,6 +161,21 @@ if [ -n "$container_id" ]; then
         > "$work_dir/container-stats.txt" 2>&1 || true
     docker cp "$container_id:/app/output/logs/." "$work_dir/app-logs" \
         > "$work_dir/docker-cp.txt" 2>&1 || true
+
+    if [ -n "$from_time" ]; then
+        # JSONL timestamps are ISO8601 UTC, so lexical comparison is stable.
+        for log_file in "$work_dir"/app-logs/*.jsonl*; do
+            [ -f "$log_file" ] || continue
+            filtered="$log_file.filtered"
+            awk -v from="$from_time" -v to="$to_time" '
+                match($0, /"timestamp":"[^"]+"/) {
+                    ts=substr($0, RSTART+13, RLENGTH-14)
+                    if (ts >= from && ts < to) print
+                }
+            ' "$log_file" > "$filtered"
+            mv -- "$filtered" "$log_file"
+        done
+    fi
 else
     echo "No running or created container found for service '$service'." \
         > "$work_dir/container-not-found.txt"
@@ -129,6 +185,8 @@ cat > "$work_dir/manifest.txt" <<EOF
 service=$service
 compose_directory=$compose_dir
 docker_logs_since=$since
+application_logs_from=$from_time
+application_logs_to=$to_time
 archive_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
