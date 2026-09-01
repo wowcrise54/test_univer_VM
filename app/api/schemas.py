@@ -238,10 +238,10 @@ class AssetCardBuildBatchJobRequest(BaseModel):
                 "asset_ids_empty",
                 "asset_ids must contain at least one non-empty value",
             )
-        if len(normalized) > 4:
+        if len(normalized) > 2:
             raise PydanticCustomError(
                 "asset_ids_limit",
-                "asset_ids must contain no more than 4 unique values",
+                "asset_ids must contain no more than 2 unique values",
             )
         return normalized
 

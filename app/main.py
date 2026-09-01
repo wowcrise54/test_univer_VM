@@ -197,7 +197,7 @@ DOCKER_GROUP_CLEANUP_FUTURES: dict[str, Future[Any]] = {}
 DOCKER_GROUP_CLEANUP_FUTURES_LOCK = threading.Lock()
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
 ASSET_CARD_REFRESH_SEMAPHORE = CONTAINER.asset_card_refresh_semaphore
-ASSET_CARD_BUILD_WORKERS = 4
+ASSET_CARD_BUILD_WORKERS = 2
 ASSET_CARD_BUILD_SEMAPHORE = threading.BoundedSemaphore(ASSET_CARD_BUILD_WORKERS)
 ASSET_METADATA_CACHE = CONTAINER.asset_metadata_cache
 ASSET_METADATA_INFLIGHT = CONTAINER.asset_metadata_inflight
@@ -3012,7 +3012,8 @@ def local_asset_card(
 
 @asset_cards_router.put("/api/asset-cards/{asset_id}")
 def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> dict[str, Any]:
-    if not db.asset_card_exists(asset_id):
+    canonical_asset_id = str(job.get("asset_id") or asset_id)
+    if not db.asset_card_exists(canonical_asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
 
     client, token = require_mpvm()
@@ -5273,6 +5274,7 @@ def refresh_docker_containers_for_scanned_asset(
             postprocess_run_id=parent_operation_id,
             item_id=item_id,
             asset_id=asset_id,
+            canonical_asset_id=canonical_asset_id,
             attempt=attempt,
             iterations=iterations,
         )
@@ -5580,7 +5582,8 @@ def build_scanned_asset_card(
         logging.INFO,
         "asset_card_build_job_completed",
         item_id=item_id,
-        asset_id=asset_id,
+        asset_id=canonical_asset_id,
+        original_asset_id=asset_id if canonical_asset_id != asset_id else None,
         build_job_id=build_job_id,
     )
     return build_job_id

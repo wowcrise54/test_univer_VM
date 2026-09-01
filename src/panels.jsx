@@ -2099,20 +2099,20 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
     [form.batch_asset_ids],
   );
   const batchAssetIdsValid =
-    batchAssetIds.length >= 1 && batchAssetIds.length <= 4;
+    batchAssetIds.length >= 1 && batchAssetIds.length <= 2;
 
   const toggleBatchAsset = (assetId) => {
     if (!assetId) return;
     const selected = new Set(batchAssetIds);
     if (selected.has(assetId)) selected.delete(assetId);
-    else if (selected.size < 4) selected.add(assetId);
+    else if (selected.size < 2) selected.add(assetId);
     update("batch_asset_ids", [...selected].join("\n"));
   };
 
   const buildCardBatch = () =>
     runBusy("assetCardBatchBuild", async () => {
       if (!batchAssetIdsValid) {
-        throw new Error("Укажите от одного до четырёх уникальных asset_id.");
+        throw new Error("Укажите один или два уникальных asset_id.");
       }
       const result = await api("/api/asset-cards/build-jobs/batch", {
         method: "POST",
@@ -2552,23 +2552,23 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
       >
         <div>
           <h3 id="asset-card-batch-title">Пакетная сборка карточек</h3>
-          <p>Одновременно создаются и сохраняются в БД от 1 до 4 карточек.</p>
+          <p>Одновременно создаются и сохраняются в БД одна или две карточки.</p>
         </div>
         <Field label="Asset ID для пакетной сборки" wide>
           <textarea
             rows={4}
             value={form.batch_asset_ids}
             onChange={(event) => update("batch_asset_ids", event.target.value)}
-            placeholder="До четырёх Asset ID, каждый с новой строки"
+            placeholder="До двух Asset ID, каждый с новой строки"
             aria-describedby="asset-card-batch-help"
           />
         </Field>
         <small
           id="asset-card-batch-help"
-          className={batchAssetIds.length > 4 ? "error-text" : undefined}
+          className={batchAssetIds.length > 2 ? "error-text" : undefined}
         >
-          Выбрано: {formatCount(batchAssetIds.length)} из 4
-          {batchAssetIds.length > 4 ? ". Удалите лишние значения." : ""}
+          Выбрано: {formatCount(batchAssetIds.length)} из 2
+          {batchAssetIds.length > 2 ? ". Удалите лишние значения." : ""}
         </small>
         <div className="action-row">
           <Button

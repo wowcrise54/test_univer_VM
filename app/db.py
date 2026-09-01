@@ -43,7 +43,7 @@ _DB_CIRCUIT_REASON: str | None = None
 # prevents concurrent sync, trend, and detail batches from locking passport
 # rows in conflicting orders while keeping readers fully concurrent.
 _VULNERABILITY_PASSPORT_WRITE_LOCK = (1297106509, 1448301139)
-ASSET_CARD_BUILD_JOB_LIMIT = 4
+ASSET_CARD_BUILD_JOB_LIMIT = 2
 _ASSET_CARD_BUILD_ADMISSION_LOCK = (1297106509, 1094927172)
 
 
@@ -3316,7 +3316,7 @@ def create_asset_card_build_jobs(
     *,
     batch_operation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Atomically admit and register one to four independent asset-card jobs."""
+    """Atomically admit and register one or two independent asset-card jobs."""
     if not 1 <= len(jobs) <= ASSET_CARD_BUILD_JOB_LIMIT:
         raise ValueError(f"jobs must contain between 1 and {ASSET_CARD_BUILD_JOB_LIMIT} items")
 
@@ -5418,6 +5418,10 @@ def rebind_scan_postprocess_asset(build_job_id: str, canonical_asset_id: str) ->
     with connect() as conn:
         conn.execute(
             "UPDATE scan_postprocess_items SET asset_id = %s, updated_at = %s WHERE build_job_id = %s",
+            (canonical_asset_id, now_utc(), build_job_id),
+        )
+        conn.execute(
+            "UPDATE asset_card_build_jobs SET asset_id = %s, updated_at = %s WHERE job_id = %s",
             (canonical_asset_id, now_utc(), build_job_id),
         )
 
