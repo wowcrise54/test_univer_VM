@@ -1324,7 +1324,11 @@ def extract_successful_connection_targets(jobs: list[dict[str, Any]]) -> list[st
 def is_successful_connection_check_job(job: dict[str, Any]) -> bool:
     if "connectioncheck" not in status_strings(job.get("runMode")):
         return False
-    if not is_finished(job) or has_failed_status(job.get("status")) or has_error_status(job.get("errorStatus")):
+    # A connection-check run can be marked failed at the aggregate job level
+    # while still containing successful per-connection results.  The per-result
+    # statuses are the authoritative source for deciding whether a target can
+    # proceed to the main scan.
+    if not is_finished(job):
         return False
     results = job.get("connectionCheckResults")
     if not isinstance(results, list) or not results:

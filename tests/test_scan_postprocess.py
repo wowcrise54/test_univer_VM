@@ -1802,11 +1802,20 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
         first_group_finished = max(
             intervals[f"asset-{index}"]["finished"] for index in range(1, 5)
         )
+
         second_group_started = min(
             intervals[f"asset-{index}"]["started"] for index in range(5, 9)
         )
         self.assertEqual(result["asset_count"], 8)
         self.assertLessEqual(first_group_finished, second_group_started)
+
+    def test_connection_check_success_is_kept_when_job_aggregate_failed(self):
+        jobs = [{
+            "id": "connection-ok", "status": "finished", "errorStatus": "failed",
+            "runMode": "connectionCheck", "targets": ["10.0.0.7"],
+            "connectionCheckResults": [{"status": "success", "errors": []}],
+        }]
+        self.assertEqual(mpvm_client.extract_successful_connection_targets(jobs), ["10.0.0.7"])
 
 
 if __name__ == "__main__":
