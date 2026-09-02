@@ -3017,8 +3017,7 @@ def local_asset_card(
 
 @asset_cards_router.put("/api/asset-cards/{asset_id}")
 def update_local_asset_card(asset_id: str, payload: AssetCardUpdateRequest) -> dict[str, Any]:
-    canonical_asset_id = str(job.get("asset_id") or asset_id)
-    if not db.asset_card_exists(canonical_asset_id):
+    if not db.asset_card_exists(asset_id):
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
 
     client, token = require_mpvm()
@@ -5573,7 +5572,8 @@ def build_scanned_asset_card(
             message=(job or {}).get("message"),
         )
         raise RuntimeError((job or {}).get("message") or "Asset card build did not complete.")
-    if not db.asset_card_exists(asset_id):
+    canonical_asset_id = str(job.get("asset_id") or asset_id)
+    if not db.asset_card_exists(canonical_asset_id):
         scan_log(
             logging.ERROR,
             "asset_card_missing_after_build",
