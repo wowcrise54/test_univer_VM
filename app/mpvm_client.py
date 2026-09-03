@@ -17,6 +17,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from .diagnostics import log_event
 from .mpvm import build_retry_adapter, build_session, resolve_access_token
 
 
@@ -875,6 +876,19 @@ class MpVmClient:
             else:
                 last_message = f"run {run_id} has no jobs yet"
 
+            log_event(
+                "app",
+                "precheck_connection_check_poll",
+                task_id=task_id,
+                run_id=run_id,
+                run_status=sorted(status_strings(run.get("status"))) or None,
+                run_finished_at=run.get("finishedAt") or None,
+                run_error_status=str(run.get("errorStatus") or "")[:200] or None,
+                jobs_returned=len(jobs) or None,
+                successful_targets=len(successful_targets) or None,
+                rejection_counts=_connection_check_rejection_counts(jobs) or None,
+            )
+
             if is_finished(run):
                 if successful_targets:
                     return successful_targets, f"run {run_id}"
@@ -895,6 +909,23 @@ class MpVmClient:
                     f"no successful targets; {stop_message}"
                 )
             time.sleep(poll_seconds)
+        # Timeout: the run is still in progress. Keep the targets already
+        # collected instead of discarding them — discarding them is what turned
+        # a run with fully green connection-check jobs (visible in MPVM) into
+        # "precheck_failed" with successful_targets=[] on 2026-09-02.
+        if successful_targets:
+            log_event(
+                "app",
+                "precheck_connection_check_timed_out_with_targets",
+                task_id=task_id,
+                successful_targets=len(successful_targets),
+                last_status=last_message,
+            )
+            return successful_targets, (
+                f"timeout after {timeout_seconds / 60:.1f} minute(s); "
+                f"using {len(successful_targets)} successful target(s) collected so far; "
+                f"last status: {last_message}"
+            )
         return [], f"timeout after {timeout_seconds / 60:.1f} minute(s); last status: {last_message}"
 
     def wait_for_task_success(
@@ -1345,10 +1376,52 @@ def is_successful_connection_check_result(result: Any) -> bool:
 
 
 def is_finished(data: dict[str, Any]) -> bool:
+    # A run that is explicitly in progress is not finished even if MPVM already
+    # sets finishedAt (observed on 2026-09-02: the connection-check run carried
+    # finishedAt while its jobs were still running).
+    if any(status in _IN_PROGRESS_STATUSES for status in status_strings(data.get("status"))):
+        return False
     if data.get("finishedAt"):
         return True
     statuses = status_strings(data.get("status"))
     return any(status in {"finished", "completed", "failed", "stopped", "suspended"} for status in statuses)
+
+
+_IN_PROGRESS_STATUSES = {"inprogress", "running", "started", "assigned", "scheduled", "pending", "queued"}
+
+
+def _connection_check_rejection_counts(jobs: list[dict[str, Any]]) -> dict[str, int]:
+    """Explain why connection-check jobs were not counted as successful.
+
+    Diagnostic-only; used to make the next precheck failure self-explanatory in
+    ``precheck_connection_check_poll`` events.
+    """
+    counts: dict[str, int] = {}
+    for job in jobs:
+        if "connectioncheck" not in status_strings(job.get("runMode")):
+            counts["non_connection_check"] = counts.get("non_connection_check", 0) + 1
+            continue
+        if not is_finished(job):
+            counts["job_not_finished"] = counts.get("job_not_finished", 0) + 1
+            continue
+        if has_failed_status(job.get("status")):
+            counts["job_status_failed"] = counts.get("job_status_failed", 0) + 1
+            continue
+        if has_error_status(job.get("errorStatus")):
+            counts["job_error_status"] = counts.get("job_error_status", 0) + 1
+            continue
+        results = job.get("connectionCheckResults")
+        if not isinstance(results, list) or not results:
+            counts["no_results"] = counts.get("no_results", 0) + 1
+            continue
+        if not all(is_successful_connection_check_result(result) for result in results):
+            counts["result_not_success"] = counts.get("result_not_success", 0) + 1
+            continue
+        targets = job.get("targets")
+        if not isinstance(targets, list) or not any(isinstance(t, str) and t for t in targets):
+            counts["no_targets"] = counts.get("no_targets", 0) + 1
+            continue
+    return counts
 
 
 def has_failed_status(value: Any) -> bool:

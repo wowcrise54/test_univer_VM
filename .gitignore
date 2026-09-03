@@ -34,6 +34,13 @@ output/playwright/
 
 # Local tool artifacts
 .superdesign/tmp/
+.audit_dupes.py
+hermes-health.json
+hermes-install-flow.html
+
+# Temporary analysis scripts and dumps
+_tmp_*.py
+_tmp_*.txt
 
 # Logs and scratch files
 *.log
