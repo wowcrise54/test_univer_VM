@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     bootstrap_admin_display_name: str = "Administrator"
     auth_session_hours: int = 12
     auth_cookie_secure: bool = False
+    attention_search_enabled: bool = True
 
     @field_validator(
         "timeout",

@@ -10,6 +10,7 @@ from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
 from .compliance import ComplianceService
 from .asset_groups import AssetGroupService
+from .attention import AttentionService
 
 if TYPE_CHECKING:
     from ..core.runtime import OperationRunner
@@ -108,3 +109,4 @@ class ServiceBundle:
             repositories.vm_workflows, operation_runner, self.remediation,
             coverage=self.coverage, risk=self.risk, reconciliation_workers=reconciliation_workers,
         )
+        self.attention = AttentionService(repositories.attention)

@@ -8,6 +8,7 @@ from .vulnerabilities import router as vulnerabilities_router
 from .compliance import dashboard_router as compliance_dashboard_router
 from .compliance import report_router as compliance_report_router
 from .asset_groups import router as asset_groups_router
+from .attention import router as attention_router
 
 system_router = APIRouter(tags=["system"])
 session_router = APIRouter(tags=["session"])
@@ -46,4 +47,5 @@ API_ROUTERS = (
     coverage_router,
     risk_router,
     vm_router,
+    attention_router,
 )

@@ -32,7 +32,7 @@ class AppContainer:
         )
         self.settings = settings
         self.session = RuntimeSession()
-        self.repositories = RepositoryBundle()
+        self.repositories = RepositoryBundle(coverage_stale_days=settings.coverage_stale_days)
         self.operation_runner = OperationRunner(
             {
                 "scan-postprocess": scan_postprocess_workers,

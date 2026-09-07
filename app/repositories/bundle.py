@@ -10,6 +10,7 @@ from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 from .compliance import ComplianceRepository
 from .asset_groups import AssetGroupRepository
+from .attention import AttentionRepository
 
 
 class OperationsRepository:
@@ -74,7 +75,7 @@ class AssetQueryRepository:
 
 
 class RepositoryBundle:
-    def __init__(self) -> None:
+    def __init__(self, *, coverage_stale_days: int = 14) -> None:
         self.operations = OperationsRepository()
         self.tasks = TasksRepository()
         self.assets = AssetsRepository()
@@ -89,3 +90,4 @@ class RepositoryBundle:
         self.coverage = CoverageRepository()
         self.risk = RiskRepository()
         self.vm_workflows = VmWorkflowRepository()
+        self.attention = AttentionRepository(stale_days=coverage_stale_days)

@@ -467,5 +467,6 @@ def required_permission(method:str,path:str)->str|None:
         if any(path.endswith(s) for s in ("/run","/cancel","/retry")): return "automations.execute"
         return "automations.read" if method in {"GET","HEAD"} else "automations.manage"
     if path.startswith("/api/notifications"): return "notifications.read" if method in {"GET","HEAD"} else "notifications.manage"
+    if path in {"/api/attention", "/api/search"}: return "system.read"
     if path.startswith("/api/system") or path=="/api/defaults": return "system.read"
     return "system.read" if method in {"GET","HEAD"} else "__deny__"

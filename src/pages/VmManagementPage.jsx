@@ -51,6 +51,12 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     queryFn: () => api(`/api/remediation/campaigns/${encodeURIComponent(selectedCampaignId)}`),
     enabled: Boolean(selectedCampaignId),
   });
+  const attention = useQuery({
+    queryKey: ["attention"],
+    queryFn: () => api("/api/attention?limit=100"),
+    enabled: permissions.has("operations.read") || permissions.has("remediation.read") || permissions.has("assets.read") || permissions.has("automations.read"),
+    refetchInterval: 15000,
+  });
 
   useEffect(() => {
     if (!taskId && tasks.data?.length) setTaskId(tasks.data[0].mp_task_id);
@@ -163,13 +169,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
         {!permissions.has("tasks.execute") ? <small>Для запуска требуется право tasks.execute.</small> : null}
       </section>
 
-      <section className="panel vm-attention">
-        <div className="panel__header"><div><h2>Требуют внимания</h2></div></div>
-        <div className="vm-attention-list">{(data.attention || []).length ? data.attention.map((item) =>
-          <a href={`/remediation?case=${encodeURIComponent(item.case_id)}`} key={item.case_id}>
-            <span className={`severity severity--${item.severity}`}>{item.severity}</span><div><strong>{item.cve || item.title}</strong><small>{item.asset_id} · {date(item.due_at)}</small></div><b aria-hidden="true">→</b>
-          </a>) : <p className="empty-cell">Срочных кейсов нет.</p>}</div>
-      </section>
+      <AttentionQueue query={attention} currentUser={currentUser} onNavigate={onNavigate} />
     </div>
 
     <section className="panel" id="vm-workflows">
@@ -189,6 +189,54 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     {selectedWorkflowId ? <WorkflowDrawer item={workflow.data} loading={workflow.isLoading} onClose={() => { setSelectedWorkflowId(null); setQuery({}); }} onCancel={() => workflowAction("cancel")} onRetry={() => workflowAction("retry")} /> : null}
     {selectedCampaignId ? <CampaignDrawer item={campaign.data} loading={campaign.isLoading} permissions={permissions} showAlert={showAlert} onWorkflow={openWorkflow} onRefresh={refresh} onClose={() => { setSelectedCampaignId(null); setQuery({}); }} /> : null}
   </div>;
+}
+
+function AttentionQueue({ query, currentUser, onNavigate }) {
+  const [type, setType] = useState("");
+  const [priority, setPriority] = useState("");
+  const [mine, setMine] = useState(false);
+  const permissions = useMemo(() => new Set(currentUser?.permissions || []), [currentUser]);
+  const allItems = query.data?.items || (Array.isArray(query.data) ? query.data : []);
+  const username = currentUser?.username || currentUser?.id;
+  const items = allItems.filter((item) =>
+    (!type || item.type === type) &&
+    (!priority || item.priority === priority) &&
+    (!mine || !username || item.owner === username || item.assignee === username),
+  );
+  const counts = allItems.reduce((acc, item) => {
+    acc[item.type] = (acc[item.type] || 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <section className="panel vm-attention" aria-labelledby="attention-title">
+      <div className="panel__header">
+        <div><h2 id="attention-title">Требуют действия</h2><p>Очередь критичных кейсов, операций и проблем покрытия.</p></div>
+        <Button variant="secondary" busy={query.isFetching} onClick={() => query.refetch()}>Обновить</Button>
+      </div>
+      <div className="attention-summary" aria-label="Счётчики очереди">
+        <span>Всего <b>{allItems.length}</b></span><span>Кейсы <b>{counts.case || 0}</b></span><span>Операции <b>{counts.operation || 0}</b></span><span>Покрытие <b>{counts.coverage || 0}</b></span>
+      </div>
+      <div className="attention-filters">
+        <label>Тип<select value={type} onChange={(event) => setType(event.target.value)}><option value="">Все типы</option><option value="case">Кейсы</option><option value="operation">Операции</option><option value="coverage">Покрытие</option><option value="automation">Автоматизация</option></select></label>
+        <label>Приоритет<select value={priority} onChange={(event) => setPriority(event.target.value)}><option value="">Все приоритеты</option><option value="critical">Критичный</option><option value="high">Высокий</option><option value="medium">Средний</option></select></label>
+        <label className="attention-mine"><input type="checkbox" checked={mine} onChange={(event) => setMine(event.target.checked)} /> Только мои</label>
+      </div>
+      {query.isLoading ? <p className="empty-cell">Загрузка очереди…</p> : null}
+      {query.error ? <div className="inline-error" role="alert">{query.error.operatorMessage || query.error.message}<Button variant="secondary" onClick={() => query.refetch()}>Повторить</Button></div> : null}
+      {!query.isLoading && !query.error && !items.length ? <p className="empty-cell">По выбранным фильтрам действий нет.</p> : null}
+      <div className="vm-attention-list" aria-live="polite">
+        {items.map((item) => {
+          const href = normalizeAttentionHref(item);
+          const canRetry = item.type === "operation" && (item.action === "retry" || item.action === "retry_operation" || item.can_retry) && permissions.has("operations.retry");
+          return <div className="attention-item" key={`${item.type}:${item.id}`}>
+            <span className={`severity severity--${item.priority || item.severity || "medium"}`}>{item.priority || item.severity || "medium"}</span>
+            <div><a href={href} onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigateHref(href, onNavigate); } }}><strong>{item.title || item.cve || item.id}</strong></a><small>{item.reason || item.subtitle || item.type} · {date(item.due_at || item.updated_at)}</small></div>
+            {canRetry ? <Button variant="tiny" onClick={async () => { try { await api(`/api/operations/${encodeURIComponent(item.operation_id || item.id)}/retry`, { method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("attention-retry") } }); await query.refetch(); } catch { /* queue remains visible */ } }}>Повторить</Button> : <a className="attention-open" href={href} aria-label={`Открыть ${item.title || item.id}`} onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigateHref(href, onNavigate); } }}>→</a>}
+          </div>;
+        })}
+      </div>
+    </section>
+  );
 }
 
 function Kpi({ label, value, tone = "neutral" }) { return <article className={`vm-kpi vm-kpi--${tone}`}><strong>{value ?? 0}</strong><span>{label}</span></article>; }
@@ -241,6 +289,24 @@ function CampaignDrawer({ item, loading, permissions, showAlert, onWorkflow, onR
 }
 
 function queryValue(key) { return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key); }
+function navigateHref(href, onNavigate) {
+  if (/[?#]/.test(href) && typeof window !== "undefined") {
+    window.history.pushState({}, "", href);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  } else onNavigate?.(href);
+}
+function normalizeAttentionHref(item) {
+  if (item.href && item.type === "coverage" && String(item.href).startsWith("/asset-cards/")) {
+    return `/asset-cards?asset_id=${encodeURIComponent(item.id)}`;
+  }
+  if (item.type === "task" && String(item.href || "").startsWith("/scanner-tasks")) {
+    return String(item.href).replace(/^\/scanner-tasks/, "/tasks");
+  }
+  if (item.type === "automation" && String(item.href || "").startsWith("/automations/runs")) {
+    return `/automations?run=${encodeURIComponent(item.id)}`;
+  }
+  return item.href || (item.type === "case" ? `/remediation?case=${encodeURIComponent(item.id)}` : "/operations");
+}
 function setQuery(values) { if (typeof window === "undefined") return; const params = new URLSearchParams(Object.entries(values).filter(([, value]) => value)); window.history.replaceState({}, "", `/vm${params.size ? `?${params}` : ""}`); }
 function date(value) { if (!value) return "без срока"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU"); }
 function inputDate(value) { if (!value) return ""; const parsed = new Date(value); return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }

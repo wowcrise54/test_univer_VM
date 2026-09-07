@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "../api/client.js";
 import { ActionMenu } from "../shared/ui.jsx";
 import { routes, workflowSteps } from "./navigation.js";
 
@@ -231,6 +232,7 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
         ) : null}
       </div>
       <div className="topbar__actions">
+        <GlobalSearch onNavigate={onNavigate} />
         <div
           className={
             session.connected ? "status-chip status-chip--ok" : "status-chip"
@@ -265,6 +267,113 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
       </div>
     </header>
   );
+}
+
+function GlobalSearch({ onNavigate }) {
+  const enabled = import.meta.env.VITE_MPVM_ATTENTION_SEARCH_ENABLED !== "false";
+  const [value, setValue] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [results, setResults] = useState([]);
+  const inputRef = useRef(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const query = value.trim();
+    if (query.length < 2) {
+      setResults([]);
+      setLoading(false);
+      setError(null);
+      return undefined;
+    }
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    setError(null);
+    const timer = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: query, limit: "20" });
+        const data = await api(`/api/search?${params}`);
+        if (requestId === requestRef.current) setResults(data?.items || []);
+      } catch (cause) {
+        if (requestId === requestRef.current) {
+          setResults([]);
+          setError(cause.operatorMessage || cause.message || "Не удалось выполнить поиск");
+        }
+      } finally {
+        if (requestId === requestRef.current) setLoading(false);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [value, enabled]);
+
+  if (!enabled) return null;
+  const open = focused && value.trim().length >= 2;
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape") {
+      setFocused(false);
+      inputRef.current?.blur();
+    }
+    if (event.key === "Enter" && results[0]?.href) {
+      event.preventDefault();
+      const href = results[0].href;
+      navigateSearchResult(href, onNavigate);
+      setFocused(false);
+    }
+  };
+  return (
+    <div className="global-search">
+      <label className="global-search__label" htmlFor="global-search-input">Поиск</label>
+      <input
+        id="global-search-input"
+        ref={inputRef}
+        type="search"
+        value={value}
+        placeholder="Поиск по активам, CVE, операциям"
+        aria-label="Глобальный поиск"
+        aria-controls="global-search-results"
+        aria-expanded={open}
+        onFocus={() => setFocused(true)}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+      {open ? (
+        <div id="global-search-results" className="global-search__results" role="listbox" aria-live="polite">
+          {loading ? <div className="global-search__status">Ищу…</div> : null}
+          {error ? <div className="global-search__status global-search__status--error" role="alert">{error}</div> : null}
+          {!loading && !error && !results.length ? <div className="global-search__status">Ничего не найдено</div> : null}
+          {!loading && !error ? results.map((item) => {
+            const href = normalizeSearchHref(item);
+            return <a role="option" className="global-search__item" href={href} key={`${item.type}:${item.id}`} onClick={(event) => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigateSearchResult(href, onNavigate); } setFocused(false); }}>
+              <span className="global-search__item-type">{item.type}</span>
+              <span><strong>{item.title}</strong>{item.subtitle ? <small>{item.subtitle}</small> : null}</span>
+            </a>;
+          }) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function normalizeSearchHref(item) {
+  if (item.type === "asset" && String(item.href || "").startsWith("/asset-cards/")) {
+    return `/asset-cards?asset_id=${encodeURIComponent(item.id)}`;
+  }
+  if (item.type === "task" && String(item.href || "").startsWith("/scanner-tasks")) {
+    return String(item.href).replace(/^\/scanner-tasks/, "/tasks");
+  }
+  if (item.type === "automation" && String(item.href || "").startsWith("/automations/runs")) {
+    return `/automations?run=${encodeURIComponent(item.id)}`;
+  }
+  return item.href || "/vm";
+}
+
+function navigateSearchResult(href, onNavigate) {
+  if (/[?#]/.test(href) && typeof window !== "undefined") {
+    window.history.pushState({}, "", href);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  } else onNavigate?.(href);
 }
 
 export function WorkflowRail({ activeRouteId, onNavigate }) {
