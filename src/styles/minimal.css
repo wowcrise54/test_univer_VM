@@ -335,7 +335,7 @@
 .table-shell {
   border-color: var(--line);
   border-radius: 10px;
-  box-shadow: none;
+  box-shadow: var(--shadow-surface);
 }
 
 table {
@@ -655,7 +655,7 @@ tr.is-selected td {
   border-radius: 9px;
   padding: 6px;
   background: #fff;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-popover);
 }
 
 .action-menu--end .action-menu__content {
@@ -788,6 +788,7 @@ tr.is-selected td {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 10px;
+  box-shadow: var(--shadow-surface);
 }
 
 .mpvm-task-table {
@@ -1022,6 +1023,171 @@ tr.is-selected td {
   }
 }
 
+/* Depth follows interaction; dense data and page layouts stay still. */
+.button.primary:not(:disabled),
+.button.success:not(:disabled),
+.topbar__next:not(:disabled) {
+  box-shadow: var(--shadow-control);
+}
+
+.button,
+.upload-button,
+.topbar__next {
+  transition:
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-normal) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
+}
+
+.nav a,
+.nav-more > summary,
+.workflow-step,
+.action-menu > summary,
+.action-menu__content > button,
+.action-menu__content > a,
+.action-menu__content > label,
+.disclosure > summary,
+.disclosure__chevron,
+.automation-tabs button,
+.asset-tabs button,
+.vulnerability-workspace-tabs button {
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+.nav a.is-active {
+  box-shadow: inset 0 0 0 1px rgba(49, 94, 251, 0.09);
+}
+
+.action-menu[open] > summary {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel-muted);
+}
+
+.disclosure[open] > summary .disclosure__chevron {
+  color: #2448c8;
+  background: var(--blue-soft);
+}
+
+.nav-more > summary:focus-visible,
+.action-menu__content > button:focus-visible,
+.action-menu__content > a:focus-visible {
+  outline: 3px solid rgba(49, 94, 251, 0.22);
+  outline-offset: 2px;
+}
+
+.confirm-dialog,
+.passport-modal__window:not(.asset-modal) {
+  box-shadow: var(--shadow-dialog);
+}
+
+.operation-drawer,
+.vm-drawer {
+  box-shadow: -8px 0 32px rgba(18, 22, 33, 0.16);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .button.primary:hover:not(:disabled),
+  .button.success:hover:not(:disabled),
+  .topbar__next:hover:not(:disabled) {
+    background: #244bd6;
+    box-shadow: 0 3px 8px rgba(49, 94, 251, 0.18);
+  }
+
+  .button.secondary:hover:not(:disabled),
+  .button.tiny:hover:not(:disabled),
+  .button.icon:hover:not(:disabled),
+  .upload-button:hover:not(:has(input:disabled)),
+  .action-menu > summary:hover {
+    border-color: #b9bdc7;
+    background: #f7f8fa;
+  }
+
+  .button.ghost:hover:not(:disabled),
+  .disclosure > summary:hover {
+    color: var(--text);
+    background: rgba(18, 22, 33, 0.025);
+  }
+
+  .button.danger:hover:not(:disabled) {
+    background: #af303e;
+  }
+
+  .button.tiny-danger:hover:not(:disabled) {
+    border-color: #dda7af;
+    background: #fff5f6;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button:active:not(:disabled),
+  .topbar__next:active:not(:disabled),
+  .upload-button:active:not(:has(input:disabled)) {
+    transform: translateY(1px);
+  }
+
+  .action-menu[open] > .action-menu__content {
+    animation: surface-enter var(--motion-fast) var(--ease-out);
+  }
+
+  .disclosure[open] > .disclosure__content {
+    animation: surface-fade var(--motion-normal) ease-out;
+  }
+
+  .confirm-dialog,
+  .passport-modal__window:not(.asset-modal) {
+    animation: surface-enter var(--motion-normal) var(--ease-out);
+  }
+
+  .operation-drawer,
+  .vm-drawer {
+    animation: drawer-enter var(--motion-normal) var(--ease-out);
+  }
+
+  /* The asset card fills the viewport; keep its sticky sections stationary. */
+  .passport-modal__window.asset-modal,
+  .passport-modal__backdrop,
+  .alert {
+    animation: surface-fade var(--motion-fast) ease-out;
+  }
+}
+
+@keyframes surface-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @media (max-width: 1220px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1156,8 +1322,277 @@ tr.is-selected td {
   }
 }
 
+/* Fine-grained polish for dense data surfaces. */
+.table-shell,
+.mpvm-table-shell {
+  scrollbar-color: #c7ccd5 transparent;
+  scrollbar-width: thin;
+}
+
+.table-shell thead th,
+.mpvm-table-shell thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: color-mix(in srgb, #f7f7f8 94%, #fff);
+  box-shadow: inset 0 -1px var(--line);
+}
+
+.table-shell tbody tr,
+.mpvm-table-shell tbody tr {
+  transition: background-color var(--motion-fast) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .table-shell tbody tr:not(.is-selected):hover td,
+  .mpvm-table-shell tbody tr:not(.is-selected):hover td {
+    background: #f8faff;
+  }
+
+  .table-shell tbody tr.is-selected:hover td,
+  .mpvm-table-shell tbody tr.is-selected:hover td {
+    background: #edf2ff;
+  }
+}
+
+.table-shell td.numeric,
+.table-shell th.numeric,
+.table-shell td[data-align="right"],
+.table-shell th[data-align="right"],
+.mpvm-table-shell td.numeric,
+.mpvm-table-shell th.numeric,
+.mpvm-table-shell td[data-align="right"],
+.mpvm-table-shell th[data-align="right"] {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+td code,
+.mono-cell,
+.table-cell-meta {
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-card,
+.operation-summary > div,
+.vulnerability-kpi {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.metric-card::before,
+.operation-summary > div::before,
+.vulnerability-kpi::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--blue);
+  content: "";
+  opacity: 0.7;
+}
+
+.metric-card--danger::before,
+.vulnerability-kpi--danger::before,
+.operation-summary .is-stale::before {
+  background: var(--red);
+}
+
+.metric-card span,
+.operation-summary span,
+.vulnerability-kpi > span {
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.metric-card strong,
+.operation-summary strong,
+.vulnerability-kpi > strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-card small,
+.operation-summary small,
+.vulnerability-kpi small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.query-state,
+.empty-cell,
+.vulnerability-loading,
+.vulnerability-empty,
+.passport-load-error,
+.inline-error,
+.vulnerability-error {
+  border-radius: 9px;
+}
+
+.query-state,
+.empty-cell,
+.vulnerability-loading,
+.vulnerability-empty {
+  background: #fafbfc;
+}
+
+.query-state--error,
+.inline-error,
+.passport-load-error,
+.vulnerability-error {
+  border-color: #e7c7ca;
+  color: #8c303a;
+  background: #fff7f8;
+}
+
+.vulnerability-loading {
+  position: relative;
+  overflow: hidden;
+  border-style: solid;
+  background: linear-gradient(90deg, #f7f8fa 0%, #fff 45%, #f7f8fa 80%);
+  background-size: 220% 100%;
+  animation: minimal-shimmer 1.6s ease-in-out infinite;
+}
+
+.vulnerability-empty,
+.empty-cell {
+  min-height: 64px;
+  display: grid;
+  place-items: center;
+}
+
+.options-card,
+.asset-card-builder,
+.query-group,
+.settings-card,
+.vulnerability-glossary {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.options-card h3,
+.asset-card-builder h3 {
+  color: var(--text);
+}
+
+.field input,
+.field select,
+.field textarea,
+.profile-select input,
+.profile-select select {
+  transition:
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
+}
+
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible,
+.profile-select input:focus-visible,
+.profile-select select:focus-visible {
+  border-color: #9eaff5;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(49, 94, 251, 0.12);
+  outline: 0;
+}
+
+.operation-drawer-overlay,
+.vm-drawer-overlay {
+  background: rgba(9, 20, 34, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.operation-drawer,
+.vm-drawer {
+  border-left: 1px solid var(--line);
+  padding: clamp(18px, 3vw, 28px);
+}
+
+.operation-drawer > header,
+.vm-drawer > header,
+.passport-modal__bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.operation-drawer > header button,
+.vm-drawer > header > button,
+.passport-modal__bar .button.icon {
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .operation-drawer > header button:hover,
+  .vm-drawer > header > button:hover,
+  .passport-modal__bar .button.icon:hover {
+    color: var(--text);
+    background: #f2f3f5;
+  }
+}
+
+@media (max-width: 760px) {
+  .workspace {
+    padding-inline: 14px;
+  }
+
+  .panel {
+    margin-bottom: 22px;
+  }
+
+  .table-shell,
+  .mpvm-table-shell {
+    border-radius: 8px;
+  }
+
+  th,
+  td,
+  .mpvm-task-table th,
+  .mpvm-task-table td {
+    padding: 8px;
+  }
+
+  .metric-card,
+  .operation-summary > div,
+  .vulnerability-kpi {
+    padding: 11px 12px;
+  }
+
+  .metric-card strong,
+  .operation-summary strong,
+  .vulnerability-kpi > strong {
+    font-size: 19px;
+  }
+
+  .operation-drawer,
+  .vm-drawer {
+    width: 100%;
+    padding: 18px 16px;
+  }
+}
+
+@keyframes minimal-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .query-state[role="status"]::before {
+    animation: none;
+  }
+
+  .vulnerability-loading {
     animation: none;
   }
 }

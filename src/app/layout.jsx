@@ -104,7 +104,9 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
           ? `Операции — активных: ${activeOperations}`
           : undefined
       }
-      className={activePath === route.path ? "is-active" : ""}
+      className={`nav-link${activePath === route.path ? " is-active" : ""}`}
+      data-route-id={route.id}
+      data-active={activePath === route.path ? "true" : undefined}
       aria-current={activePath === route.path ? "page" : undefined}
       onClick={(event) => {
         if (!shouldHandleLinkClick(event)) return;
@@ -137,6 +139,8 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
     <section
       className={`system-banner system-banner--${isDown ? "down" : "degraded"}`}
       role="status"
+      aria-live="polite"
+      data-state={isDown ? "down" : "degraded"}
     >
       <div>
         <strong>
@@ -216,19 +220,25 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
       ? action?.connectedLabel
       : action?.label;
   return (
-    <header className="topbar">
+    <header className="topbar" aria-labelledby="workspace-title">
       <div className="topbar__copy">
-        <h1 ref={headingRef} tabIndex={-1}>
+        <span className="topbar__eyebrow">MP VM Client</span>
+        <h1 id="workspace-title" ref={headingRef} tabIndex={-1}>
           {route?.title || "MP VM REST Client"}
         </h1>
+        {route?.description ? (
+          <p className="topbar__description">{route.description}</p>
+        ) : null}
       </div>
       <div className="topbar__actions">
         <div
           className={
             session.connected ? "status-chip status-chip--ok" : "status-chip"
           }
+          role="status"
+          aria-label={session.connected ? "Подключено" : "Нет подключения"}
         >
-          <span />
+          <span aria-hidden="true" />
           {session.connected ? "Подключено" : "Нет подключения"}
         </div>
         {actionPath && actionLabel ? (
@@ -276,6 +286,9 @@ export function WorkflowRail({ activeRouteId, onNavigate }) {
             type="button"
             className={`workflow-step workflow-step--${state}`}
             aria-label={`${step.label}: ${step.hint}`}
+            aria-current={state === "active" ? "step" : undefined}
+            data-step-id={step.id}
+            data-state={state}
             title={step.hint}
             onClick={() => onNavigate(step.path)}
             key={step.id}
