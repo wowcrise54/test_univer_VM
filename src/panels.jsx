@@ -5219,7 +5219,117 @@ function mergeAssetTreeEntries(current, incoming) {
   });
 }
 
-function AssetConfigurationTab({ assetId }) {
+const WINDOWS_ASSET_CARD_EXCLUDED_BRANCHES = new Set([
+  "aclaccesslist",
+  "aclaccesslists",
+  "accountlockoutpolicy",
+  "accountlockoutpolicies",
+  "appliedaccesslist",
+  "appliedaccesslists",
+  "arp",
+  "arptable",
+  "arptables",
+  "auditpolicy",
+  "auditpolicies",
+  "bios",
+  "certificate",
+  "certificates",
+  "cpu",
+  "cpus",
+  "centralprocessor",
+  "dnscache",
+  "dnsclient",
+  "dnsclientsettings",
+  "dynamicrouting",
+  "eventlog",
+  "eventlogs",
+  "eventlogsettings",
+  "gpcredentials",
+  "group",
+  "groups",
+  "hdd",
+  "hdds",
+  "harddisk",
+  "harddisks",
+  "hypervisor",
+  "hypervisors",
+  "ipv6",
+  "ipv6settings",
+  "lanmanserver",
+  "lanmanworkstation",
+  "logicaldisk",
+  "logicaldisks",
+  "motherboard",
+  "nattable",
+  "nattables",
+  "neighbor",
+  "neighbors",
+  "neighbordevices",
+  "networkadapter",
+  "networkadapters",
+  "networkconnection",
+  "networkconnections",
+  "oscandidates",
+  "operatingsystemcandidates",
+  "osfingerprints",
+  "operatingsystemfingerprint",
+  "passwordpolicy",
+  "passwordpolicies",
+  "pcidevice",
+  "pcidevices",
+  "peripheral",
+  "peripherals",
+  "peripheraldevices",
+  "powermanagement",
+  "printer",
+  "printers",
+  "roles",
+  "trace",
+  "traces",
+  "traceroutes",
+  "usbdevice",
+  "usbdevices",
+]);
+
+function normalizeAssetCardBranch(value) {
+  return String(value || "")
+    .replace(/[_-]/g, "")
+    .toLowerCase();
+}
+
+function isWindowsAssetCard(card) {
+  const raw = card || {};
+  const root = raw.root || {};
+  const rootData = root.data || {};
+  return [
+    raw.asset_type,
+    raw.assetType,
+    raw.os_name,
+    raw.osName,
+    root.type,
+    root.assetType,
+    root.osName,
+    rootData.osName,
+    rootData.os_name,
+    rootData.operatingSystem,
+  ].some((value) =>
+    String(value || "")
+      .toLowerCase()
+      .includes("windows"),
+  );
+}
+
+function isExcludedWindowsAssetPath(path) {
+  return String(path || "")
+    .split(/[.\[]/)
+    .some((segment) =>
+      WINDOWS_ASSET_CARD_EXCLUDED_BRANCHES.has(
+        normalizeAssetCardBranch(segment),
+      ),
+    );
+}
+
+function AssetConfigurationTab({ assetId, card }) {
   const [entries, setEntries] = useState([]);
   const [expandedPaths, setExpandedPaths] = useState(["asset"]);
   const [selectedPath, setSelectedPath] = useState("asset");
@@ -5238,10 +5348,13 @@ function AssetConfigurationTab({ assetId }) {
   );
   const visibleTreeEntries = useMemo(
     () =>
-      entries.filter((entry) =>
-        isAssetTreeEntryVisible(entry, expandedSet, entries),
+      entries.filter(
+        (entry) =>
+          (!isWindowsAssetCard(card) ||
+            !isExcludedWindowsAssetPath(entry.path)) &&
+          isAssetTreeEntryVisible(entry, expandedSet, entries),
       ),
-    [entries, expandedSet],
+    [card, entries, expandedSet],
   );
 
   const loadTree = useCallback(
@@ -5257,7 +5370,13 @@ function AssetConfigurationTab({ assetId }) {
         const result = await api(
           `/api/asset-cards/${encodeURIComponent(assetId)}/configuration/tree?${params.toString()}`,
         );
-        const nextEntries = (result.rows || []).map(normalizeAssetTreeEntry);
+        const nextEntries = (result.rows || [])
+          .filter(
+            (entry) =>
+              !isWindowsAssetCard(card) ||
+              !isExcludedWindowsAssetPath(entry.path),
+          )
+          .map(normalizeAssetTreeEntry);
         setEntries((current) => mergeAssetTreeEntries(current, nextEntries));
         setLoadedParents((current) => {
           const next = new Set(current);
@@ -5270,7 +5389,7 @@ function AssetConfigurationTab({ assetId }) {
         setLoadingParents((current) => ({ ...current, [key]: false }));
       }
     },
-    [assetId],
+    [assetId, card],
   );
 
   const loadDetail = useCallback(
@@ -6160,6 +6279,10 @@ function buildAssetConfigTree(card) {
   });
 
   [...nodes]
+    .filter(
+      (node) =>
+        !isWindowsAssetCard(card) || !isExcludedWindowsAssetPath(node.path),
+    )
     .sort((left, right) =>
       String(left.path || "").localeCompare(String(right.path || "")),
     )
@@ -6181,6 +6304,11 @@ function buildAssetConfigTree(card) {
     });
 
   [...collections]
+    .filter(
+      (collection) =>
+        !isWindowsAssetCard(card) ||
+        !isExcludedWindowsAssetPath(collection.path),
+    )
     .sort((left, right) =>
       String(left.path || "").localeCompare(String(right.path || "")),
     )

@@ -184,6 +184,81 @@ ASSET_CARD_STAGE_PROGRESS = {
     "completed": 100,
 }
 
+# Windows asset-card branches that are intentionally excluded from collection
+# discovery.  Keep the comparison normalized because MP VM metadata has used
+# both camelCase and snake_case names across versions.
+WINDOWS_ASSET_CARD_EXCLUDED_COLLECTIONS = frozenset({
+    "aclaccesslist",
+    "aclaccesslists",
+    "accountlockoutpolicy",
+    "accountlockoutpolicies",
+    "appliedaccesslists",
+    "appliedaccesslist",
+    "arp",
+    "arptable",
+    "arptables",
+    "auditpolicy",
+    "auditpolicies",
+    "bios",
+    "certificates",
+    "certificate",
+    "cpu",
+    "cpus",
+    "centralprocessor",
+    "dnscache",
+    "dnsclientsettings",
+    "dnsclient",
+    "dynamicrouting",
+    "eventlog",
+    "eventlogsettings",
+    "eventlogs",
+    "gpcredentials",
+    "groups",
+    "group",
+    "hdds",
+    "hdd",
+    "harddisks",
+    "harddisk",
+    "hypervisors",
+    "hypervisor",
+    "ipv6settings",
+    "ipv6",
+    "lanmanserver",
+    "lanmanworkstation",
+    "logicaldisks",
+    "logicaldisk",
+    "motherboard",
+    "nattable",
+    "nattables",
+    "neighbors",
+    "neighbor",
+    "neighbordevices",
+    "networkadapters",
+    "networkadapter",
+    "networkconnections",
+    "networkconnection",
+    "os_candidates",
+    "oscandidates",
+    "operatingsystemcandidates",
+    "osfingerprints",
+    "operatingsystemfingerprint",
+    "passwordpolicy",
+    "passwordpolicies",
+    "pcidevice",
+    "pcidevices",
+    "peripherals",
+    "peripheraldevices",
+    "powermanagement",
+    "printers",
+    "printer",
+    "roles",
+    "traces",
+    "trace",
+    "traceroutes",
+    "usbdevices",
+    "usbdevice",
+})
+
 
 CONTAINER = AppContainer(SETTINGS)
 SESSION = CONTAINER.session
@@ -5857,6 +5932,7 @@ def build_asset_card(
         stage_callback("root")
     root = remote_call(lambda remote: remote.get_asset_tree_root(token, timeline_token), label="tree_root")
     root_asset_id = str(first_present(root.get("objectId"), asset_id))
+    windows_asset = is_windows_asset_card_root(root)
 
     metadata_cache: dict[str, dict[str, Any]] = {}
     nodes: list[dict[str, Any]] = []
@@ -5949,6 +6025,8 @@ def build_asset_card(
 
         for (asset_type, cache_key, event), (value, error) in zip(owned, settled):
             metadata = value if isinstance(value, dict) else {}
+            if windows_asset:
+                metadata = filter_windows_asset_metadata(metadata)
             if error is not None:
                 warn(f"metadata {asset_type}: {error}")
             else:
@@ -6309,6 +6387,10 @@ def build_asset_card(
                     )
                     kind = clean_text(prop.get("kind"))
                     current_path = f"{path}.{name}"
+                    if windows_asset and is_excluded_windows_asset_card_branch(
+                        name, prop.get("collectionName"), prop.get("collection_name"), title,
+                    ):
+                        continue
                     if should_fetch_collection(prop, value):
                         add_table_row(
                             path=current_path, name=name, title=title, value=value,
@@ -6357,6 +6439,10 @@ def build_asset_card(
                     if not name or metadata_data_has_property(data, name):
                         continue
                     current_path = f"{path}.{name}"
+                    if windows_asset and is_excluded_windows_asset_card_branch(
+                        name, prop.get("collectionName"), prop.get("collection_name"), prop.get("title"),
+                    ):
+                        continue
                     if depth >= max_depth:
                         warn(f"max depth reached before collection {current_path}")
                     else:
@@ -7381,6 +7467,68 @@ def metadata_data_has_property(data: dict[str, Any], name: Any) -> bool:
 
 def normalize_asset_metadata_key(value: Any) -> str:
     return str(value or "").replace("_", "").replace("-", "").lower()
+
+
+def is_windows_asset_card_root(root: dict[str, Any]) -> bool:
+    """Return whether an MP VM asset tree represents a Windows host."""
+    if not isinstance(root, dict):
+        return False
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    values = (
+        root.get("type"),
+        root.get("assetType"),
+        root.get("osName"),
+        root.get("os_name"),
+        data.get("osName"),
+        data.get("os_name"),
+        data.get("operatingSystem"),
+    )
+    return any("windows" in str(value or "").casefold() for value in values)
+
+
+def is_excluded_windows_asset_card_branch(*values: Any) -> bool:
+    """Match a collection/node property against the Windows exclusion list."""
+    for value in values:
+        normalized = normalize_asset_metadata_key(value)
+        if normalized in WINDOWS_ASSET_CARD_EXCLUDED_COLLECTIONS:
+            return True
+    return False
+
+
+def filter_windows_asset_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Remove excluded Windows collection definitions from cached metadata."""
+    if not isinstance(metadata, dict):
+        return {}
+    filtered = dict(metadata)
+    properties = metadata.get("properties")
+    if isinstance(properties, list):
+        filtered["properties"] = [
+            prop for prop in properties
+            if not isinstance(prop, dict)
+            or not is_excluded_windows_asset_card_branch(
+                prop.get("name"), prop.get("collectionName"), prop.get("collection_name"), prop.get("title")
+            )
+        ]
+    for key in ("collections", "collectionProperties", "collection_properties"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            filtered[key] = [
+                prop for prop in value
+                if not is_excluded_windows_asset_card_branch(
+                    prop.get("name") if isinstance(prop, dict) else prop,
+                    prop.get("collectionName") if isinstance(prop, dict) else None,
+                    prop.get("title") if isinstance(prop, dict) else None,
+                )
+            ]
+        elif isinstance(value, dict):
+            filtered[key] = {
+                name: prop for name, prop in value.items()
+                if not is_excluded_windows_asset_card_branch(
+                    name, prop.get("collectionName") if isinstance(prop, dict) else None,
+                    prop.get("title") if isinstance(prop, dict) else prop,
+                )
+            }
+    return filtered
 
 
 def should_fetch_collection(prop: dict[str, Any], value: Any) -> bool:

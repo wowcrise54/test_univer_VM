@@ -248,6 +248,46 @@ class ParallelTreeAssetClient(FixtureAssetClient):
         }
 
 
+class WindowsFilteredAssetClient(FixtureAssetClient):
+    collection_names = (
+        "ACLAccessList", "AccountLockoutPolicy", "AppliedAccessLists", "ArpTables",
+        "AuditPolicy", "Bios", "Certificates", "Cpu", "DnsCache", "DnsClientSettings",
+        "DynamicRouting", "EventLogSettings", "GpCredentials", "Groups", "HardDisks",
+        "Hypervisors", "IPv6Settings", "LanmanServer", "LanmanWorkstation", "LogicalDisks",
+        "Motherboard", "NatTable", "NeighborDevices", "NetworkAdapters", "NetworkConnections",
+        "OperatingSystemCandidates", "OperatingSystemFingerprint", "PasswordPolicy",
+        "PciDevices", "Peripherals", "PowerManagement", "Printers", "Roles", "Traces", "UsbDevices",
+        "AllowedCollection",
+    )
+    requested_collections = []
+
+    def get_asset_tree_root(self, _token, _timeline):
+        return {
+            "objectId": "asset-windows",
+            "type": "WindowsHost",
+            "displayName": "Windows fixture",
+            "data": {name: {"hasItems": True} for name in self.collection_names},
+        }
+
+    def get_asset_metadata(self, _token, asset_type):
+        if asset_type == "WindowsHost":
+            return {
+                "properties": [
+                    {"name": name, "title": name, "isCollection": True}
+                    for name in self.collection_names
+                ]
+            }
+        return super().get_asset_metadata(_token, asset_type)
+
+    def get_asset_tree_collection(self, _token, _parent_type, _object_id, name, _timeline, **kwargs):
+        type(self).requested_collections.append(name)
+        limit = kwargs.get("limit", 100)
+        return {
+            "items": [{"objectId": f"{name}-1", "type": "Leaf", "displayName": name}][:limit],
+            "count": 1,
+        }
+
+
 def semantic_card(card):
     cleaned = main.sanitize_asset_card_for_response(card)
     stats = cleaned.get("stats") or {}
@@ -266,6 +306,22 @@ def semantic_card(card):
 
 
 class AssetCardExecutorTests(unittest.TestCase):
+    def test_windows_excluded_collections_are_not_requested(self):
+        WindowsFilteredAssetClient.requested_collections = []
+        main.ASSET_METADATA_CACHE.clear()
+        card = main.build_asset_card(
+            client=WindowsFilteredAssetClient(SimpleNamespace(api_url="https://fixture")),
+            token="token",
+            asset_id="asset-windows",
+            timeline_timestamp=1,
+            limit_per_collection=100,
+            max_items_per_collection=100,
+            max_depth=4,
+        )
+
+        self.assertEqual(WindowsFilteredAssetClient.requested_collections, ["AllowedCollection"])
+        self.assertEqual([item["name"] for item in card["collections"]], ["AllowedCollection"])
+
     def test_one_hundred_requests_complete_under_two_seconds_with_limit_ten(self):
         SlowClient.active = 0
         SlowClient.max_active = 0
@@ -650,6 +706,8 @@ class AssetCardBatchJobApiTests(unittest.TestCase):
             "kind": "asset_card_build_batch",
             "result": {"job_ids": ["job-1", "job-2"]},
         }
+
+
         create_jobs = MagicMock(return_value=jobs)
         run_batch = MagicMock()
         with (
