@@ -77,6 +77,26 @@ function configureApi({ views = [], queryResult } = {}) {
         total_cards: 8,
       });
     }
+    if (
+      path === "/api/asset-card-query/presets/software-search/assets" &&
+      options.method === "POST"
+    ) {
+      return Promise.resolve({
+        rows: [
+          {
+            asset_id: "asset-1",
+            display_name: "workstation-01",
+            ip_address: "10.0.0.15",
+            os_name: "Windows 11",
+            soft_name: "OpenSSL",
+            soft_version: "3.2.1",
+            vendor: "OpenSSL Foundation",
+          },
+        ],
+        total: 1,
+        offset: 0,
+      });
+    }
     if (path === "/api/asset-card-query" && options.method === "POST") {
       return Promise.resolve(
         queryResult || {
@@ -241,6 +261,42 @@ describe("asset query UI", () => {
     expect(
       screen.getByText("Источник: локальные карточки активов"),
     ).toBeInTheDocument();
+
+    const showAssets = screen
+      .getAllByRole("button", { name: "Показать активы" })
+      .find((button) => !button.disabled);
+    fireEvent.click(showAssets);
+    await waitFor(() => {
+      const call = api.mock.calls.find(
+        ([path, options]) =>
+          path === "/api/asset-card-query/presets/software-search/assets" &&
+          options.method === "POST",
+      );
+      expect(JSON.parse(call[1].body)).toMatchObject({
+        software_name: "OpenSSL",
+        software_version: "3.2.1",
+      });
+    });
+    expect(await screen.findByText("workstation-01")).toBeInTheDocument();
+    expect(screen.getByText("10.0.0.15")).toBeInTheDocument();
+  });
+
+  it("does not submit an empty manual query", async () => {
+    configureApi();
+    renderPage();
+    await waitForFields();
+
+    const manualSubmit = screen.getByRole("button", {
+      name: "Показать активы",
+    });
+    expect(manualSubmit).toBeDisabled();
+    fireEvent.click(manualSubmit);
+    expect(
+      api.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/asset-card-query" && options.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("saves the current query and marks the saved query as active", async () => {
@@ -320,12 +376,12 @@ describe("asset query UI", () => {
     expect(
       screen.getByRole("button", { name: "Удалить условие 1" }),
     ).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Ещё" }));
+    fireEvent.click(screen.getByText("Ещё").closest("summary"));
     fireEvent.click(
       screen.getByRole("button", { name: "Добавить группу условий" }),
     );
     expect(screen.getByText("Группа условий 1")).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole("button", { name: "Ещё" })[1]);
+    fireEvent.click(screen.getAllByText("Ещё")[1].closest("summary"));
     const removeGroup = screen.getByRole("button", { name: "Удалить группу" });
     expect(removeGroup).toBeEnabled();
     fireEvent.click(removeGroup);

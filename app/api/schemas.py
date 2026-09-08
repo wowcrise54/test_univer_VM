@@ -71,8 +71,10 @@ class AssetGroupPreviewRequest(BaseModel):
 
 
 class AssetCardPresetQueryRequest(BaseModel):
+    software_version: str | None = Field(default=None, max_length=500)
     software_name: str | None = Field(default=None, max_length=500)
     software_version_like: str | None = Field(default=None, max_length=500)
+    vendor: str | None = Field(default=None, max_length=500)
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 

@@ -2983,6 +2983,41 @@ def execute_asset_card_query_preset(
         ) from exc
 
 
+@asset_query_router.post("/api/asset-card-query/presets/{preset_id}/assets")
+def execute_asset_card_query_preset_assets(
+    preset_id: str,
+    payload: AssetCardPresetQueryRequest,
+) -> dict[str, Any]:
+    start_asset_search_backfill()
+    try:
+        return db.query_asset_card_preset_assets(
+            preset_id,
+            software_name=payload.software_name,
+            software_version=payload.software_version,
+            vendor=payload.vendor,
+            limit=payload.limit,
+            offset=payload.offset,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "ASSET_QUERY_PRESET_NOT_FOUND",
+                "message": f"Unknown asset query preset: {preset_id}",
+                "component": "asset_cards",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_ASSET_QUERY_PRESET_ASSETS",
+                "message": str(exc),
+                "component": "asset_cards",
+            },
+        ) from exc
+
+
 @asset_query_router.post("/api/asset-card-query")
 def asset_card_query(payload: AssetCardFieldQueryRequest) -> dict[str, Any]:
     start_asset_search_backfill()

@@ -5686,6 +5686,103 @@ def query_asset_card_preset(
     }
 
 
+def query_asset_card_preset_assets(
+    preset_id: str,
+    *,
+    software_name: str | None = None,
+    software_version: str | None = None,
+    vendor: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    init_db()
+    preset = ASSET_CARD_QUERY_PRESETS.get(str(preset_id))
+    if preset is None:
+        raise KeyError(preset_id)
+    if preset["kind"] != "software":
+        raise ValueError("Asset details are only available for software presets.")
+    clean_name = str(software_name or "").strip()
+    clean_version = str(software_version or "").strip()
+    clean_vendor = str(vendor or "").strip()
+    if not clean_name and not clean_vendor:
+        raise ValueError("software_name or vendor is required.")
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+
+    filters = []
+    params: list[Any] = [bool(preset.get("windows_only"))]
+    if clean_name:
+        filters.append("soft_name = %s")
+        params.append(clean_name)
+    if clean_version:
+        filters.append("soft_version = %s")
+        params.append(clean_version)
+    if clean_vendor:
+        filters.append("vendor = %s")
+        params.append(clean_vendor)
+    statement = (
+        ASSET_SOFTWARE_ROWS_CTE
+        + f""",
+        selected_assets AS (
+            SELECT
+                asset_id,
+                host,
+                MAX(soft_name) AS soft_name,
+                STRING_AGG(DISTINCT NULLIF(soft_version, ''), ', ') AS soft_version,
+                STRING_AGG(DISTINCT NULLIF(vendor, ''), ', ') AS vendor,
+                STRING_AGG(DISTINCT NULLIF(architecture, ''), ', ') AS architecture,
+                STRING_AGG(DISTINCT NULLIF(install_path, ''), ', ') AS install_path,
+                MAX(update_time) AS update_time
+            FROM software_rows
+            WHERE {" AND ".join(filters)}
+            GROUP BY asset_id, host
+        )
+            SELECT
+                selected_assets.asset_id,
+                selected_assets.host AS display_name,
+                card.ip_address,
+                card.fqdn,
+                card.hostname,
+                card.os_name,
+                card.os_version,
+                selected_assets.update_time AS last_seen,
+                selected_assets.soft_name,
+                selected_assets.soft_version,
+                selected_assets.vendor,
+                selected_assets.architecture,
+                selected_assets.install_path,
+                COUNT(*) OVER()::int AS __total
+            FROM selected_assets
+            JOIN asset_cards AS card USING (asset_id)
+            ORDER BY LOWER(selected_assets.host) ASC NULLS LAST,
+                     selected_assets.asset_id ASC
+            LIMIT %s OFFSET %s
+        """
+    )
+    params.extend([limit, offset])
+    with connect() as conn:
+        raw_rows = conn.execute(statement, params).fetchall()
+    rows = rows_to_dicts(raw_rows)
+    total = int(rows[0].pop("__total", 0)) if rows else 0
+    for row in rows[1:]:
+        row.pop("__total", None)
+    return {
+        "preset": public_asset_card_query_preset(preset),
+        "selection": {
+            "software_name": clean_name or None,
+            "software_version": clean_version or None,
+            "vendor": clean_vendor or None,
+        },
+        "rows": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "execution": "local",
+        "source": "asset_cards",
+        **asset_card_search_index_coverage(),
+    }
+
+
 def asset_card_search_index_coverage() -> dict[str, int]:
     init_db()
     with connect() as conn:

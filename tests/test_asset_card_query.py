@@ -141,6 +141,42 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         query.convert(sql + " SELECT * FROM software_rows", [False])
         self.assertIn(b"LIKE '%.software[%'", query.query)
 
+    @patch.object(db, "asset_card_search_index_coverage", return_value={
+        "indexed_cards": 3,
+        "total_cards": 3,
+    })
+    @patch.object(db, "connect")
+    @patch.object(db, "init_db")
+    def test_software_preset_assets_returns_local_hosts(
+        self, _init_db, connect, _coverage,
+    ):
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = [
+            {
+                "asset_id": "asset-1",
+                "display_name": "pc-01",
+                "ip_address": "10.0.0.1",
+                "soft_name": "AnyDesk",
+                "soft_version": "9.5.2",
+                "__total": 1,
+            },
+        ]
+        connect.return_value.__enter__.return_value = connection
+
+        result = db.query_asset_card_preset_assets(
+            "windows-software-by-version",
+            software_name="AnyDesk",
+            software_version="9.5.2",
+        )
+
+        sql, params = connection.execute.call_args.args
+        self.assertIn("selected_assets AS", sql)
+        self.assertIn("JOIN asset_cards AS card", sql)
+        self.assertEqual(params[:3], [True, "AnyDesk", "9.5.2"])
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["rows"][0]["asset_id"], "asset-1")
+        self.assertEqual(result["execution"], "local")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,16 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     total: 0,
     offset: 0,
   });
+  const [presetAssetSelection, setPresetAssetSelection] = useState(null);
+  const [presetAssets, setPresetAssets] = useState({
+    rows: [],
+    total: 0,
+    offset: 0,
+  });
+  const [presetAssetsState, setPresetAssetsState] = useState({
+    status: "idle",
+    error: null,
+  });
   const [presetState, setPresetState] = useState({
     status: "loading",
     error: null,
@@ -80,6 +90,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     () => presets.find((item) => item.id === activePresetId) || null,
     [activePresetId, presets],
   );
+  const manualQueryReady = useMemo(() => validQueryTree(query), [query]);
 
   useEffect(() => {
     let active = true;
@@ -202,7 +213,48 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     setActivePresetId(id);
     setPresetSearch(nextSearch);
     setPresetResult({ rows: [], total: 0, offset: 0 });
+    setPresetAssetSelection(null);
+    setPresetAssets({ rows: [], total: 0, offset: 0 });
+    setPresetAssetsState({ status: "idle", error: null });
     runBusy("assetQueryPreset", () => executePreset(preset, 0, nextSearch), {
+      allowConcurrent: true,
+    });
+  };
+
+  const executePresetAssets = async (selection, offset = 0) => {
+    if (!activePreset || !selection) return null;
+    setPresetAssetsState({ status: "loading", error: null });
+    try {
+      const response = await api(
+        `/api/asset-card-query/presets/${encodeURIComponent(activePreset.id)}/assets`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...selection,
+            limit: PRESET_PAGE_SIZE,
+            offset,
+          }),
+        },
+      );
+      setPresetAssets(response);
+      setPresetAssetsState({ status: "success", error: null });
+      return response;
+    } catch (error) {
+      setPresetAssetsState({ status: "error", error });
+      throw error;
+    }
+  };
+
+  const showPresetAssets = (row) => {
+    if (!activePreset) return;
+    const selection = {
+      software_name: row.soft_name || null,
+      software_version: row.soft_version || null,
+      vendor: row.vendor || null,
+    };
+    setPresetAssetSelection(selection);
+    setPresetAssets({ rows: [], total: 0, offset: 0 });
+    runBusy("assetQueryPresetAssets", () => executePresetAssets(selection, 0), {
       allowConcurrent: true,
     });
   };
@@ -324,7 +376,16 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
       title="Выборки по карточкам активов"
       description="Найдите активы по данным локальных карточек."
       action={
-        <Button busy={busy.assetQuery} onClick={() => runQuery(0)}>
+        <Button
+          busy={busy.assetQuery}
+          disabled={!manualQueryReady}
+          title={
+            manualQueryReady
+              ? "Выполнить условия ручной выборки"
+              : "Сначала заполните поле и значение условия"
+          }
+          onClick={() => runQuery(0)}
+        >
           Показать активы
         </Button>
       }
@@ -414,6 +475,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
               preset={activePreset}
               result={presetResult}
               state={presetState}
+              onShowAssets={showPresetAssets}
               onRetry={() =>
                 runBusy(
                   "assetQueryPreset",
@@ -429,6 +491,33 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
                 )
               }
             />
+            {presetAssetSelection ? (
+              <PresetAssets
+                selection={presetAssetSelection}
+                result={presetAssets}
+                state={presetAssetsState}
+                busy={busy.assetQueryPresetAssets}
+                onClose={() => setPresetAssetSelection(null)}
+                onRetry={() =>
+                  runBusy(
+                    "assetQueryPresetAssets",
+                    () =>
+                      executePresetAssets(
+                        presetAssetSelection,
+                        presetAssets.offset || 0,
+                      ),
+                    { allowConcurrent: true },
+                  )
+                }
+                onPage={(offset) =>
+                  runBusy(
+                    "assetQueryPresetAssets",
+                    () => executePresetAssets(presetAssetSelection, offset),
+                    { allowConcurrent: true },
+                  )
+                }
+              />
+            ) : null}
           </div>
         ) : presetState.status === "error" ? (
           <div className="query-state query-state--error" role="alert">
@@ -589,6 +678,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
           </div>
           <Button
             variant="secondary"
+            disabled={!manualQueryReady}
             busy={busy.assetQueryExport}
             onClick={exportCsv}
           >
@@ -740,8 +830,17 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
   );
 }
 
-function PresetResult({ preset, result, state, onRetry, onPage }) {
+function PresetResult({
+  preset,
+  result,
+  state,
+  onRetry,
+  onPage,
+  onShowAssets,
+}) {
   const columns = preset.columns || [];
+  const supportsAssets = preset.id !== "os-versions";
+  const tableColumnCount = columns.length + (supportsAssets ? 1 : 0);
   return (
     <section
       className="asset-query-preset-result"
@@ -758,13 +857,14 @@ function PresetResult({ preset, result, state, onRetry, onPage }) {
               {columns.map((column) => (
                 <th key={column.key}>{column.label}</th>
               ))}
+              {supportsAssets ? <th>Активы</th> : null}
             </tr>
           </thead>
           <tbody>
             {state.status === "loading" ? (
               <tr>
                 <td
-                  colSpan={Math.max(columns.length, 1)}
+                  colSpan={Math.max(tableColumnCount, 1)}
                   className="empty-cell"
                 >
                   Выполняется локальная группировка…
@@ -773,7 +873,7 @@ function PresetResult({ preset, result, state, onRetry, onPage }) {
             ) : state.status === "error" ? (
               <tr>
                 <td
-                  colSpan={Math.max(columns.length, 1)}
+                  colSpan={Math.max(tableColumnCount, 1)}
                   className="empty-cell"
                 >
                   <div className="query-state query-state--error" role="alert">
@@ -804,12 +904,19 @@ function PresetResult({ preset, result, state, onRetry, onPage }) {
                         : String(row[column.key])}
                     </td>
                   ))}
+                  {supportsAssets ? (
+                    <td>
+                      <Button variant="tiny" onClick={() => onShowAssets(row)}>
+                        Показать активы
+                      </Button>
+                    </td>
+                  ) : null}
                 </tr>
               ))
             ) : (
               <tr>
                 <td
-                  colSpan={Math.max(columns.length, 1)}
+                  colSpan={Math.max(tableColumnCount, 1)}
                   className="empty-cell"
                 >
                   Данные по этому пресету не найдены в локальных карточках.
@@ -833,6 +940,131 @@ function PresetResult({ preset, result, state, onRetry, onPage }) {
                 result.offset + PRESET_PAGE_SIZE,
                 result.total,
               )} из ${result.total}`
+            : "Нет результатов"}
+        </span>
+        <Button
+          variant="secondary"
+          disabled={result.offset + PRESET_PAGE_SIZE >= result.total}
+          onClick={() => onPage(result.offset + PRESET_PAGE_SIZE)}
+        >
+          Далее
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function PresetAssets({
+  selection,
+  result,
+  state,
+  busy,
+  onClose,
+  onRetry,
+  onPage,
+}) {
+  const label = [
+    selection.software_name,
+    selection.software_version,
+    selection.vendor && !selection.software_name
+      ? `вендор ${selection.vendor}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <section className="asset-query-preset-assets" aria-label="Активы с ПО">
+      <div className="asset-query-preset-assets__header">
+        <div>
+          <span>Активы с выбранным ПО</span>
+          <h4>{label}</h4>
+        </div>
+        <Button variant="ghost" onClick={onClose}>
+          Закрыть
+        </Button>
+      </div>
+      <div className="table-shell">
+        <table className="asset-query-table">
+          <thead>
+            <tr>
+              <th>Хост</th>
+              <th>IP-адрес</th>
+              <th>ОС</th>
+              <th>Версия ПО</th>
+              <th>Вендор</th>
+              <th>Архитектура</th>
+              <th>Путь установки</th>
+              <th>Свежесть</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.status === "loading" ? (
+              <tr>
+                <td colSpan={8} className="empty-cell">
+                  Загрузка активов…
+                </td>
+              </tr>
+            ) : state.status === "error" ? (
+              <tr>
+                <td colSpan={8} className="empty-cell">
+                  <div className="query-state query-state--error" role="alert">
+                    <span>
+                      Не удалось загрузить активы:{" "}
+                      {state.error?.message || "сервис недоступен"}
+                    </span>
+                    <Button variant="tiny" busy={busy} onClick={onRetry}>
+                      Повторить
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ) : result.rows?.length ? (
+              result.rows.map((row) => (
+                <tr key={row.asset_id}>
+                  <td>
+                    <a
+                      href={`/asset-cards?asset=${encodeURIComponent(row.asset_id)}`}
+                    >
+                      {row.display_name || row.hostname || row.asset_id}
+                    </a>
+                    <code>{row.asset_id}</code>
+                  </td>
+                  <td>{row.ip_address || row.fqdn || "—"}</td>
+                  <td>
+                    {[row.os_name, row.os_version].filter(Boolean).join(" ") ||
+                      "—"}
+                  </td>
+                  <td>{row.soft_version || "—"}</td>
+                  <td>{row.vendor || "—"}</td>
+                  <td>{row.architecture || "—"}</td>
+                  <td>{row.install_path || "—"}</td>
+                  <td>{formatDate(row.last_seen)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={8} className="empty-cell">
+                  Активы с выбранным ПО не найдены.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="passport-pagination">
+        <Button
+          variant="secondary"
+          disabled={!result.offset}
+          onClick={() => onPage(Math.max(0, result.offset - PRESET_PAGE_SIZE))}
+        >
+          Назад
+        </Button>
+        <span>
+          {result.total
+            ? `${result.offset + 1}–${Math.min(
+                result.offset + PRESET_PAGE_SIZE,
+                result.total,
+              )} из ${result.total} активов`
             : "Нет результатов"}
         </span>
         <Button
@@ -1189,6 +1421,23 @@ function countRules(node) {
   return isRuleNode(node)
     ? 1
     : (node.rules || []).reduce((sum, item) => sum + countRules(item), 0);
+}
+
+function validQueryTree(node) {
+  if (isRuleNode(node)) {
+    if (!String(node.field_path || "").trim() || !node.operator) return false;
+    if (
+      ["exists", "not_exists", "is_true", "is_false"].includes(node.operator)
+    ) {
+      return true;
+    }
+    return String(node.value ?? "").trim().length > 0;
+  }
+  return (
+    Array.isArray(node?.rules) &&
+    node.rules.length > 0 &&
+    node.rules.every(validQueryTree)
+  );
 }
 
 function operatorsFor(type, matchScope = "host") {
