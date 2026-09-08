@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from psycopg._queries import PostgresQuery
+from psycopg.adapt import Transformer
+
 from app import db
 
 
@@ -127,6 +130,16 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertEqual(params[:3], [False, "OpenSSL", "3.%"])
         self.assertEqual(result["execution"], "local")
         self.assertEqual(result["rows"][0]["count"], 4)
+
+    def test_software_preset_escapes_percent_like_patterns_for_psycopg(self):
+        sql = db.ASSET_SOFTWARE_ROWS_CTE
+
+        self.assertIn("LIKE '%%.software[%%'", sql)
+        self.assertIn("LIKE '%%.softs.%%'", sql)
+        self.assertNotIn("LIKE '%.software[%'", sql)
+        query = PostgresQuery(Transformer())
+        query.convert(sql + " SELECT * FROM software_rows", [False])
+        self.assertIn(b"LIKE '%.software[%'", query.query)
 
 
 if __name__ == "__main__":

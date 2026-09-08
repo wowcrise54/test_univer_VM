@@ -5526,12 +5526,12 @@ WITH candidate_fields AS (
         ) AS field_value
     FROM asset_card_search_fields AS field
     WHERE
-        LOWER(field.entity_path) LIKE '%.software[%'
-        OR LOWER(field.entity_path) LIKE '%.softs[%'
-        OR LOWER(field.entity_path) LIKE 'software[%'
-        OR LOWER(field.entity_path) LIKE 'softs[%'
-        OR LOWER(field.field_path) LIKE '%.software.%'
-        OR LOWER(field.field_path) LIKE '%.softs.%'
+        LOWER(field.entity_path) LIKE '%%.software[%%'
+        OR LOWER(field.entity_path) LIKE '%%.softs[%%'
+        OR LOWER(field.entity_path) LIKE 'software[%%'
+        OR LOWER(field.entity_path) LIKE 'softs[%%'
+        OR LOWER(field.field_path) LIKE '%%.software.%%'
+        OR LOWER(field.field_path) LIKE '%%.softs.%%'
 ),
 software_entities AS (
     SELECT
