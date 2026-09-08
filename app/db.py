@@ -664,6 +664,23 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS asset_card_software_inventory (
+            id BIGSERIAL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            entity_path TEXT NOT NULL,
+            soft_name TEXT NOT NULL,
+            soft_name_normalized TEXT NOT NULL,
+            soft_version TEXT NOT NULL DEFAULT '',
+            soft_version_normalized TEXT NOT NULL DEFAULT '',
+            vendor TEXT,
+            architecture TEXT,
+            install_path TEXT,
+            is_windows BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, entity_path)
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS asset_group_members (
             group_id UUID NOT NULL REFERENCES asset_groups(group_id) ON DELETE CASCADE,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
@@ -685,6 +702,7 @@ def schema_statements() -> list[str]:
         )
         """,
         "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS vulnerabilities_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE asset_cards ADD COLUMN IF NOT EXISTS software_inventory_updated_at TEXT",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE asset_card_build_jobs ADD COLUMN IF NOT EXISTS trace_id TEXT",
         """
@@ -789,6 +807,10 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_asset_search_path_number ON asset_card_search_fields(field_path, value_number, asset_id) WHERE value_type = 'number'",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_path_boolean ON asset_card_search_fields(field_path, value_boolean, asset_id) WHERE value_type = 'boolean'",
         "CREATE INDEX IF NOT EXISTS idx_asset_search_entity ON asset_card_search_fields(asset_id, entity_path, field_path)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_software_name_version ON asset_card_software_inventory(is_windows, soft_name_normalized, soft_version_normalized, asset_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_software_name ON asset_card_software_inventory(soft_name_normalized, asset_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_software_name_version_prefix ON asset_card_software_inventory(is_windows, soft_name_normalized, soft_version_normalized text_pattern_ops, asset_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_software_asset ON asset_card_software_inventory(asset_id)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_groups_asset_source ON asset_card_vulnerability_groups(asset_id, source_type, group_order)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_asset_cve ON asset_card_vulnerabilities(asset_id, cve_name)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerabilities_group_order ON asset_card_vulnerabilities(group_id, cve_name, name, id)",
@@ -3679,6 +3701,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
         replace_asset_card_search_index(conn, asset_id, card, current)
+        replace_asset_card_software_inventory(conn, asset_id, card, current)
         save_duration_ms = round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2)
         stats = card.setdefault("stats", {})
         if isinstance(stats, dict):
@@ -4066,6 +4089,119 @@ def build_asset_card_search_rows(card: dict[str, Any]) -> list[tuple[str, str, s
     return deduped
 
 
+SOFTWARE_ENTITY_MARKERS = (
+    ".software[",
+    ".softs[",
+    "software[",
+    "softs[",
+    ".software.",
+    ".softs.",
+)
+
+SOFTWARE_FIELD_ALIASES = {
+    "name": "soft_name",
+    "softname": "soft_name",
+    "softwarename": "soft_name",
+    "version": "soft_version",
+    "softversion": "soft_version",
+    "softwareversion": "soft_version",
+    "vendor": "vendor",
+    "publisher": "vendor",
+    "manufacturer": "vendor",
+    "architecture": "architecture",
+    "arch": "architecture",
+    "installpath": "install_path",
+    "installationpath": "install_path",
+    "path": "install_path",
+}
+
+
+def _is_software_entity(entity_path: str, field_path: str) -> bool:
+    haystack = f"{entity_path}.{field_path}".lower()
+    return any(marker in haystack for marker in SOFTWARE_ENTITY_MARKERS)
+
+
+def _software_field_leaf(field_path: str, field_name: str) -> str:
+    leaf = asset_path_leaf(field_path).lower()
+    return re.sub(r"[^a-z0-9]", "", leaf or field_name.lower())
+
+
+def build_asset_card_software_inventory_rows(
+    card: dict[str, Any],
+) -> list[
+    tuple[
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str | None,
+        str | None,
+        str | None,
+        bool,
+    ]
+]:
+    """Flatten software entities once so preset queries do not rebuild them."""
+
+    asset_id = clean_value(card.get("asset_id"))
+    if not asset_id:
+        return []
+
+    root = card.get("root") if isinstance(card.get("root"), dict) else {}
+    root_data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    asset_type = first_non_empty(card.get("asset_type"), root.get("type"))
+    os_name = first_non_empty(card.get("os_name"), root_data.get("osName"))
+    is_windows = (
+        "windows" in str(asset_type or "").lower()
+        or "windows" in str(os_name or "").lower()
+    )
+
+    entities: dict[str, dict[str, str]] = {}
+    for (
+        entity_path,
+        field_path,
+        field_name,
+        value_type,
+        value_text,
+        _value_text_normalized,
+        _value_number,
+        _value_boolean,
+    ) in build_asset_card_search_rows(card):
+        if not _is_software_entity(entity_path, field_path):
+            continue
+        alias = SOFTWARE_FIELD_ALIASES.get(_software_field_leaf(field_path, field_name))
+        if not alias or value_type != "text" or value_text is None:
+            continue
+        entity = entities.setdefault(entity_path, {})
+        entity.setdefault(alias, value_text)
+
+    rows = []
+    for entity_path, entity in entities.items():
+        soft_name = clean_value(entity.get("soft_name"))
+        if not soft_name:
+            continue
+        soft_version = clean_value(entity.get("soft_version")) or ""
+        vendor = clean_value(entity.get("vendor"))
+        architecture = clean_value(entity.get("architecture"))
+        install_path = clean_value(entity.get("install_path"))
+        rows.append(
+            (
+                asset_id,
+                entity_path,
+                soft_name,
+                soft_name.lower(),
+                soft_version,
+                soft_version.lower(),
+                vendor,
+                architecture,
+                install_path,
+                is_windows,
+            )
+        )
+    return sorted(rows, key=lambda row: (row[2].lower(), row[4].lower(), row[1]))
+
+
 def asset_path_leaf(path: str) -> str:
     return re.split(r"[.\[]", str(path))[-1].rstrip("]") or str(path)
 
@@ -4088,6 +4224,47 @@ def replace_asset_card_search_index(
             ),
             [(asset_id, *row, updated_at) for row in rows],
         )
+    return len(rows)
+
+
+def replace_asset_card_software_inventory(
+    conn: psycopg.Connection[dict[str, Any]],
+    asset_id: str,
+    card: dict[str, Any],
+    updated_at: str,
+) -> int:
+    conn.execute(
+        "DELETE FROM asset_card_software_inventory WHERE asset_id = %s",
+        (asset_id,),
+    )
+    rows = build_asset_card_software_inventory_rows(card)
+    with conn.cursor() as cur:
+        copy_rows(
+            cur,
+            "asset_card_software_inventory",
+            (
+                "asset_id",
+                "entity_path",
+                "soft_name",
+                "soft_name_normalized",
+                "soft_version",
+                "soft_version_normalized",
+                "vendor",
+                "architecture",
+                "install_path",
+                "is_windows",
+                "updated_at",
+            ),
+            [(asset_id, *row[1:], updated_at) for row in rows],
+        )
+    conn.execute(
+        """
+        UPDATE asset_cards
+        SET software_inventory_updated_at = %s
+        WHERE asset_id = %s
+        """,
+        (updated_at, asset_id),
+    )
     return len(rows)
 
 
@@ -5514,64 +5691,21 @@ def list_asset_card_query_presets() -> list[dict[str, Any]]:
 
 
 ASSET_SOFTWARE_ROWS_CTE = """
-WITH candidate_fields AS (
+WITH software_rows AS (
     SELECT
-        field.asset_id,
-        field.entity_path,
-        LOWER(REGEXP_REPLACE(field.field_path, '^.*[.]', '')) AS leaf_name,
-        COALESCE(
-            field.value_text,
-            field.value_number::text,
-            field.value_boolean::text
-        ) AS field_value
-    FROM asset_card_search_fields AS field
-    WHERE
-        LOWER(field.entity_path) LIKE '%%.software[%%'
-        OR LOWER(field.entity_path) LIKE '%%.softs[%%'
-        OR LOWER(field.entity_path) LIKE 'software[%%'
-        OR LOWER(field.entity_path) LIKE 'softs[%%'
-        OR LOWER(field.field_path) LIKE '%%.software.%%'
-        OR LOWER(field.field_path) LIKE '%%.softs.%%'
-),
-software_entities AS (
-    SELECT
-        asset_id,
-        entity_path,
-        MAX(field_value) FILTER (
-            WHERE leaf_name IN ('name', 'softname', 'softwarename')
-        ) AS soft_name,
-        MAX(field_value) FILTER (
-            WHERE leaf_name IN ('version', 'softversion', 'softwareversion')
-        ) AS soft_version,
-        MAX(field_value) FILTER (
-            WHERE leaf_name IN ('vendor', 'publisher', 'manufacturer')
-        ) AS vendor,
-        MAX(field_value) FILTER (
-            WHERE leaf_name IN ('architecture', 'arch')
-        ) AS architecture,
-        MAX(field_value) FILTER (
-            WHERE leaf_name IN ('installpath', 'installationpath', 'path')
-        ) AS install_path
-    FROM candidate_fields
-    GROUP BY asset_id, entity_path
-),
-software_rows AS (
-    SELECT DISTINCT
-        card.asset_id,
+        inventory.asset_id,
         COALESCE(card.display_name, card.hostname, card.fqdn, card.asset_id) AS host,
-        entity.soft_name,
-        entity.soft_version,
-        entity.vendor,
-        entity.architecture,
-        entity.install_path,
+        inventory.soft_name,
+        inventory.soft_name_normalized,
+        inventory.soft_version,
+        inventory.soft_version_normalized,
+        inventory.vendor,
+        inventory.architecture,
+        inventory.install_path,
         card.last_seen AS update_time
-    FROM software_entities AS entity
-    JOIN asset_cards AS card ON card.asset_id = entity.asset_id
-    WHERE entity.soft_name IS NOT NULL
-      AND (%s = FALSE OR (
-          LOWER(COALESCE(card.asset_type, '')) = 'windowshost'
-          OR LOWER(COALESCE(card.os_name, '')) LIKE '%%windows%%'
-      ))
+    FROM asset_card_software_inventory AS inventory
+    JOIN asset_cards AS card ON card.asset_id = inventory.asset_id
+    WHERE (%s = FALSE OR inventory.is_windows = TRUE)
 )
 """
 
@@ -5621,10 +5755,10 @@ def query_asset_card_preset(
             ).strip()
             if not clean_name:
                 raise ValueError("software_name must not be blank.")
-            filters.append("LOWER(soft_name) = LOWER(%s)")
+            filters.append("soft_name_normalized = LOWER(%s)")
             params.append(clean_name)
             if clean_version:
-                filters.append("soft_version ILIKE %s")
+                filters.append("soft_version_normalized LIKE LOWER(%s)")
                 params.append(clean_version)
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         grouping = preset["grouping"]
@@ -5712,10 +5846,10 @@ def query_asset_card_preset_assets(
     filters = []
     params: list[Any] = [bool(preset.get("windows_only"))]
     if clean_name:
-        filters.append("soft_name = %s")
+        filters.append("soft_name_normalized = LOWER(%s)")
         params.append(clean_name)
     if clean_version:
-        filters.append("soft_version = %s")
+        filters.append("soft_version_normalized = LOWER(%s)")
         params.append(clean_version)
     if clean_vendor:
         filters.append("vendor = %s")
@@ -5790,10 +5924,34 @@ def asset_card_search_index_coverage() -> dict[str, int]:
             """
             SELECT
                 (SELECT COUNT(*) FROM asset_cards) AS total_cards,
-                (SELECT COUNT(DISTINCT asset_id) FROM asset_card_search_fields) AS indexed_cards
+                (SELECT COUNT(DISTINCT asset_id) FROM asset_card_search_fields) AS indexed_cards,
+                (
+                    SELECT COUNT(*)
+                    FROM asset_cards
+                    WHERE software_inventory_updated_at IS NOT NULL
+                )
+                    AS software_inventory_indexed_cards
             """
         ).fetchone()
-    return {"total_cards": int(row["total_cards"] or 0), "indexed_cards": int(row["indexed_cards"] or 0)}
+    total_cards = int(row["total_cards"] or 0)
+    return {
+        "total_cards": total_cards,
+        "indexed_cards": int(row["indexed_cards"] or 0),
+        "software_inventory_total_cards": total_cards,
+        "software_inventory_indexed_cards": int(
+            row["software_inventory_indexed_cards"] or 0
+        ),
+    }
+
+
+def asset_card_software_inventory_coverage() -> dict[str, int]:
+    coverage = asset_card_search_index_coverage()
+    return {
+        "software_inventory_total_cards": coverage["software_inventory_total_cards"],
+        "software_inventory_indexed_cards": coverage[
+            "software_inventory_indexed_cards"
+        ],
+    }
 
 
 def backfill_asset_card_search_index_batch(limit: int = 20) -> dict[str, int]:
@@ -5822,9 +5980,49 @@ def backfill_asset_card_search_index_batch(limit: int = 20) -> dict[str, int]:
         current = now_utc()
         with connect() as conn:
             indexed_fields += replace_asset_card_search_index(conn, asset_id, card, current)
+            replace_asset_card_software_inventory(conn, asset_id, card, current)
         processed += 1
     coverage = asset_card_search_index_coverage()
     return {**coverage, "processed": processed, "indexed_fields": indexed_fields}
+
+
+def backfill_asset_card_software_inventory_batch(limit: int = 20) -> dict[str, int]:
+    """Populate the materialized software rows for legacy asset cards."""
+
+    init_db()
+    limit = max(1, min(100, int(limit)))
+    with connect() as conn:
+        missing = conn.execute(
+            """
+            SELECT card.asset_id
+            FROM asset_cards card
+            WHERE card.software_inventory_updated_at IS NULL
+            ORDER BY card.last_seen DESC, card.asset_id
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    processed = 0
+    indexed_rows = 0
+    for row in missing:
+        asset_id = str(row["asset_id"])
+        card = get_asset_card(asset_id)
+        if not card:
+            continue
+        current = now_utc()
+        with connect() as conn:
+            indexed_rows += replace_asset_card_software_inventory(
+                conn,
+                asset_id,
+                card,
+                current,
+            )
+        processed += 1
+    return {
+        **asset_card_software_inventory_coverage(),
+        "processed": processed,
+        "indexed_rows": indexed_rows,
+    }
 
 
 def list_asset_card_search_fields(q: str | None = None, limit: int = 100) -> dict[str, Any]:

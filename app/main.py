@@ -663,7 +663,11 @@ def start_asset_search_backfill() -> None:
             coverage = db.asset_card_search_index_coverage()
         except psycopg.Error:
             return
-        if coverage["indexed_cards"] >= coverage["total_cards"]:
+        if (
+            coverage["indexed_cards"] >= coverage["total_cards"]
+            and coverage["software_inventory_indexed_cards"]
+            >= coverage["software_inventory_total_cards"]
+        ):
             return
         ASSET_SEARCH_BACKFILL_RUNNING = True
     thread = threading.Thread(target=run_asset_search_backfill, daemon=True, name="asset-search-backfill")
@@ -675,36 +679,66 @@ def run_asset_search_backfill() -> None:
     operation_id = str(uuid.uuid4())
     try:
         coverage = db.asset_card_search_index_coverage()
-        total = max(coverage["total_cards"], 1)
+        total = max(coverage["total_cards"], coverage["software_inventory_total_cards"], 1)
+        indexed = min(
+            coverage["indexed_cards"],
+            coverage["software_inventory_indexed_cards"],
+        )
         db.register_operation(
             operation_id,
             kind="asset_search_reindex",
             source_id=operation_id,
             status="running",
             stage="indexing",
-            progress_percent=round(coverage["indexed_cards"] * 100 / total),
+            progress_percent=round(indexed * 100 / total),
             subject_type="asset_cards",
-            subject_label="Индекс полей карточек активов",
-            message="Индексируются существующие карточки активов.",
+            subject_label="Индексы карточек активов",
+            message="Индексы полей и ПО существующих карточек активов.",
         )
-        while coverage["indexed_cards"] < coverage["total_cards"]:
-            batch = db.backfill_asset_card_search_index_batch(limit=20)
+        while True:
+            search_done = coverage["indexed_cards"] >= coverage["total_cards"]
+            software_done = (
+                coverage["software_inventory_indexed_cards"]
+                >= coverage["software_inventory_total_cards"]
+            )
+            if search_done and software_done:
+                break
+            if not search_done:
+                batch = db.backfill_asset_card_search_index_batch(limit=20)
+            else:
+                batch = db.backfill_asset_card_software_inventory_batch(limit=20)
             if not batch["processed"]:
                 break
-            coverage = batch
+            coverage = db.asset_card_search_index_coverage()
+            indexed = min(
+                coverage["indexed_cards"],
+                coverage["software_inventory_indexed_cards"],
+            )
             db.register_operation(
                 operation_id,
                 kind="asset_search_reindex",
                 source_id=operation_id,
                 status="running",
                 stage="indexing",
-                progress_percent=round(coverage["indexed_cards"] * 100 / max(coverage["total_cards"], 1)),
+                progress_percent=round(indexed * 100 / total),
                 subject_type="asset_cards",
-                subject_label="Индекс полей карточек активов",
-                message=f"Проиндексировано карточек: {coverage['indexed_cards']} из {coverage['total_cards']}.",
+                subject_label="Индексы карточек активов",
+                message=(
+                    "Индексы: "
+                    f"поля {coverage['indexed_cards']}/{coverage['total_cards']}, "
+                    "ПО "
+                    f"{coverage['software_inventory_indexed_cards']}/"
+                    f"{coverage['software_inventory_total_cards']}."
+                ),
                 result=coverage,
             )
-        final_status = "completed" if coverage["indexed_cards"] >= coverage["total_cards"] else "completed_with_errors"
+        final_status = (
+            "completed"
+            if coverage["indexed_cards"] >= coverage["total_cards"]
+            and coverage["software_inventory_indexed_cards"]
+            >= coverage["software_inventory_total_cards"]
+            else "completed_with_errors"
+        )
         db.register_operation(
             operation_id,
             kind="asset_search_reindex",
@@ -713,8 +747,14 @@ def run_asset_search_backfill() -> None:
             stage=final_status,
             progress_percent=100,
             subject_type="asset_cards",
-            subject_label="Индекс полей карточек активов",
-            message=f"Индексация завершена: {coverage['indexed_cards']} из {coverage['total_cards']} карточек.",
+            subject_label="Индексы карточек активов",
+            message=(
+                "Индексация завершена: "
+                f"поля {coverage['indexed_cards']}/{coverage['total_cards']}, "
+                "ПО "
+                f"{coverage['software_inventory_indexed_cards']}/"
+                f"{coverage['software_inventory_total_cards']}."
+            ),
             result=coverage,
             finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )

@@ -56,6 +56,34 @@ class AssetCardSearchIndexTests(unittest.TestCase):
             "asset.firewall.rules.action", "deny", "deny",
         ])
 
+    def test_software_inventory_extracts_one_row_per_software_entity(self):
+        card = {
+            "asset_id": "asset-windows-1",
+            "asset_type": "WindowsHost",
+            "os_name": "Microsoft Windows Server 2022",
+            "collections": [{
+                "path": "asset.WindowsHost.Softs",
+                "items": [{
+                    "path": "asset.WindowsHost.Softs[0]",
+                    "data": {
+                        "Name": "OpenSSL",
+                        "Version": "3.2.1",
+                        "Vendor": "OpenSSL Project",
+                        "Architecture": "x64",
+                        "InstallPath": "C:/OpenSSL",
+                    },
+                }],
+            }],
+        }
+
+        rows = db.build_asset_card_software_inventory_rows(card)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "asset-windows-1")
+        self.assertEqual(rows[0][2:6], ("OpenSSL", "openssl", "3.2.1", "3.2.1"))
+        self.assertEqual(rows[0][6:9], ("OpenSSL Project", "x64", "C:/OpenSSL"))
+        self.assertTrue(rows[0][9])
+
     def test_long_text_equality_uses_digest_and_full_value_check(self):
         value = "x" * 5000
         sql, params, scope = db.compile_asset_query_rule({
@@ -124,7 +152,7 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         )
 
         sql, params = connection.execute.call_args.args
-        self.assertIn("FROM asset_card_search_fields", sql)
+        self.assertIn("FROM asset_card_software_inventory", sql)
         self.assertIn("GROUP BY soft_name, soft_version", sql)
         self.assertNotIn("mpvm", sql.lower())
         self.assertEqual(params[:3], [False, "OpenSSL", "3.%"])
@@ -134,12 +162,12 @@ class AssetCardSearchIndexTests(unittest.TestCase):
     def test_software_preset_escapes_percent_like_patterns_for_psycopg(self):
         sql = db.ASSET_SOFTWARE_ROWS_CTE
 
-        self.assertIn("LIKE '%%.software[%%'", sql)
-        self.assertIn("LIKE '%%.softs.%%'", sql)
-        self.assertNotIn("LIKE '%.software[%'", sql)
+        self.assertIn("FROM asset_card_software_inventory", sql)
+        self.assertIn("inventory.soft_name_normalized", sql)
+        self.assertIn("inventory.soft_version_normalized", sql)
         query = PostgresQuery(Transformer())
         query.convert(sql + " SELECT * FROM software_rows", [False])
-        self.assertIn(b"LIKE '%.software[%'", query.query)
+        self.assertIn(b"asset_card_software_inventory", query.query)
 
     @patch.object(db, "asset_card_search_index_coverage", return_value={
         "indexed_cards": 3,
