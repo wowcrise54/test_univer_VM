@@ -41,6 +41,42 @@ function configureApi({ views = [], queryResult } = {}) {
     if (path === "/api/saved-views?route=asset-query") {
       return Promise.resolve({ rows: views });
     }
+    if (path === "/api/asset-card-query/presets") {
+      return Promise.resolve({
+        execution: "local",
+        source: "asset_cards",
+        rows: [
+          {
+            id: "software-search",
+            name: "Поиск определённого ПО на активах",
+            description: "Поиск ПО в локальных карточках.",
+            search: true,
+            defaults: {
+              software_name: "OpenSSL",
+              software_version_like: "3.%",
+            },
+            columns: [
+              { key: "soft_name", label: "ПО" },
+              { key: "soft_version", label: "Версия" },
+              { key: "count", label: "Количество установок" },
+            ],
+            pdql: 'filter(Host.Softs) | filter(SoftName = "OpenSSL")',
+          },
+        ],
+      });
+    }
+    if (
+      path === "/api/asset-card-query/presets/software-search" &&
+      options.method === "POST"
+    ) {
+      return Promise.resolve({
+        rows: [{ soft_name: "OpenSSL", soft_version: "3.2.1", count: 4 }],
+        total: 1,
+        offset: 0,
+        indexed_cards: 8,
+        total_cards: 8,
+      });
+    }
     if (path === "/api/asset-card-query" && options.method === "POST") {
       return Promise.resolve(
         queryResult || {
@@ -176,6 +212,35 @@ describe("asset query UI", () => {
       "Выборка «Публичные веб-серверы» удалена.",
       "success",
     );
+  });
+
+  it("runs a selected preset locally and shows grouped card data", async () => {
+    configureApi();
+    renderPage();
+
+    const preset = await screen.findByRole("option", {
+      name: "Поиск определённого ПО на активах",
+    });
+    fireEvent.change(screen.getByLabelText("Готовый пресет"), {
+      target: { value: preset.value },
+    });
+
+    await waitFor(() => {
+      const call = api.mock.calls.find(
+        ([path, options]) =>
+          path === "/api/asset-card-query/presets/software-search" &&
+          options.method === "POST",
+      );
+      expect(JSON.parse(call[1].body)).toMatchObject({
+        software_name: "OpenSSL",
+        software_version_like: "3.%",
+        offset: 0,
+      });
+    });
+    expect(await screen.findByText("3.2.1")).toBeInTheDocument();
+    expect(
+      screen.getByText("Источник: локальные карточки активов"),
+    ).toBeInTheDocument();
   });
 
   it("saves the current query and marks the saved query as active", async () => {

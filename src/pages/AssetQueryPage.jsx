@@ -11,6 +11,7 @@ const EMPTY_GROUP = (depth = 0) => ({
 });
 const DEFAULT_SORT = { key: "display_name", direction: "asc" };
 const PAGE_SIZE = 50;
+const PRESET_PAGE_SIZE = 100;
 const RESULT_COLUMNS = [
   ["display_name", "Хост"],
   ["ip_address", "IP-адрес"],
@@ -22,6 +23,21 @@ const RESULT_COLUMN_KEYS = new Set(RESULT_COLUMNS.map(([key]) => key));
 
 export function AssetQueryPage({ runBusy, busy, showAlert }) {
   const [catalog, setCatalog] = useState([]);
+  const [presets, setPresets] = useState([]);
+  const [activePresetId, setActivePresetId] = useState("");
+  const [presetSearch, setPresetSearch] = useState({
+    software_name: "",
+    software_version_like: "",
+  });
+  const [presetResult, setPresetResult] = useState({
+    rows: [],
+    total: 0,
+    offset: 0,
+  });
+  const [presetState, setPresetState] = useState({
+    status: "loading",
+    error: null,
+  });
   const [coverage, setCoverage] = useState({
     indexed_cards: 0,
     total_cards: 0,
@@ -60,6 +76,10 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
       !sameViewSettings(activeView.filters, { query, sort, columns }),
     [activeView, columns, query, sort],
   );
+  const activePreset = useMemo(
+    () => presets.find((item) => item.id === activePresetId) || null,
+    [activePresetId, presets],
+  );
 
   useEffect(() => {
     let active = true;
@@ -89,6 +109,21 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         setViewsState({ loading: false, error });
         showAlert(
           `Не удалось загрузить сохранённые выборки: ${error.message || String(error)}`,
+          "error",
+        );
+      });
+    api("/api/asset-card-query/presets")
+      .then((response) => {
+        if (!active) return;
+        const rows = response.rows || [];
+        setPresets(rows);
+        setPresetState({ status: "idle", error: null });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setPresetState({ status: "error", error });
+        showAlert(
+          `Не удалось загрузить пресеты: ${error.message || String(error)}`,
           "error",
         );
       });
@@ -131,6 +166,46 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     runBusy("assetQuery", () => execute(offset, nextSort, nextQuery), {
       allowConcurrent: true,
     });
+
+  const executePreset = async (preset, offset = 0, search = presetSearch) => {
+    if (!preset) return null;
+    setPresetState({ status: "loading", error: null });
+    try {
+      const response = await api(
+        `/api/asset-card-query/presets/${encodeURIComponent(preset.id)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...(preset.search ? search : {}),
+            limit: PRESET_PAGE_SIZE,
+            offset,
+          }),
+        },
+      );
+      setPresetResult(response);
+      setCoverage(response);
+      setPresetState({ status: "success", error: null });
+      return response;
+    } catch (error) {
+      setPresetState({ status: "error", error });
+      throw error;
+    }
+  };
+
+  const selectPreset = (id) => {
+    const preset = presets.find((item) => item.id === id);
+    if (!preset) return;
+    const nextSearch = {
+      software_name: preset.defaults?.software_name || "",
+      software_version_like: preset.defaults?.software_version_like || "",
+    };
+    setActivePresetId(id);
+    setPresetSearch(nextSearch);
+    setPresetResult({ rows: [], total: 0, offset: 0 });
+    runBusy("assetQueryPreset", () => executePreset(preset, 0, nextSearch), {
+      allowConcurrent: true,
+    });
+  };
 
   const changeQuery = (nextQuery) => {
     requestSequenceRef.current += 1;
@@ -254,6 +329,115 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         </Button>
       }
     >
+      <section className="asset-query-presets" aria-label="Готовые пресеты">
+        <div className="asset-query-presets__picker">
+          <label>
+            <span>Готовый пресет</span>
+            <select
+              value={activePresetId}
+              aria-busy={presetState.status === "loading" ? "true" : undefined}
+              onChange={(event) => selectPreset(event.target.value)}
+            >
+              <option value="" disabled>
+                Выберите пресет
+              </option>
+              {presets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="asset-query-presets__local">
+            <strong>Локальное выполнение</strong>
+            <span>
+              Данные группируются локально по полям сохранённых карточек
+              активов. Запрос в MP VM не отправляется.
+            </span>
+          </div>
+        </div>
+        {activePreset ? (
+          <div className="asset-query-preset-card">
+            <div>
+              <span className="asset-query-preset-card__eyebrow">Пресет</span>
+              <h3>{activePreset.name}</h3>
+              <p>{activePreset.description}</p>
+            </div>
+            {activePreset.search ? (
+              <div className="asset-query-preset-search">
+                <label>
+                  <span>Название ПО</span>
+                  <input
+                    aria-label="Название ПО в пресете"
+                    value={presetSearch.software_name}
+                    onChange={(event) =>
+                      setPresetSearch({
+                        ...presetSearch,
+                        software_name: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Маска версии</span>
+                  <input
+                    aria-label="Маска версии в пресете"
+                    value={presetSearch.software_version_like}
+                    onChange={(event) =>
+                      setPresetSearch({
+                        ...presetSearch,
+                        software_version_like: event.target.value,
+                      })
+                    }
+                    placeholder="Например, 3.%"
+                  />
+                </label>
+                <Button
+                  busy={busy.assetQueryPreset}
+                  onClick={() =>
+                    runBusy(
+                      "assetQueryPreset",
+                      () => executePreset(activePreset),
+                      { allowConcurrent: true },
+                    )
+                  }
+                >
+                  Найти
+                </Button>
+              </div>
+            ) : null}
+            <details className="asset-query-preset-pdql">
+              <summary>Исходный PDQL</summary>
+              <code>{activePreset.pdql}</code>
+            </details>
+            <PresetResult
+              preset={activePreset}
+              result={presetResult}
+              state={presetState}
+              onRetry={() =>
+                runBusy(
+                  "assetQueryPreset",
+                  () => executePreset(activePreset, presetResult.offset || 0),
+                  { allowConcurrent: true },
+                )
+              }
+              onPage={(offset) =>
+                runBusy(
+                  "assetQueryPreset",
+                  () => executePreset(activePreset, offset),
+                  { allowConcurrent: true },
+                )
+              }
+            />
+          </div>
+        ) : presetState.status === "error" ? (
+          <div className="query-state query-state--error" role="alert">
+            Пресеты недоступны:{" "}
+            {presetState.error?.message || "сервис недоступен"}
+          </div>
+        ) : null}
+      </section>
+
       <div
         className={`index-coverage ${incomplete ? "index-coverage--warning" : ""}`}
       >
@@ -553,6 +737,113 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         </Button>
       </div>
     </Panel>
+  );
+}
+
+function PresetResult({ preset, result, state, onRetry, onPage }) {
+  const columns = preset.columns || [];
+  return (
+    <section
+      className="asset-query-preset-result"
+      aria-label="Результат пресета"
+    >
+      <div className="asset-query-result-header">
+        <strong>Строк результата: {result.total || 0}</strong>
+        <span>Источник: локальные карточки активов</span>
+      </div>
+      <div className="table-shell">
+        <table className="asset-query-table">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column.key}>{column.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {state.status === "loading" ? (
+              <tr>
+                <td
+                  colSpan={Math.max(columns.length, 1)}
+                  className="empty-cell"
+                >
+                  Выполняется локальная группировка…
+                </td>
+              </tr>
+            ) : state.status === "error" ? (
+              <tr>
+                <td
+                  colSpan={Math.max(columns.length, 1)}
+                  className="empty-cell"
+                >
+                  <div className="query-state query-state--error" role="alert">
+                    <span>
+                      Не удалось выполнить пресет:{" "}
+                      {state.error?.message || "сервис недоступен"}
+                    </span>
+                    <Button variant="tiny" onClick={onRetry}>
+                      Повторить
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ) : result.rows?.length ? (
+              result.rows.map((row, index) => (
+                <tr
+                  key={columns
+                    .map((column) => String(row[column.key] ?? ""))
+                    .concat(index)
+                    .join("-")}
+                >
+                  {columns.map((column) => (
+                    <td key={column.key}>
+                      {row[column.key] === null ||
+                      row[column.key] === undefined ||
+                      row[column.key] === ""
+                        ? "Не указано"
+                        : String(row[column.key])}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td
+                  colSpan={Math.max(columns.length, 1)}
+                  className="empty-cell"
+                >
+                  Данные по этому пресету не найдены в локальных карточках.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="passport-pagination">
+        <Button
+          variant="secondary"
+          disabled={!result.offset}
+          onClick={() => onPage(Math.max(0, result.offset - PRESET_PAGE_SIZE))}
+        >
+          Назад
+        </Button>
+        <span>
+          {result.total
+            ? `${result.offset + 1}–${Math.min(
+                result.offset + PRESET_PAGE_SIZE,
+                result.total,
+              )} из ${result.total}`
+            : "Нет результатов"}
+        </span>
+        <Button
+          variant="secondary"
+          disabled={result.offset + PRESET_PAGE_SIZE >= result.total}
+          onClick={() => onPage(result.offset + PRESET_PAGE_SIZE)}
+        >
+          Далее
+        </Button>
+      </div>
+    </section>
   );
 }
 

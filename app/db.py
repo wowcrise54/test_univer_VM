@@ -5342,6 +5342,349 @@ ASSET_QUERY_NUMBER_OPERATORS = {"equals", "not_equals", "gt", "gte", "lt", "lte"
 ASSET_QUERY_BOOLEAN_OPERATORS = {"is_true", "is_false"}
 ASSET_QUERY_COMMON_OPERATORS = {"exists", "not_exists"}
 
+ASSET_CARD_QUERY_PRESETS: dict[str, dict[str, Any]] = {
+    "windows-software": {
+        "id": "windows-software",
+        "name": "ПО Windows",
+        "description": "Установленное ПО на Windows-активах, сгруппированное по названию.",
+        "kind": "software",
+        "windows_only": True,
+        "grouping": "name",
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            "filter(WindowsHost.Softs) | select(@WindowsHost, WindowsHost.Softs.Name as SoftName, "
+            "WindowsHost.Softs.Version as SoftVersion, WindowsHost.Softs.Vendor, "
+            "WindowsHost.Softs.Architecture, WindowsHost.Softs.InstallPath as InstallPath, "
+            "WindowsHost.@UpdateTime) | unique() | sort(@WindowsHost ASC, SoftName ASC, "
+            "SoftVersion ASC, InstallPath ASC) | group(SoftName, COUNT(*)) | sort(SoftName ASC)"
+        ),
+    },
+    "windows-software-by-version": {
+        "id": "windows-software-by-version",
+        "name": "ПО Windows, сгруппированное по версиям",
+        "description": "Установленное ПО на Windows-активах по названию и версии.",
+        "kind": "software",
+        "windows_only": True,
+        "grouping": "name_version",
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "soft_version", "label": "Версия"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            "filter(WindowsHost.Softs) | select(@WindowsHost, WindowsHost.Softs.Name as SoftName, "
+            "WindowsHost.Softs.Version as SoftVersion, WindowsHost.Softs.Vendor, "
+            "WindowsHost.Softs.Architecture, WindowsHost.Softs.InstallPath as InstallPath, "
+            "WindowsHost.@UpdateTime) | unique() | sort(@WindowsHost ASC, InstallPath ASC) | "
+            "group(SoftName, SoftVersion, COUNT(*)) | sort(SoftName ASC, SoftVersion ASC)"
+        ),
+    },
+    "windows-software-search": {
+        "id": "windows-software-search",
+        "name": "Поиск определённого ПО на активах Windows",
+        "description": "Поиск названия и маски версии ПО только на Windows-активах.",
+        "kind": "software",
+        "windows_only": True,
+        "grouping": "name_version",
+        "search": True,
+        "defaults": {"software_name": "OpenSSL", "software_version_like": "3.%"},
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "soft_version", "label": "Версия"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            'filter(WindowsHost.Softs) | select(@Host, Host.Softs.Name as SoftName, '
+            "Host.Softs.Version as SoftVersion, Host.@UpdateTime) | unique() | sort(@Host ASC) | "
+            'group(SoftName, SoftVersion, COUNT(*)) | filter(SoftName = "OpenSSL" and '
+            'SoftVersion like "3.%") | sort(SoftName, SoftVersion)'
+        ),
+    },
+    "software": {
+        "id": "software",
+        "name": "ПО на активах",
+        "description": "Установленное ПО на всех локальных карточках, сгруппированное по названию.",
+        "kind": "software",
+        "windows_only": False,
+        "grouping": "name",
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            "filter(Host.Softs) | select(@Host, Host.Softs.Name as SoftName, "
+            "Host.Softs.Version as SoftVersion, Host.Softs.Vendor, Host.Softs.Architecture, "
+            "Host.Softs.InstallPath as InstallPath, Host.@UpdateTime) | sort(@Host ASC, "
+            "SoftName ASC, SoftVersion ASC, InstallPath ASC) | group(SoftName, COUNT(*)) | "
+            "sort(SoftName ASC)"
+        ),
+    },
+    "software-by-version": {
+        "id": "software-by-version",
+        "name": "ПО на активах, сгруппированное по версиям",
+        "description": "Установленное ПО на всех локальных карточках по названию и версии.",
+        "kind": "software",
+        "windows_only": False,
+        "grouping": "name_version",
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "soft_version", "label": "Версия"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            "filter(Host.Softs) | select(@Host, Host.Softs.Name as SoftName, "
+            "Host.Softs.Version as SoftVersion, Host.Softs.Vendor, Host.Softs.Architecture, "
+            "Host.Softs.InstallPath as InstallPath, Host.@UpdateTime) | sort(@Host ASC, "
+            "InstallPath ASC) | group(SoftName, SoftVersion, COUNT(*)) | "
+            "sort(SoftName ASC, SoftVersion ASC)"
+        ),
+    },
+    "software-search": {
+        "id": "software-search",
+        "name": "Поиск определённого ПО на активах",
+        "description": "Поиск названия и маски версии ПО на всех локальных карточках.",
+        "kind": "software",
+        "windows_only": False,
+        "grouping": "name_version",
+        "search": True,
+        "defaults": {"software_name": "OpenSSL", "software_version_like": "3.%"},
+        "columns": [
+            {"key": "soft_name", "label": "ПО"},
+            {"key": "soft_version", "label": "Версия"},
+            {"key": "count", "label": "Количество установок"},
+        ],
+        "pdql": (
+            'filter(Host.Softs) | select(@Host, Host.Softs.Name as SoftName, '
+            "Host.Softs.Version as SoftVersion, Host.@UpdateTime) | unique() | sort(@Host ASC) | "
+            'group(SoftName, SoftVersion, COUNT(*)) | filter(SoftName = "OpenSSL" and '
+            'SoftVersion like "3.%") | sort(SoftName, SoftVersion)'
+        ),
+    },
+    "software-vendors": {
+        "id": "software-vendors",
+        "name": "Вендоры ПО",
+        "description": "Количество записей установленного ПО по вендорам.",
+        "kind": "software",
+        "windows_only": False,
+        "grouping": "vendor",
+        "columns": [
+            {"key": "vendor", "label": "Вендор"},
+            {"key": "soft_number", "label": "Количество ПО"},
+        ],
+        "pdql": (
+            "filter(Host.Softs) | select(@Host, Host.Softs.Name as SoftName, "
+            "Host.Softs.Version as SoftVersion, Host.Softs.Vendor as Vendor, "
+            "Host.Softs.Architecture, Host.Softs.InstallPath as InstallPath, Host.@UpdateTime) | "
+            "sort(@Host ASC, SoftName ASC, SoftVersion ASC, InstallPath ASC) | "
+            "group(Vendor, COUNT(*) as SoftNumber) | sort(SoftNumber DESC)"
+        ),
+    },
+    "os-versions": {
+        "id": "os-versions",
+        "name": "Версии ОС",
+        "description": "Активы, сгруппированные по названию и версии операционной системы.",
+        "kind": "os",
+        "columns": [
+            {"key": "os_name", "label": "ОС"},
+            {"key": "os_version", "label": "Версия"},
+            {"key": "count", "label": "Количество активов"},
+        ],
+        "pdql": (
+            "select(@Host, Host.OsName, Host.OsVersion, Host.@UpdateTime) | "
+            "group(Host.OsName, Host.OsVersion, COUNT(*)) | "
+            "sort(Host.OsName ASC, Host.OsVersion ASC)"
+        ),
+    },
+}
+
+
+def public_asset_card_query_preset(preset: dict[str, Any]) -> dict[str, Any]:
+    public_keys = {"id", "name", "description", "columns", "pdql", "search", "defaults"}
+    return {key: value for key, value in preset.items() if key in public_keys}
+
+
+def list_asset_card_query_presets() -> list[dict[str, Any]]:
+    return [
+        public_asset_card_query_preset(preset)
+        for preset in ASSET_CARD_QUERY_PRESETS.values()
+    ]
+
+
+ASSET_SOFTWARE_ROWS_CTE = """
+WITH candidate_fields AS (
+    SELECT
+        field.asset_id,
+        field.entity_path,
+        LOWER(REGEXP_REPLACE(field.field_path, '^.*[.]', '')) AS leaf_name,
+        COALESCE(
+            field.value_text,
+            field.value_number::text,
+            field.value_boolean::text
+        ) AS field_value
+    FROM asset_card_search_fields AS field
+    WHERE
+        LOWER(field.entity_path) LIKE '%.software[%'
+        OR LOWER(field.entity_path) LIKE '%.softs[%'
+        OR LOWER(field.entity_path) LIKE 'software[%'
+        OR LOWER(field.entity_path) LIKE 'softs[%'
+        OR LOWER(field.field_path) LIKE '%.software.%'
+        OR LOWER(field.field_path) LIKE '%.softs.%'
+),
+software_entities AS (
+    SELECT
+        asset_id,
+        entity_path,
+        MAX(field_value) FILTER (
+            WHERE leaf_name IN ('name', 'softname', 'softwarename')
+        ) AS soft_name,
+        MAX(field_value) FILTER (
+            WHERE leaf_name IN ('version', 'softversion', 'softwareversion')
+        ) AS soft_version,
+        MAX(field_value) FILTER (
+            WHERE leaf_name IN ('vendor', 'publisher', 'manufacturer')
+        ) AS vendor,
+        MAX(field_value) FILTER (
+            WHERE leaf_name IN ('architecture', 'arch')
+        ) AS architecture,
+        MAX(field_value) FILTER (
+            WHERE leaf_name IN ('installpath', 'installationpath', 'path')
+        ) AS install_path
+    FROM candidate_fields
+    GROUP BY asset_id, entity_path
+),
+software_rows AS (
+    SELECT DISTINCT
+        card.asset_id,
+        COALESCE(card.display_name, card.hostname, card.fqdn, card.asset_id) AS host,
+        entity.soft_name,
+        entity.soft_version,
+        entity.vendor,
+        entity.architecture,
+        entity.install_path,
+        card.last_seen AS update_time
+    FROM software_entities AS entity
+    JOIN asset_cards AS card ON card.asset_id = entity.asset_id
+    WHERE entity.soft_name IS NOT NULL
+      AND (%s = FALSE OR (
+          LOWER(COALESCE(card.asset_type, '')) = 'windowshost'
+          OR LOWER(COALESCE(card.os_name, '')) LIKE '%%windows%%'
+      ))
+)
+"""
+
+
+def query_asset_card_preset(
+    preset_id: str,
+    *,
+    software_name: str | None = None,
+    software_version_like: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    init_db()
+    preset = ASSET_CARD_QUERY_PRESETS.get(str(preset_id))
+    if preset is None:
+        raise KeyError(preset_id)
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+
+    if preset["kind"] == "os":
+        statement = """
+            SELECT
+                card.os_name,
+                card.os_version,
+                COUNT(*)::int AS count,
+                COUNT(*) OVER()::int AS __total
+            FROM asset_cards AS card
+            GROUP BY card.os_name, card.os_version
+            ORDER BY LOWER(card.os_name) ASC NULLS LAST,
+                     LOWER(card.os_version) ASC NULLS LAST
+            LIMIT %s OFFSET %s
+        """
+        params: list[Any] = [limit, offset]
+    else:
+        filters = []
+        params = [bool(preset.get("windows_only"))]
+        if preset.get("search"):
+            clean_name = str(
+                software_name
+                if software_name is not None
+                else preset.get("defaults", {}).get("software_name", "")
+            ).strip()
+            clean_version = str(
+                software_version_like
+                if software_version_like is not None
+                else preset.get("defaults", {}).get("software_version_like", "")
+            ).strip()
+            if not clean_name:
+                raise ValueError("software_name must not be blank.")
+            filters.append("LOWER(soft_name) = LOWER(%s)")
+            params.append(clean_name)
+            if clean_version:
+                filters.append("soft_version ILIKE %s")
+                params.append(clean_version)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        grouping = preset["grouping"]
+        if grouping == "name":
+            grouped = f"""
+                SELECT soft_name, COUNT(*)::int AS count
+                FROM software_rows
+                {where}
+                GROUP BY soft_name
+            """
+            order = "LOWER(soft_name) ASC NULLS LAST"
+        elif grouping == "name_version":
+            grouped = f"""
+                SELECT soft_name, soft_version, COUNT(*)::int AS count
+                FROM software_rows
+                {where}
+                GROUP BY soft_name, soft_version
+            """
+            order = (
+                "LOWER(soft_name) ASC NULLS LAST, "
+                "LOWER(soft_version) ASC NULLS LAST"
+            )
+        elif grouping == "vendor":
+            grouped = f"""
+                SELECT vendor, COUNT(*)::int AS soft_number
+                FROM software_rows
+                {where}
+                GROUP BY vendor
+            """
+            order = "soft_number DESC, LOWER(vendor) ASC NULLS LAST"
+        else:
+            raise ValueError(f"Unsupported preset grouping: {grouping}")
+        statement = (
+            ASSET_SOFTWARE_ROWS_CTE
+            + f"""
+                SELECT grouped.*, COUNT(*) OVER()::int AS __total
+                FROM ({grouped}) AS grouped
+                ORDER BY {order}
+                LIMIT %s OFFSET %s
+            """
+        )
+        params.extend([limit, offset])
+
+    with connect() as conn:
+        raw_rows = conn.execute(statement, params).fetchall()
+    rows = rows_to_dicts(raw_rows)
+    total = int(rows[0].pop("__total", 0)) if rows else 0
+    for row in rows[1:]:
+        row.pop("__total", None)
+    return {
+        "preset": public_asset_card_query_preset(preset),
+        "rows": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "execution": "local",
+        "source": "asset_cards",
+        **asset_card_search_index_coverage(),
+    }
+
 
 def asset_card_search_index_coverage() -> dict[str, int]:
     init_db()

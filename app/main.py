@@ -73,6 +73,7 @@ from .api.schemas import (
     AssetCardBuildRequest,
     AssetCardBulkRefreshRequest,
     AssetCardFieldQueryRequest,
+    AssetCardPresetQueryRequest,
     AssetCardRefreshScanRequest,
     AssetCardUpdateRequest,
     ConnectionRequest,
@@ -2937,6 +2938,49 @@ def local_asset_cards(
 def asset_card_query_fields(q: str | None = None, limit: int = 100) -> dict[str, Any]:
     start_asset_search_backfill()
     return CONTAINER.services.asset_query.fields(q=q, limit=limit)
+
+
+@asset_query_router.get("/api/asset-card-query/presets")
+def asset_card_query_presets() -> dict[str, Any]:
+    return {
+        "rows": db.list_asset_card_query_presets(),
+        "execution": "local",
+        "source": "asset_cards",
+    }
+
+
+@asset_query_router.post("/api/asset-card-query/presets/{preset_id}")
+def execute_asset_card_query_preset(
+    preset_id: str,
+    payload: AssetCardPresetQueryRequest,
+) -> dict[str, Any]:
+    start_asset_search_backfill()
+    try:
+        return db.query_asset_card_preset(
+            preset_id,
+            software_name=payload.software_name,
+            software_version_like=payload.software_version_like,
+            limit=payload.limit,
+            offset=payload.offset,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "ASSET_QUERY_PRESET_NOT_FOUND",
+                "message": f"Unknown asset query preset: {preset_id}",
+                "component": "asset_cards",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_ASSET_QUERY_PRESET",
+                "message": str(exc),
+                "component": "asset_cards",
+            },
+        ) from exc
 
 
 @asset_query_router.post("/api/asset-card-query")

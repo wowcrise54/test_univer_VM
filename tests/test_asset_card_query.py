@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
 from app import db
 
@@ -73,6 +74,59 @@ class AssetCardSearchIndexTests(unittest.TestCase):
             db.validate_asset_query_tree(too_many)
         with self.assertRaisesRegex(ValueError, "Unsupported sort column"):
             db.validated_sort_sql("drop table", "asc", {"name": "name"}, default="name")
+
+    def test_all_requested_local_presets_are_available(self):
+        presets = db.list_asset_card_query_presets()
+
+        self.assertEqual(len(presets), 8)
+        self.assertEqual(
+            [preset["name"] for preset in presets],
+            [
+                "ПО Windows",
+                "ПО Windows, сгруппированное по версиям",
+                "Поиск определённого ПО на активах Windows",
+                "ПО на активах",
+                "ПО на активах, сгруппированное по версиям",
+                "Поиск определённого ПО на активах",
+                "Вендоры ПО",
+                "Версии ОС",
+            ],
+        )
+        self.assertTrue(all(preset["pdql"] for preset in presets))
+
+    @patch.object(db, "asset_card_search_index_coverage", return_value={
+        "indexed_cards": 3,
+        "total_cards": 3,
+    })
+    @patch.object(db, "connect")
+    @patch.object(db, "init_db")
+    def test_software_search_preset_groups_local_index(
+        self, _init_db, connect, _coverage,
+    ):
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = [
+            {
+                "soft_name": "OpenSSL",
+                "soft_version": "3.2.1",
+                "count": 4,
+                "__total": 1,
+            },
+        ]
+        connect.return_value.__enter__.return_value = connection
+
+        result = db.query_asset_card_preset(
+            "software-search",
+            software_name="OpenSSL",
+            software_version_like="3.%",
+        )
+
+        sql, params = connection.execute.call_args.args
+        self.assertIn("FROM asset_card_search_fields", sql)
+        self.assertIn("GROUP BY soft_name, soft_version", sql)
+        self.assertNotIn("mpvm", sql.lower())
+        self.assertEqual(params[:3], [False, "OpenSSL", "3.%"])
+        self.assertEqual(result["execution"], "local")
+        self.assertEqual(result["rows"][0]["count"], 4)
 
 
 if __name__ == "__main__":
