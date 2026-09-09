@@ -63,6 +63,25 @@ class ConnectionTokenTests(unittest.TestCase):
         finally:
             runtime_session.client.session.close()
 
+    def test_session_info_attempts_env_reconnect_when_disconnected(self):
+        runtime_session = SimpleNamespace(
+            client=None,
+            access_token=None,
+            api_url=None,
+            token_url=None,
+            username=None,
+            verify_tls=True,
+        )
+
+        with (
+            patch.object(main, "SESSION", runtime_session),
+            patch.object(main, "configure_session_from_env") as configure,
+        ):
+            result = main.session_info()
+
+        self.assertFalse(result["connected"])
+        configure.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

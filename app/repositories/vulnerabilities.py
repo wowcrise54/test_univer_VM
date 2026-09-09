@@ -201,6 +201,8 @@ def _filtered_findings_cte(
     *,
     q: str | None = None,
     host_q: str | None = None,
+    os: str | None = None,
+    asset_type: str | None = None,
     severity: str | None = None,
     source: VulnerabilitySource | None = None,
     selector: str | None = None,
@@ -225,6 +227,13 @@ def _filtered_findings_cte(
             "OR card.fqdn ILIKE %s OR card.ip_address ILIKE %s)"
         )
         params.extend([like, like, like, like, like])
+    if os:
+        like = f"%{os.strip()}%"
+        filters.append("(card.os_name ILIKE %s OR card.os_version ILIKE %s)")
+        params.extend([like, like])
+    if asset_type:
+        filters.append("card.asset_type ILIKE %s")
+        params.append(f"%{asset_type.strip()}%")
     if severity:
         normalized = severity.strip().lower()
         normalized = normalized if normalized in {"critical", "high", "medium", "low"} else "unknown"
@@ -664,11 +673,20 @@ class VulnerabilityAnalyticsRepository:
         *,
         q: str | None = None,
         host_q: str | None = None,
+        os: str | None = None,
+        asset_type: str | None = None,
         severity: str | None = None,
         source: VulnerabilitySource | None = None,
     ) -> dict[str, Any]:
         db.init_db()
-        cte, params = _filtered_findings_cte(q=q, host_q=host_q, severity=severity, source=source)
+        cte, params = _filtered_findings_cte(
+            q=q,
+            host_q=host_q,
+            os=os,
+            asset_type=asset_type,
+            severity=severity,
+            source=source,
+        )
         with db.connect() as conn:
             coverage_row = dict(
                 conn.execute(
@@ -735,6 +753,41 @@ class VulnerabilityAnalyticsRepository:
                 """,
                 params,
             ).fetchall()
+            top_vulnerability_rows = conn.execute(
+                cte
+                + """
+                SELECT
+                    selector,
+                    MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
+                    MAX(NULLIF(cve, '')) AS cve,
+                    MAX(NULLIF(name, '')) AS name,
+                    CASE MIN(severity_rank)
+                        WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                        WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                    MIN(severity_rank) AS severity_rank,
+                    MAX(cvss_score) AS cvss_score,
+                    COUNT(DISTINCT asset_id) AS affected_hosts,
+                    COUNT(*) AS findings,
+                    COUNT(DISTINCT group_id) AS affected_objects,
+                    ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
+                        FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
+                        AS components,
+                    ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                        AS docker_containers,
+                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                        AS docker_images,
+                    '[]'::jsonb AS passports,
+                    MAX(last_seen) AS last_seen
+                FROM filtered_findings
+                GROUP BY selector
+                ORDER BY affected_hosts DESC, findings DESC, selector ASC
+                LIMIT 8
+                """,
+                params,
+            ).fetchall()
             top_host_rows = conn.execute(
                 cte
                 + """
@@ -784,17 +837,6 @@ class VulnerabilityAnalyticsRepository:
             "high_risk_hosts": int(totals_row.get("high_risk_hosts") or 0),
             "unrated_vulnerabilities": int(totals_row.get("unrated_vulnerabilities") or 0),
         }
-        top = self.list(
-            q=q,
-            host_q=host_q,
-            severity=severity,
-            source=source,
-            limit=8,
-            offset=0,
-            sort_by="affected_hosts",
-            sort_dir="desc",
-            include_total=False,
-        )
         return {
             "source": {
                 "kind": "asset_cards",
@@ -802,7 +844,14 @@ class VulnerabilityAnalyticsRepository:
                 "as_of": coverage["freshest_at"],
                 "historical": False,
             },
-            "filters": {"q": q or "", "host_q": host_q or "", "severity": severity or "", "source": source or ""},
+            "filters": {
+                "q": q or "",
+                "host_q": host_q or "",
+                "os": os or "",
+                "asset_type": asset_type or "",
+                "severity": severity or "",
+                "source": source or "",
+            },
             "totals": totals,
             "by_severity": [
                 {
@@ -814,7 +863,9 @@ class VulnerabilityAnalyticsRepository:
                 for row in severity_rows
             ],
             "coverage": coverage,
-            "top_vulnerabilities": top["rows"],
+            "top_vulnerabilities": [
+                _decode_vulnerability(dict(row)) for row in top_vulnerability_rows
+            ],
             "top_hosts": [_decode_host(dict(row)) for row in top_host_rows],
         }
 
@@ -963,6 +1014,8 @@ class VulnerabilityAnalyticsRepository:
         *,
         q: str | None = None,
         host_q: str | None = None,
+        os: str | None = None,
+        asset_type: str | None = None,
         severity: str | None = None,
         source: VulnerabilitySource | None = None,
         limit: int = 50,
@@ -989,7 +1042,14 @@ class VulnerabilityAnalyticsRepository:
             default_direction="desc",
         )
         db.init_db()
-        cte, params = _filtered_findings_cte(q=q, host_q=host_q, severity=severity, source=source)
+        cte, params = _filtered_findings_cte(
+            q=q,
+            host_q=host_q,
+            os=os,
+            asset_type=asset_type,
+            severity=severity,
+            source=source,
+        )
         aggregate = """
             , aggregated AS (
                 SELECT
@@ -1127,6 +1187,8 @@ class VulnerabilityAnalyticsRepository:
         *,
         selector: str,
         host_q: str | None = None,
+        os: str | None = None,
+        asset_type: str | None = None,
         severity: str | None = None,
         source: VulnerabilitySource | None = None,
         limit: int = 50,
@@ -1155,6 +1217,8 @@ class VulnerabilityAnalyticsRepository:
         db.init_db()
         cte, params = _filtered_findings_cte(
             host_q=host_q,
+            os=os,
+            asset_type=asset_type,
             severity=severity,
             source=source,
             selector=selector,

@@ -7,28 +7,69 @@ export const navigationGroups = [
 ];
 
 export const workflowSteps = [
-  { id: "overview", label: "Обзор", hint: "VM-контур", path: "/vm", routes: ["vm"] },
-  { id: "scan", label: "Сканирование", hint: "Запуск и контроль", path: "/tasks", routes: ["connection", "tasks", "asset-groups", "operations"] },
-  { id: "review", label: "Находки", hint: "Риск и активы", path: "/vulnerabilities", routes: ["vulnerabilities", "asset-cards", "passports", "asset-query"] },
-  { id: "fix", label: "Устранение", hint: "SLA и проверка", path: "/remediation", routes: ["remediation"] },
-  { id: "report", label: "Отчётность", hint: "CSV и сценарии", path: "/export", routes: ["export", "automations"] },
+  {
+    id: "overview",
+    label: "Обзор",
+    hint: "VM-контур",
+    path: "/vm",
+    routes: ["vm"],
+  },
+  {
+    id: "scan",
+    label: "Сканирование",
+    hint: "Запуск и контроль",
+    path: "/tasks",
+    routes: ["connection", "tasks", "asset-groups", "operations"],
+  },
+  {
+    id: "review",
+    label: "Находки",
+    hint: "Риск и активы",
+    path: "/vulnerabilities",
+    routes: ["vulnerabilities", "asset-cards", "passports", "asset-query"],
+  },
+  {
+    id: "fix",
+    label: "Устранение",
+    hint: "SLA и проверка",
+    path: "/remediation",
+    routes: ["remediation"],
+  },
+  {
+    id: "report",
+    label: "Отчётность",
+    hint: "CSV и сценарии",
+    path: "/export",
+    routes: ["export", "automations"],
+  },
 ];
 
 export const routes = [
   {
-    id: "vm", requiredPermission: "operations.read", group: "primary", icon: "◆", path: "/vm",
-    label: "VM Management", title: "VM Management",
-    description: "Единый цикл сканирования, приоритизации, устранения и подтверждения результата.",
+    id: "vm",
+    requiredPermission: "operations.read",
+    group: "primary",
+    icon: "◆",
+    path: "/vm",
+    label: "VM Management",
+    title: "VM Management",
+    description:
+      "Единый цикл сканирования, приоритизации, устранения и подтверждения результата.",
   },
   {
     id: "users",
-    requiredAnyPermission: ["security.users.read", "security.roles.read", "security.audit.read"],
+    requiredAnyPermission: [
+      "security.users.read",
+      "security.roles.read",
+      "security.audit.read",
+    ],
     group: "admin",
     icon: "◎",
     path: "/users",
     label: "Пользователи",
     title: "Пользователи и роли",
-    description: "Управление доступом к приложению, ролями и состоянием учётных записей.",
+    description:
+      "Управление доступом к приложению, ролями и состоянием учётных записей.",
   },
   {
     id: "connection",
@@ -78,10 +119,9 @@ export const routes = [
     group: "primary",
     icon: "⇩",
     path: "/export",
-    label: "PDQL экспорт",
-    title: "PDQL экспорт",
-    description:
-      "Выгрузка и сохранение результатов PDQL-запросов в локальную БД.",
+    label: "Отчётность",
+    title: "Отчётность",
+    description: "CSV-отчёты и управляемый экспорт для операторов.",
   },
   {
     id: "vulnerabilities",
@@ -95,8 +135,15 @@ export const routes = [
       "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
   },
   {
-    id: "remediation", requiredPermission: "remediation.read", group: "primary", icon: "✓", path: "/remediation", label: "Устранение",
-    title: "Устранение уязвимостей", description: "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
+    id: "remediation",
+    requiredPermission: "remediation.read",
+    group: "primary",
+    icon: "✓",
+    path: "/remediation",
+    label: "Устранение",
+    title: "Устранение уязвимостей",
+    description:
+      "Рабочая очередь, ответственные, SLA и подтверждение устранения.",
   },
   {
     id: "asset-cards",

@@ -35,10 +35,19 @@ def vulnerability_summary(
     request: Request,
     q: Annotated[str | None, Query(max_length=500)] = None,
     host_q: Annotated[str | None, Query(max_length=500)] = None,
+    os: Annotated[str | None, Query(max_length=500)] = None,
+    asset_type: Annotated[str | None, Query(max_length=200)] = None,
     severity: SeverityFilter | None = None,
     source: SourceFilter | None = None,
 ) -> dict:
-    return _service(request).summary(q=q, host_q=host_q, severity=severity, source=source)
+    return _service(request).summary(
+        q=q,
+        host_q=host_q,
+        os=os,
+        asset_type=asset_type,
+        severity=severity,
+        source=source,
+    )
 
 
 @router.get("/trending")
@@ -71,6 +80,8 @@ def vulnerability_hosts(
     request: Request,
     selector: Annotated[str, Query(min_length=1, max_length=2000)],
     host_q: Annotated[str | None, Query(max_length=500)] = None,
+    os: Annotated[str | None, Query(max_length=500)] = None,
+    asset_type: Annotated[str | None, Query(max_length=200)] = None,
     severity: SeverityFilter | None = None,
     source: SourceFilter | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
@@ -82,6 +93,8 @@ def vulnerability_hosts(
         result = _service(request).hosts(
             selector=selector,
             host_q=host_q,
+            os=os,
+            asset_type=asset_type,
             severity=severity,
             source=source,
             limit=limit,
@@ -107,6 +120,8 @@ def vulnerabilities(
     request: Request,
     q: Annotated[str | None, Query(max_length=500)] = None,
     host_q: Annotated[str | None, Query(max_length=500)] = None,
+    os: Annotated[str | None, Query(max_length=500)] = None,
+    asset_type: Annotated[str | None, Query(max_length=200)] = None,
     severity: SeverityFilter | None = None,
     source: SourceFilter | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
@@ -118,6 +133,8 @@ def vulnerabilities(
         return _service(request).list(
             q=q,
             host_q=host_q,
+            os=os,
+            asset_type=asset_type,
             severity=severity,
             source=source,
             limit=limit,

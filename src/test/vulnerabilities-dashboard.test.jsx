@@ -833,6 +833,12 @@ describe("vulnerability dashboard", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Хост" }), {
       target: { value: "server" },
     });
+    fireEvent.change(screen.getByRole("textbox", { name: "ОС" }), {
+      target: { value: "Windows" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Тип актива" }), {
+      target: { value: "host" },
+    });
     fireEvent.change(screen.getByRole("combobox", { name: "Критичность" }), {
       target: { value: "critical" },
     });
@@ -849,6 +855,8 @@ describe("vulnerability dashboard", () => {
             url.pathname === "/api/vulnerabilities/summary" &&
             url.searchParams.get("q") === "CVE-2026" &&
             url.searchParams.get("host_q") === "server" &&
+            url.searchParams.get("os") === "Windows" &&
+            url.searchParams.get("asset_type") === "host" &&
             url.searchParams.get("severity") === "critical" &&
             url.searchParams.get("source") === "os"
           );

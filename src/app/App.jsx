@@ -28,8 +28,9 @@ export function App() {
 
 function AuthenticatedApp({ auth }) {
   const { navigate, path, route } = useRouter();
+  const routeAllowed = !route || canAccessRoute(route, auth.user);
   return (
-    <AppDataProvider routeId={route?.id}>
+    <AppDataProvider routeId={routeAllowed ? route?.id : "forbidden"}>
       <AppShell navigate={navigate} path={path} route={route} auth={auth} />
     </AppDataProvider>
   );
@@ -37,6 +38,15 @@ function AuthenticatedApp({ auth }) {
 
 function AppShell({ navigate, path, route, auth }) {
   const appData = useAppDataContext();
+  const routeAllowed = !route || canAccessRoute(route, auth.user);
+  const visibleRoute = routeAllowed
+    ? route
+    : {
+        id: "forbidden",
+        title: "Нет доступа",
+        description: "Выберите доступный раздел в меню.",
+      };
+  const activeRouteId = routeAllowed ? route?.id : "forbidden";
 
   return (
     <div className="app-shell">
@@ -57,7 +67,7 @@ function AppShell({ navigate, path, route, auth }) {
       <main className="workspace">
         <Topbar
           session={appData.session}
-          route={route}
+          route={visibleRoute}
           onNavigate={navigate}
           currentUser={auth.user}
           onLogout={auth.logout}
@@ -67,13 +77,14 @@ function AppShell({ navigate, path, route, auth }) {
           stale={appData.operationsStale}
           onRetry={appData.refreshSystemStatus}
           onNavigate={navigate}
+          currentUser={auth.user}
         />
-        {route?.id === "vm" ? (
-          <WorkflowRail activeRouteId={route.id} onNavigate={navigate} />
+        {activeRouteId === "vm" ? (
+          <WorkflowRail activeRouteId={activeRouteId} onNavigate={navigate} />
         ) : null}
         <AlertStack alerts={appData.alerts} />
         <ActivePage
-          routeId={route?.id}
+          routeId={activeRouteId}
           onNavigate={navigate}
           currentUser={auth.user}
           {...appData}
@@ -83,7 +94,35 @@ function AppShell({ navigate, path, route, auth }) {
   );
 }
 
+function canAccessRoute(route, user) {
+  const permissions = new Set(user?.permissions || []);
+  if (route.requiredPermission && !permissions.has(route.requiredPermission)) {
+    return false;
+  }
+  if (
+    route.requiredAnyPermission &&
+    !route.requiredAnyPermission.some((permission) =>
+      permissions.has(permission),
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function ActivePage({ routeId, ...props }) {
+  if (routeId === "forbidden") {
+    return (
+      <section className="panel">
+        <div className="panel__header">
+          <div>
+            <h2>Раздел недоступен</h2>
+            <p>Для этой роли раздел скрыт.</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
   if (routeId === "vm") {
     return (
       <VmManagementPage
@@ -189,6 +228,7 @@ function ActivePage({ routeId, ...props }) {
         runBusy={props.runBusy}
         refreshAssets={props.refreshAssets}
         showAlert={props.showAlert}
+        currentUser={props.currentUser}
       />
     );
   }
@@ -209,6 +249,7 @@ function ActivePage({ routeId, ...props }) {
         busy={props.busy}
         runBusy={props.runBusy}
         showAlert={props.showAlert}
+        currentUser={props.currentUser}
       />
     );
   }

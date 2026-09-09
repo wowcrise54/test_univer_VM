@@ -1606,7 +1606,16 @@ function lastRunText(task) {
   return formatDateTime(task.updated_at);
 }
 
-function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
+function ExportPanel({
+  defaults,
+  busy,
+  runBusy,
+  refreshAssets,
+  showAlert,
+  currentUser,
+}) {
+  const permissions = new Set(currentUser?.permissions || []);
+  const canManageExports = permissions.has("imports_exports.manage");
   const [form, setForm] = useState({
     pdql: "",
     utc_offset: "+05:00",
@@ -1690,88 +1699,104 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
   return (
     <Panel
       id="export"
-      title="PDQL экспорт"
-      description="Выгрузите данные и при необходимости сохраните их в PostgreSQL."
+      title={canManageExports ? "PDQL экспорт" : "Отчётность по уязвимостям"}
+      description={
+        canManageExports
+          ? "Выгрузите данные и при необходимости сохраните их в PostgreSQL."
+          : "Сформируйте CSV-отчёты по сохранённым данным."
+      }
     >
-      <Field label="PDQL запрос">
-        <textarea
-          className="code-input"
-          rows={8}
-          value={form.pdql}
-          onChange={(event) => update("pdql", event.target.value)}
-        />
-      </Field>
-      <Disclosure
-        className={form.delete_assets_after_export ? "disclosure--danger" : ""}
-        title="Параметры экспорта"
-        description="Группы, активы и обработка результата"
-        meta={
-          form.delete_assets_after_export
-            ? "Удаление в MP VM включено"
-            : "Без удаления"
-        }
-      >
-        <div className="form-grid form-grid--four">
-          <Field label="UTC offset">
-            <input
-              value={form.utc_offset}
-              onChange={(event) => update("utc_offset", event.target.value)}
+      {canManageExports ? (
+        <>
+          <Field label="PDQL запрос">
+            <textarea
+              className="code-input"
+              rows={8}
+              value={form.pdql}
+              onChange={(event) => update("pdql", event.target.value)}
             />
           </Field>
-          <Field label="Group IDs">
-            <input
-              value={form.group_ids}
-              onChange={(event) => update("group_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Field label="Asset IDs">
-            <input
-              value={form.asset_ids}
-              onChange={(event) => update("asset_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Toggle
-            label="Include nested groups"
-            checked={form.include_nested_groups}
-            onChange={(value) => update("include_nested_groups", value)}
-          />
-          <Toggle
-            label="Сохранить в БД"
-            checked={form.import_results}
-            onChange={(value) => update("import_results", value)}
-          />
-          <Toggle
-            label="Удалить активы в MP VM после импорта"
-            checked={form.delete_assets_after_export}
-            onChange={(value) => update("delete_assets_after_export", value)}
-          />
-        </div>
-        {form.delete_assets_after_export ? (
-          <p className="danger-note">
-            После успешного импорта выбранные активы будут удалены из MP VM.
-          </p>
-        ) : null}
-      </Disclosure>
-      <div className="action-row">
-        <Button busy={busy.export} onClick={runExport}>
-          Выполнить экспорт
-        </Button>
-        <ActionMenu label="Импорт">
-          <label className="upload-button">
-            Импорт CSV файла
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={importCsvFile}
-            />
-          </label>
-          <Button variant="secondary" busy={busy.sample} onClick={importSample}>
-            Импортировать пример CSV
-          </Button>
-        </ActionMenu>
-      </div>
+          <Disclosure
+            className={
+              form.delete_assets_after_export ? "disclosure--danger" : ""
+            }
+            title="Параметры экспорта"
+            description="Группы, активы и обработка результата"
+            meta={
+              form.delete_assets_after_export
+                ? "Удаление в MP VM включено"
+                : "Без удаления"
+            }
+          >
+            <div className="form-grid form-grid--four">
+              <Field label="UTC offset">
+                <input
+                  value={form.utc_offset}
+                  onChange={(event) => update("utc_offset", event.target.value)}
+                />
+              </Field>
+              <Field label="Group IDs">
+                <input
+                  value={form.group_ids}
+                  onChange={(event) => update("group_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Field label="Asset IDs">
+                <input
+                  value={form.asset_ids}
+                  onChange={(event) => update("asset_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Toggle
+                label="Include nested groups"
+                checked={form.include_nested_groups}
+                onChange={(value) => update("include_nested_groups", value)}
+              />
+              <Toggle
+                label="Сохранить в БД"
+                checked={form.import_results}
+                onChange={(value) => update("import_results", value)}
+              />
+              <Toggle
+                label="Удалить активы в MP VM после импорта"
+                checked={form.delete_assets_after_export}
+                onChange={(value) =>
+                  update("delete_assets_after_export", value)
+                }
+              />
+            </div>
+            {form.delete_assets_after_export ? (
+              <p className="danger-note">
+                После успешного импорта выбранные активы будут удалены из MP VM.
+              </p>
+            ) : null}
+          </Disclosure>
+          <div className="action-row">
+            <Button busy={busy.export} onClick={runExport}>
+              Выполнить экспорт
+            </Button>
+            <ActionMenu label="Импорт">
+              <label className="upload-button">
+                Импорт CSV файла
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={importCsvFile}
+                />
+              </label>
+              <Button
+                variant="secondary"
+                busy={busy.sample}
+                onClick={importSample}
+              >
+                Импортировать пример CSV
+              </Button>
+            </ActionMenu>
+          </div>
+        </>
+      ) : null}
       <Disclosure
         title="Отчётность по уязвимостям"
         description="CSV по ОС, ПО и Docker"
@@ -1809,7 +1834,7 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
           </Button>
         </div>
       </Disclosure>
-      {result ? (
+      {canManageExports && result ? (
         <Disclosure title="Результат операции" meta="JSON">
           <pre className="result-box">{result}</pre>
         </Disclosure>
@@ -3248,7 +3273,15 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
   );
 }
 
-function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
+function VulnerabilityPassportsPanel({
+  defaults,
+  busy,
+  runBusy,
+  showAlert,
+  currentUser,
+}) {
+  const permissions = new Set(currentUser?.permissions || []);
+  const canManagePassports = permissions.has("passports.manage");
   const [form, setForm] = useState({
     pdql: "",
     utc_offset: "+05:00",
@@ -3341,6 +3374,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
   }, [passportWindowOpen]);
 
   useEffect(() => {
+    if (!canManagePassports) return undefined;
     let alive = true;
     api("/api/vulnerability-passports/detail-jobs/active")
       .then((result) => {
@@ -3352,7 +3386,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
     return () => {
       alive = false;
     };
-  }, [showAlert]);
+  }, [canManagePassports, showAlert]);
 
   useEffect(() => {
     if (
@@ -3609,74 +3643,82 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
       title="Паспорта уязвимостей"
       description="Найдите паспорт и откройте его подробные данные."
     >
-      <Field label="PDQL запрос">
-        <textarea
-          className="code-input"
-          rows={6}
-          value={form.pdql}
-          onChange={(event) => update("pdql", event.target.value)}
-        />
-      </Field>
-      <Disclosure
-        title="Параметры PDQL"
-        description="Группы, активы, лимиты и загрузка деталей"
-        meta={form.load_details ? "С деталями" : "Только список"}
-      >
-        <div className="form-grid form-grid--four">
-          <Field label="UTC offset">
-            <input
-              value={form.utc_offset}
-              onChange={(event) => update("utc_offset", event.target.value)}
+      {canManagePassports ? (
+        <>
+          <Field label="PDQL запрос">
+            <textarea
+              className="code-input"
+              rows={6}
+              value={form.pdql}
+              onChange={(event) => update("pdql", event.target.value)}
             />
           </Field>
-          <Field label="Group IDs">
-            <input
-              value={form.group_ids}
-              onChange={(event) => update("group_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Field label="Asset IDs">
-            <input
-              value={form.asset_ids}
-              onChange={(event) => update("asset_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Field label="Сколько загрузить (пусто = все)">
-            <input
-              value={form.passport_limit}
-              onChange={(event) => update("passport_limit", event.target.value)}
-              type="number"
-              min="1"
-              placeholder="Без лимита"
-            />
-          </Field>
-          <Field label="Размер пачки">
-            <input
-              value={form.batch_size}
-              onChange={(event) => update("batch_size", event.target.value)}
-              type="number"
-              min="1"
-              max="10000"
-            />
-          </Field>
-          <Toggle
-            label="Include nested groups"
-            checked={form.include_nested_groups}
-            onChange={(value) => update("include_nested_groups", value)}
-          />
-          <Toggle
-            label="Сразу загрузить детали в БД"
-            checked={form.load_details}
-            onChange={(value) => update("load_details", value)}
-          />
-        </div>
-      </Disclosure>
+          <Disclosure
+            title="Параметры PDQL"
+            description="Группы, активы, лимиты и загрузка деталей"
+            meta={form.load_details ? "С деталями" : "Только список"}
+          >
+            <div className="form-grid form-grid--four">
+              <Field label="UTC offset">
+                <input
+                  value={form.utc_offset}
+                  onChange={(event) => update("utc_offset", event.target.value)}
+                />
+              </Field>
+              <Field label="Group IDs">
+                <input
+                  value={form.group_ids}
+                  onChange={(event) => update("group_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Field label="Asset IDs">
+                <input
+                  value={form.asset_ids}
+                  onChange={(event) => update("asset_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Field label="Сколько загрузить (пусто = все)">
+                <input
+                  value={form.passport_limit}
+                  onChange={(event) =>
+                    update("passport_limit", event.target.value)
+                  }
+                  type="number"
+                  min="1"
+                  placeholder="Без лимита"
+                />
+              </Field>
+              <Field label="Размер пачки">
+                <input
+                  value={form.batch_size}
+                  onChange={(event) => update("batch_size", event.target.value)}
+                  type="number"
+                  min="1"
+                  max="10000"
+                />
+              </Field>
+              <Toggle
+                label="Include nested groups"
+                checked={form.include_nested_groups}
+                onChange={(value) => update("include_nested_groups", value)}
+              />
+              <Toggle
+                label="Сразу загрузить детали в БД"
+                checked={form.load_details}
+                onChange={(value) => update("load_details", value)}
+              />
+            </div>
+          </Disclosure>
+        </>
+      ) : null}
       <div className="action-row">
-        <Button busy={busy.passportQuery} onClick={queryPassports}>
-          Выполнить PDQL
-        </Button>
+        {canManagePassports ? (
+          <Button busy={busy.passportQuery} onClick={queryPassports}>
+            Выполнить PDQL
+          </Button>
+        ) : null}
         <Button
           variant="secondary"
           busy={busy.passportLocal}
@@ -3689,7 +3731,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           <span>{formatCount(passportTotal)}</span>
         </div>
       </div>
-      {passportJob ? (
+      {canManagePassports && passportJob ? (
         <section
           className={`passport-job passport-job--${passportJob.status}`}
           aria-live="polite"
@@ -3880,22 +3922,24 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                       >
                         Открыть
                       </Button>
-                      <ActionMenu label="Ещё">
-                        <Button
-                          variant="tiny"
-                          busy={busy[`passportUpdate:${row.internal_id}`]}
-                          onClick={() => updatePassport(row)}
-                        >
-                          Обновить
-                        </Button>
-                        <Button
-                          variant="tiny-danger"
-                          busy={busy[`passportDelete:${row.internal_id}`]}
-                          onClick={() => setPendingPassportDelete(row)}
-                        >
-                          Удалить
-                        </Button>
-                      </ActionMenu>
+                      {canManagePassports ? (
+                        <ActionMenu label="Ещё">
+                          <Button
+                            variant="tiny"
+                            busy={busy[`passportUpdate:${row.internal_id}`]}
+                            onClick={() => updatePassport(row)}
+                          >
+                            Обновить
+                          </Button>
+                          <Button
+                            variant="tiny-danger"
+                            busy={busy[`passportDelete:${row.internal_id}`]}
+                            onClick={() => setPendingPassportDelete(row)}
+                          >
+                            Удалить
+                          </Button>
+                        </ActionMenu>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -3905,7 +3949,9 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
                 <td colSpan={7} className="empty-cell">
                   {passportTotal
                     ? "На этой странице нет записей."
-                    : "Выполните PDQL или загрузите паспорта из БД."}
+                    : canManagePassports
+                      ? "Выполните PDQL или загрузите паспорта из БД."
+                      : "Загрузите паспорта из БД."}
                 </td>
               </tr>
             )}
@@ -3937,7 +3983,7 @@ function VulnerabilityPassportsPanel({ defaults, busy, runBusy, showAlert }) {
           </div>
         </div>
       ) : null}
-      {queryRaw && !rows.length ? (
+      {canManagePassports && queryRaw && !rows.length ? (
         <details className="raw-details">
           <summary>Raw-ответ PDQL запроса</summary>
           <pre>{JSON.stringify(queryRaw, null, 2)}</pre>

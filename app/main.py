@@ -269,6 +269,9 @@ DATABASE_STARTUP_ERROR: str | None = None
 SCAN_POSTPROCESS_FUTURES: dict[str, Future[Any]] = {}
 SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
 SCAN_POSTPROCESS_CANCEL_EVENTS: dict[str, threading.Event] = {}
+MPVM_ENV_CONNECT_LOCK = threading.Lock()
+MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
+MPVM_ENV_CONNECT_BACKOFF_SECONDS = 30.0
 DOCKER_GROUP_CLEANUP_FUTURES: dict[str, Future[Any]] = {}
 DOCKER_GROUP_CLEANUP_FUTURES_LOCK = threading.Lock()
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
@@ -1059,13 +1062,14 @@ def auth_audit(limit: int = 200, offset: int = 0) -> dict[str, Any]:
 
 @system_router.get("/api/health")
 def health() -> dict[str, Any]:
+    connected = mpvm_session_connected()
     return {
         "ok": True,
         "app": "mpvm-rest-client",
         "database": db.database_label(),
         "database_ready": DATABASE_STARTUP_ERROR is None,
         "database_error": DATABASE_STARTUP_ERROR,
-        "connected": SESSION.client is not None and SESSION.access_token is not None,
+        "connected": connected,
         "api_url": SESSION.api_url,
         "background_workers": {
             "scan_postprocess": SCAN_POSTPROCESS_WORKERS,
@@ -1098,7 +1102,7 @@ def system_status() -> dict[str, Any]:
             database_error = type(exc).__name__
             DATABASE_STARTUP_ERROR = str(exc)
             circuit = db.database_circuit_status()
-    connected = SESSION.client is not None and SESSION.access_token is not None
+    connected = mpvm_session_connected()
     mpvm_state = "ok" if connected else "degraded"
     workers_state = "ok" if database_state == "ok" else "down"
     components = {
@@ -1353,6 +1357,7 @@ def defaults() -> dict[str, Any]:
 
 @session_router.post("/api/session/connect")
 def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    global MPVM_ENV_CONNECT_RETRY_AFTER
     try:
         api_url = normalize_url(payload.api_url)
         token_url = normalize_url(payload.token_url) if payload.token_url else build_default_token_url(api_url)
@@ -1379,6 +1384,7 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
     SESSION.token_url = token_url
     SESSION.username = payload.username
     SESSION.verify_tls = payload.verify_tls
+    MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
     # Returning the authenticated session must not wait for stale scan recovery.
     # Recovery is queued after the HTTP response and uses its own bounded executor.
     background_tasks.add_task(resume_connected_workflows)
@@ -1393,18 +1399,21 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
 
 @session_router.post("/api/session/disconnect")
 def disconnect_session() -> dict[str, Any]:
+    global MPVM_ENV_CONNECT_RETRY_AFTER
     SESSION.client = None
     SESSION.access_token = None
     SESSION.api_url = None
     SESSION.token_url = None
     SESSION.username = None
+    MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
     return {"connected": False}
 
 
 @session_router.get("/api/session")
 def session_info() -> dict[str, Any]:
+    connected = mpvm_session_connected()
     return {
-        "connected": SESSION.client is not None and SESSION.access_token is not None,
+        "connected": connected,
         "api_url": SESSION.api_url,
         "token_url": SESSION.token_url,
         "username": SESSION.username,
@@ -3690,7 +3699,27 @@ def download_export(filename: str) -> FileResponse:
     return FileResponse(path, media_type="text/csv", filename=path.name)
 
 
-def configure_session_from_env() -> None:
+def configure_session_from_env(*, force: bool = False) -> None:
+    global MPVM_ENV_CONNECT_RETRY_AFTER
+    api_url = os.getenv("MPVM_API_URL") or os.getenv("MP10_API_URL")
+    if not api_url:
+        return
+    now = time.monotonic()
+    if not force and now < MPVM_ENV_CONNECT_RETRY_AFTER:
+        return
+    if not force and SESSION.client is not None and SESSION.access_token is not None:
+        return
+    with MPVM_ENV_CONNECT_LOCK:
+        now = time.monotonic()
+        if not force and now < MPVM_ENV_CONNECT_RETRY_AFTER:
+            return
+        if not force and SESSION.client is not None and SESSION.access_token is not None:
+            return
+        _configure_session_from_env_unlocked()
+
+
+def _configure_session_from_env_unlocked() -> None:
+    global MPVM_ENV_CONNECT_RETRY_AFTER
     api_url = os.getenv("MPVM_API_URL") or os.getenv("MP10_API_URL")
     if not api_url:
         return
@@ -3729,14 +3758,22 @@ def configure_session_from_env() -> None:
         SESSION.token_url = token_url
         SESSION.username = auth.username
         SESSION.verify_tls = auth.verify_tls
+        MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
     except Exception:
         SESSION.client = None
         SESSION.access_token = None
+        MPVM_ENV_CONNECT_RETRY_AFTER = time.monotonic() + MPVM_ENV_CONNECT_BACKOFF_SECONDS
+        log_exception("mpvm", "session.env_connect.failed")
+
+
+def mpvm_session_connected() -> bool:
+    if not SESSION.client or not SESSION.access_token:
+        configure_session_from_env()
+    return SESSION.client is not None and SESSION.access_token is not None
 
 
 def require_mpvm() -> tuple[MpVmClient, str]:
-    if not SESSION.client or not SESSION.access_token:
-        configure_session_from_env()
+    mpvm_session_connected()
     if not SESSION.client or not SESSION.access_token:
         raise HTTPException(status_code=409, detail="MP VM connection is not configured. Connect first.")
     return SESSION.client, SESSION.access_token

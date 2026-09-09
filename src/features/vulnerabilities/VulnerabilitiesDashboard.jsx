@@ -10,7 +10,14 @@ import {
 } from "./useVulnerabilityDashboard.js";
 import { ComplianceDashboard } from "./ComplianceDashboard.jsx";
 
-const EMPTY_FILTERS = { q: "", host_q: "", severity: "", source: "" };
+const EMPTY_FILTERS = {
+  q: "",
+  host_q: "",
+  os: "",
+  asset_type: "",
+  severity: "",
+  source: "",
+};
 const DEFAULT_VULNERABILITY_SORT = {
   key: "affected_hosts",
   direction: "desc",
@@ -126,6 +133,8 @@ export function VulnerabilitiesDashboard({
     const normalized = {
       q: String(nextFilters.q || "").trim(),
       host_q: String(nextFilters.host_q || "").trim(),
+      os: String(nextFilters.os || "").trim(),
+      asset_type: String(nextFilters.asset_type || "").trim(),
       severity: nextFilters.severity || "",
       source: nextFilters.source || "",
     };
@@ -832,6 +841,20 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
           value={filters.host_q}
           onChange={(event) => update("host_q", event.target.value)}
           placeholder="Имя, IP или FQDN"
+        />
+      </Field>
+      <Field label="ОС">
+        <input
+          value={filters.os}
+          onChange={(event) => update("os", event.target.value)}
+          placeholder="Windows, Linux, Ubuntu"
+        />
+      </Field>
+      <Field label="Тип актива">
+        <input
+          value={filters.asset_type}
+          onChange={(event) => update("asset_type", event.target.value)}
+          placeholder="host, server, workstation"
         />
       </Field>
       <Field label="Критичность">

@@ -125,8 +125,16 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
   );
 }
 
-export function SystemBanner({ status, stale, onRetry, onNavigate }) {
+export function SystemBanner({
+  status,
+  stale,
+  onRetry,
+  onNavigate,
+  currentUser,
+}) {
   if (!status || (status.state === "ok" && !stale)) return null;
+  const permissions = new Set(currentUser?.permissions || []);
+  const canOpenConnectionSettings = permissions.has("connection.manage");
   const components = Object.entries(status.components || {}).filter(
     ([, value]) => value?.state !== "ok",
   );
@@ -135,7 +143,8 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
     status.state === "down" ||
     components.some(([, value]) => value?.state === "down");
   const showContextActions =
-    stale || components.some(([key]) => key === "mpvm");
+    stale ||
+    (canOpenConnectionSettings && components.some(([key]) => key === "mpvm"));
   return (
     <section
       className={`system-banner system-banner--${isDown ? "down" : "degraded"}`}
@@ -160,7 +169,8 @@ export function SystemBanner({ status, stale, onRetry, onNavigate }) {
         </button>
         {showContextActions ? (
           <ActionMenu label="Подробнее">
-            {components.some(([key]) => key === "mpvm") ? (
+            {components.some(([key]) => key === "mpvm") &&
+            canOpenConnectionSettings ? (
               <button type="button" onClick={() => onNavigate("/connection")}>
                 Подключение
               </button>
@@ -197,6 +207,10 @@ const routeNextActions = {
 
 export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
   const headingRef = useRef(null);
+  const permissions = new Set(currentUser?.permissions || []);
+  const canReadConnection =
+    permissions.has("connection.read") || permissions.has("connection.manage");
+  const canManageConnection = permissions.has("connection.manage");
   useEffect(() => {
     const title = route?.title || "MP VM REST Client";
     if (typeof document !== "undefined")
@@ -208,7 +222,8 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
     return () => window.clearTimeout(timer);
   }, [route?.id, route?.title]);
   const action = routeNextActions[route?.id];
-  const needsConnection = !session.connected && route?.id !== "connection";
+  const needsConnection =
+    canManageConnection && !session.connected && route?.id !== "connection";
   const actionPath =
     route?.id === "connection" && !session.connected
       ? null
@@ -233,16 +248,18 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
       </div>
       <div className="topbar__actions">
         <GlobalSearch onNavigate={onNavigate} />
-        <div
-          className={
-            session.connected ? "status-chip status-chip--ok" : "status-chip"
-          }
-          role="status"
-          aria-label={session.connected ? "Подключено" : "Нет подключения"}
-        >
-          <span aria-hidden="true" />
-          {session.connected ? "Подключено" : "Нет подключения"}
-        </div>
+        {canReadConnection ? (
+          <div
+            className={
+              session.connected ? "status-chip status-chip--ok" : "status-chip"
+            }
+            role="status"
+            aria-label={session.connected ? "Подключено" : "Нет подключения"}
+          >
+            <span aria-hidden="true" />
+            {session.connected ? "Подключено" : "Нет подключения"}
+          </div>
+        ) : null}
         {actionPath && actionLabel ? (
           <button
             type="button"
@@ -270,7 +287,8 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
 }
 
 function GlobalSearch({ onNavigate }) {
-  const enabled = import.meta.env.VITE_MPVM_ATTENTION_SEARCH_ENABLED !== "false";
+  const enabled =
+    import.meta.env.VITE_MPVM_ATTENTION_SEARCH_ENABLED !== "false";
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -299,7 +317,11 @@ function GlobalSearch({ onNavigate }) {
       } catch (cause) {
         if (requestId === requestRef.current) {
           setResults([]);
-          setError(cause.operatorMessage || cause.message || "Не удалось выполнить поиск");
+          setError(
+            cause.operatorMessage ||
+              cause.message ||
+              "Не удалось выполнить поиск",
+          );
         }
       } finally {
         if (requestId === requestRef.current) setLoading(false);
@@ -324,7 +346,9 @@ function GlobalSearch({ onNavigate }) {
   };
   return (
     <div className="global-search">
-      <label className="global-search__label" htmlFor="global-search-input">Поиск</label>
+      <label className="global-search__label" htmlFor="global-search-input">
+        Поиск
+      </label>
       <input
         id="global-search-input"
         ref={inputRef}
@@ -339,17 +363,57 @@ function GlobalSearch({ onNavigate }) {
         onKeyDown={handleKeyDown}
       />
       {open ? (
-        <div id="global-search-results" className="global-search__results" role="listbox" aria-live="polite">
+        <div
+          id="global-search-results"
+          className="global-search__results"
+          role="listbox"
+          aria-live="polite"
+        >
           {loading ? <div className="global-search__status">Ищу…</div> : null}
-          {error ? <div className="global-search__status global-search__status--error" role="alert">{error}</div> : null}
-          {!loading && !error && !results.length ? <div className="global-search__status">Ничего не найдено</div> : null}
-          {!loading && !error ? results.map((item) => {
-            const href = normalizeSearchHref(item);
-            return <a role="option" className="global-search__item" href={href} key={`${item.type}:${item.id}`} onClick={(event) => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigateSearchResult(href, onNavigate); } setFocused(false); }}>
-              <span className="global-search__item-type">{item.type}</span>
-              <span><strong>{item.title}</strong>{item.subtitle ? <small>{item.subtitle}</small> : null}</span>
-            </a>;
-          }) : null}
+          {error ? (
+            <div
+              className="global-search__status global-search__status--error"
+              role="alert"
+            >
+              {error}
+            </div>
+          ) : null}
+          {!loading && !error && !results.length ? (
+            <div className="global-search__status">Ничего не найдено</div>
+          ) : null}
+          {!loading && !error
+            ? results.map((item) => {
+                const href = normalizeSearchHref(item);
+                return (
+                  <a
+                    role="option"
+                    className="global-search__item"
+                    href={href}
+                    key={`${item.type}:${item.id}`}
+                    onClick={(event) => {
+                      if (
+                        !event.metaKey &&
+                        !event.ctrlKey &&
+                        !event.shiftKey &&
+                        !event.altKey
+                      ) {
+                        event.preventDefault();
+                        navigateSearchResult(href, onNavigate);
+                      }
+                      setFocused(false);
+                    }}
+                  >
+                    <span className="global-search__item-type">
+                      {item.type}
+                    </span>
+                    <span>
+                      <strong>{item.title}</strong>
+                      {item.subtitle ? <small>{item.subtitle}</small> : null}
+                    </span>
+                  </a>
+                );
+              })
+            : null}
         </div>
       ) : null}
     </div>
@@ -357,13 +421,22 @@ function GlobalSearch({ onNavigate }) {
 }
 
 function normalizeSearchHref(item) {
-  if (item.type === "asset" && String(item.href || "").startsWith("/asset-cards/")) {
+  if (
+    item.type === "asset" &&
+    String(item.href || "").startsWith("/asset-cards/")
+  ) {
     return `/asset-cards?asset_id=${encodeURIComponent(item.id)}`;
   }
-  if (item.type === "task" && String(item.href || "").startsWith("/scanner-tasks")) {
+  if (
+    item.type === "task" &&
+    String(item.href || "").startsWith("/scanner-tasks")
+  ) {
     return String(item.href).replace(/^\/scanner-tasks/, "/tasks");
   }
-  if (item.type === "automation" && String(item.href || "").startsWith("/automations/runs")) {
+  if (
+    item.type === "automation" &&
+    String(item.href || "").startsWith("/automations/runs")
+  ) {
     return `/automations?run=${encodeURIComponent(item.id)}`;
   }
   return item.href || "/vm";
