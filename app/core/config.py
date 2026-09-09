@@ -64,6 +64,19 @@ class Settings(BaseSettings):
     auth_session_hours: int = 12
     auth_cookie_secure: bool = False
     attention_search_enabled: bool = True
+    # LDAP (corporate directory) login. Local login is always tried first;
+    # LDAP is consulted only when it fails and automatically provisions the
+    # local user record on first successful login.
+    ldap_enabled: bool = False
+    ldap_url: str = ""
+    ldap_base_dn: str = ""
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = Field(default="", repr=False)
+    ldap_user_filter: str = "(sAMAccountName={username})"
+    ldap_display_name_attribute: str = "displayName"
+    ldap_admin_group_dn: str = ""
+    ldap_default_role: str = "viewer"
+    ldap_connect_timeout_seconds: int = 10
 
     @field_validator(
         "timeout",
@@ -80,10 +93,11 @@ class Settings(BaseSettings):
         "scan_asset_removal_timeout_seconds",
         "scan_asset_removal_poll_seconds",
         "docker_dynamic_group_timeout_seconds",
-        "docker_dynamic_group_poll_seconds",
+        "docker_dynamic_group_retention_seconds",
         "automation_scheduler_poll_seconds",
         "coverage_stale_days",
         "auth_session_hours",
+        "ldap_connect_timeout_seconds",
     )
     @classmethod
     def positive_integer(cls, value: int) -> int:

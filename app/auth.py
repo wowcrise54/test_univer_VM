@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from . import db
+from .ldap import LdapError, resolve_ldap_identity
 
 COOKIE_NAME = "mpvm_app_session"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
@@ -79,7 +81,18 @@ BUILTIN_ROLE_PERMISSIONS = {
     "operator": OPERATOR_PERMISSIONS,
     "admin": set(PERMISSIONS),
 }
+ASSET_CARDS_READONLY_PERMISSIONS = {
+    "asset_cards.read",
+    "assets.read",
+    "imports_exports.read",
+    "passports.read",
+    "saved_views.manage",
+    "saved_views.read",
+    "system.read",
+}
+BUILTIN_ROLE_PERMISSIONS["viewer_cards"] = ASSET_CARDS_READONLY_PERMISSIONS
 BUILTIN_ROLE_NAMES = {"admin": "Администратор", "operator": "Оператор", "viewer": "Наблюдатель"}
+BUILTIN_ROLE_NAMES["viewer_cards"] = "Карточки активов (чтение)"
 
 
 class LoginRequest(BaseModel):
@@ -223,8 +236,48 @@ def authenticate(username: str, password: str) -> dict[str, Any] | None:
         row = conn.execute("SELECT * FROM app_users WHERE username=%s", (username.strip().lower(),)).fetchone()
         if row and row["is_active"] and verify_password(password, row["password_hash"]):
             return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
-    if not row: hash_password(password)
     return None
+
+
+def _local_user_record(username: str) -> dict[str, Any] | None:
+    """Return the public local user record, or None when absent/inactive."""
+    username = (username or "").strip().lower()
+    if not username: return None
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM app_users WHERE username=%s", (username,)).fetchone()
+        if not row or not row["is_active"]: return None
+        return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
+
+
+def _provision_ldap_user(identity: dict[str, Any]) -> dict[str, Any]:
+    """Create a regular local user from a verified LDAP identity."""
+    username = identity["username"].strip().lower()
+    current = db.now_utc()
+    with db.connect() as conn:
+        role = conn.execute("SELECT id FROM app_roles WHERE role_key=%s", (identity["role"],)).fetchone()
+        if role is None:
+            role = conn.execute("SELECT id FROM app_roles WHERE role_key='viewer'").fetchone()
+        assert role is not None
+        row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
+            VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING *""",
+            (username, identity["display_name"].strip() or username, hash_password(secrets.token_urlsafe(32)), current, current)).fetchone()
+        assert row is not None
+        conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role["id"]))
+        logging.getLogger("mpvm.ldap").info("Создан локальный пользователь %s из LDAP (роль %s)", username, identity["role"])
+        return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
+
+
+def _login_via_ldap(username: str, password: str, request: Request) -> dict[str, Any] | None:
+    """Local-first LDAP fallback: map a verified directory identity onto a
+    regular local user, provisioning it on first login."""
+    try:
+        identity = resolve_ldap_identity(username, password)
+    except LdapError as exc:
+        logging.getLogger("mpvm.ldap").info("LDAP-вход отклонён (%s): %s", username, exc)
+        return None
+    if not identity:
+        return None
+    return _local_user_record(identity["username"]) or _provision_ldap_user(identity)
 
 
 def create_session(user_id: int, *, hours: int) -> str:
@@ -413,6 +466,8 @@ LOGIN_LIMITER=LoginLimiter()
 
 def login(payload:LoginRequest,request:Request,response:Response,*,hours:int,secure:bool)->dict[str,Any]:
     key=f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"; LOGIN_LIMITER.check(key); user=authenticate(payload.username,payload.password)
+    if not user:
+        user=_login_via_ldap(payload.username,payload.password,request)
     if not user:
         LOGIN_LIMITER.fail(key); audit_event(request=request,user=None,event_type="login",decision="deny",details={"username":payload.username.strip().lower()}); raise HTTPException(401,detail={"code":"INVALID_CREDENTIALS","message":"Неверное имя пользователя или пароль."})
     LOGIN_LIMITER.clear(key); token=create_session(user["id"],hours=hours); response.set_cookie(COOKIE_NAME,token,max_age=hours*3600,httponly=True,secure=secure,samesite="strict",path="/"); audit_event(request=request,user=user,event_type="login",decision="allow"); return {"authenticated":True,"user":user}
