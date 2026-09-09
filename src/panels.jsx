@@ -1818,7 +1818,7 @@ function ExportPanel({ defaults, busy, runBusy, refreshAssets, showAlert }) {
   );
 }
 
-function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
+function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
   const [form, setForm] = useState({
     pdql: "",
     utc_offset: "+05:00",
@@ -1861,6 +1861,12 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
   const [pendingCardDelete, setPendingCardDelete] = useState(null);
   const [candidateSort, toggleCandidateSort] = useTableSort();
   const [cardSort, toggleCardSort] = useTableSort("last_seen", "desc");
+  const permissions = useMemo(
+    () => new Set(currentUser?.permissions || []),
+    [currentUser],
+  );
+  const canBuildAssetCards = permissions.has("asset_cards.build");
+  const canManageAssetCards = permissions.has("asset_cards.manage");
 
   const refreshLocalCards = useCallback(
     async (sorting = cardSort) => {
@@ -2498,259 +2504,277 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
           >
             Сохранённые карточки
           </Button>
-          <ActionMenu label="Ещё">
-            <Button
-              busy={busy.assetCardsBulkRefresh}
-              disabled={
-                !selectedRefreshTemplateId ||
-                assetCardJobActive ||
-                assetRefreshActive ||
-                assetBulkRefreshActive
-              }
-              onClick={updateAllLocalCards}
-            >
-              Обновить все из MP VM
-            </Button>
-          </ActionMenu>
+          {canBuildAssetCards ? (
+            <ActionMenu label="Ещё">
+              <Button
+                aria-label="Обновить все карточки активов"
+                busy={busy.assetCardsBulkRefresh}
+                disabled={
+                  !selectedRefreshTemplateId ||
+                  assetCardJobActive ||
+                  assetRefreshActive ||
+                  assetBulkRefreshActive
+                }
+                onClick={updateAllLocalCards}
+              >
+                Обновить все из MP VM
+              </Button>
+            </ActionMenu>
+          ) : null}
         </div>
       }
     >
-      <Disclosure
-        title="Обновление карточек из MP VM"
-        description="Шаблон сканирования и параллельность"
-        meta={selectedRefreshTemplateId ? "Шаблон выбран" : "Не настроено"}
-      >
-        <Field label="Задача MP VM для обновления карточек">
-          <select
-            value={selectedRefreshTemplateId}
-            onChange={(event) =>
-              setSelectedRefreshTemplateId(event.target.value)
-            }
+      {canBuildAssetCards ? (
+        <>
+          <Disclosure
+            title="Обновление карточек из MP VM"
+            description="Шаблон сканирования и параллельность"
+            meta={selectedRefreshTemplateId ? "Шаблон выбран" : "Не настроено"}
           >
-            <option value="">Выберите задачу-шаблон</option>
-            {assetRefreshTemplates.map((task) => (
-              <option key={task.mp_task_id} value={task.mp_task_id}>
-                {task.name || task.mp_task_id}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Параллельных обновлений">
-          <input
-            type="number"
-            min="1"
-            max={defaults?.asset_card_refresh_workers || 10}
-            value={form.asset_refresh_parallelism}
-            onChange={(event) =>
-              update("asset_refresh_parallelism", event.target.value)
-            }
-          />
-        </Field>
-        {assetRefreshTemplatesError ? (
-          <small className="error-text">
-            Не удалось загрузить задачи-шаблоны: {assetRefreshTemplatesError}
-          </small>
-        ) : assetRefreshTemplates.length === 0 ? (
-          <small className="error-text">
-            В MP VM не найдено задач с заполненными scope и scanner profile.
-            Создайте такую задачу перед массовым обновлением карточек.
-          </small>
-        ) : null}
-      </Disclosure>
-      <Field label="PDQL для получения asset_id">
-        <textarea
-          className="code-input"
-          rows={4}
-          value={form.pdql}
-          onChange={(event) => update("pdql", event.target.value)}
-        />
-      </Field>
-      <Disclosure
-        title="Параметры поиска"
-        description="Группы, фильтры и лимиты PDQL"
-        meta={
-          form.group_ids || form.asset_ids ? "Есть ограничения" : "По умолчанию"
-        }
-      >
-        <div className="form-grid form-grid--four">
-          <Field label="UTC offset">
-            <input
-              value={form.utc_offset}
-              onChange={(event) => update("utc_offset", event.target.value)}
-            />
-          </Field>
-          <Field label="Group IDs">
-            <input
-              value={form.group_ids}
-              onChange={(event) => update("group_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Field label="Asset filter IDs">
-            <input
-              value={form.asset_ids}
-              onChange={(event) => update("asset_ids", event.target.value)}
-              placeholder="uuid, uuid"
-            />
-          </Field>
-          <Field label="Сколько загрузить">
-            <input
-              value={form.asset_limit}
-              onChange={(event) => update("asset_limit", event.target.value)}
-              type="number"
-              min="1"
-              max="50000"
-            />
-          </Field>
-          <Field label="Размер пачки">
-            <input
-              value={form.batch_size}
-              onChange={(event) => update("batch_size", event.target.value)}
-              type="number"
-              min="1"
-              max="10000"
-            />
-          </Field>
-          <Toggle
-            label="Include nested groups"
-            checked={form.include_nested_groups}
-            onChange={(value) => update("include_nested_groups", value)}
-          />
-        </div>
-      </Disclosure>
-      <div className="action-row">
-        <Button busy={busy.assetCandidateQuery} onClick={queryAssets}>
-          Получить asset_id
-        </Button>
-        <div className="inline-metric">
-          Найдено: <span>{formatCount(filteredCandidates.length)}</span>
-        </div>
-      </div>
-
-      <div className="asset-card-builder">
-        <div className="asset-card-build-primary">
-          <Field label="Выбранный asset_id">
-            <input
-              value={form.selected_asset_id}
-              onChange={(event) =>
-                update("selected_asset_id", event.target.value)
-              }
-              placeholder="1e41d857-9d80-0001-0000-000000000009"
-            />
-          </Field>
-          <Button
-            busy={busy.assetCardBuild}
-            disabled={assetCardJobActive || assetCardBatchActive}
-            onClick={buildCard}
-          >
-            Собрать карточку
-          </Button>
-        </div>
-        <Disclosure
-          title="Параметры сборки"
-          description="Docker PDQL, timeline и лимиты обхода"
-          meta={form.save_to_db ? "Сохранить в БД" : "Без сохранения"}
-        >
-          <Field label="PDQL уязвимостей Docker-контейнеров">
+            <Field label="Задача MP VM для обновления карточек">
+              <select
+                value={selectedRefreshTemplateId}
+                onChange={(event) =>
+                  setSelectedRefreshTemplateId(event.target.value)
+                }
+              >
+                <option value="">Выберите задачу-шаблон</option>
+                {assetRefreshTemplates.map((task) => (
+                  <option key={task.mp_task_id} value={task.mp_task_id}>
+                    {task.name || task.mp_task_id}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Параллельных обновлений">
+              <input
+                type="number"
+                min="1"
+                max={defaults?.asset_card_refresh_workers || 10}
+                value={form.asset_refresh_parallelism}
+                onChange={(event) =>
+                  update("asset_refresh_parallelism", event.target.value)
+                }
+              />
+            </Field>
+            {assetRefreshTemplatesError ? (
+              <small className="error-text">
+                Не удалось загрузить задачи-шаблоны:{" "}
+                {assetRefreshTemplatesError}
+              </small>
+            ) : assetRefreshTemplates.length === 0 ? (
+              <small className="error-text">
+                В MP VM не найдено задач с заполненными scope и scanner profile.
+                Создайте такую задачу перед массовым обновлением карточек.
+              </small>
+            ) : null}
+          </Disclosure>
+          <Field label="PDQL для получения asset_id">
             <textarea
               className="code-input"
-              rows={6}
-              value={form.docker_vulnerability_pdql}
-              onChange={(event) =>
-                update("docker_vulnerability_pdql", event.target.value)
-              }
+              rows={4}
+              value={form.pdql}
+              onChange={(event) => update("pdql", event.target.value)}
             />
           </Field>
-          <div className="form-grid form-grid--two form-grid--spaced">
-            <Field label="Timeline datetime, Unix timestamp">
-              <input
-                value={form.timeline_timestamp}
-                onChange={(event) =>
-                  update("timeline_timestamp", event.target.value)
-                }
-                type="number"
-                placeholder="пусто = сейчас"
-              />
-            </Field>
-            <Field label="Лимит запроса коллекции">
-              <input
-                value={form.limit_per_collection}
-                onChange={(event) =>
-                  update("limit_per_collection", event.target.value)
-                }
-                type="number"
-                min="1"
-                max="5000"
-              />
-            </Field>
-            <Field label="Максимум элементов коллекции">
-              <input
-                value={form.max_items_per_collection}
-                onChange={(event) =>
-                  update("max_items_per_collection", event.target.value)
-                }
-                type="number"
-                min="1"
-                max="50000"
-              />
-            </Field>
-            <Field label="Глубина обхода">
-              <input
-                value={form.max_depth}
-                onChange={(event) => update("max_depth", event.target.value)}
-                type="number"
-                min="0"
-                max="8"
-              />
-            </Field>
-            <Toggle
-              label="Сохранить карточку в БД"
-              checked={form.save_to_db}
-              onChange={(value) => update("save_to_db", value)}
-            />
-          </div>
-        </Disclosure>
-      </div>
-
-      <Disclosure
-        title="Пакетная сборка"
-        description="До двух карточек одновременно"
-        meta={
-          batchAssetIds.length
-            ? `Выбрано: ${batchAssetIds.length}`
-            : "Не выбрано"
-        }
-      >
-        <Field label="Asset ID для пакетной сборки" wide>
-          <textarea
-            rows={4}
-            value={form.batch_asset_ids}
-            onChange={(event) => update("batch_asset_ids", event.target.value)}
-            placeholder="До двух Asset ID, каждый с новой строки"
-            aria-describedby="asset-card-batch-help"
-          />
-        </Field>
-        <small
-          id="asset-card-batch-help"
-          className={batchAssetIds.length > 2 ? "error-text" : undefined}
-        >
-          Выбрано: {formatCount(batchAssetIds.length)} из 2
-          {batchAssetIds.length > 2 ? ". Удалите лишние значения." : ""}
-        </small>
-        <div className="action-row">
-          <Button
-            busy={busy.assetCardBatchBuild}
-            disabled={
-              !batchAssetIdsValid || assetCardJobActive || assetCardBatchActive
+          <Disclosure
+            title="Параметры поиска"
+            description="Группы, фильтры и лимиты PDQL"
+            meta={
+              form.group_ids || form.asset_ids
+                ? "Есть ограничения"
+                : "По умолчанию"
             }
-            onClick={buildCardBatch}
           >
-            Собрать выбранные карточки
-          </Button>
-        </div>
-      </Disclosure>
+            <div className="form-grid form-grid--four">
+              <Field label="UTC offset">
+                <input
+                  value={form.utc_offset}
+                  onChange={(event) => update("utc_offset", event.target.value)}
+                />
+              </Field>
+              <Field label="Group IDs">
+                <input
+                  value={form.group_ids}
+                  onChange={(event) => update("group_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Field label="Asset filter IDs">
+                <input
+                  value={form.asset_ids}
+                  onChange={(event) => update("asset_ids", event.target.value)}
+                  placeholder="uuid, uuid"
+                />
+              </Field>
+              <Field label="Сколько загрузить">
+                <input
+                  value={form.asset_limit}
+                  onChange={(event) =>
+                    update("asset_limit", event.target.value)
+                  }
+                  type="number"
+                  min="1"
+                  max="50000"
+                />
+              </Field>
+              <Field label="Размер пачки">
+                <input
+                  value={form.batch_size}
+                  onChange={(event) => update("batch_size", event.target.value)}
+                  type="number"
+                  min="1"
+                  max="10000"
+                />
+              </Field>
+              <Toggle
+                label="Include nested groups"
+                checked={form.include_nested_groups}
+                onChange={(value) => update("include_nested_groups", value)}
+              />
+            </div>
+          </Disclosure>
+          <div className="action-row">
+            <Button busy={busy.assetCandidateQuery} onClick={queryAssets}>
+              Получить asset_id
+            </Button>
+            <div className="inline-metric">
+              Найдено: <span>{formatCount(filteredCandidates.length)}</span>
+            </div>
+          </div>
 
-      {assetCardBatchJobs.length ? (
+          <div className="asset-card-builder">
+            <div className="asset-card-build-primary">
+              <Field label="Выбранный asset_id">
+                <input
+                  value={form.selected_asset_id}
+                  onChange={(event) =>
+                    update("selected_asset_id", event.target.value)
+                  }
+                  placeholder="1e41d857-9d80-0001-0000-000000000009"
+                />
+              </Field>
+              <Button
+                busy={busy.assetCardBuild}
+                disabled={assetCardJobActive || assetCardBatchActive}
+                onClick={buildCard}
+              >
+                Собрать карточку
+              </Button>
+            </div>
+            <Disclosure
+              title="Параметры сборки"
+              description="Docker PDQL, timeline и лимиты обхода"
+              meta={form.save_to_db ? "Сохранить в БД" : "Без сохранения"}
+            >
+              <Field label="PDQL уязвимостей Docker-контейнеров">
+                <textarea
+                  className="code-input"
+                  rows={6}
+                  value={form.docker_vulnerability_pdql}
+                  onChange={(event) =>
+                    update("docker_vulnerability_pdql", event.target.value)
+                  }
+                />
+              </Field>
+              <div className="form-grid form-grid--two form-grid--spaced">
+                <Field label="Timeline datetime, Unix timestamp">
+                  <input
+                    value={form.timeline_timestamp}
+                    onChange={(event) =>
+                      update("timeline_timestamp", event.target.value)
+                    }
+                    type="number"
+                    placeholder="пусто = сейчас"
+                  />
+                </Field>
+                <Field label="Лимит запроса коллекции">
+                  <input
+                    value={form.limit_per_collection}
+                    onChange={(event) =>
+                      update("limit_per_collection", event.target.value)
+                    }
+                    type="number"
+                    min="1"
+                    max="5000"
+                  />
+                </Field>
+                <Field label="Максимум элементов коллекции">
+                  <input
+                    value={form.max_items_per_collection}
+                    onChange={(event) =>
+                      update("max_items_per_collection", event.target.value)
+                    }
+                    type="number"
+                    min="1"
+                    max="50000"
+                  />
+                </Field>
+                <Field label="Глубина обхода">
+                  <input
+                    value={form.max_depth}
+                    onChange={(event) =>
+                      update("max_depth", event.target.value)
+                    }
+                    type="number"
+                    min="0"
+                    max="8"
+                  />
+                </Field>
+                <Toggle
+                  label="Сохранить карточку в БД"
+                  checked={form.save_to_db}
+                  onChange={(value) => update("save_to_db", value)}
+                />
+              </div>
+            </Disclosure>
+          </div>
+
+          <Disclosure
+            title="Пакетная сборка"
+            description="До двух карточек одновременно"
+            meta={
+              batchAssetIds.length
+                ? `Выбрано: ${batchAssetIds.length}`
+                : "Не выбрано"
+            }
+          >
+            <Field label="Asset ID для пакетной сборки" wide>
+              <textarea
+                rows={4}
+                value={form.batch_asset_ids}
+                onChange={(event) =>
+                  update("batch_asset_ids", event.target.value)
+                }
+                placeholder="До двух Asset ID, каждый с новой строки"
+                aria-describedby="asset-card-batch-help"
+              />
+            </Field>
+            <small
+              id="asset-card-batch-help"
+              className={batchAssetIds.length > 2 ? "error-text" : undefined}
+            >
+              Выбрано: {formatCount(batchAssetIds.length)} из 2
+              {batchAssetIds.length > 2 ? ". Удалите лишние значения." : ""}
+            </small>
+            <div className="action-row">
+              <Button
+                busy={busy.assetCardBatchBuild}
+                disabled={
+                  !batchAssetIdsValid ||
+                  assetCardJobActive ||
+                  assetCardBatchActive
+                }
+                onClick={buildCardBatch}
+              >
+                Собрать выбранные карточки
+              </Button>
+            </div>
+          </Disclosure>
+        </>
+      ) : null}
+
+      {canBuildAssetCards && assetCardBatchJobs.length ? (
         <section className="passport-job asset-card-job" aria-live="polite">
           <div className="passport-job__header">
             <strong>Пакетная сборка карточек</strong>
@@ -2802,7 +2826,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </section>
       ) : null}
 
-      {assetCardJob ? (
+      {canBuildAssetCards && assetCardJob ? (
         <section
           className={`passport-job asset-card-job passport-job--${assetCardJob.status}${assetCardJobActive ? " asset-card-job--active" : ""}`}
           aria-live="polite"
@@ -2854,7 +2878,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </section>
       ) : null}
 
-      {assetRefreshRun ? (
+      {canBuildAssetCards && assetRefreshRun ? (
         <div className="asset-refresh-scan">
           <div className="asset-local-header">
             <div>
@@ -2873,7 +2897,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </div>
       ) : null}
 
-      {assetBulkRefreshOperation ? (
+      {canBuildAssetCards && assetBulkRefreshOperation ? (
         <section className="passport-job asset-refresh-scan" aria-live="polite">
           <div className="asset-local-header">
             <div>
@@ -2908,7 +2932,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
         </section>
       ) : null}
 
-      {candidates.length ? (
+      {canBuildAssetCards && candidates.length ? (
         <>
           <div className="passport-controls">
             <input
@@ -3020,7 +3044,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             </table>
           </div>
         </>
-      ) : queryRaw ? (
+      ) : canBuildAssetCards && queryRaw ? (
         <details className="raw-details">
           <summary>Raw-ответ PDQL запроса активов</summary>
           <pre>{JSON.stringify(queryRaw, null, 2)}</pre>
@@ -3126,23 +3150,31 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
                         >
                           Открыть
                         </Button>
-                        <ActionMenu label="Ещё">
-                          <Button
-                            variant="tiny"
-                            disabled={assetCardJobActive || assetRefreshActive}
-                            busy={busy[`assetCardUpdate:${row.asset_id}`]}
-                            onClick={() => updateLocalCard(row)}
-                          >
-                            Обновить
-                          </Button>
-                          <Button
-                            variant="tiny-danger"
-                            busy={busy[`assetCardDelete:${row.asset_id}`]}
-                            onClick={() => setPendingCardDelete(row)}
-                          >
-                            Удалить
-                          </Button>
-                        </ActionMenu>
+                        {canBuildAssetCards || canManageAssetCards ? (
+                          <ActionMenu label="Ещё">
+                            {canBuildAssetCards ? (
+                              <Button
+                                variant="tiny"
+                                disabled={
+                                  assetCardJobActive || assetRefreshActive
+                                }
+                                busy={busy[`assetCardUpdate:${row.asset_id}`]}
+                                onClick={() => updateLocalCard(row)}
+                              >
+                                Обновить
+                              </Button>
+                            ) : null}
+                            {canManageAssetCards ? (
+                              <Button
+                                variant="tiny-danger"
+                                busy={busy[`assetCardDelete:${row.asset_id}`]}
+                                onClick={() => setPendingCardDelete(row)}
+                              >
+                                Удалить
+                              </Button>
+                            ) : null}
+                          </ActionMenu>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -3151,7 +3183,9 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert }) {
             ) : (
               <tr>
                 <td colSpan={5} className="empty-cell">
-                  Соберите карточку или загрузите сохранённые из БД.
+                  {canBuildAssetCards
+                    ? "Соберите карточку или загрузите сохранённые из БД."
+                    : "Загрузите сохранённые карточки из БД."}
                 </td>
               </tr>
             )}

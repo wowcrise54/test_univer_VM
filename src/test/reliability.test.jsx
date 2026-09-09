@@ -223,6 +223,13 @@ describe("reliability UI", () => {
         defaults={{}}
         busy={{}}
         runBusy={(_key, action) => action()}
+        currentUser={{
+          permissions: [
+            "asset_cards.read",
+            "asset_cards.build",
+            "asset_cards.manage",
+          ],
+        }}
         showAlert={vi.fn()}
       />,
     );

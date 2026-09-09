@@ -30,6 +30,7 @@ function renderPanel() {
       defaults={{}}
       busy={{}}
       runBusy={(_key, action) => action()}
+      currentUser={{ permissions: ["asset_cards.read", "asset_cards.build"] }}
       showAlert={vi.fn()}
     />,
   );
@@ -227,5 +228,43 @@ describe("AssetCardsPanel batch builds", () => {
       await screen.findByText("Готово: 1 · Ошибки: 1 · В работе: 1"),
     ).toBeInTheDocument();
     expect(screen.getByText("ошибка")).toBeInTheDocument();
+  });
+
+  it("hides asset query and build controls without build permission", async () => {
+    render(
+      <AssetCardsPanel
+        defaults={{}}
+        busy={{}}
+        runBusy={(_key, action) => action()}
+        currentUser={{
+          permissions: [
+            "asset_cards.read",
+            "assets.read",
+            "imports_exports.read",
+            "passports.read",
+            "saved_views.manage",
+            "saved_views.read",
+            "system.read",
+          ],
+        }}
+        showAlert={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByText("PDQL для получения asset_id"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Параметры поиска")).not.toBeInTheDocument();
+    expect(screen.queryByText("Параметры сборки")).not.toBeInTheDocument();
+    expect(screen.queryByText("Пакетная сборка")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Получить asset_id" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Собрать карточку" }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Показать сохранённые" }),
+    ).toBeInTheDocument();
   });
 });

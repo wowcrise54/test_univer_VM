@@ -137,7 +137,12 @@ function ActivePage({ routeId, ...props }) {
     );
   }
   if (routeId === "asset-groups") {
-    return <AssetGroupsPage currentUser={props.currentUser} showAlert={props.showAlert} />;
+    return (
+      <AssetGroupsPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
   }
   if (routeId === "operations") {
     return (
@@ -193,6 +198,7 @@ function ActivePage({ routeId, ...props }) {
         defaults={props.defaults}
         busy={props.busy}
         runBusy={props.runBusy}
+        currentUser={props.currentUser}
         showAlert={props.showAlert}
       />
     );
