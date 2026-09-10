@@ -9,6 +9,7 @@ login provisions the local user automatically.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 
 from app.core import get_settings
 
@@ -32,19 +33,53 @@ def _filter_for(username: str, settings) -> str:
 def _build_connection(settings, user: str | None = None, password: str | None = None):
     import ldap3
 
+    try:
+        parsed = urlparse((settings.ldap_url or "").strip())
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise LdapError("invalid_ldap_url") from exc
+
+    if parsed.scheme not in {"ldap", "ldaps"} or not hostname:
+        raise LdapError("invalid_ldap_url")
+
+    # ldap3 does not reliably infer SSL from a URL when use_ssl is supplied
+    # explicitly.  Derive both the transport and the default port here so
+    # ldaps://...:636 works as documented in .env.example.
+    use_ssl = parsed.scheme == "ldaps"
+    port = port or (636 if use_ssl else 389)
+
     server = ldap3.Server(
-        settings.ldap_url,
+        parsed.hostname,
+        port=port,
         get_info=ldap3.NONE,
-        use_ssl=False,
+        use_ssl=use_ssl,
         connect_timeout=max(1, settings.ldap_connect_timeout_seconds),
     )
-    return ldap3.Connection(
-        server,
-        user=user or None,
-        password=password if password is not None else None,
-        auto_bind=True,
-        read_only=True,
-    )
+    try:
+        return ldap3.Connection(
+            server,
+            user=user or None,
+            password=password if password is not None else None,
+            auto_bind=True,
+            read_only=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - normalize ldap3 failures for auth
+        # Never let LDAPBindError escape through FastAPI as a 500.  The login
+        # layer deliberately converts LdapError into the normal 401 response.
+        description = getattr(exc, "message", None) or str(exc) or exc.__class__.__name__
+        if not user:
+            bind_kind = "anonymous account"
+        elif user == getattr(settings, "ldap_bind_dn", ""):
+            bind_kind = "lookup account"
+        else:
+            bind_kind = "user account"
+        logger.warning(
+            "LDAP bind failed for %s: %s",
+            bind_kind,
+            description,
+        )
+        raise LdapError("ldap_bind_failed") from exc
 
 
 def _search_user(settings, username: str) -> dict | None:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import auth, main
+from app import auth, ldap, main
 from app.ldap import LdapError
 
 ADMIN = {"id": 1, "username": "admin", "display_name": "Admin", "role": "admin", "is_active": True,
@@ -161,3 +163,66 @@ def test_existing_local_user_wins_over_ldap(monkeypatch):
             "/api/auth/login", json={"username": "ivan.petrov", "password": "secret"})
     assert response.status_code == 200
     assert response.json()["user"]["username"] == "ivan.petrov"
+
+
+def test_ldap_url_selects_ldaps_transport_and_default_port(monkeypatch):
+    captured = {}
+
+    class FakeServer:
+        def __init__(self, host, **kwargs):
+            captured["server"] = (host, kwargs)
+
+    class FakeConnection:
+        def __init__(self, server, **kwargs):
+            captured["connection"] = (server, kwargs)
+
+        def unbind(self):
+            pass
+
+    fake_ldap3 = SimpleNamespace(NONE=object(), Server=FakeServer, Connection=FakeConnection)
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+    settings = SimpleNamespace(
+        ldap_url="ldaps://directory.example.local",
+        ldap_bind_dn="CN=lookup,DC=example,DC=local",
+        ldap_connect_timeout_seconds=10,
+    )
+
+    ldap._build_connection(settings, settings.ldap_bind_dn, "secret")
+
+    assert captured["server"] == (
+        "directory.example.local",
+        {"port": 636, "get_info": fake_ldap3.NONE, "use_ssl": True, "connect_timeout": 10},
+    )
+    assert captured["connection"][1]["auto_bind"] is True
+
+
+def test_ldap_bind_failure_is_normalized_to_ldap_error(monkeypatch):
+    class FakeServer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def fail_bind(*args, **kwargs):
+        raise LDAPBindError("invalidCredentials")
+
+    class LDAPBindError(Exception):
+        pass
+
+    fake_ldap3 = SimpleNamespace(
+        NONE=object(),
+        Server=FakeServer,
+        Connection=fail_bind,
+        core=SimpleNamespace(exceptions=SimpleNamespace(LDAPBindError=LDAPBindError)),
+    )
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+    settings = SimpleNamespace(
+        ldap_url="ldap://directory.example.local:389",
+        ldap_bind_dn="CN=lookup,DC=example,DC=local",
+        ldap_connect_timeout_seconds=10,
+    )
+
+    try:
+        ldap._build_connection(settings, settings.ldap_bind_dn, "wrong")
+    except LdapError as exc:
+        assert str(exc) == "ldap_bind_failed"
+    else:
+        raise AssertionError("LDAP bind failures must be normalized to LdapError")
