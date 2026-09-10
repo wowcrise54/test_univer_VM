@@ -35,10 +35,10 @@ def _is_in_required_ou(user_dn: str, settings) -> bool:
     required_ou = (getattr(settings, "ldap_required_ou", "") or "").strip()
     if not required_ou:
         return True
-    # Match a complete OU component, not a substring such as OU=t10.
+
     return bool(
         re.search(
-            rf"(?:^|,)\s*OU={re.escape(required_ou)}\s*(?:,|$)",
+            rf"(?:^|,)\s*OU={re.escape(required_ou)}(?:_[^,]*)?\s*(?:,|$)",
             user_dn,
             flags=re.IGNORECASE,
         )
