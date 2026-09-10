@@ -21,9 +21,8 @@ class LdapError(Exception):
 
 def _escape_filter_value(value: str) -> str:
     """Escape a value before interpolating it into an LDAP filter (RFC 4515)."""
-    for raw, token in (("*", "\\2a"), ("\\", "\\5c"), ('"', "\\22"), ("\0", "\\00")):
-        value = value.replace(raw, token)
-    return value
+    from ldap3.utils.conv import escape_filter_chars
+    return escape_filter_chars(value)
 
 
 def _filter_for(username: str, settings) -> str:
@@ -35,7 +34,7 @@ def _build_connection(settings, user: str | None = None, password: str | None = 
 
     server = ldap3.Server(
         settings.ldap_url,
-        get_info=ldap3.OFFLINE,
+        get_info=ldap3.NONE,
         use_ssl=False,
         connect_timeout=max(1, settings.ldap_connect_timeout_seconds),
     )
