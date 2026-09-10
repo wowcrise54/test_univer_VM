@@ -261,7 +261,11 @@ def schema_statements() -> list[str]:
             pdql_token TEXT,
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
-            detail_updated_at TEXT
+            detail_updated_at TEXT,
+            exploitation_evidence BOOLEAN GENERATED ALWAYS AS (
+                LOWER(COALESCE(raw_detail_json, '') || COALESCE(metrics_json, '') || COALESCE(raw_record_json, ''))
+                SIMILAR TO '%(exploit|exploited|эксплуат)%'
+            ) STORED
         )
         """,
         """

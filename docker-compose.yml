@@ -42,6 +42,19 @@ services:
       - checkpoint_completion_target=0.9
       - -c
       - wal_compression=on
+      # Observe slow queries instead of guessing from client disconnects.
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - log_duration=true
+      - -c
+      - track_io_timing=on
+      # Guard against queries that hang with an open transaction (deadlocks, lost locks).
+      # 10 min is generous for bulk imports (batch commits keep idle time short).
+      - -c
+      - statement_timeout=600000
+      - -c
+      - idle_in_transaction_session_timeout=600000
     ports:
       - "55432:5432"
     environment:
