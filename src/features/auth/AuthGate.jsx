@@ -37,6 +37,7 @@ export function AuthGate({ children }) {
 function LoginForm({ onLogin, error, configured }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [authType, setAuthType] = useState("local");
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState(error?.operatorMessage || error?.message || "");
 
@@ -44,7 +45,7 @@ function LoginForm({ onLogin, error, configured }) {
     event.preventDefault();
     setPending(true);
     setMessage("");
-    try { await onLogin({ username, password }); }
+    try { await onLogin({ username, password, auth_type: authType }); }
     catch (nextError) { setMessage(nextError.operatorMessage || nextError.message); }
     finally { setPending(false); }
   };
@@ -55,12 +56,20 @@ function LoginForm({ onLogin, error, configured }) {
         <div className="auth-brand">MP</div>
         <span>MP VM Client</span>
         <h1>Вход в приложение</h1>
-        <p>Используйте локальную учётную запись. Подключение к MP VM настраивается отдельно.</p>
+        <p>{authType === "ldap" ? "Используйте доменную учётную запись LDAP." : "Используйте локальную учётную запись."}</p>
+        <div className="auth-mode" role="group" aria-label="Способ авторизации">
+          <button type="button" className={authType === "local" ? "is-active" : ""} onClick={() => setAuthType("local")}>
+            Локально
+          </button>
+          <button type="button" className={authType === "ldap" ? "is-active" : ""} onClick={() => setAuthType("ldap")}>
+            LDAP
+          </button>
+        </div>
         {!configured ? <div className="auth-warning">Первый администратор ещё не создан. Задайте MPVM_BOOTSTRAP_ADMIN_PASSWORD и перезапустите приложение.</div> : null}
-        <label><span>Имя пользователя</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
+        <label><span>{authType === "ldap" ? "LDAP-логин" : "Имя пользователя"}</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
         <label><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         {message ? <div className="auth-error" role="alert">{message}</div> : null}
-        <button type="submit" disabled={pending || !configured}>{pending ? "Входим…" : "Войти"}</button>
+        <button type="submit" disabled={pending || !configured}>{pending ? "Входим…" : authType === "ldap" ? "Войти через LDAP" : "Войти"}</button>
       </form>
     </main>
   );

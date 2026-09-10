@@ -98,6 +98,7 @@ BUILTIN_ROLE_NAMES["viewer_cards"] = "Карточки активов (чтен�
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
+    auth_type: str = Field(default="auto", pattern=r"^(auto|local|ldap)$")
 
 
 class UserCreateRequest(BaseModel):
@@ -249,15 +250,24 @@ def _local_user_record(username: str) -> dict[str, Any] | None:
         return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
 
 
+def _ldap_default_role_row(conn, configured_role: str | None) -> dict[str, Any]:
+    role_value = (configured_role or "").strip()
+    role = None
+    if role_value:
+        role = conn.execute("""SELECT id FROM app_roles WHERE role_key=%s OR name=%s
+            ORDER BY CASE WHEN role_key=%s THEN 0 ELSE 1 END LIMIT 1""", (role_value, role_value, role_value)).fetchone()
+    if role is None:
+        role = conn.execute("SELECT id FROM app_roles WHERE role_key='viewer'").fetchone()
+    assert role is not None
+    return role
+
+
 def _provision_ldap_user(identity: dict[str, Any]) -> dict[str, Any]:
     """Create a regular local user from a verified LDAP identity."""
     username = identity["username"].strip().lower()
     current = db.now_utc()
     with db.connect() as conn:
-        role = conn.execute("SELECT id FROM app_roles WHERE role_key=%s", (identity["role"],)).fetchone()
-        if role is None:
-            role = conn.execute("SELECT id FROM app_roles WHERE role_key='viewer'").fetchone()
-        assert role is not None
+        role = _ldap_default_role_row(conn, identity.get("role"))
         row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
             VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING *""",
             (username, identity["display_name"].strip() or username, hash_password(secrets.token_urlsafe(32)), current, current)).fetchone()
@@ -465,8 +475,10 @@ LOGIN_LIMITER=LoginLimiter()
 
 
 def login(payload:LoginRequest,request:Request,response:Response,*,hours:int,secure:bool)->dict[str,Any]:
-    key=f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"; LOGIN_LIMITER.check(key); user=authenticate(payload.username,payload.password)
-    if not user:
+    key=f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"; LOGIN_LIMITER.check(key); user=None
+    if payload.auth_type in {"auto","local"}:
+        user=authenticate(payload.username,payload.password)
+    if not user and payload.auth_type in {"auto","ldap"}:
         user=_login_via_ldap(payload.username,payload.password,request)
     if not user:
         LOGIN_LIMITER.fail(key); audit_event(request=request,user=None,event_type="login",decision="deny",details={"username":payload.username.strip().lower()}); raise HTTPException(401,detail={"code":"INVALID_CREDENTIALS","message":"Неверное имя пользователя или пароль."})
