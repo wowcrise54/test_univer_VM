@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     ldap_display_name_attribute: str = "displayName"
     ldap_admin_group_dn: str = ""
     ldap_default_role: str = "viewer"
+    # Restrict LDAP application access to accounts in this OU. Empty disables
+    # the restriction, but the secure default allows only OU=t1 accounts.
+    ldap_required_ou: str = "t1"
     ldap_connect_timeout_seconds: int = 10
 
     @field_validator(

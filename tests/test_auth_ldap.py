@@ -269,3 +269,20 @@ def test_search_user_copies_entries_before_unbind(monkeypatch):
         "dn": "CN=Ivan Petrov,DC=example,DC=local",
         "display": "Ivan Petrov",
     }
+
+
+def test_ldap_required_ou_matches_exact_ou_component():
+    settings = SimpleNamespace(ldap_required_ou="t1")
+
+    assert ldap._is_in_required_ou(
+        "CN=Ivan,OU=t1,OU=Users,DC=example,DC=local",
+        settings,
+    )
+    assert not ldap._is_in_required_ou(
+        "CN=Ivan,OU=t10,OU=Users,DC=example,DC=local",
+        settings,
+    )
+    assert not ldap._is_in_required_ou(
+        "CN=Ivan,OU=Users,DC=example,DC=local",
+        settings,
+    )

@@ -9,6 +9,7 @@ login provisions the local user automatically.
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import urlparse
 
 from app.core import get_settings
@@ -28,6 +29,20 @@ def _escape_filter_value(value: str) -> str:
 
 def _filter_for(username: str, settings) -> str:
     return settings.ldap_user_filter.replace("{username}", _escape_filter_value(username))
+
+
+def _is_in_required_ou(user_dn: str, settings) -> bool:
+    required_ou = (getattr(settings, "ldap_required_ou", "") or "").strip()
+    if not required_ou:
+        return True
+    # Match a complete OU component, not a substring such as OU=t10.
+    return bool(
+        re.search(
+            rf"(?:^|,)\s*OU={re.escape(required_ou)}\s*(?:,|$)",
+            user_dn,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _build_connection(settings, user: str | None = None, password: str | None = None):
@@ -173,6 +188,9 @@ def resolve_ldap_identity(username: str, password: str) -> dict | None:
     if not found:
         logger.info("LDAP: пользователь %s не найден", username)
         raise LdapError("user_not_found")
+    if not _is_in_required_ou(found["dn"], settings):
+        logger.info("LDAP: пользователь %s отклонён из-за ограничения OU", username)
+        raise LdapError("account_not_allowed")
     if not _password_ok(settings, found["dn"], password or ""):
         logger.info("LDAP: неверный пароль для %s", username)
         raise LdapError("bad_credentials")
