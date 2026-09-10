@@ -1627,6 +1627,10 @@ function ExportPanel({
     delete_assets_after_export: true,
   });
   const [result, setResult] = useState("");
+  const [reportAssetSearch, setReportAssetSearch] = useState("");
+  const [reportAssetOptions, setReportAssetOptions] = useState([]);
+  const [selectedReportAssetId, setSelectedReportAssetId] = useState("");
+  const [reportAssetLookupBusy, setReportAssetLookupBusy] = useState(false);
 
   useEffect(() => {
     if (!defaults) return;
@@ -1636,6 +1640,33 @@ function ExportPanel({
       utc_offset: value.utc_offset || defaults.utc_offset || "+05:00",
     }));
   }, [defaults]);
+
+  useEffect(() => {
+    const query = reportAssetSearch.trim();
+    if (!query) {
+      setReportAssetOptions([]);
+      setReportAssetLookupBusy(false);
+      return undefined;
+    }
+    let alive = true;
+    const timer = window.setTimeout(async () => {
+      setReportAssetLookupBusy(true);
+      try {
+        const response = await api(
+          `/api/asset-cards/local?q=${encodeURIComponent(query)}&limit=20&sort_by=display_name&sort_dir=asc`,
+        );
+        if (alive) setReportAssetOptions(response.rows || []);
+      } catch {
+        if (alive) setReportAssetOptions([]);
+      } finally {
+        if (alive) setReportAssetLookupBusy(false);
+      }
+    }, 250);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [reportAssetSearch]);
 
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -1694,6 +1725,15 @@ function ExportPanel({
         },
       );
       showAlert(`CSV-отчёт сформирован: ${report.filename}`, "success");
+    });
+
+  const downloadVulnerabilityXlsx = () =>
+    runBusy("report-xlsx", async () => {
+      const report = await downloadApiFile("/api/reports/vulnerabilities/xlsx", {
+        method: "POST",
+        body: JSON.stringify({ asset_id: selectedReportAssetId }),
+      });
+      showAlert(`XLSX-отчёт сформирован: ${report.filename}`, "success");
     });
 
   return (
@@ -1799,9 +1839,61 @@ function ExportPanel({
       ) : null}
       <Disclosure
         title="Отчётность по уязвимостям"
-        description="CSV по ОС, ПО и Docker"
+        description="CSV и Excel по сохранённым данным"
         meta="Дополнительно"
       >
+        <Field label="Актив для XLSX-отчёта" wide>
+          <input
+            aria-label="Поиск актива для XLSX-отчёта"
+            value={reportAssetSearch}
+            onChange={(event) => {
+              setReportAssetSearch(event.target.value);
+              setSelectedReportAssetId("");
+            }}
+            placeholder="Поиск по IP, имени хоста или Asset ID"
+          />
+          {reportAssetLookupBusy ? (
+            <small className="muted-text">Ищу сохранённые активы…</small>
+          ) : null}
+          {reportAssetOptions.length ? (
+            <div className="report-asset-options" role="listbox" aria-label="Найденные активы">
+              {reportAssetOptions.map((asset) => {
+                const label = asset.display_name || asset.hostname || asset.asset_id;
+                const details = [asset.ip_address, asset.hostname, asset.asset_id].filter(Boolean).join(" · ");
+                return (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selectedReportAssetId === asset.asset_id}
+                    className={`report-asset-option${selectedReportAssetId === asset.asset_id ? " is-selected" : ""}`}
+                    key={asset.asset_id}
+                    onClick={() => {
+                      setSelectedReportAssetId(asset.asset_id);
+                      setReportAssetSearch(`${label} · ${asset.asset_id}`);
+                      setReportAssetOptions([]);
+                    }}
+                  >
+                    <strong>{label}</strong>
+                    <span>{details}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {selectedReportAssetId ? (
+            <small className="muted-text">Выбран Asset ID: {selectedReportAssetId}</small>
+          ) : null}
+        </Field>
+        <div className="action-row">
+          <Button
+            variant="secondary"
+            busy={busy["report-xlsx"]}
+            disabled={!selectedReportAssetId}
+            onClick={downloadVulnerabilityXlsx}
+          >
+            Скачать отчёт XLSX
+          </Button>
+        </div>
         <Field label="Asset ID для отчёта" wide>
           <textarea
             rows={3}

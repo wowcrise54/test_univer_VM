@@ -255,6 +255,18 @@ class AssetCardBuildBatchJobRequest(BaseModel):
         return normalized
 
 
+class VulnerabilityXlsxReportRequest(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=500)
+
+    @field_validator("asset_id")
+    @classmethod
+    def normalize_asset_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("asset_id must not be empty")
+        return normalized
+
+
 class AssetCardUpdateRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)

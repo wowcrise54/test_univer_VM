@@ -18,6 +18,7 @@ EXPECTED_API_PATHS = {
     "/api/operations/summary",
     "/api/exports/pdql",
     "/api/reports/vulnerabilities/{report_type}/csv",
+    "/api/reports/vulnerabilities/xlsx",
     "/api/assets",
     "/api/asset-groups",
     "/api/asset-cards/local",

@@ -16,6 +16,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from contextvars import copy_context
 from datetime import UTC, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -86,12 +87,14 @@ from .api.schemas import (
     StartScannerTaskRequest,
     VulnerabilityPassportQueryRequest,
     VulnerabilityReportRequest,
+    VulnerabilityXlsxReportRequest,
     AutomationPublishRequest,
     AutomationRunRequest,
     AutomationRunbookRequest,
     AutomationScheduleRequest,
 )
 from .automations import AutomationRepository, AutomationService, AutomationStepCancelled
+from .reports.vulnerability import render_vulnerability_xlsx
 from .core import AppContainer, get_settings
 from .factory import create_app
 from .mpvm_client import (
@@ -2678,6 +2681,28 @@ def export_vulnerability_report(
     return StreamingResponse(
         stream_vulnerability_report_csv(report_type, rows),
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@imports_router.post("/api/reports/vulnerabilities/xlsx")
+def export_vulnerability_xlsx(payload: VulnerabilityXlsxReportRequest) -> StreamingResponse:
+    """Export one saved asset and its locally stored vulnerability findings."""
+    asset = db.get_asset_card(payload.asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Сохранённый актив не найден.")
+    asset_ids = [payload.asset_id]
+    content = render_vulnerability_xlsx(
+        asset,
+        db.iter_vulnerability_report_rows("os", asset_ids),
+        db.iter_vulnerability_report_rows("software", asset_ids),
+        db.iter_docker_vulnerability_report_rows(asset_ids),
+    )
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"asset_{payload.asset_id}_vulnerabilities_{timestamp}.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
