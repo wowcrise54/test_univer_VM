@@ -78,6 +78,43 @@ def test_ldap_login_provisions_regular_user_when_local_missing(monkeypatch):
     create_session.assert_called_once()
 
 
+def test_local_login_mode_does_not_try_ldap(monkeypatch):
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: None)
+    def _should_not_run(u, p):
+        raise AssertionError("LDAP should not be called for local login mode")
+    monkeypatch.setattr(auth, "resolve_ldap_identity", _should_not_run)
+
+    with patch.object(auth, "audit_event"), patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+        response = TestClient(main.app).post(
+            "/api/auth/login",
+            json={"username": "ivan.petrov", "password": "secret", "auth_type": "local"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+
+
+def test_ldap_login_mode_uses_ldap_without_local_password_check(monkeypatch):
+    def _should_not_run(u, p):
+        raise AssertionError("Local password auth should not be called for LDAP login mode")
+    monkeypatch.setattr(auth, "authenticate", _should_not_run)
+    identity = {"username": "ivan.petrov", "display_name": "Ivan Petrov", "role": "viewer"}
+    monkeypatch.setattr(auth, "resolve_ldap_identity", lambda u, p: identity)
+
+    with patch.object(auth, "_local_user_record", return_value=None), \
+         patch.object(auth, "_provision_ldap_user", side_effect=lambda i: dict(VIEWER)), \
+         patch.object(auth, "create_session", return_value="tok"), \
+         patch.object(auth, "audit_event"), \
+         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+        response = TestClient(main.app).post(
+            "/api/auth/login",
+            json={"username": "ivan.petrov", "password": "secret", "auth_type": "ldap"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["username"] == "ivan.petrov"
+
+
 def test_ldap_login_maps_admin_group_to_admin_role(monkeypatch):
     """When the directory identity resolves to the admin role, the mapped user keeps admin."""
     monkeypatch.setattr(auth, "authenticate", lambda u, p: None)

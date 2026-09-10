@@ -98,6 +98,7 @@ BUILTIN_ROLE_NAMES["viewer_cards"] = "Карточки активов (чтен�
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
+    auth_type: str = Field(default="auto", pattern=r"^(auto|local|ldap)$")
 
 
 class UserCreateRequest(BaseModel):
@@ -474,8 +475,10 @@ LOGIN_LIMITER=LoginLimiter()
 
 
 def login(payload:LoginRequest,request:Request,response:Response,*,hours:int,secure:bool)->dict[str,Any]:
-    key=f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"; LOGIN_LIMITER.check(key); user=authenticate(payload.username,payload.password)
-    if not user:
+    key=f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"; LOGIN_LIMITER.check(key); user=None
+    if payload.auth_type in {"auto","local"}:
+        user=authenticate(payload.username,payload.password)
+    if not user and payload.auth_type in {"auto","ldap"}:
         user=_login_via_ldap(payload.username,payload.password,request)
     if not user:
         LOGIN_LIMITER.fail(key); audit_event(request=request,user=None,event_type="login",decision="deny",details={"username":payload.username.strip().lower()}); raise HTTPException(401,detail={"code":"INVALID_CREDENTIALS","message":"Неверное имя пользователя или пароль."})
