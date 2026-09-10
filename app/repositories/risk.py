@@ -26,7 +26,7 @@ def _risk_sql(alias: str = "x") -> str:
       + CASE WHEN c.first_seen_at<NOW()-INTERVAL '90 days' THEN 5 WHEN c.first_seen_at<NOW()-INTERVAL '30 days' THEN 3 ELSE 0 END
       + CASE WHEN EXISTS(SELECT 1 FROM vulnerability_passports vp WHERE vp.internal_id=c.passport_internal_id
           AND vp.exploitation_evidence) THEN 5 ELSE 0 END
-      + LEAST(5,(SELECT COUNT(*) FROM remediation_cases spread WHERE spread.vulnerability_key=c.vulnerability_key)-1)
+      + LEAST(5,COALESCE(spread.n,0)-1)
     ))::integer"""
 
 
@@ -150,8 +150,9 @@ class RiskRepository:
                 COALESCE(x.exposure,'internal') exposure,x.owner,COALESCE(x.tags,'[]'::jsonb) tags,{score} risk_score
                 ,EXISTS(SELECT 1 FROM vulnerability_passports vp WHERE vp.internal_id=c.passport_internal_id
                   AND vp.exploitation_evidence) exploitation_evidence
-                ,(SELECT COUNT(*) FROM remediation_cases spread WHERE spread.vulnerability_key=c.vulnerability_key)::int affected_hosts
+                ,COALESCE(spread.n,0)::int affected_hosts
                 FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id
+                LEFT JOIN (SELECT vulnerability_key,COUNT(*) n FROM remediation_cases GROUP BY vulnerability_key) spread ON spread.vulnerability_key=c.vulnerability_key
                 WHERE {where} ORDER BY risk_score DESC,c.due_at NULLS LAST,c.case_id LIMIT %s OFFSET %s""",
                 (*params, limit, offset),
             ).fetchall()

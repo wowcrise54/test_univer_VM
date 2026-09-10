@@ -21,6 +21,10 @@ def test_risk_queue_uses_materialized_exploitation_evidence_flag():
     source = inspect.getsource(RiskRepository.queue)
     assert "vp.exploitation_evidence" in source
     assert "SIMILAR TO" not in source
+    # Host-spread counts come from one pre-aggregated join, not a correlated
+    # COUNT(*) per row (that pattern timed out on the production volume).
+    assert "COUNT(*) FROM remediation_cases spread WHERE" not in source
+    assert "spread.vulnerability_key=c.vulnerability_key" in source
 
 
 def test_context_rejects_unknown_classification_before_database_access():
