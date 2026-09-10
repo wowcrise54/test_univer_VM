@@ -226,3 +226,46 @@ def test_ldap_bind_failure_is_normalized_to_ldap_error(monkeypatch):
         assert str(exc) == "ldap_bind_failed"
     else:
         raise AssertionError("LDAP bind failures must be normalized to LdapError")
+
+
+def test_search_user_copies_entries_before_unbind(monkeypatch):
+    fake_conv = SimpleNamespace(escape_filter_chars=lambda value: value)
+    class FakeEntry:
+        entry_dn = "CN=Ivan Petrov,DC=example,DC=local"
+
+        def __contains__(self, key):
+            return key == "displayName"
+
+        def __getitem__(self, key):
+            if key == "displayName":
+                return "Ivan Petrov"
+            raise KeyError(key)
+
+    class FakeConnection:
+        entries = []
+        result = {"description": "success"}
+
+        def search(self, *args, **kwargs):
+            self.entries = [FakeEntry()]
+            return True
+
+        def unbind(self):
+            self.entries = []
+
+    monkeypatch.setitem(sys.modules, "ldap3.utils.conv", fake_conv)
+    connection = FakeConnection()
+    monkeypatch.setattr(ldap, "_build_connection", lambda *args, **kwargs: connection)
+    settings = SimpleNamespace(
+        ldap_bind_dn="CN=lookup,DC=example,DC=local",
+        ldap_bind_password="secret",
+        ldap_base_dn="DC=example,DC=local",
+        ldap_user_filter="(sAMAccountName={username})",
+        ldap_display_name_attribute="displayName",
+    )
+
+    result = ldap._search_user(settings, "ivan.petrov")
+
+    assert result == {
+        "dn": "CN=Ivan Petrov,DC=example,DC=local",
+        "display": "Ivan Petrov",
+    }

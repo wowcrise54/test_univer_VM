@@ -93,19 +93,27 @@ def _search_user(settings, username: str) -> dict | None:
             attributes=[settings.ldap_display_name_attribute, "displayName", "cn"],
         ):
             raise LdapError(f"LDAP-поиск завершился с ошибкой: {connection.result.get('description', 'unknown')}")
+        # Copy the result before unbind(). ldap3 may clear entries when the
+        # connection is closed; reading connection.entries after unbind made
+        # valid searches look like user_not_found.
+        entries = list(connection.entries)
+        if not entries:
+            return None
+        if len(entries) > 1:
+            logger.warning(
+                "LDAP-фильтр %r вернул %d записей, используется первая",
+                settings.ldap_user_filter,
+                len(entries),
+            )
+        entry = entries[0]
+        display = ""
+        for attr in (settings.ldap_display_name_attribute, "displayName", "cn"):
+            if attr in entry:
+                display = str(entry[attr])
+                break
+        return {"dn": str(entry.entry_dn), "display": display}
     finally:
         _safe_unbind(connection)
-    if not connection.entries:
-        return None
-    if len(connection.entries) > 1:
-        logger.warning("LDAP-фильтр %r вернул %d записей, используется первая", settings.ldap_user_filter, len(connection.entries))
-    entry = connection.entries[0]
-    display = ""
-    for attr in (settings.ldap_display_name_attribute, "displayName", "cn"):
-        if attr in entry:
-            display = str(entry[attr])
-            break
-    return {"dn": str(entry.entry_dn), "display": display}
 
 
 def _password_ok(settings, user_dn: str, password: str) -> bool:
