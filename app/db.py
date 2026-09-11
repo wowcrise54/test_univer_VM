@@ -4120,9 +4120,16 @@ SOFTWARE_FIELD_ALIASES = {
 }
 
 
+SOFTWARE_ENTITY_PATTERN = r"(^|[.])(software|softs)\[[^]]+\]$"
+
+
 def _is_software_entity(entity_path: str, field_path: str) -> bool:
-    haystack = f"{entity_path}.{field_path}".lower()
-    return any(marker in haystack for marker in SOFTWARE_ENTITY_MARKERS)
+    # Only direct fields of an installed-software item belong in inventory.
+    # Descendant collections (containers, users, services, etc.) are separate entities.
+    return bool(
+        re.search(SOFTWARE_ENTITY_PATTERN, entity_path, re.IGNORECASE)
+        and re.search(r"(^|[.])(software|softs)(\[[^]]+\])?[.][^.]+$", field_path, re.IGNORECASE)
+    )
 
 
 def _software_field_leaf(field_path: str, field_name: str) -> str:
@@ -5683,7 +5690,7 @@ ASSET_CARD_QUERY_PRESETS: dict[str, dict[str, Any]] = {
 
 
 def public_asset_card_query_preset(preset: dict[str, Any]) -> dict[str, Any]:
-    public_keys = {"id", "name", "description", "columns", "pdql", "search", "defaults"}
+    public_keys = {"id", "name", "description", "columns", "pdql", "search", "defaults", "kind"}
     return {key: value for key, value in preset.items() if key in public_keys}
 
 
@@ -5694,7 +5701,7 @@ def list_asset_card_query_presets() -> list[dict[str, Any]]:
     ]
 
 
-ASSET_SOFTWARE_ROWS_CTE = """
+ASSET_SOFTWARE_ROWS_CTE = rf"""
 WITH software_rows AS (
     SELECT
         inventory.asset_id,
@@ -5710,6 +5717,7 @@ WITH software_rows AS (
     FROM asset_card_software_inventory AS inventory
     JOIN asset_cards AS card ON card.asset_id = inventory.asset_id
     WHERE (%s = FALSE OR inventory.is_windows = TRUE)
+      AND inventory.entity_path ~* '{SOFTWARE_ENTITY_PATTERN}'
 )
 """
 
@@ -5746,7 +5754,7 @@ def query_asset_card_preset(
     else:
         filters = []
         params = [bool(preset.get("windows_only"))]
-        if preset.get("search"):
+        if preset.get("search") or software_name is not None or software_version_like is not None:
             clean_name = str(
                 software_name
                 if software_name is not None
@@ -5757,10 +5765,11 @@ def query_asset_card_preset(
                 if software_version_like is not None
                 else preset.get("defaults", {}).get("software_version_like", "")
             ).strip()
-            if not clean_name:
+            if not clean_name and preset.get("search"):
                 raise ValueError("software_name must not be blank.")
-            filters.append("soft_name_normalized = LOWER(%s)")
-            params.append(clean_name)
+            if clean_name:
+                filters.append("soft_name_normalized = LOWER(%s)")
+                params.append(clean_name)
             if clean_version:
                 filters.append("soft_version_normalized LIKE LOWER(%s)")
                 params.append(clean_version)

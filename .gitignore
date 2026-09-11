@@ -4,6 +4,8 @@
 !.env.example
 
 # Python
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 *.pyd
@@ -26,13 +28,18 @@ playwright-report/
 test-results/
 
 # Generated application output
+/app/static/
+/data/
+/exports/
 output/logs/
 output/diagnostics/
 output/coverage-*/
 output/coverage-*.json
 output/playwright/
+output/preset_sql_regression.py
 
 # Local tool artifacts
+/.tools/
 .superdesign/tmp/
 .audit_dupes.py
 hermes-health.json
@@ -57,6 +64,7 @@ support-logs/
 graphify-out/cache/
 graphify-out/memory/
 graphify-out/.graphify_*
+graphify-out/.vocab.txt
 
 # Editors and operating systems
 .idea/

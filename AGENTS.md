@@ -1,45 +1,74 @@
-# Project agent instructions
+# Инструкции для работы с MP VM Client
 
-## Mandatory skill restriction
+## Назначение и контекст
 
-- For every task in this repository, use **only** the `graphify` skill.
-- Do not invoke, read, or apply any other skill, even if another skill would normally be mandatory or recommended.
-- Use the existing `graphify-out/graph.json` as the first source for questions about the codebase.
-- Run `graphify query`, `graphify path`, or `graphify explain` before broad manual exploration when the graph can answer the question.
-- If Graphify does not contain enough evidence, inspect the relevant source files directly and state that the graph was insufficient.
-- Do not rebuild or update the graph unless the user explicitly requests it.
+React/Vite-интерфейс и FastAPI backend для MP VM / MP10 с локальным хранилищем PostgreSQL. Приложение управляет сканированием, PDQL и CSV-импортом, сохраняет карточки активов и паспорта уязвимостей, строит локальные выборки и аналитику. VM Management объединяет сканирование, постобработку, риск, устранение и проверочное сканирование. Есть runbook-автоматизации, расписания, уведомления и центр фоновых операций.
 
-## Subagents
+Локальная PostgreSQL приложения не является внутренней БД MP VM: интеграция с MP VM выполняется через API. Сценарии описаны в README.md, границы модулей — в docs/ARCHITECTURE.md. Сверяй документацию с кодом.
 
-Reusable project subagent profiles live in `.agents/` as TOML files. Each profile declares its own model, reasoning effort, scope, and instructions:
+## Рабочие правила
 
-- `backend.toml` — `gpt-5.6-sol`, FastAPI endpoints, services, schemas, background jobs, MP VM integration.
-- `frontend.toml` — `gpt-5.6-terra`, React UI, routes, state, accessibility, and API integration.
-- `tests.toml` — `gpt-5.6-terra`, pytest, Vitest, Playwright, regression coverage, and test diagnostics.
-- `database.toml` — `gpt-5.6-sol`, PostgreSQL schema, migrations, queries, persistence, and transaction safety.
-- `docker-infrastructure.toml` — `gpt-5.6-terra`, Docker Compose, runtime configuration, networking, and deployment diagnostics.
-- `security-review.toml` — `gpt-5.6-sol`, authentication, RBAC, validation, secret handling, and security review.
-- `code-review.toml` — `gpt-5.6-sol`, evidence-led review for correctness, regressions, and maintainability.
-- `investigator.toml` — `gpt-5.6-sol`, read-only tracing, root-cause investigation, and architecture discovery.
-- `documentation.toml` — `gpt-5.6-luna`, README, runbooks, API contracts, and operator documentation.
+- Понимай поручение из контекста и доводи до проверяемого результата. Не останавливайся после первого устранимого сбоя окружения.
+- Проверяй git status и существующий diff. Сохраняй чужие и незавершённые правки; не сбрасывай их и не приписывай себе.
+- Работай самостоятельно; делегируй только при разрешении пользователя или применимого навыка. Не обещай недоступную модель.
+- Применяй относящиеся к задаче навыки, без обязательного запуска всех исследовательских процедур.
+- Пиши пользователю по-русски, сохраняй текст в UTF-8 без испорченной кодировки.
+- Не создавай коммиты, не публикуй и не перезапускай рабочий стек без соответствующего поручения.
 
-## Delegation rules
+## Graphify по необходимости
 
-- The root agent remains responsible for integration, final verification, and the final user-facing report.
-- Delegate only concrete, bounded work that matches a profile.
-- A subagent must read this file and its assigned profile before acting.
-- A subagent must also obey the mandatory restriction to use only `graphify`.
-- Do not assign overlapping write scopes to agents running concurrently.
-- At most seven subagents may run concurrently in this environment; use additional batches when needed.
-- Prefer read-only investigation before edits. Preserve unrelated user changes.
-- Do not create commits, branches, pull requests, or destructive changes unless the user explicitly requests them.
-- Report exact files changed and verification commands run. Never claim a test passed without current command output.
+- Используй graphify-out/graph.json для неизвестных архитектурных связей, владельцев функциональности и цепочек вызовов. Перед широким исследованием выполняй подходящий graphify query, path или explain.
+- Для известного файла, точечной правки, тестов, диагностики Docker и документации Graphify необязателен. Не повторяй запрос, если контекст уже получен.
+- Граф служит навигацией, а не доказательством актуального поведения. Если его недостаточно, отметь ограничение и исследуй соответствующие исходники.
+- Не перестраивай и не обновляй граф без явного запроса пользователя.
 
-## Project boundaries
+## Карта проекта и границы
 
-- Backend entry points and orchestration are primarily under `app/`, including `app/main.py`, `app/db.py`, `app/api/schemas.py`, and `app/services/`.
-- Frontend code is under `src/`; preserve existing routes, RBAC, accessibility, responsive behavior, and API contracts.
-- Backend tests are under `tests/`; frontend and browser tests follow the scripts declared in `package.json`.
-- Database work must preserve PostgreSQL parameter typing, transaction boundaries, migrations, and existing persisted-data compatibility.
-- Docker work must preserve the intended host/container connectivity model and must not expose credentials in logs or committed files.
-- Treat scan, postprocess, asset-card, vulnerability, and remediation workflows as operator-critical paths.
+- app/main.py — текущая точка запуска и совместимый фасад; app/factory.py создаёт FastAPI; app/core/ управляет настройками, контейнером ресурсов и lifecycle.
+- app/api/ — HTTP-роутеры и DTO, включая schemas.py; app/services/ — сценарии приложения; app/repositories/ — доступ к данным. Новый SQL размещай в репозиториях, бизнес-логику — в сервисах, не в HTTP handlers.
+- app/mpvm/ и app/mpvm_client.py — транспорт, аутентификация и совместимость с MP VM API.
+- app/automations/ — runbook-сценарии; app/services/vm_workflows.py — устойчивый родительский workflow поверх фоновых операций.
+- migrations/ и alembic.ini — изменения схемы. Новая схема требует Alembic revision и совместимости с сохранёнными данными.
+- src/app/ — оболочка и providers; src/pages/ — страницы; src/features/ — доменные сценарии; src/shared/ — общие компоненты; src/api/ — API-клиент; src/styles/ — стили. Для server-state сохраняй подход TanStack Query.
+- app/main.py, app/db.py, app/mpvm_client.py и src/panels.jsx — переходные фасады. Исправляй существующее поведение адресно; новые большие сценарии размещай в доменных модулях.
+- Backend-тесты: tests/; frontend: src/test/; браузерные: tests/e2e/. Настройки: package.json, pyproject.toml, playwright.config.js, .github/workflows/quality.yml.
+
+## Критичные инварианты
+
+- Сохраняй маршруты UI, контракты API, RBAC admin/operator/viewer, доступность и адаптивность. Авторизация обеспечивается backend, а не только скрытием кнопок.
+- Scan, postprocess, карточки активов, уязвимости и remediation — операторские критичные цепочки. Сохраняй идемпотентность, отмену, ограничение параллелизма, прогресс и восстановление после перезапуска.
+- Не удаляй активы в MP VM до успешного локального сохранения. Не запускай реальные удалённые операции ради теста.
+- Неполная или устаревшая карточка не доказывает устранение. Сохраняй проверку полноты/свежести, переоткрытие кейсов, аудит и expected_version.
+- В выборках ПО отличай установленное ПО от вложенных пользователей и контейнеров. Учитывай актуализацию уже сохранённого индекса, серверные фильтры и пагинацию.
+- Сохраняй типизацию параметров PostgreSQL, параметризованный SQL, транзакции и миграции. Не подменяй PostgreSQL на SQLite для проверки SQL.
+- Не выводи .env, токены, пароли, cookies или полный разрешённый Compose-конфиг с секретами. Сохраняй очистку чувствительных данных в диагностике.
+
+## Все тесты только в Docker
+
+Обязательное правило пользователя: backend, frontend, integration и браузерные тесты выполняются внутри Docker-контейнеров. Lint, type-check, coverage и проверочную сборку также выполняй в контейнерном окружении.
+
+- Не запускай тесты на Windows-хосте через .venv, bundled Python Codex или .tools/py.cmd. Не чини PATH и не устанавливай зависимости на хост ради тестов.
+- Сначала выбери Compose-файл и проверь сервисы/контейнеры. Основной docker-compose.yml описывает mpvm-client и postgres; корпоративный пример использует mpvm-rest-client. Не угадывай имя контейнера по старым сообщениям.
+- Перед docker compose exec проверь наличие текущих исходников и тестовых зависимостей. Production Dockerfile не копирует tests/ и не устанавливает requirements-dev.txt; Node присутствует только на frontend-этапе сборки. Production-контейнер сам по себе не является тестовым окружением.
+- Используй отдельный временный test-контейнер или подтверждённое тестовое окружение. Backend: Python 3.14 и requirements-dev.txt; frontend: Node 26, npm ci и package-lock.json. Не используй Windows node_modules/.venv как Linux-зависимости.
+- Интеграционные тесты и миграции направляй только в отдельную тестовую PostgreSQL. Не наследуй рабочий DSN из .env, не удаляй рабочие volumes и не используй docker compose down -v для подготовки тестов.
+- Основной Compose закрепляет PostgreSQL 16 ради существующего volume; корпоративный пример и CI используют 18. Не меняй major-версию существующей БД без отдельной миграционной задачи. При проверке SQL учитывай целевую версию.
+- Внутри Compose БД доступна по имени сервиса и порту 5432; опубликованный localhost:55432 относится к хосту. Сохраняй модель сети и корпоративные package registries.
+- При отказе доступа к Docker запроси разрешение на конкретную команду. Не обходи отказ тестами на хосте. Если Docker недоступен, перечисли заблокированные проверки.
+
+Следующие команды выполняются ВНУТРИ подготовленного test-контейнера:
+
+- Backend по области правки: python -m pytest tests/test_asset_card_query.py -q; весь набор: python -m pytest.
+- Frontend по области правки: npm test -- src/test/asset-query.test.jsx; весь набор: npm test.
+- Статический анализ: npm run lint и npm run format:check; области ruff/mypy бери из текущего quality.yml.
+- Сборка: npm run build. Результат — app/static; не редактируй его вместо исходников.
+- Браузерные проверки: npm run test:e2e. Chromium и системные библиотеки должны быть в test-образе. Playwright поднимает Vite на 4173; smoke-тесты с замоканным API не проверяют живой MP VM.
+- Coverage: параметры отчётов из quality.yml и npm run coverage:check. Не ослабляй пороги ради прохождения.
+
+README и текущий CI содержат запуск вне Docker; это не отменяет правило пользователя для агента. Перевод CI на контейнерный запуск — отдельное изменение, не делай его молча.
+
+## Проверка и завершение
+
+Проверяй соразмерно риску. Документация требует чтения результата и проверки diff; изменение поведения — релевантных регрессионных тестов в Docker. Для схемы проверяй миграцию на пустой тестовой БД и совместимость на изолированной копии данных.
+
+В конце укажи, что изменено, какие команды и в каком контейнерном окружении выполнены, результаты и непроверенные части. Запуск без выполненных тестов не является успехом. Не объявляй баг исправленным только по чтению кода.

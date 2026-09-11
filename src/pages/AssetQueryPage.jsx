@@ -187,7 +187,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         {
           method: "POST",
           body: JSON.stringify({
-            ...(preset.search ? search : {}),
+            ...(preset.kind === "software" || preset.search ? search : {}),
             limit: PRESET_PAGE_SIZE,
             offset,
           }),
@@ -424,7 +424,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
               <h3>{activePreset.name}</h3>
               <p>{activePreset.description}</p>
             </div>
-            {activePreset.search ? (
+            {activePreset.kind === "software" ? (
               <div className="asset-query-preset-search">
                 <label>
                   <span>Название ПО</span>

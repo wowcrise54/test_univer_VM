@@ -29,7 +29,7 @@ const FIELDS = [
   },
 ];
 
-function configureApi({ views = [], queryResult } = {}) {
+function configureApi({ views = [], queryResult, presetSearch = true } = {}) {
   api.mockImplementation((path, options = {}) => {
     if (path === "/api/asset-card-query/fields?limit=500") {
       return Promise.resolve({
@@ -50,7 +50,8 @@ function configureApi({ views = [], queryResult } = {}) {
             id: "software-search",
             name: "Поиск определённого ПО на активах",
             description: "Поиск ПО в локальных карточках.",
-            search: true,
+            kind: "software",
+            search: presetSearch,
             defaults: {
               software_name: "OpenSSL",
               software_version_like: "3.%",
@@ -279,6 +280,32 @@ describe("asset query UI", () => {
     });
     expect(await screen.findByText("workstation-01")).toBeInTheDocument();
     expect(screen.getByText("10.0.0.15")).toBeInTheDocument();
+  });
+
+  it("submits software filters for an ordinary preset", async () => {
+    configureApi({ presetSearch: false });
+    renderPage();
+    await screen.findByRole("option", { name: "Поиск определённого ПО на активах" });
+    fireEvent.change(screen.getByLabelText("Готовый пресет"), {
+      target: { value: "software-search" },
+    });
+    await screen.findByText("3.2.1");
+    fireEvent.change(screen.getByLabelText("Название ПО в пресете"), {
+      target: { value: "AnyDesk" },
+    });
+    fireEvent.change(screen.getByLabelText("Маска версии в пресете"), {
+      target: { value: "9.%" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await waitFor(() => {
+      const calls = api.mock.calls.filter(([path]) =>
+        path === "/api/asset-card-query/presets/software-search");
+      expect(JSON.parse(calls.at(-1)[1].body)).toMatchObject({
+        software_name: "AnyDesk",
+        software_version_like: "9.%",
+        offset: 0,
+      });
+    });
   });
 
   it("does not submit an empty manual query", async () => {

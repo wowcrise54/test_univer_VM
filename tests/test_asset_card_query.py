@@ -97,6 +97,22 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertIn("value_text_normalized = %s", sql)
         self.assertEqual(params, ["asset.notes", value, value])
 
+    def test_software_inventory_excludes_nested_metadata(self):
+        card = {
+            "asset_id": "host",
+            "collections": [
+                {"path": path, "items": [{"data": data}]}
+                for path, data in [
+                    ("asset.Host.Softs", {"Name": "Docker Engine", "Version": "28"}),
+                    ("asset.Host.Softs[0].Containers", {"Name": "nginx"}),
+                    ("asset.Host.Softs[0].Users", {"Name": "root"}),
+                    ("asset.Host.Softs[0].Services", {"Name": "daemon"}),
+                ]
+            ],
+        }
+        rows = db.build_asset_card_software_inventory_rows(card)
+        self.assertEqual([row[2] for row in rows], ["Docker Engine"])
+
     def test_query_limits_and_sort_allowlist_are_validated(self):
         too_many = {"combinator": "or", "match_scope": "host", "rules": [
             {"field_path": "asset.hostname", "operator": "exists"} for _ in range(21)
@@ -124,6 +140,7 @@ class AssetCardSearchIndexTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(preset["pdql"] for preset in presets))
+        self.assertTrue(all(preset.get("kind") in {"software", "os"} for preset in presets))
 
     @patch.object(db, "asset_card_search_index_coverage", return_value={
         "indexed_cards": 3,
