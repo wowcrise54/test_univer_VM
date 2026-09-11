@@ -1078,9 +1078,14 @@ class VulnerabilityAnalyticsRepository:
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY selector
+            ), paged AS (
+                SELECT aggregated.*
+                FROM aggregated
+                ORDER BY {expression} {direction} NULLS LAST, selector ASC
+                LIMIT %s OFFSET %s
             ), mapped_passports AS (
                 SELECT
-                    filtered_findings.selector,
+                    paged.selector,
                     passport.internal_id,
                     passport.external_id,
                     passport.name,
@@ -1113,13 +1118,15 @@ class VulnerabilityAnalyticsRepository:
                     MIN(
                         CASE link.match_method WHEN 'vulner_id' THEN 0 ELSE 1 END
                     ) AS match_priority
-                FROM filtered_findings
+                FROM paged
+                JOIN filtered_findings
+                    ON filtered_findings.selector = paged.selector
                 JOIN asset_card_vulnerability_passports AS link
                     ON link.asset_vulnerability_id = filtered_findings.finding_id
                 JOIN vulnerability_passports AS passport
                     ON passport.internal_id = link.passport_internal_id
                 GROUP BY
-                    filtered_findings.selector,
+                    paged.selector,
                     passport.internal_id,
                     passport.external_id,
                     passport.name,
@@ -1167,11 +1174,10 @@ class VulnerabilityAnalyticsRepository:
                 SELECT
                     aggregated.*,
                     COALESCE(passport_rollup.passports, '[]'::jsonb) AS passports
-                FROM aggregated
+                FROM paged AS aggregated
                 LEFT JOIN passport_rollup
                     ON passport_rollup.selector = aggregated.selector
                 ORDER BY {expression} {direction} NULLS LAST, aggregated.selector ASC
-                LIMIT %s OFFSET %s
                 """,
                 [*params, limit, offset],
             ).fetchall()
