@@ -186,6 +186,32 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         query.convert(sql + " SELECT * FROM software_rows", [False])
         self.assertIn(b"asset_card_software_inventory", query.query)
 
+    @patch.object(db, "asset_card_search_index_coverage", return_value={})
+    @patch.object(db, "connect")
+    @patch.object(db, "init_db")
+    def test_os_and_vendor_filters(self, _init, connect, _coverage):
+        conn = connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = []
+        db.query_asset_card_preset("os-versions", os_name="Linux", os_version_like="22.%")
+        sql, params = conn.execute.call_args.args
+        self.assertIn("card.os_name", sql)
+        self.assertEqual(params, ["Linux", "22.%", 100, 0])
+        db.query_asset_card_preset("software-vendors", vendor="Microsoft")
+        sql, params = conn.execute.call_args.args
+        self.assertIn("LOWER(vendor)", sql)
+        self.assertEqual(params, [False, "Microsoft", 100, 0])
+
+    @patch.object(db, "asset_card_search_index_coverage", return_value={})
+    @patch.object(db, "connect")
+    @patch.object(db, "init_db")
+    def test_os_assets_use_exact_nullable_group_and_pagination(self, _init, connect, _coverage):
+        conn = connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = []
+        db.query_asset_card_preset_assets("os-versions", os_name="Linux", os_version=None, offset=100)
+        sql, params = conn.execute.call_args.args
+        self.assertIn("IS NOT DISTINCT FROM %s::text", sql)
+        self.assertEqual(params, ["Linux", None, 100, 100])
+
     @patch.object(db, "asset_card_search_index_coverage", return_value={
         "indexed_cards": 3,
         "total_cards": 3,

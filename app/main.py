@@ -3034,6 +3034,9 @@ def execute_asset_card_query_preset(
             preset_id,
             software_name=payload.software_name,
             software_version_like=payload.software_version_like,
+            vendor=payload.vendor,
+            os_name=payload.os_name,
+            os_version_like=payload.os_version_like,
             limit=payload.limit,
             offset=payload.offset,
         )
@@ -3069,6 +3072,8 @@ def execute_asset_card_query_preset_assets(
             software_name=payload.software_name,
             software_version=payload.software_version,
             vendor=payload.vendor,
+            os_name=payload.os_name,
+            os_version=payload.os_version,
             limit=payload.limit,
             offset=payload.offset,
         )

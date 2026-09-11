@@ -29,7 +29,7 @@ const FIELDS = [
   },
 ];
 
-function configureApi({ views = [], queryResult, presetSearch = true } = {}) {
+function configureApi({ views = [], queryResult, presetSearch = true, extraPreset } = {}) {
   api.mockImplementation((path, options = {}) => {
     if (path === "/api/asset-card-query/fields?limit=500") {
       return Promise.resolve({
@@ -46,6 +46,7 @@ function configureApi({ views = [], queryResult, presetSearch = true } = {}) {
         execution: "local",
         source: "asset_cards",
         rows: [
+          ...(extraPreset ? [extraPreset] : []),
           {
             id: "software-search",
             name: "Поиск определённого ПО на активах",
@@ -64,6 +65,20 @@ function configureApi({ views = [], queryResult, presetSearch = true } = {}) {
             pdql: 'filter(Host.Softs) | filter(SoftName = "OpenSSL")',
           },
         ],
+      });
+    }
+    if (extraPreset && path === `/api/asset-card-query/presets/${extraPreset.id}`) {
+      return Promise.resolve({
+        rows: extraPreset.kind === "os"
+          ? [{ os_name: "Ubuntu", os_version: "22.04", count: 1 }]
+          : [{ vendor: "Microsoft", soft_number: 1 }],
+        total: 1, offset: 0,
+      });
+    }
+    if (extraPreset && path === `/api/asset-card-query/presets/${extraPreset.id}/assets`) {
+      return Promise.resolve({
+        rows: [{ asset_id: "os-host", display_name: "ubuntu-host", os_name: "Ubuntu", os_version: "22.04" }],
+        total: 1, offset: 0,
       });
     }
     if (
@@ -305,6 +320,48 @@ describe("asset query UI", () => {
         software_version_like: "9.%",
         offset: 0,
       });
+    });
+  });
+
+  it("searches OS versions and opens their hosts", async () => {
+    configureApi({ extraPreset: {
+      id: "os-versions", name: "Версии ОС", kind: "os",
+      columns: [{ key: "os_name", label: "ОС" }, { key: "os_version", label: "Версия" }],
+    } });
+    renderPage();
+    await screen.findByRole("option", { name: "Версии ОС" });
+    fireEvent.change(screen.getByLabelText("Готовый пресет"), { target: { value: "os-versions" } });
+    await screen.findByText("22.04");
+    fireEvent.change(screen.getByLabelText("Название ОС в пресете"), { target: { value: "Ubuntu" } });
+    fireEvent.change(screen.getByLabelText("Маска версии ОС в пресете"), { target: { value: "22.%" } });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await waitFor(() => {
+      const call = api.mock.calls.filter(([p]) => p.endsWith("/presets/os-versions")).at(-1);
+      expect(JSON.parse(call[1].body)).toMatchObject({ os_name: "Ubuntu", os_version_like: "22.%" });
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Показать активы" }).find((b) => !b.disabled));
+    expect(await screen.findByText("ubuntu-host")).toBeInTheDocument();
+    const call = api.mock.calls.find(([p]) => p.endsWith("/os-versions/assets"));
+    expect(JSON.parse(call[1].body)).toMatchObject({ os_name: "Ubuntu", os_version: "22.04" });
+    expect(screen.queryByRole("columnheader", { name: "Версия ПО" })).not.toBeInTheDocument();
+  });
+
+  it("uses a vendor field without a software version filter", async () => {
+    configureApi({ extraPreset: {
+      id: "software-vendors", name: "Вендоры ПО", kind: "software",
+      columns: [{ key: "vendor", label: "Вендор" }],
+    } });
+    renderPage();
+    await screen.findByRole("option", { name: "Вендоры ПО" });
+    fireEvent.change(screen.getByLabelText("Готовый пресет"), { target: { value: "software-vendors" } });
+    await screen.findByText("Microsoft");
+    expect(screen.queryByLabelText("Маска версии в пресете")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Название ПО в пресете")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Вендор ПО в пресете"), { target: { value: "Micro" } });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await waitFor(() => {
+      const call = api.mock.calls.filter(([p]) => p.endsWith("/presets/software-vendors")).at(-1);
+      expect(JSON.parse(call[1].body)).toMatchObject({ vendor: "Micro" });
     });
   });
 

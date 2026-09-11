@@ -5727,6 +5727,9 @@ def query_asset_card_preset(
     *,
     software_name: str | None = None,
     software_version_like: str | None = None,
+    vendor: str | None = None,
+    os_name: str | None = None,
+    os_version_like: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -5738,19 +5741,29 @@ def query_asset_card_preset(
     offset = max(0, int(offset))
 
     if preset["kind"] == "os":
-        statement = """
+        filters = []
+        params: list[Any] = []
+        if os_name and os_name.strip():
+            filters.append("STRPOS(LOWER(card.os_name), LOWER(%s)) > 0")
+            params.append(os_name.strip())
+        if os_version_like and os_version_like.strip():
+            filters.append("LOWER(card.os_version) LIKE LOWER(%s)")
+            params.append(os_version_like.strip())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        statement = f"""
             SELECT
                 card.os_name,
                 card.os_version,
                 COUNT(*)::int AS count,
                 COUNT(*) OVER()::int AS __total
             FROM asset_cards AS card
+            {where}
             GROUP BY card.os_name, card.os_version
             ORDER BY LOWER(card.os_name) ASC NULLS LAST,
                      LOWER(card.os_version) ASC NULLS LAST
             LIMIT %s OFFSET %s
         """
-        params: list[Any] = [limit, offset]
+        params.extend([limit, offset])
     else:
         filters = []
         params = [bool(preset.get("windows_only"))]
@@ -5773,6 +5786,9 @@ def query_asset_card_preset(
             if clean_version:
                 filters.append("soft_version_normalized LIKE LOWER(%s)")
                 params.append(clean_version)
+        if vendor and vendor.strip():
+            filters.append("STRPOS(LOWER(vendor), LOWER(%s)) > 0")
+            params.append(vendor.strip())
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         grouping = preset["grouping"]
         if grouping == "name":
@@ -5839,6 +5855,8 @@ def query_asset_card_preset_assets(
     software_name: str | None = None,
     software_version: str | None = None,
     vendor: str | None = None,
+    os_name: str | None = None,
+    os_version: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -5846,6 +5864,33 @@ def query_asset_card_preset_assets(
     preset = ASSET_CARD_QUERY_PRESETS.get(str(preset_id))
     if preset is None:
         raise KeyError(preset_id)
+    if preset["kind"] == "os":
+        limit = max(1, min(500, int(limit)))
+        offset = max(0, int(offset))
+        with connect() as conn:
+            rows = rows_to_dicts(conn.execute("""
+                SELECT card.asset_id,
+                       COALESCE(card.display_name, card.hostname, card.fqdn, card.asset_id) AS display_name,
+                       card.hostname, card.ip_address, card.fqdn,
+                       card.os_name, card.os_version, card.last_seen,
+                       COUNT(*) OVER()::int AS __total
+                FROM asset_cards AS card
+                WHERE card.os_name IS NOT DISTINCT FROM %s::text
+                  AND card.os_version IS NOT DISTINCT FROM %s::text
+                ORDER BY LOWER(COALESCE(card.display_name, card.hostname, card.fqdn, card.asset_id)),
+                         card.asset_id
+                LIMIT %s OFFSET %s
+            """, [os_name, os_version, limit, offset]).fetchall())
+        total = int(rows[0].get("__total", 0)) if rows else 0
+        for row in rows:
+            row.pop("__total", None)
+        return {
+            "preset": public_asset_card_query_preset(preset),
+            "selection": {"os_name": os_name, "os_version": os_version},
+            "rows": rows, "total": total, "limit": limit, "offset": offset,
+            "execution": "local", "source": "asset_cards",
+            **asset_card_search_index_coverage(),
+        }
     if preset["kind"] != "software":
         raise ValueError("Asset details are only available for software presets.")
     clean_name = str(software_name or "").strip()

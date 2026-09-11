@@ -187,7 +187,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         {
           method: "POST",
           body: JSON.stringify({
-            ...(preset.kind === "software" || preset.search ? search : {}),
+            ...search,
             limit: PRESET_PAGE_SIZE,
             offset,
           }),
@@ -209,6 +209,9 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     const nextSearch = {
       software_name: preset.defaults?.software_name || "",
       software_version_like: preset.defaults?.software_version_like || "",
+      vendor: "",
+      os_name: "",
+      os_version_like: "",
     };
     setActivePresetId(id);
     setPresetSearch(nextSearch);
@@ -247,7 +250,10 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
 
   const showPresetAssets = (row) => {
     if (!activePreset) return;
-    const selection = {
+    const selection = activePreset.kind === "os" ? {
+      os_name: row.os_name ?? null,
+      os_version: row.os_version ?? null,
+    } : {
       software_name: row.soft_name || null,
       software_version: row.soft_version || null,
       vendor: row.vendor || null,
@@ -424,35 +430,35 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
               <h3>{activePreset.name}</h3>
               <p>{activePreset.description}</p>
             </div>
-            {activePreset.kind === "software" ? (
+            {activePreset ? (
               <div className="asset-query-preset-search">
                 <label>
-                  <span>Название ПО</span>
+                  <span>{activePreset.kind === "os" ? "Название ОС" : activePreset.id === "software-vendors" ? "Вендор ПО" : "Название ПО"}</span>
                   <input
-                    aria-label="Название ПО в пресете"
-                    value={presetSearch.software_name}
+                    aria-label={activePreset.kind === "os" ? "Название ОС в пресете" : activePreset.id === "software-vendors" ? "Вендор ПО в пресете" : "Название ПО в пресете"}
+                    value={presetSearch[activePreset.kind === "os" ? "os_name" : activePreset.id === "software-vendors" ? "vendor" : "software_name"] || ""}
                     onChange={(event) =>
                       setPresetSearch({
                         ...presetSearch,
-                        software_name: event.target.value,
+                        [activePreset.kind === "os" ? "os_name" : activePreset.id === "software-vendors" ? "vendor" : "software_name"]: event.target.value,
                       })
                     }
                   />
                 </label>
-                <label>
-                  <span>Маска версии</span>
+                {activePreset.id !== "software-vendors" ? <label>
+                  <span>{activePreset.kind === "os" ? "Маска версии ОС" : "Маска версии"}</span>
                   <input
-                    aria-label="Маска версии в пресете"
-                    value={presetSearch.software_version_like}
+                    aria-label={activePreset.kind === "os" ? "Маска версии ОС в пресете" : "Маска версии в пресете"}
+                    value={presetSearch[activePreset.kind === "os" ? "os_version_like" : "software_version_like"] || ""}
                     onChange={(event) =>
                       setPresetSearch({
                         ...presetSearch,
-                        software_version_like: event.target.value,
+                        [activePreset.kind === "os" ? "os_version_like" : "software_version_like"]: event.target.value,
                       })
                     }
                     placeholder="Например, 3.%"
                   />
-                </label>
+                </label> : null}
                 <Button
                   busy={busy.assetQueryPreset}
                   onClick={() =>
@@ -839,7 +845,7 @@ function PresetResult({
   onShowAssets,
 }) {
   const columns = preset.columns || [];
-  const supportsAssets = preset.id !== "os-versions";
+  const supportsAssets = true;
   const tableColumnCount = columns.length + (supportsAssets ? 1 : 0);
   return (
     <section
@@ -963,7 +969,10 @@ function PresetAssets({
   onRetry,
   onPage,
 }) {
+  const isOs = Object.hasOwn(selection, "os_name");
   const label = [
+    isOs ? (selection.os_name || "ОС не указана") : null,
+    isOs ? (selection.os_version || "Версия не указана") : null,
     selection.software_name,
     selection.software_version,
     selection.vendor && !selection.software_name
@@ -973,10 +982,10 @@ function PresetAssets({
     .filter(Boolean)
     .join(" · ");
   return (
-    <section className="asset-query-preset-assets" aria-label="Активы с ПО">
+    <section className="asset-query-preset-assets" aria-label={isOs ? "Активы с ОС" : "Активы с ПО"}>
       <div className="asset-query-preset-assets__header">
         <div>
-          <span>Активы с выбранным ПО</span>
+          <span>{isOs ? "Активы с выбранной ОС и версией" : "Активы с выбранным ПО"}</span>
           <h4>{label}</h4>
         </div>
         <Button variant="ghost" onClick={onClose}>
@@ -990,23 +999,23 @@ function PresetAssets({
               <th>Хост</th>
               <th>IP-адрес</th>
               <th>ОС</th>
-              <th>Версия ПО</th>
+              {!isOs ? <><th>Версия ПО</th>
               <th>Вендор</th>
               <th>Архитектура</th>
-              <th>Путь установки</th>
+              <th>Путь установки</th></> : null}
               <th>Свежесть</th>
             </tr>
           </thead>
           <tbody>
             {state.status === "loading" ? (
               <tr>
-                <td colSpan={8} className="empty-cell">
+                <td colSpan={isOs ? 4 : 8} className="empty-cell">
                   Загрузка активов…
                 </td>
               </tr>
             ) : state.status === "error" ? (
               <tr>
-                <td colSpan={8} className="empty-cell">
+                <td colSpan={isOs ? 4 : 8} className="empty-cell">
                   <div className="query-state query-state--error" role="alert">
                     <span>
                       Не удалось загрузить активы:{" "}
@@ -1034,17 +1043,17 @@ function PresetAssets({
                     {[row.os_name, row.os_version].filter(Boolean).join(" ") ||
                       "—"}
                   </td>
-                  <td>{row.soft_version || "—"}</td>
+                  {!isOs ? <><td>{row.soft_version || "—"}</td>
                   <td>{row.vendor || "—"}</td>
                   <td>{row.architecture || "—"}</td>
-                  <td>{row.install_path || "—"}</td>
+                  <td>{row.install_path || "—"}</td></> : null}
                   <td>{formatDate(row.last_seen)}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={8} className="empty-cell">
-                  Активы с выбранным ПО не найдены.
+                <td colSpan={isOs ? 4 : 8} className="empty-cell">
+                  {isOs ? "Активы с выбранной ОС не найдены." : "Активы с выбранным ПО не найдены."}
                 </td>
               </tr>
             )}

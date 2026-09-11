@@ -71,6 +71,9 @@ class AssetGroupPreviewRequest(BaseModel):
 
 
 class AssetCardPresetQueryRequest(BaseModel):
+    os_name: str | None = Field(default=None, max_length=500)
+    os_version: str | None = Field(default=None, max_length=500)
+    os_version_like: str | None = Field(default=None, max_length=500)
     software_version: str | None = Field(default=None, max_length=500)
     software_name: str | None = Field(default=None, max_length=500)
     software_version_like: str | None = Field(default=None, max_length=500)
