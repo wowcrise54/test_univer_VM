@@ -303,9 +303,6 @@ describe("vulnerability dashboard", () => {
       screen.getByText("Как читать показатели: уязвимости, findings и хосты"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("columnheader", { name: "Краткое описание" }),
-    ).toBeInTheDocument();
-    expect(
       screen.getByText(
         "Ошибка проверки границ памяти позволяет выполнить произвольный код.",
       ),
@@ -954,10 +951,14 @@ describe("vulnerability dashboard", () => {
       name: "Показать хосты с уязвимостью Неподдерживаемая версия",
     });
     const cells = within(button.closest("tr")).getAllByRole("cell");
-    expect(cells[4]).toHaveTextContent("—");
-    expect(cells[8]).toHaveTextContent(
-      "Операционная система, Установленное ПО",
-    );
+    expect(cells[2]).toHaveTextContent("—");
+    fireEvent.click(within(button.closest("tr")).getByText("Подробнее"));
+    expect(
+      screen.getByText("Операционная система"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Установленное ПО")[0],
+    ).toBeInTheDocument();
   });
 
   it("marks incomplete aggregates as a lower estimate", async () => {
@@ -978,8 +979,8 @@ describe("vulnerability dashboard", () => {
     renderDashboard();
 
     expect(await screen.findByRole("note")).toHaveTextContent(
-      "Показатели неполные",
+      "Неполные данные",
     );
-    expect(screen.getByRole("note")).toHaveTextContent("нижней оценкой");
+    expect(screen.getByRole("note")).toHaveTextContent("нижнюю оценку");
   });
 });

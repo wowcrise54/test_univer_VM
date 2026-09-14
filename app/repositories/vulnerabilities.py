@@ -206,6 +206,7 @@ def _filtered_findings_cte(
     severity: str | None = None,
     source: VulnerabilitySource | None = None,
     selector: str | None = None,
+    include_details: bool = True,
 ) -> tuple[str, list[Any]]:
     filters = [
         "COALESCE(NULLIF(TRIM(finding.vulnerability_id), ''), "
@@ -247,10 +248,7 @@ def _filtered_findings_cte(
         params.append(selector)
 
     where = " AND ".join(filters)
-    cte = f"""
-        WITH filtered_findings AS (
-            SELECT
-                {VULNERABILITY_SELECTOR_SQL} AS selector,
+    detail_columns = f""",
                 finding.id AS finding_id,
                 finding.vulnerability_id,
                 finding.vulnerability_instance_id,
@@ -292,6 +290,12 @@ def _filtered_findings_cte(
                 card.os_version,
                 card.asset_type,
                 card.last_seen
+    """ if include_details else ""
+    cte = f"""
+        WITH filtered_findings AS (
+            SELECT
+                {VULNERABILITY_SELECTOR_SQL} AS selector
+                {detail_columns}
             FROM asset_card_vulnerabilities AS finding
             JOIN asset_card_vulnerability_groups AS vulnerability_group
                 ON vulnerability_group.id = finding.group_id
@@ -1162,14 +1166,24 @@ class VulnerabilityAnalyticsRepository:
         with db.connect() as conn:
             total = 0
             if include_total:
+                count_cte, count_params = _filtered_findings_cte(
+                    q=q,
+                    host_q=host_q,
+                    os=os,
+                    asset_type=asset_type,
+                    severity=severity,
+                    source=source,
+                    include_details=False,
+                )
                 count_row = conn.execute(
-                    cte + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
-                    params,
+                    count_cte
+                    + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
+                    count_params,
                 ).fetchone()
                 total = int((count_row or {}).get("count") or 0)
             rows = conn.execute(
                 cte
-                + aggregate
+                + aggregate.replace("{expression}", expression).replace("{direction}", direction)
                 + f"""
                 SELECT
                     aggregated.*,
@@ -1261,6 +1275,11 @@ class VulnerabilityAnalyticsRepository:
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY asset_id
+            ), paged_hosts AS (
+                SELECT aggregated_hosts.*
+                FROM aggregated_hosts
+                ORDER BY {expression} {direction} NULLS LAST, asset_id ASC
+                LIMIT %s OFFSET %s
             )
         """
         with db.connect() as conn:
@@ -1298,8 +1317,10 @@ class VulnerabilityAnalyticsRepository:
             total = int((count_row or {}).get("count") or 0)
             rows = conn.execute(
                 cte
-                + aggregate
+                + aggregate.replace("{expression}", expression).replace("{direction}", direction)
                 + f"""
+                SELECT host_page.*
+                FROM (
                 SELECT
                     aggregated_hosts.*,
                     remediation.case_id AS remediation_case_id,
@@ -1312,14 +1333,14 @@ class VulnerabilityAnalyticsRepository:
                         remediation.status IN ('open', 'in_progress')
                         AND remediation.due_at < NOW()
                     ) AS remediation_overdue
-                FROM aggregated_hosts
+                FROM paged_hosts AS aggregated_hosts
                 LEFT JOIN remediation_cases AS remediation
                     ON remediation.asset_id = aggregated_hosts.asset_id
                    AND remediation.vulnerability_key = %s
+                ) AS host_page
                 ORDER BY {expression} {direction} NULLS LAST, asset_id ASC
-                LIMIT %s OFFSET %s
                 """,
-                [*params, selector, limit, offset],
+                [*params, limit, offset, selector],
             ).fetchall()
         return {
             "selection": _decode_vulnerability(dict(selection_row)) if selection_row else None,

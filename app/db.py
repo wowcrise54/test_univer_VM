@@ -826,6 +826,7 @@ def schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_asset_cards_last_seen ON asset_cards(last_seen DESC)",
         "CREATE INDEX IF NOT EXISTS idx_asset_scan_evidence_scanned_at ON asset_scan_evidence(scanned_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_passport ON asset_card_vulnerability_passports(passport_internal_id)",
+        "CREATE INDEX IF NOT EXISTS idx_asset_card_vulnerability_passports_finding ON asset_card_vulnerability_passports(asset_vulnerability_id, passport_internal_id)",
     ]
 
 
