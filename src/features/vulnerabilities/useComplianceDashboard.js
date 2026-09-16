@@ -13,12 +13,16 @@ export function useComplianceDashboard({ scope, assessmentDate, enabled }) {
   });
   const findingsQuery = useQuery({
     queryKey: ["compliance-findings", scope, assessmentDate],
-    queryFn: () => api(vulnerabilityApiUrl(`${base}/findings`, { ...params, limit: 500 })),
+    queryFn: () =>
+      api(vulnerabilityApiUrl(`${base}/findings`, { ...params, limit: 500 })),
     ...options,
   });
   const staleQuery = useQuery({
     queryKey: ["compliance-stale", scope, assessmentDate],
-    queryFn: () => api(vulnerabilityApiUrl(`${base}/stale-assets`, { ...params, limit: 500 })),
+    queryFn: () =>
+      api(
+        vulnerabilityApiUrl(`${base}/stale-assets`, { ...params, limit: 500 }),
+      ),
     ...options,
   });
   return { summaryQuery, findingsQuery, staleQuery };

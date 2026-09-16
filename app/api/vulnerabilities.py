@@ -21,6 +21,7 @@ SeverityFilter = Literal[
     "unrated",
 ]
 SourceFilter = Literal["os", "software", "docker"]
+HasFixFilter = Literal["yes", "no", "any"]
 SortDirection = Literal["asc", "desc"]
 TrendBucket = Literal["day", "week"]
 TrendingContext = Literal["all", "docker", "host"]
@@ -37,17 +38,26 @@ def vulnerability_summary(
     host_q: Annotated[str | None, Query(max_length=500)] = None,
     os: Annotated[str | None, Query(max_length=500)] = None,
     asset_type: Annotated[str | None, Query(max_length=200)] = None,
+    asset_id: Annotated[str | None, Query(max_length=500)] = None,
     severity: SeverityFilter | None = None,
     source: SourceFilter | None = None,
+    has_fix: HasFixFilter | None = None,
+    fix_q: Annotated[str | None, Query(max_length=500)] = None,
 ) -> dict:
-    return _service(request).summary(
-        q=q,
-        host_q=host_q,
-        os=os,
-        asset_type=asset_type,
-        severity=severity,
-        source=source,
-    )
+    try:
+        return _service(request).summary(
+            q=q,
+            host_q=host_q,
+            os=os,
+            asset_type=asset_type,
+            asset_id=asset_id,
+            severity=severity,
+            source=source,
+            has_fix=has_fix,
+            fix_q=fix_q,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_FILTER", "message": str(exc)}) from exc
 
 
 @router.get("/trending")
@@ -122,8 +132,11 @@ def vulnerabilities(
     host_q: Annotated[str | None, Query(max_length=500)] = None,
     os: Annotated[str | None, Query(max_length=500)] = None,
     asset_type: Annotated[str | None, Query(max_length=200)] = None,
+    asset_id: Annotated[str | None, Query(max_length=500)] = None,
     severity: SeverityFilter | None = None,
     source: SourceFilter | None = None,
+    has_fix: HasFixFilter | None = None,
+    fix_q: Annotated[str | None, Query(max_length=500)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     sort_by: str | None = None,
@@ -135,8 +148,11 @@ def vulnerabilities(
             host_q=host_q,
             os=os,
             asset_type=asset_type,
+            asset_id=asset_id,
             severity=severity,
             source=source,
+            has_fix=has_fix,
+            fix_q=fix_q,
             limit=limit,
             offset=offset,
             sort_by=sort_by,

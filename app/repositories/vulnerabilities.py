@@ -197,14 +197,163 @@ def _sort_sql(
     return allowed[key], direction.upper()
 
 
+_PASSPORT_FIX_KEYS = (
+    "howToFix",
+    "solution",
+    "recommendation",
+    "remediation",
+    "fixDescription",
+)
+
+
+def _passport_fix_sql(passport_alias: str) -> str:
+    parts: list[str] = []
+    for key in _PASSPORT_FIX_KEYS:
+        parts.append(
+            "NULLIF(CASE "
+            f"WHEN jsonb_typeof({passport_alias}.raw_detail_json::jsonb -> '{key}') = 'string' "
+            f"THEN {passport_alias}.raw_detail_json::jsonb ->> '{key}' "
+            "END, '')"
+        )
+        parts.append(
+            f"NULLIF({passport_alias}.raw_detail_json::jsonb #>> '{{{key},text}}', '')"
+        )
+        parts.append(
+            f"NULLIF({passport_alias}.raw_detail_json::jsonb #>> '{{{key},description}}', '')"
+        )
+    return "COALESCE(\n    " + ",\n    ".join(parts) + "\n)"
+
+
+def _has_fix_exists_sql(fix_text: str | None = None) -> tuple[str, list[Any]]:
+    text_filter = ""
+    params: list[Any] = []
+    if fix_text:
+        text_filter = f"\n      AND {_passport_fix_sql('fix_passport')} ILIKE %s"
+        params.append(f"%{fix_text.strip()}%")
+    return (
+        "EXISTS (\n"
+        "    SELECT 1\n"
+        "    FROM asset_card_vulnerability_passports AS fix_link\n"
+        "    JOIN vulnerability_passports AS fix_passport\n"
+        "        ON fix_passport.internal_id = fix_link.passport_internal_id\n"
+        "    WHERE fix_link.asset_vulnerability_id = finding.id\n"
+        f"      AND {_passport_fix_sql('fix_passport')} IS NOT NULL{text_filter}\n"
+        ")"
+    ), params
+
+
+def _fix_rollup_cte(
+    selector_params: list[Any] | None = None,
+    restrict_to_filtered: bool = False,
+) -> str:
+    selector_filter = ""
+    if selector_params is not None:
+        placeholders = ", ".join(["%s"] * len(selector_params))
+        if placeholders:
+            selector_filter = f"\n        AND fix_findings.selector IN ({placeholders})"
+        else:
+            selector_filter = "\n        AND 1 = 0"
+    elif restrict_to_filtered:
+        selector_filter = (
+            "\n        AND fix_findings.selector IN "
+            "(SELECT DISTINCT selector FROM filtered_findings)"
+        )
+    return (
+        ", fix_rollup AS (\n"
+        "    SELECT\n"
+        "        fix_findings.selector,\n"
+        "        MAX(fix_findings.how_to_fix) "
+        "FILTER (WHERE fix_findings.how_to_fix IS NOT NULL) AS how_to_fix\n"
+        "    FROM (\n"
+        "        SELECT\n"
+        f"            {VULNERABILITY_SELECTOR_SQL} AS selector,\n"
+        f"            {_passport_fix_sql('fix_passport')} AS how_to_fix\n"
+        "        FROM asset_card_vulnerabilities AS finding\n"
+        "        JOIN asset_card_vulnerability_groups AS vulnerability_group\n"
+        "            ON vulnerability_group.id = finding.group_id\n"
+        "        JOIN asset_card_vulnerability_passports AS fix_link\n"
+        "            ON fix_link.asset_vulnerability_id = finding.id\n"
+        "        JOIN vulnerability_passports AS fix_passport\n"
+        "            ON fix_passport.internal_id = fix_link.passport_internal_id\n"
+        "        WHERE COALESCE(\n"
+        "            NULLIF(TRIM(finding.vulnerability_id), ''),\n"
+        "            NULLIF(TRIM(finding.cve_name), ''),\n"
+        "            NULLIF(TRIM(finding.name), ''),\n"
+        "            NULLIF(TRIM(finding.vulnerability_instance_id), '')\n"
+        "        ) IS NOT NULL"
+        f"{selector_filter}\n"
+        "    ) AS fix_findings\n"
+        "    GROUP BY fix_findings.selector\n"
+        ")"
+    )
+
+
+def _fix_text_query(selectors: list[Any]) -> tuple[str, list[Any]]:
+    """Bounded follow-up lookup: fix text only for the selected selectors."""
+    unique_selectors = [value for value in dict.fromkeys(selectors) if value]
+    if not unique_selectors:
+        return "", []
+    placeholders = ", ".join(["%s"] * len(unique_selectors))
+    return (
+        """
+        SELECT
+            fix_findings.selector,
+            MAX(fix_findings.how_to_fix)
+                FILTER (WHERE fix_findings.how_to_fix IS NOT NULL) AS how_to_fix
+        FROM (
+            SELECT
+                """
+        + VULNERABILITY_SELECTOR_SQL
+        + """ AS selector,
+                """
+        + _passport_fix_sql("fix_passport")
+        + """ AS how_to_fix
+            FROM asset_card_vulnerabilities AS finding
+            JOIN asset_card_vulnerability_groups AS vulnerability_group
+                ON vulnerability_group.id = finding.group_id
+            JOIN asset_card_vulnerability_passports AS fix_link
+                ON fix_link.asset_vulnerability_id = finding.id
+            JOIN vulnerability_passports AS fix_passport
+                ON fix_passport.internal_id = fix_link.passport_internal_id
+            WHERE COALESCE(
+                NULLIF(TRIM(finding.vulnerability_id), ''),
+                NULLIF(TRIM(finding.cve_name), ''),
+                NULLIF(TRIM(finding.name), ''),
+                NULLIF(TRIM(finding.vulnerability_instance_id), '')
+            ) IS NOT NULL
+              AND """
+        + VULNERABILITY_SELECTOR_SQL
+        + f" IN ({placeholders})\n"
+        "        ) AS fix_findings\n"
+        "        GROUP BY fix_findings.selector\n"
+    ), unique_selectors
+
+
+def _attach_fix_text(
+    rows: list[dict[str, Any]],
+    fix_map: dict[Any, Any] | None,
+) -> list[dict[str, Any]]:
+    for row in rows:
+        how_to_fix = (fix_map or {}).get(row.get("selector"))
+        row["how_to_fix"] = (how_to_fix or "").strip() or None
+        row["has_fix"] = bool((how_to_fix or "").strip())
+    return rows
+
+
+HAS_FIX_FILTER_VALUES = {"yes", "no", "any"}
+
+
 def _filtered_findings_cte(
     *,
     q: str | None = None,
     host_q: str | None = None,
     os: str | None = None,
     asset_type: str | None = None,
+    asset_id: str | None = None,
     severity: str | None = None,
     source: VulnerabilitySource | None = None,
+    has_fix: str | None = None,
+    fix_q: str | None = None,
     selector: str | None = None,
     include_details: bool = True,
 ) -> tuple[str, list[Any]]:
@@ -235,6 +384,9 @@ def _filtered_findings_cte(
     if asset_type:
         filters.append("card.asset_type ILIKE %s")
         params.append(f"%{asset_type.strip()}%")
+    if asset_id:
+        filters.append("card.asset_id = %s")
+        params.append(asset_id.strip())
     if severity:
         normalized = severity.strip().lower()
         normalized = normalized if normalized in {"critical", "high", "medium", "low"} else "unknown"
@@ -243,6 +395,18 @@ def _filtered_findings_cte(
     if source:
         filters.append("vulnerability_group.source_type = %s")
         params.append(source)
+    if has_fix:
+        normalized = has_fix.strip().lower()
+        if normalized not in HAS_FIX_FILTER_VALUES:
+            raise ValueError(f"Unsupported has_fix filter: {has_fix}")
+        if normalized == "yes":
+            sql, fix_params = _has_fix_exists_sql(fix_q)
+            filters.append(sql)
+            params.extend(fix_params)
+        elif normalized == "no":
+            sql, fix_params = _has_fix_exists_sql(fix_q)
+            filters.append(f"NOT {sql}")
+            params.extend(fix_params)
     if selector:
         filters.append(f"({VULNERABILITY_SELECTOR_SQL}) = %s")
         params.append(selector)
@@ -335,6 +499,8 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
         "docker_images": list(row.get("docker_images") or []),
         "passports": passports,
         "short_description": short_description,
+        "how_to_fix": (row.get("how_to_fix") or "").strip() or None,
+        "has_fix": bool((row.get("how_to_fix") or "").strip()),
         "last_seen": row.get("last_seen"),
     }
 
@@ -679,8 +845,11 @@ class VulnerabilityAnalyticsRepository:
         host_q: str | None = None,
         os: str | None = None,
         asset_type: str | None = None,
+        asset_id: str | None = None,
         severity: str | None = None,
         source: VulnerabilitySource | None = None,
+        has_fix: str | None = None,
+        fix_q: str | None = None,
     ) -> dict[str, Any]:
         db.init_db()
         cte, params = _filtered_findings_cte(
@@ -688,8 +857,11 @@ class VulnerabilityAnalyticsRepository:
             host_q=host_q,
             os=os,
             asset_type=asset_type,
+            asset_id=asset_id,
             severity=severity,
             source=source,
+            has_fix=has_fix,
+            fix_q=fix_q,
         )
         with db.connect() as conn:
             coverage_row = dict(
@@ -761,37 +933,64 @@ class VulnerabilityAnalyticsRepository:
                 cte
                 + """
                 SELECT
-                    selector,
-                    MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
-                    MAX(NULLIF(cve, '')) AS cve,
-                    MAX(NULLIF(name, '')) AS name,
-                    CASE MIN(severity_rank)
-                        WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
-                        WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
-                    MIN(severity_rank) AS severity_rank,
-                    MAX(cvss_score) AS cvss_score,
-                    COUNT(DISTINCT asset_id) AS affected_hosts,
-                    COUNT(*) AS findings,
-                    COUNT(DISTINCT group_id) AS affected_objects,
-                    ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
-                        FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
-                        AS components,
-                    ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
-                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
-                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
-                        AS docker_containers,
-                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
-                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
-                        AS docker_images,
-                    '[]'::jsonb AS passports,
-                    MAX(last_seen) AS last_seen
-                FROM filtered_findings
-                GROUP BY selector
-                ORDER BY affected_hosts DESC, findings DESC, selector ASC
-                LIMIT 8
+                    aggregated.selector,
+                    aggregated.vulnerability_id,
+                    aggregated.cve,
+                    aggregated.name,
+                    aggregated.severity,
+                    aggregated.severity_rank,
+                    aggregated.cvss_score,
+                    aggregated.affected_hosts,
+                    aggregated.findings,
+                    aggregated.affected_objects,
+                    aggregated.components,
+                    aggregated.sources,
+                    aggregated.docker_containers,
+                    aggregated.docker_images,
+                    aggregated.passports,
+                    aggregated.last_seen
+                FROM (
+                    SELECT
+                        selector,
+                        MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
+                        MAX(NULLIF(cve, '')) AS cve,
+                        MAX(NULLIF(name, '')) AS name,
+                        CASE MIN(severity_rank)
+                            WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                            WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                        MIN(severity_rank) AS severity_rank,
+                        MAX(cvss_score) AS cvss_score,
+                        COUNT(DISTINCT asset_id) AS affected_hosts,
+                        COUNT(*) AS findings,
+                        COUNT(DISTINCT group_id) AS affected_objects,
+                        ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
+                            FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
+                            AS components,
+                        ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                        ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                            FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                            AS docker_containers,
+                        ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                            FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                            AS docker_images,
+                        '[]'::jsonb AS passports,
+                        MAX(last_seen) AS last_seen
+                    FROM filtered_findings
+                    GROUP BY selector
+                    ORDER BY affected_hosts DESC, findings DESC, selector ASC
+                    LIMIT 8
+                ) AS aggregated
+                ORDER BY aggregated.affected_hosts DESC, aggregated.findings DESC,
+                    aggregated.selector ASC
                 """,
                 params,
             ).fetchall()
+            fix_map: dict[Any, Any] = {}
+            top_selectors = [row["selector"] for row in top_vulnerability_rows if row.get("selector")]
+            if top_selectors:
+                fix_sql, fix_params = _fix_text_query(top_selectors)
+                fix_rows = conn.execute(fix_sql, fix_params).fetchall()
+                fix_map = {row["selector"]: row.get("how_to_fix") for row in fix_rows}
             top_host_rows = conn.execute(
                 cte
                 + """
@@ -853,8 +1052,11 @@ class VulnerabilityAnalyticsRepository:
                 "host_q": host_q or "",
                 "os": os or "",
                 "asset_type": asset_type or "",
+                "asset_id": asset_id or "",
                 "severity": severity or "",
                 "source": source or "",
+                "has_fix": has_fix or "",
+                "fix_q": fix_q or "",
             },
             "totals": totals,
             "by_severity": [
@@ -868,7 +1070,8 @@ class VulnerabilityAnalyticsRepository:
             ],
             "coverage": coverage,
             "top_vulnerabilities": [
-                _decode_vulnerability(dict(row)) for row in top_vulnerability_rows
+                _decode_vulnerability(dict(row))
+                for row in _attach_fix_text(top_vulnerability_rows, fix_map)
             ],
             "top_hosts": [_decode_host(dict(row)) for row in top_host_rows],
         }
@@ -1020,8 +1223,11 @@ class VulnerabilityAnalyticsRepository:
         host_q: str | None = None,
         os: str | None = None,
         asset_type: str | None = None,
+        asset_id: str | None = None,
         severity: str | None = None,
         source: VulnerabilitySource | None = None,
+        has_fix: str | None = None,
+        fix_q: str | None = None,
         limit: int = 50,
         offset: int = 0,
         sort_by: str | None = None,
@@ -1040,20 +1246,30 @@ class VulnerabilityAnalyticsRepository:
                 "max_cvss": "cvss_score",
                 "name": "LOWER(COALESCE(name, cve, selector))",
                 "cve": "LOWER(COALESCE(cve, ''))",
+                "how_to_fix": "CASE WHEN COALESCE(how_to_fix, '') = '' "
+                "THEN 1 ELSE 0 END, LEFT(how_to_fix, 80)",
+                "has_fix": "CASE WHEN COALESCE(how_to_fix, '') = '' "
+                "THEN 1 ELSE 0 END",
                 "last_seen": "last_seen",
             },
             default="affected_hosts",
             default_direction="desc",
         )
+        sort_by_fix_columns = sort_by in {"how_to_fix", "has_fix"}
         db.init_db()
         cte, params = _filtered_findings_cte(
             q=q,
             host_q=host_q,
             os=os,
             asset_type=asset_type,
+            asset_id=asset_id,
             severity=severity,
             source=source,
+            has_fix=has_fix,
+            fix_q=fix_q,
         )
+        if sort_by_fix_columns:
+            cte = f"{cte}{_fix_rollup_cte(restrict_to_filtered=True)}"
         aggregate = """
             , aggregated AS (
                 SELECT
@@ -1082,10 +1298,16 @@ class VulnerabilityAnalyticsRepository:
                     MAX(last_seen) AS last_seen
                 FROM filtered_findings
                 GROUP BY selector
-            ), paged AS (
-                SELECT aggregated.*
+            ), fix_joined AS (
+                SELECT
+                    aggregated.*
+                {fix_select}
                 FROM aggregated
-                ORDER BY {expression} {direction} NULLS LAST, selector ASC
+                {fix_join}
+            ), paged AS (
+                SELECT fix_joined.*
+                FROM fix_joined
+                ORDER BY {expression} {direction} NULLS LAST, fix_joined.selector ASC
                 LIMIT %s OFFSET %s
             ), mapped_passports AS (
                 SELECT
@@ -1171,8 +1393,11 @@ class VulnerabilityAnalyticsRepository:
                     host_q=host_q,
                     os=os,
                     asset_type=asset_type,
+                    asset_id=asset_id,
                     severity=severity,
                     source=source,
+                    has_fix=has_fix,
+                    fix_q=fix_q,
                     include_details=False,
                 )
                 count_row = conn.execute(
@@ -1181,9 +1406,21 @@ class VulnerabilityAnalyticsRepository:
                     count_params,
                 ).fetchone()
                 total = int((count_row or {}).get("count") or 0)
+            if sort_by_fix_columns:
+                aggregate_sql = aggregate.replace(
+                    "{fix_select}", ", fix_rollup.how_to_fix"
+                ).replace(
+                    "{fix_join}",
+                    "LEFT JOIN fix_rollup\n"
+                    "                    ON fix_rollup.selector = aggregated.selector",
+                )
+            else:
+                aggregate_sql = aggregate.replace(
+                    "{fix_select}", ""
+                ).replace("{fix_join}", "")
             rows = conn.execute(
                 cte
-                + aggregate.replace("{expression}", expression).replace("{direction}", direction)
+                + aggregate_sql.replace("{expression}", expression).replace("{direction}", direction)
                 + f"""
                 SELECT
                     aggregated.*,
@@ -1195,12 +1432,21 @@ class VulnerabilityAnalyticsRepository:
                 """,
                 [*params, limit, offset],
             ).fetchall()
-        return {
-            "total": total,
-            "rows": [_decode_vulnerability(dict(row)) for row in rows],
-            "limit": limit,
-            "offset": offset,
-        }
+            decoded_rows = [_decode_vulnerability(dict(row)) for row in rows]
+            fix_map: dict[Any, Any] = {}
+            if not sort_by_fix_columns:
+                page_selectors = [row["selector"] for row in decoded_rows if row.get("selector")]
+                if page_selectors:
+                    fix_sql, fix_params = _fix_text_query(page_selectors)
+                    fix_rows = conn.execute(fix_sql, fix_params).fetchall()
+                    fix_map = {row["selector"]: row.get("how_to_fix") for row in fix_rows}
+                decoded_rows = _attach_fix_text(decoded_rows, fix_map)
+            return {
+                "total": total,
+                "rows": decoded_rows,
+                "limit": limit,
+                "offset": offset,
+            }
 
     def hosts(
         self,
@@ -1287,30 +1533,52 @@ class VulnerabilityAnalyticsRepository:
                 cte
                 + """
                 SELECT
-                    selector,
-                    MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
-                    MAX(NULLIF(cve, '')) AS cve,
-                    MAX(NULLIF(name, '')) AS name,
-                    CASE MIN(severity_rank)
-                        WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
-                        WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
-                    MAX(cvss_score) AS cvss_score,
-                    COUNT(DISTINCT asset_id) AS affected_hosts,
-                    COUNT(*) AS findings,
-                    COUNT(DISTINCT group_id) AS affected_objects,
-                    ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
-                    ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
-                        FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
-                        AS docker_containers,
-                    ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
-                        FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
-                        AS docker_images,
-                    MAX(last_seen) AS last_seen
-                FROM filtered_findings
-                GROUP BY selector
+                    selection.selector,
+                    selection.vulnerability_id,
+                    selection.cve,
+                    selection.name,
+                    selection.severity,
+                    selection.cvss_score,
+                    selection.affected_hosts,
+                    selection.findings,
+                    selection.affected_objects,
+                    selection.sources,
+                    selection.docker_containers,
+                    selection.docker_images,
+                    selection.last_seen
+                FROM (
+                    SELECT
+                        selector,
+                        MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
+                        MAX(NULLIF(cve, '')) AS cve,
+                        MAX(NULLIF(name, '')) AS name,
+                        CASE MIN(severity_rank)
+                            WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                            WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                        MAX(cvss_score) AS cvss_score,
+                        COUNT(DISTINCT asset_id) AS affected_hosts,
+                        COUNT(*) AS findings,
+                        COUNT(DISTINCT group_id) AS affected_objects,
+                        ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                        ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                            FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                            AS docker_containers,
+                        ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                            FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                            AS docker_images,
+                        MAX(last_seen) AS last_seen
+                    FROM filtered_findings
+                    GROUP BY selector
+                ) AS selection
                 """,
                 params,
             ).fetchone()
+            fix_map: dict[Any, Any] = {}
+            if selection_row is not None and selection_row.get("selector"):
+                fix_sql, fix_params = _fix_text_query([selection_row["selector"]])
+                if fix_sql:
+                    fix_rows = conn.execute(fix_sql, fix_params).fetchall()
+                    fix_map = {row["selector"]: row.get("how_to_fix") for row in fix_rows}
             count_row = conn.execute(
                 cte + "SELECT COUNT(DISTINCT asset_id) AS count FROM filtered_findings", params
             ).fetchone()
@@ -1342,8 +1610,14 @@ class VulnerabilityAnalyticsRepository:
                 """,
                 [*params, limit, offset, selector],
             ).fetchall()
+        selection = None
+        if selection_row:
+            selection = _decode_vulnerability(dict(selection_row))
+            how_to_fix = (fix_map.get(selection_row.get("selector")) or "").strip() or None
+            selection["how_to_fix"] = how_to_fix
+            selection["has_fix"] = bool(how_to_fix)
         return {
-            "selection": _decode_vulnerability(dict(selection_row)) if selection_row else None,
+            "selection": selection,
             "total": total,
             "rows": [_decode_host(dict(row)) for row in rows],
             "limit": limit,

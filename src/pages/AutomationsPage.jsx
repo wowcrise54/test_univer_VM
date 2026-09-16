@@ -130,13 +130,10 @@ export function AutomationsPage({ showAlert }) {
               ],
             }),
           });
-          await api(
-            `/api/automations/runbooks/${runbook.runbook_id}/publish`,
-            {
-              method: "POST",
-              body: JSON.stringify({ confirm_name: null }),
-            },
-          );
+          await api(`/api/automations/runbooks/${runbook.runbook_id}/publish`, {
+            method: "POST",
+            body: JSON.stringify({ confirm_name: null }),
+          });
           await api("/api/automations/schedules", {
             method: "POST",
             body: JSON.stringify({
@@ -168,9 +165,7 @@ export function AutomationsPage({ showAlert }) {
   const runbookById = new Map(
     runbooks.map((runbook) => [runbook.runbook_id, runbook]),
   );
-  const taskById = new Map(
-    scannerTasks.map((task) => [task.mp_task_id, task]),
-  );
+  const taskById = new Map(scannerTasks.map((task) => [task.mp_task_id, task]));
   const tabs = [
     ["schedules", "Расписания"],
     ["runs", "Запуски"],
@@ -238,6 +233,7 @@ export function AutomationsPage({ showAlert }) {
               </Field>
               <Field label="Cron">
                 <input
+                  aria-label="Cron"
                   value={scheduleForm.cron_expression}
                   aria-describedby="automation-cron-help"
                   onChange={(event) =>
@@ -330,9 +326,7 @@ function AutomationTabs({ tab, tabs, onChange }) {
           className={tab === id ? "is-active" : ""}
           onClick={() => onChange(id)}
           onKeyDown={(event) => {
-            if (
-              !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
-            )
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
               return;
             event.preventDefault();
             const nextIndex =
@@ -414,22 +408,20 @@ function SchedulesTable({
                         variant="tiny"
                         busy={busy[`schedule:toggle:${item.schedule_id}`]}
                         onClick={() =>
-                          perform(
-                            `schedule:toggle:${item.schedule_id}`,
-                            () =>
-                              api(
-                                `/api/automations/schedules/${item.schedule_id}`,
-                                {
-                                  method: "PUT",
-                                  body: JSON.stringify({
-                                    runbook_id: item.runbook_id,
-                                    name: item.name,
-                                    cron_expression: item.cron_expression,
-                                    timezone: item.timezone,
-                                    enabled: !item.enabled,
-                                  }),
-                                },
-                              ),
+                          perform(`schedule:toggle:${item.schedule_id}`, () =>
+                            api(
+                              `/api/automations/schedules/${item.schedule_id}`,
+                              {
+                                method: "PUT",
+                                body: JSON.stringify({
+                                  runbook_id: item.runbook_id,
+                                  name: item.name,
+                                  cron_expression: item.cron_expression,
+                                  timezone: item.timezone,
+                                  enabled: !item.enabled,
+                                }),
+                              },
+                            ),
                           )
                         }
                       >
@@ -466,7 +458,14 @@ function SchedulesTable({
   );
 }
 
-function RunsPanel({ runs, query, selectedRun, setSelectedRun, busy, perform }) {
+function RunsPanel({
+  runs,
+  query,
+  selectedRun,
+  setSelectedRun,
+  busy,
+  perform,
+}) {
   return (
     <div
       id="automation-panel-runs"
@@ -487,80 +486,82 @@ function RunsPanel({ runs, query, selectedRun, setSelectedRun, busy, perform }) 
       >
         <div className="table-shell">
           <table>
-          <thead>
-            <tr>
-              <th>Расписание</th>
-              <th>Триггер</th>
-              <th>Статус</th>
-              <th>Этап</th>
-              <th>Создан</th>
-              <th>Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {query.isPending ? (
-              <LoadingRow columns="6" label="Загрузка запусков…" />
-            ) : query.isError ? (
-              <ErrorRow columns="6" label="историю запусков" query={query} />
-            ) : runs.length ? (
-              runs.map((item) => (
-                <tr key={item.run_id}>
-                  <td>{item.runbook_name || item.runbook_id}</td>
-                  <td>{item.trigger_type}</td>
-                  <td>
-                    <span
-                      className={`operation-status operation-status--${item.status}`}
-                    >
-                      {item.status}
-                    </span>
-                  </td>
-                  <td>{item.current_step + 1}</td>
-                  <td>{formatDate(item.created_at)}</td>
-                  <td>
-                    <div className="row-actions">
-                      <Button
-                        variant="tiny"
-                        busy={busy[`run:detail:${item.run_id}`]}
-                        onClick={() =>
-                          perform(`run:detail:${item.run_id}`, async () =>
-                            setSelectedRun(
-                              await api(
-                                `/api/automations/runs/${item.run_id}`,
-                              ),
-                            ),
-                          )
-                        }
+            <thead>
+              <tr>
+                <th>Расписание</th>
+                <th>Триггер</th>
+                <th>Статус</th>
+                <th>Этап</th>
+                <th>Создан</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              {query.isPending ? (
+                <LoadingRow columns="6" label="Загрузка запусков…" />
+              ) : query.isError ? (
+                <ErrorRow columns="6" label="историю запусков" query={query} />
+              ) : runs.length ? (
+                runs.map((item) => (
+                  <tr key={item.run_id}>
+                    <td>{item.runbook_name || item.runbook_id}</td>
+                    <td>{item.trigger_type}</td>
+                    <td>
+                      <span
+                        className={`operation-status operation-status--${item.status}`}
                       >
-                        Этапы
-                      </Button>
-                      <Button
-                        variant="tiny"
-                        disabled={!["queued", "running", "cancelling"].includes(
-                          item.status,
-                        )}
-                        busy={busy[`run:cancel:${item.run_id}`]}
-                        onClick={() =>
-                          perform(
-                            `run:cancel:${item.run_id}`,
-                            () =>
-                              api(
-                                `/api/automations/runs/${item.run_id}/cancel`,
-                                { method: "POST" },
+                        {item.status}
+                      </span>
+                    </td>
+                    <td>{item.current_step + 1}</td>
+                    <td>{formatDate(item.created_at)}</td>
+                    <td>
+                      <div className="row-actions">
+                        <Button
+                          variant="tiny"
+                          busy={busy[`run:detail:${item.run_id}`]}
+                          onClick={() =>
+                            perform(`run:detail:${item.run_id}`, async () =>
+                              setSelectedRun(
+                                await api(
+                                  `/api/automations/runs/${item.run_id}`,
+                                ),
                               ),
-                            "Отмена запрошена.",
-                          )
-                        }
-                      >
-                        Отменить
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <EmptyRow columns="6" label="Запусков пока нет." />
-            )}
-          </tbody>
+                            )
+                          }
+                        >
+                          Этапы
+                        </Button>
+                        <Button
+                          variant="tiny"
+                          disabled={
+                            !["queued", "running", "cancelling"].includes(
+                              item.status,
+                            )
+                          }
+                          busy={busy[`run:cancel:${item.run_id}`]}
+                          onClick={() =>
+                            perform(
+                              `run:cancel:${item.run_id}`,
+                              () =>
+                                api(
+                                  `/api/automations/runs/${item.run_id}/cancel`,
+                                  { method: "POST" },
+                                ),
+                              "Отмена запрошена.",
+                            )
+                          }
+                        >
+                          Отменить
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <EmptyRow columns="6" label="Запусков пока нет." />
+              )}
+            </tbody>
           </table>
         </div>
       </Panel>
@@ -638,13 +639,10 @@ function NotificationsPanel({ notifications, query, busy, perform }) {
                     variant="tiny"
                     busy={busy[`notification:read:${item.notification_id}`]}
                     onClick={() =>
-                      perform(
-                        `notification:read:${item.notification_id}`,
-                        () =>
-                          api(
-                            `/api/notifications/${item.notification_id}/read`,
-                            { method: "POST" },
-                          ),
+                      perform(`notification:read:${item.notification_id}`, () =>
+                        api(`/api/notifications/${item.notification_id}/read`, {
+                          method: "POST",
+                        }),
                       )
                     }
                   >

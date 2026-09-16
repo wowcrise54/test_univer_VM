@@ -26,6 +26,8 @@ const VULNERABILITY = {
   short_description:
     "Ошибка проверки границ памяти позволяет выполнить произвольный код.",
   sources: ["os"],
+  how_to_fix: "Обновить OpenSSL до версии 3.0.14",
+  has_fix: true,
   last_seen: "2026-07-11T08:00:00Z",
 };
 
@@ -897,6 +899,74 @@ describe("vulnerability dashboard", () => {
     );
   });
 
+  it("renders fix columns and filters vulnerabilities by asset and fix state", async () => {
+    renderDashboard();
+    await screen.findAllByText("Удалённое выполнение кода");
+
+    // the summary table exposes the two new columns
+    const headers = screen.getAllByText("Как исправить");
+    expect(headers.length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Исправление").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("Обновить OpenSSL до версии 3.0.14").length,
+    ).toBeGreaterThan(0);
+
+    // asset filter uses the local asset cards as suggestions
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) =>
+          path.startsWith("/api/asset-cards/local"),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("combobox", { name: "Актив" })).toBeVisible(),
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Актив" }), {
+      target: { value: "asset-1" },
+    });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Наличие исправления" }),
+      {
+        target: { value: "yes" },
+      },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Текст исправления" }),
+      {
+        target: { value: "обновить" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Применить фильтры" }));
+
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) => {
+          const url = new URL(path, "http://localhost");
+          return (
+            url.pathname === "/api/vulnerabilities" &&
+            url.searchParams.get("asset_id") === "asset-1" &&
+            url.searchParams.get("has_fix") === "yes" &&
+            url.searchParams.get("fix_q") === "обновить"
+          );
+        }),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(([path]) => {
+          const url = new URL(path, "http://localhost");
+          return (
+            url.pathname === "/api/vulnerabilities/summary" &&
+            url.searchParams.get("asset_id") === "asset-1" &&
+            url.searchParams.get("has_fix") === "yes"
+          );
+        }),
+      ).toBe(true),
+    );
+  });
+
   it("shows an actionable summary error and an empty list state", async () => {
     let summaryFails = true;
     api.mockImplementation((path) => {
@@ -953,12 +1023,8 @@ describe("vulnerability dashboard", () => {
     const cells = within(button.closest("tr")).getAllByRole("cell");
     expect(cells[2]).toHaveTextContent("—");
     fireEvent.click(within(button.closest("tr")).getByText("Подробнее"));
-    expect(
-      screen.getByText("Операционная система"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getAllByText("Установленное ПО")[0],
-    ).toBeInTheDocument();
+    expect(screen.getByText("Операционная система")).toBeInTheDocument();
+    expect(screen.getAllByText("Установленное ПО")[0]).toBeInTheDocument();
   });
 
   it("marks incomplete aggregates as a lower estimate", async () => {

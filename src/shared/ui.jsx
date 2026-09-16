@@ -258,6 +258,7 @@ export function ActionMenu({
         className="action-menu__content"
         onClick={(event) => {
           if (!event.target.closest("button, a")) return;
+          event.currentTarget.closest("details")?.removeAttribute("open");
           setOpen(false);
           summaryRef.current?.focus({ preventScroll: true });
         }}

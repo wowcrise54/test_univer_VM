@@ -41,7 +41,9 @@ describe("guided application shell", () => {
     expect(
       screen.getByRole("link", { name: "Уязвимости" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ещё" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Ещё").closest("summary"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute(
       "aria-current",
       "page",
@@ -96,6 +98,7 @@ describe("guided application shell", () => {
         session={{ connected: false }}
         route={routeById("tasks")}
         onNavigate={navigate}
+        currentUser={{ permissions: ["connection.manage"] }}
       />,
     );
 

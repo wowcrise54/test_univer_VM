@@ -16,13 +16,23 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("local asset groups management", () => {
   it("renders and filters the calculated hierarchy", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((input) => String(input).includes("/fields")
-      ? response({ rows: [] })
-      : response({ rows: [{ group_id: "root-1", name: "Infrastructure", status: "ready", member_count: 12, children: [
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) {
+        return response({ runs: 0, success: 0, false: 0, unknown: 0 });
+      }
+      if (url.includes("/precheck-runs")) return response({ rows: [] });
+      if (url.includes("/fields")) return response({ rows: [] });
+      return response({ rows: [{ group_id: "root-1", name: "Infrastructure", status: "ready", member_count: 12, children: [
         { group_id: "group-1", name: "Production Linux", status: "ready", member_count: 4, children: [] },
-      ] }] }));
+      ] }] });
+    });
 
     renderPage();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/asset-groups/tree",
+      expect.any(Object),
+    ));
     expect(await screen.findByRole("button", { name: /Infrastructure/ })).toBeInTheDocument();
     fireEvent.change(screen.getByRole("searchbox", { name: "Поиск групп" }), { target: { value: "Linux" } });
     expect(screen.getByRole("button", { name: /Production Linux/ })).toBeInTheDocument();
@@ -43,6 +53,7 @@ describe("local asset groups management", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, options) => {
       const url = String(input);
       if (url.includes("/precheck-stats")) return response({ runs: 4, success: 9, false: 3, unknown: 1 });
+      if (url.includes("/precheck-runs")) return response({ rows: [] });
       if (url.includes("/fields")) return response({ rows: [] });
       if (url.endsWith("/bulk-action") && options?.method === "POST") {
         return response({ processed: 1, succeeded: 1, failed: 0, results: [] });
@@ -52,8 +63,8 @@ describe("local asset groups management", () => {
 
     const showAlert = vi.fn();
     renderPage(undefined, showAlert);
-    expect(await screen.findByText("Успешные цели")).toBeInTheDocument();
-    expect(screen.getByText("9")).toBeInTheDocument();
+    expect(screen.getByText("Успешные цели")).toBeInTheDocument();
+    expect(await screen.findByText("9")).toBeInTheDocument();
     expect(screen.getByText("False")).toBeInTheDocument();
     expect(screen.getByText("Без детализации")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Пересчитать выбранные" })).toBeDisabled();

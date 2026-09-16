@@ -35,6 +35,9 @@ describe("VM Management", () => {
     expect(await screen.findByText("Единый контур VM Management")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Просрочено").previousSibling).toHaveTextContent("2"));
     await screen.findByRole("option", { name: "Production" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Задача MP VM" }), {
+      target: { value: "task-1" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Проверить перед запуском" }));
     expect(await screen.findByText("Проверка пройдена")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Запустить конвейер" }));

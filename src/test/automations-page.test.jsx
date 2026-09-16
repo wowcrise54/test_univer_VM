@@ -53,8 +53,11 @@ describe("AutomationsPage", () => {
   it("creates and publishes a scan runbook before attaching the cron schedule", async () => {
     const showAlert = renderPage();
 
+    expect(
+      await screen.findByRole("option", { name: "Периметр" }),
+    ).toBeInTheDocument();
     fireEvent.change(
-      await screen.findByLabelText("Задача сканирования MP VM"),
+      screen.getByLabelText("Задача сканирования MP VM"),
       { target: { value: "task-1" } },
     );
     fireEvent.change(screen.getByLabelText("Название расписания"), {

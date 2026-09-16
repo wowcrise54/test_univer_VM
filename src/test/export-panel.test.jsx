@@ -59,7 +59,7 @@ describe("ExportPanel vulnerability reports", () => {
   it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
     fireEvent.click(
-      screen.getByText("CSV по ОС, ПО и Docker").closest("summary"),
+      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
     );
     fireEvent.change(
       screen.getByRole("textbox", { name: "Asset ID для отчёта" }),
@@ -114,7 +114,7 @@ describe("ExportPanel vulnerability reports", () => {
       downloadError: new Error("Не удалось сформировать отчёт"),
     });
     fireEvent.click(
-      screen.getByText("CSV по ОС, ПО и Docker").closest("summary"),
+      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Скачать уязвимости ОС" }),
@@ -130,7 +130,7 @@ describe("ExportPanel vulnerability reports", () => {
   it("keeps OS, software, and Docker download states independent", () => {
     renderPanel({ busy: { "report-os": true } });
     fireEvent.click(
-      screen.getByText("CSV по ОС, ПО и Docker").closest("summary"),
+      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
     );
     const busyButton = screen.getByRole("button", { name: /Выполняю/ });
     expect(busyButton).toBeDisabled();

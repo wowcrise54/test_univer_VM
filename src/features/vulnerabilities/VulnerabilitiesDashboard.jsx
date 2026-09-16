@@ -15,8 +15,11 @@ const EMPTY_FILTERS = {
   host_q: "",
   os: "",
   asset_type: "",
+  asset_id: "",
   severity: "",
   source: "",
+  has_fix: "",
+  fix_q: "",
 };
 const DEFAULT_VULNERABILITY_SORT = {
   key: "affected_hosts",
@@ -90,6 +93,7 @@ export function VulnerabilitiesDashboard({
     trendsQuery,
     trendingPassportsQuery,
     summaryQuery,
+    assetFilterOptionsQuery,
     vulnerabilitiesQuery,
     hostsQuery,
     resolutionQuery,
@@ -135,8 +139,11 @@ export function VulnerabilitiesDashboard({
       host_q: String(nextFilters.host_q || "").trim(),
       os: String(nextFilters.os || "").trim(),
       asset_type: String(nextFilters.asset_type || "").trim(),
+      asset_id: String(nextFilters.asset_id || "").trim(),
       severity: nextFilters.severity || "",
       source: nextFilters.source || "",
+      has_fix: nextFilters.has_fix || "",
+      fix_q: String(nextFilters.fix_q || "").trim(),
     };
     setDraftFilters(normalized);
     setFilters(normalized);
@@ -283,6 +290,12 @@ export function VulnerabilitiesDashboard({
   };
 
   const summary = summaryQuery.data || {};
+  const assetFilterOptions = (assetFilterOptionsQuery.data?.rows || []).map(
+    (card) => ({
+      value: card.asset_id,
+      label: cardLabel(card),
+    }),
+  );
   const vulnerabilityRows = resultRows(vulnerabilitiesQuery.data);
   const vulnerabilityTotal = resultTotal(
     vulnerabilitiesQuery.data,
@@ -331,6 +344,7 @@ export function VulnerabilitiesDashboard({
         <>
           <VulnerabilityFilters
             filters={draftFilters}
+            assetOptions={assetFilterOptions}
             onChange={setDraftFilters}
             onSubmit={submitFilters}
             onReset={() => applyFilters(EMPTY_FILTERS)}
@@ -820,7 +834,14 @@ function ResolutionMetric({ label, value, note }) {
   );
 }
 
-function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
+function VulnerabilityFilters({
+  filters,
+  assetOptions = [],
+  onChange,
+  onSubmit,
+  onReset,
+  busy,
+}) {
   const update = (key, value) =>
     onChange((current) => ({ ...current, [key]: value }));
   return (
@@ -842,6 +863,21 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
           onChange={(event) => update("host_q", event.target.value)}
           placeholder="Имя, IP или FQDN"
         />
+      </Field>
+      <Field label="Актив">
+        <input
+          value={filters.asset_id}
+          list="vulnerability-filter-asset-options"
+          onChange={(event) => update("asset_id", event.target.value)}
+          placeholder="Точный ID актива"
+        />
+        <datalist id="vulnerability-filter-asset-options">
+          {assetOptions.map((option) => (
+            <option value={option.value} key={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </datalist>
       </Field>
       <Field label="ОС">
         <input
@@ -880,6 +916,24 @@ function VulnerabilityFilters({ filters, onChange, onSubmit, onReset, busy }) {
           <option value="software">Установленное ПО</option>
           <option value="docker">Docker-контейнеры</option>
         </select>
+      </Field>
+      <Field label="Наличие исправления">
+        <select
+          value={filters.has_fix}
+          onChange={(event) => update("has_fix", event.target.value)}
+        >
+          <option value="">Все</option>
+          <option value="yes">Есть исправление</option>
+          <option value="no">Нет исправления</option>
+          <option value="any">Не важно</option>
+        </select>
+      </Field>
+      <Field label="Текст исправления">
+        <input
+          value={filters.fix_q}
+          onChange={(event) => update("fix_q", event.target.value)}
+          placeholder="Например: обновить, патч"
+        />
       </Field>
       <div className="vulnerability-filters__actions">
         <Button type="submit" busy={busy}>
@@ -1791,6 +1845,22 @@ function VulnerabilityTable({
                 Макс. CVSS
               </SortableHeader>
               <SortableHeader
+                column="how_to_fix"
+                sort={sort}
+                onSort={onSort}
+                initialDirection="asc"
+              >
+                Как исправить
+              </SortableHeader>
+              <SortableHeader
+                column="has_fix"
+                sort={sort}
+                onSort={onSort}
+                initialDirection="asc"
+              >
+                Исправление
+              </SortableHeader>
+              <SortableHeader
                 column="affected_hosts"
                 sort={sort}
                 onSort={onSort}
@@ -1820,7 +1890,7 @@ function VulnerabilityTable({
           <tbody>
             {pending ? (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={9} className="empty-cell">
                   Загружаю уязвимости…
                 </td>
               </tr>
@@ -1884,6 +1954,18 @@ function VulnerabilityTable({
                       <SeverityBadge value={row.severity} />
                     </td>
                     <td>{formatScore(row.max_cvss ?? row.cvss_score)}</td>
+                    <td>
+                      <VulnerabilityFixCell text={row.how_to_fix} />
+                    </td>
+                    <td>
+                      <span
+                        className={`vulnerability-fix-badge ${
+                          row.has_fix ? "vulnerability-fix-badge--yes" : ""
+                        }`}
+                      >
+                        {row.has_fix ? "Есть" : "Нет"}
+                      </span>
+                    </td>
                     <td>{formatCount(row.affected_hosts)}</td>
                     <td>{formatCount(row.findings)}</td>
                     <td>{formatDate(row.last_seen)}</td>
@@ -1905,7 +1987,7 @@ function VulnerabilityTable({
               })
             ) : (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={9} className="empty-cell">
                   Уязвимости с такими фильтрами не найдены.
                 </td>
               </tr>
@@ -2468,6 +2550,12 @@ function hostLabel(row) {
   );
 }
 
+function cardLabel(card) {
+  const primary = card?.display_name || card?.hostname || card?.asset_id || "";
+  const secondary = [card?.ip_address, card?.fqdn].filter(Boolean).join(" · ");
+  return secondary ? `${primary} · ${secondary}` : primary;
+}
+
 function remediationStatusLabel(status) {
   return (
     {
@@ -2554,6 +2642,19 @@ function VulnerabilityComponent({ row }) {
         <small key={image}>Образ: {image}</small>
       ))}
     </div>
+  );
+}
+
+function VulnerabilityFixCell({ text }) {
+  const value = typeof text === "string" ? text.trim() : "";
+  if (!value) {
+    return <span className="muted-text">—</span>;
+  }
+  const truncated = value.length > 120 ? `${value.slice(0, 117)}…` : value;
+  return (
+    <span className="vulnerability-fix-text" title={value}>
+      {truncated}
+    </span>
   );
 }
 

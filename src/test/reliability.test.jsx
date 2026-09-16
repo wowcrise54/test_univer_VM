@@ -149,7 +149,7 @@ describe("reliability UI", () => {
     );
   });
 
-  it("restores focus to an action menu after choosing an item", () => {
+  it("restores focus to an action menu after choosing an item", async () => {
     render(
       <ActionMenu>
         <Button>Повторить</Button>
@@ -161,7 +161,9 @@ describe("reliability UI", () => {
     action.focus();
     fireEvent.click(action);
     expect(summary).toHaveFocus();
-    expect(summary.closest("details")).not.toHaveAttribute("open");
+    await waitFor(() =>
+      expect(summary.closest("details")).not.toHaveAttribute("open"),
+    );
   });
 
   it("blocks busy buttons and deduplicates promise-backed clicks", async () => {

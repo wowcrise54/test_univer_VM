@@ -32,9 +32,7 @@
 
 .vulnerability-filters {
   display: grid;
-  grid-template-columns:
-    minmax(220px, 1.4fr) minmax(200px, 1.15fr) minmax(160px, 0.8fr)
-    minmax(180px, 0.9fr) auto;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 12px;
   align-items: end;
   margin-bottom: 18px;
@@ -2089,4 +2087,32 @@ button.ranking-row:focus-visible,
   to {
     transform: translateX(100%);
   }
+}
+
+.vulnerability-fix-text {
+  display: block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: help;
+}
+
+.vulnerability-fix-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-muted, #eef2f6);
+  border: 1px solid var(--line);
+}
+
+.vulnerability-fix-badge--yes {
+  color: #14532d;
+  background: #dcfce7;
+  border-color: #86efac;
 }
