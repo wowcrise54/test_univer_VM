@@ -5977,13 +5977,33 @@ def query_asset_card_preset_assets(
 
 
 def asset_card_search_index_coverage() -> dict[str, int]:
+    """Index coverage of asset cards.
+
+    ``indexed_cards`` is counted from the small ``asset_cards`` side with
+    an indexed ``EXISTS`` lookup.  Because of the FK
+    ``asset_card_search_fields.asset_id -> asset_cards.asset_id`` this is
+    exactly equivalent to ``COUNT(DISTINCT asset_id)`` on the search
+    fields table, but avoids a parallel full scan + sort of the
+    15 GB / 21 M-row ``asset_card_search_fields`` table.  The old form
+    took 2-3 minutes per call on production-sized data and blocked
+    application startup (and made every asset-card API response slow).
+    """
     init_db()
     with connect() as conn:
         row = conn.execute(
             """
             SELECT
                 (SELECT COUNT(*) FROM asset_cards) AS total_cards,
-                (SELECT COUNT(DISTINCT asset_id) FROM asset_card_search_fields) AS indexed_cards,
+                (
+                    SELECT COUNT(*)
+                    FROM asset_cards card
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM asset_card_search_fields field
+                        WHERE field.asset_id = card.asset_id
+                    )
+                )
+                    AS indexed_cards,
                 (
                     SELECT COUNT(*)
                     FROM asset_cards

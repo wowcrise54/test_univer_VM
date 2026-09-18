@@ -248,6 +248,41 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertEqual(result["rows"][0]["asset_id"], "asset-1")
         self.assertEqual(result["execution"], "local")
 
+    @patch.object(db, "connect")
+    @patch.object(db, "init_db")
+    def test_index_coverage_counts_from_asset_cards_side(self, _init_db, connect):
+        """Regression: indexed_cards must be counted from the small
+        ``asset_cards`` side (indexed EXISTS), not with a full
+        ``COUNT(DISTINCT asset_id)`` scan of asset_card_search_fields.
+
+        On production data (21 M search-field rows) the distinct scan
+        took 2-3 minutes and blocked app startup for ~6 minutes per
+        restart; the EXISTS form runs in ~26 ms.
+        """
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {
+            "total_cards": 337,
+            "indexed_cards": 337,
+            "software_inventory_indexed_cards": 337,
+        }
+        connect.return_value.__enter__.return_value = connection
+
+        coverage = db.asset_card_search_index_coverage()
+
+        self.assertEqual(
+            coverage,
+            {
+                "total_cards": 337,
+                "indexed_cards": 337,
+                "software_inventory_total_cards": 337,
+                "software_inventory_indexed_cards": 337,
+            },
+        )
+        sql, *_ = connection.execute.call_args.args
+        self.assertNotIn("COUNT(DISTINCT asset_id)", sql)
+        self.assertIn("FROM asset_cards card", sql)
+        self.assertIn("EXISTS", sql)
+
 
 if __name__ == "__main__":
     unittest.main()
