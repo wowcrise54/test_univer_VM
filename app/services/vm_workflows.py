@@ -147,6 +147,8 @@ class VmWorkflowService:
             if replay:
                 if replay.get("kind") != "scan":
                     raise ValueError("Idempotency key belongs to another workflow kind.")
+                if replay.get("retry_of") is not None:
+                    raise ValueError("Idempotency key belongs to another workflow operation.")
                 if not self._identical_scan_request(replay, task_id=task_id, options=options):
                     raise ValueError(
                         "Idempotency key was already used with a different scan request.",

@@ -40,8 +40,7 @@ class VmWorkflowRepository:
         if idempotency_key:
             replay = self.by_idempotency_key(idempotency_key)
             if replay:
-                if replay["kind"] != kind:
-                    raise ValueError("Idempotency key belongs to another workflow kind.")
+                self._validate_idempotency_replay(replay, kind=kind, request=request, retry_of=retry_of)
                 return replay, True
         workflow_id = str(uuid.uuid4())
         try:
@@ -62,10 +61,26 @@ class VmWorkflowRepository:
             if not idempotency_key:
                 raise
             replay = self._wait_for_idempotent_workflow(idempotency_key)
-            if replay is None or replay["kind"] != kind:
+            if replay is None:
                 raise
+            self._validate_idempotency_replay(replay, kind=kind, request=request, retry_of=retry_of)
             return replay, True
         return self.get(workflow_id) or {}, False
+
+    @staticmethod
+    def _validate_idempotency_replay(
+        replay: dict[str, Any], *, kind: str, request: dict[str, Any], retry_of: str | None,
+    ) -> None:
+        if replay.get("kind") != kind:
+            raise ValueError("Idempotency key belongs to another workflow kind.")
+        replay_retry_of = replay.get("retry_of")
+        if (replay_retry_of is None) != (retry_of is None) or (
+            replay_retry_of is not None and str(replay_retry_of) != str(retry_of)
+        ):
+            raise ValueError("Idempotency key belongs to another workflow operation.")
+        if (replay.get("request") or {}) != (request or {}):
+            message = "different scan request" if kind == "scan" else "different workflow request"
+            raise ValueError(f"Idempotency key was already used with a {message}.")
 
     def _wait_for_idempotent_workflow(self, key: str, attempts: int = 25) -> dict[str, Any] | None:
         """Read the workflow a racing request committed; the winner's transaction may lag."""

@@ -130,6 +130,38 @@ def test_parallel_identical_requests_create_exactly_one_workflow(test_db):
     assert sorted(replays) == [False, True]
 
 
+def test_parallel_requests_with_same_key_but_different_request_are_rejected(test_db):
+    """A racing request must not silently replay a workflow for another task."""
+    runner = FakeRunner()
+    service = _service(runner)
+    errors: list[BaseException] = []
+    workflows: list[dict[str, Any]] = []
+    barrier = threading.Barrier(2)
+
+    def call(task_id: str):
+        try:
+            barrier.wait()
+            workflow, _ = service.start_scan(
+                task_id=task_id, options={}, actor="op", idempotency_key="race-key",
+            )
+            workflows.append(workflow)
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call, args=(task_id,)) for task_id in ("task-1", "task-2")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(workflows) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "different scan request" in str(errors[0])
+    assert _workflow_count() == 1
+    assert len(runner.submitted) == 1
+
+
 def test_replay_after_process_restart_reads_workflow_from_db(test_db):
     """A fresh service instance (simulated restart) must replay the persisted row."""
     first_runner, second_runner = FakeRunner(), FakeRunner()
@@ -149,3 +181,21 @@ def test_replay_after_process_restart_reads_workflow_from_db(test_db):
     assert restored["request"]["task_id"] == "task-1"
     assert second_runner.submitted == []
     assert _workflow_count() == 1
+
+
+def test_retry_rejects_reused_key_for_a_different_workflow(test_db):
+    """A retry key already used by another workflow must not be replayed."""
+    runner = FakeRunner()
+    service = _service(runner)
+    source, _ = service.start_scan(
+        task_id="task-1", options={}, actor="op", idempotency_key="source-key",
+    )
+
+    repository = VmWorkflowRepository()
+    repository.update_run(source["workflow_id"], status="failed", stage="failed", progress_percent=100)
+
+    with pytest.raises(ValueError):
+        service.retry(source["workflow_id"], "op", "source-key")
+
+    assert _workflow_count() == 1
+    assert len(runner.submitted) == 1
