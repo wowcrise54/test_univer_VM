@@ -43,6 +43,7 @@ jobs:
       - run: npm run format:check
       - run: npm run test:coverage -- --coverage.reporter=json-summary --coverage.reportsDirectory=output/coverage-js
       - run: npm run coverage:check
+      - run: python scripts/check_coverage_thresholds.py --report output/coverage-python.json
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

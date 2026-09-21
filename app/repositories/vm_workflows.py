@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import builtins
 import json
+import time
 import uuid
 from typing import Any
+
+import psycopg.errors
 
 from .. import db
 
@@ -41,18 +44,37 @@ class VmWorkflowRepository:
                     raise ValueError("Idempotency key belongs to another workflow kind.")
                 return replay, True
         workflow_id = str(uuid.uuid4())
-        with db.connect() as conn:
-            conn.execute(
-                """INSERT INTO vm_workflow_runs(workflow_id,kind,requested_by,idempotency_key,retry_of,request_json)
-                   VALUES(%s,%s,%s,%s,%s,%s)""",
-                (workflow_id, kind, requested_by, idempotency_key, retry_of, json.dumps(request)),
-            )
-            for position, key in enumerate(STEP_KEYS[kind], 1):
+        try:
+            with db.connect() as conn:
                 conn.execute(
-                    "INSERT INTO vm_workflow_steps(workflow_id,step_key,position) VALUES(%s,%s,%s)",
-                    (workflow_id, key, position),
+                    """INSERT INTO vm_workflow_runs(workflow_id,kind,requested_by,idempotency_key,retry_of,request_json)
+                       VALUES(%s,%s,%s,%s,%s,%s)""",
+                    (workflow_id, kind, requested_by, idempotency_key, retry_of, json.dumps(request)),
                 )
+                for position, key in enumerate(STEP_KEYS[kind], 1):
+                    conn.execute(
+                        "INSERT INTO vm_workflow_steps(workflow_id,step_key,position) VALUES(%s,%s,%s)",
+                        (workflow_id, key, position),
+                    )
+        except psycopg.errors.UniqueViolation:
+            # A concurrent request committed the same idempotency key first.
+            # Return that workflow instead of failing the duplicate click.
+            if not idempotency_key:
+                raise
+            replay = self._wait_for_idempotent_workflow(idempotency_key)
+            if replay is None or replay["kind"] != kind:
+                raise
+            return replay, True
         return self.get(workflow_id) or {}, False
+
+    def _wait_for_idempotent_workflow(self, key: str, attempts: int = 25) -> dict[str, Any] | None:
+        """Read the workflow a racing request committed; the winner's transaction may lag."""
+        for _ in range(attempts):
+            replay = self.by_idempotency_key(key)
+            if replay is not None:
+                return replay
+            time.sleep(0.05)
+        return self.by_idempotency_key(key)
 
     def by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         with db.connect() as conn:
@@ -86,6 +108,13 @@ class VmWorkflowRepository:
         return {"rows": [_decode(dict(row)) for row in rows], "total": int(total_row["count"] if total_row else 0), "limit": limit, "offset": offset}
 
     def get(self, workflow_id: str) -> dict[str, Any] | None:
+        # workflow_id is a UUID column: an unparsable value would raise
+        # InvalidTextRepresentation inside the handler (503 + circuit breaker)
+        # instead of a clean 404.
+        try:
+            uuid.UUID(str(workflow_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
         with db.connect() as conn:
             row = conn.execute("SELECT * FROM vm_workflow_runs WHERE workflow_id=%s", (workflow_id,)).fetchone()
             steps = conn.execute(
@@ -155,6 +184,8 @@ class VmWorkflowRepository:
             )
 
     def request_cancel(self, workflow_id: str) -> dict[str, Any] | None:
+        if self.get(workflow_id) is None:
+            return None
         with db.connect() as conn:
             conn.execute(
                 """UPDATE vm_workflow_runs SET cancel_requested=TRUE,status='cancelling',updated_at=NOW()

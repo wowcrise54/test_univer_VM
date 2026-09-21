@@ -147,6 +147,10 @@ class VmWorkflowService:
             if replay:
                 if replay.get("kind") != "scan":
                     raise ValueError("Idempotency key belongs to another workflow kind.")
+                if not self._identical_scan_request(replay, task_id=task_id, options=options):
+                    raise ValueError(
+                        "Idempotency key was already used with a different scan request.",
+                    )
                 return replay, True
         preflight = self.scan_preflight(task_id=task_id, options=options)
         if not preflight["ready"]:
@@ -158,6 +162,15 @@ class VmWorkflowService:
         if not replay:
             self._schedule(workflow["workflow_id"])
         return workflow, replay
+
+    @staticmethod
+    def _identical_scan_request(
+        replay: dict[str, Any], *, task_id: str, options: dict[str, Any],
+    ) -> bool:
+        request = replay.get("request") or {}
+        if str(request.get("task_id") or "") != str(task_id):
+            return False
+        return (request.get("options") or {}) == (options or {})
 
     def track_scan(
         self, *, task_id: str, operation_id: str, options: dict[str, Any], actor: str | None,

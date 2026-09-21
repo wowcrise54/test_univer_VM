@@ -17,6 +17,8 @@ from typing import Any
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
+import psycopg.errors
+
 from . import db
 from .ldap import LdapError, resolve_ldap_identity
 
@@ -262,19 +264,27 @@ def _ldap_default_role_row(conn, configured_role: str | None) -> dict[str, Any]:
     return role
 
 
-def _provision_ldap_user(identity: dict[str, Any]) -> dict[str, Any]:
-    """Create a regular local user from a verified LDAP identity."""
+def _provision_ldap_user(identity: dict[str, Any]) -> dict[str, Any] | None:
+    """Create a regular local user from a verified LDAP identity.
+
+    Concurrent first logins race on the username unique constraint; the loser
+    simply adopts the row the winner committed.
+    """
     username = identity["username"].strip().lower()
     current = db.now_utc()
-    with db.connect() as conn:
-        role = _ldap_default_role_row(conn, identity.get("role"))
-        row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
-            VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING *""",
-            (username, identity["display_name"].strip() or username, hash_password(secrets.token_urlsafe(32)), current, current)).fetchone()
-        assert row is not None
-        conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role["id"]))
-        logging.getLogger("mpvm.ldap").info("Создан локальный пользователь %s из LDAP (роль %s)", username, identity["role"])
-        return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
+    try:
+        with db.connect() as conn:
+            role = _ldap_default_role_row(conn, identity.get("role"))
+            row = conn.execute("""INSERT INTO app_users(username,display_name,password_hash,is_active,created_at,updated_at)
+                VALUES(%s,%s,%s,TRUE,%s,%s) RETURNING *""",
+                (username, identity["display_name"].strip() or username, hash_password(secrets.token_urlsafe(32)), current, current)).fetchone()
+            assert row is not None
+            conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role["id"]))
+            logging.getLogger("mpvm.ldap").info("Создан локальный пользователь %s из LDAP (роль %s)", username, identity["role"])
+            return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
+    except psycopg.errors.UniqueViolation:
+        logging.getLogger("mpvm.ldap").info("LDAP-пользователь %s уже провижнен параллельным входом", username)
+        return _local_user_record(username) or None
 
 
 def _login_via_ldap(username: str, password: str, request: Request) -> dict[str, Any] | None:
@@ -287,7 +297,18 @@ def _login_via_ldap(username: str, password: str, request: Request) -> dict[str,
         return None
     if not identity:
         return None
-    return _local_user_record(identity["username"]) or _provision_ldap_user(identity)
+    local_user = _local_user_record(identity["username"])
+    if local_user:
+        return local_user
+    # A locally disabled account must stay disabled: re-provisioning it from
+    # LDAP would resurrect the user behind the administrator's back.
+    username_key = identity["username"].strip().lower()
+    with db.connect() as conn:
+        row = conn.execute("SELECT is_active FROM app_users WHERE username=%s", (username_key,)).fetchone()
+    if row is not None and not row["is_active"]:
+        logging.getLogger("mpvm.ldap").info("LDAP-вход отклонён: локальный пользователь %s отключён", username_key)
+        return None
+    return _provision_ldap_user(identity)
 
 
 def create_session(user_id: int, *, hours: int) -> str:

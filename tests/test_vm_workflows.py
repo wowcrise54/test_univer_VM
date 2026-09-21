@@ -2,7 +2,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app import auth
 from app.services.vm_workflows import VmPreflightBlocked, VmWorkflowService
@@ -98,7 +100,8 @@ def test_start_scan_repeats_preflight_and_does_not_create_blocked_workflow():
 
 def test_repeated_start_returns_idempotent_workflow_before_new_preflight():
     repository, runner = FakeRepository(), FakeRunner()
-    existing = {"workflow_id": "wf-existing", "kind": "scan", "status": "running"}
+    existing = {"workflow_id": "wf-existing", "kind": "scan", "status": "running",
+                "request": {"task_id": "task-1", "options": {"require_clean_jobs": True}}}
     repository.by_idempotency_key = lambda _key: existing
     service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
     service.task_provider = lambda: []
@@ -260,3 +263,122 @@ def test_reconciliation_runs_independent_assets_in_parallel():
     assert peak_active == 3
     assert elapsed < 0.11
     assert repository.update_run.call_args.kwargs["result"]["reconciliation"]["created"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Regression: idempotency key reuse with a *different* scan request.
+#
+# Before the fix, `start_scan` returned the existing workflow for ANY replay
+# matching the key, silently ignoring a changed `task_id` or `options`.
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_idempotency_key_with_different_task_id_is_rejected():
+    repository, runner = FakeRepository(), FakeRunner()
+    existing = {
+        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "request": {"task_id": "task-1", "options": {}},
+    }
+    repository.by_idempotency_key = lambda _key: existing
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+
+    with pytest.raises(ValueError) as exc_info:
+        service.start_scan(
+            task_id="task-2", options={}, actor="operator", idempotency_key="same-click",
+        )
+
+    assert "different scan request" in str(exc_info.value)
+    assert runner.submitted == []
+
+
+def test_repeated_idempotency_key_with_changed_options_is_rejected():
+    repository, runner = FakeRepository(), FakeRunner()
+    existing = {
+        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "request": {"task_id": "task-1", "options": {"require_clean_jobs": False}},
+    }
+    repository.by_idempotency_key = lambda _key: existing
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+
+    with pytest.raises(ValueError):
+        service.start_scan(
+            task_id="task-1",
+            options={"require_clean_jobs": True},
+            actor="operator",
+            idempotency_key="same-click",
+        )
+
+    assert runner.submitted == []
+
+
+def test_identical_idempotent_scan_replay_still_returns_existing_workflow():
+    repository, runner = FakeRepository(), FakeRunner()
+    existing = {
+        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "request": {"task_id": "task-1", "options": {"require_clean_jobs": True}},
+    }
+    repository.by_idempotency_key = lambda _key: existing
+    service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
+
+    workflow, replay = service.start_scan(
+        task_id="task-1",
+        options={"require_clean_jobs": True},
+        actor="operator",
+        idempotency_key="same-click",
+    )
+
+    assert replay is True
+    assert workflow["workflow_id"] == "wf-existing"
+    assert runner.submitted == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: a disabled local user must not be resurrected by an LDAP login.
+# (Integration coverage with a real PostgreSQL lives in tests/integration.)
+# ---------------------------------------------------------------------------
+
+
+def test_ldap_login_rejects_disabled_local_user():
+    """A locally disabled account stays disabled even when LDAP verifies it."""
+    from app import main
+    from fastapi.testclient import TestClient
+
+    identity = {"username": "ivan.petrov", "display_name": "Ivan Petrov", "role": "viewer"}
+
+    with patch.object(auth, "authenticate", lambda u, p: None), \
+         patch.object(auth, "resolve_ldap_identity", lambda u, p: identity), \
+         patch.object(auth, "_local_user_record", return_value=None), \
+         patch.object(auth, "_provision_ldap_user") as provision, \
+         patch.object(auth, "audit_event"), \
+         patch.object(auth.db, "connect", side_effect=_fake_connect({"is_active": False})):
+        response = TestClient(main.app).post(
+            "/api/auth/login",
+            json={"username": "ivan.petrov", "password": "secret"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    provision.assert_not_called()
+
+
+def _fake_connect(row):
+    class _Result:
+        def fetchone(self):
+            return row
+
+    class _Query:
+        def fetchone(self):
+            return row
+
+    class _Conn:
+        def execute(self, sql, params=()):
+            return _Query()
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *exc):
+            return False
+
+    return lambda: _Ctx()
