@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2537,121 +2538,54 @@ def upsert_vulnerability_passports(
     with connect() as conn:
         _lock_vulnerability_passport_writes(conn)
         with conn.cursor() as cursor:
-            for value in values:
-                (
-                    internal_id,
-                    external_id,
-                    name,
-                    severity,
-                    score,
-                    issue_time,
-                    package_id,
-                    package_version,
-                    cves_json,
-                    metrics_json,
-                    raw_record_json,
-                    _source_pdql,
-                    _pdql_token,
-                    _first_seen,
-                    _last_seen,
-                ) = value
-                # MP VM internal IDs can change after an instance migration.
-                # Match only a unique passport with the same external ID and
-                # package identity; ambiguous matches are left untouched.
-                candidates = cursor.execute(
+            known_ids: set[str] = set()
+            for offset in range(0, len(saved_ids), 5000):
+                batch = saved_ids[offset : offset + 5000]
+                if batch:
+                    known_ids.update(
+                        row["internal_id"]
+                        for row in cursor.execute(
+                            "SELECT internal_id FROM vulnerability_passports WHERE internal_id = ANY(%s)",
+                            (batch,),
+                        ).fetchall()
+                    )
+
+            incoming_key_counts = Counter(
+                (value[1], value[6], value[7])
+                for value in values
+                if value[1]
+            )
+            changed_ids = [value for value in values if value[0] not in known_ids and value[1]]
+            existing_by_key: dict[tuple[Any, Any, Any], list[dict[str, Any]]] = defaultdict(list)
+            external_ids = sorted({value[1] for value in changed_ids})
+            for offset in range(0, len(external_ids), 5000):
+                batch = external_ids[offset : offset + 5000]
+                rows = cursor.execute(
                     """
-                    SELECT internal_id, raw_detail_json, first_seen
+                    SELECT internal_id, external_id, package_id, package_version,
+                           raw_detail_json, first_seen
                     FROM vulnerability_passports
-                    WHERE internal_id <> %s
-                      AND external_id = %s
-                      AND package_id IS NOT DISTINCT FROM %s
-                      AND package_version IS NOT DISTINCT FROM %s
+                    WHERE external_id = ANY(%s)
                     FOR UPDATE
                     """,
-                    (internal_id, external_id, package_id, package_version),
-                ).fetchall() if external_id else []
-                if len(candidates) > 1:
+                    (batch,),
+                ).fetchall()
+                for row in rows:
+                    key = (row["external_id"], row["package_id"], row["package_version"])
+                    existing_by_key[key].append(dict(row))
+
+            id_replacements: list[tuple[str, str]] = []
+            for value in changed_ids:
+                new_id = value[0]
+                key = (value[1], value[6], value[7])
+                candidates = [row for row in existing_by_key.get(key, []) if row["internal_id"] != new_id]
+                if len(candidates) > 1 or (candidates and incoming_key_counts[key] > 1):
                     ambiguous += 1
                     continue
-                if not candidates:
-                    continue
-                old = candidates[0]
-                old_id = old["internal_id"]
-                cursor.execute(
-                    """
-                    INSERT INTO vulnerability_passports (
-                        internal_id, external_id, name, severity, score, issue_time,
-                        package_id, package_version, cves_json, metrics_json,
-                        raw_record_json, raw_detail_json, source_pdql, pdql_token,
-                        first_seen, last_seen, detail_updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT(internal_id) DO NOTHING
-                    """,
-                    (
-                        *value[:11],
-                        old["raw_detail_json"],
-                        *value[11:14],
-                        old["first_seen"],
-                        value[14],
-                        None,
-                    ),
-                )
-                cursor.execute(
-                    """
-                    UPDATE vulnerability_passports SET
-                        external_id=%s, name=%s, severity=%s, score=%s, issue_time=%s,
-                        package_id=%s, package_version=%s, cves_json=%s,
-                        metrics_json=%s, raw_record_json=%s, source_pdql=%s,
-                        pdql_token=%s, last_seen=%s
-                    WHERE internal_id=%s
-                    """,
-                    (
-                        external_id,
-                        name,
-                        severity,
-                        score,
-                        issue_time,
-                        package_id,
-                        package_version,
-                        cves_json,
-                        metrics_json,
-                        raw_record_json,
-                        value[11],
-                        value[12],
-                        value[14],
-                        internal_id,
-                    ),
-                )
-                cursor.execute(
-                    """
-                    INSERT INTO asset_card_vulnerability_passports (
-                        asset_vulnerability_id, passport_internal_id, match_method, linked_at
-                    ) SELECT asset_vulnerability_id, %s, match_method, linked_at
-                      FROM asset_card_vulnerability_passports
-                      WHERE passport_internal_id=%s
-                    ON CONFLICT (asset_vulnerability_id, passport_internal_id) DO NOTHING
-                    """,
-                    (internal_id, old_id),
-                )
-                cursor.execute(
-                    "UPDATE remediation_cases SET passport_internal_id=%s WHERE passport_internal_id=%s",
-                    (internal_id, old_id),
-                )
-                cursor.execute(
-                    """
-                    INSERT INTO vulnerability_passport_trends (
-                        passport_internal_id, description, is_trend_since,
-                        vendors_json, affected_components_json, source_pdql,
-                        pdql_token, synced_at
-                    ) SELECT %s, description, is_trend_since, vendors_json,
-                             affected_components_json, source_pdql, pdql_token, synced_at
-                      FROM vulnerability_passport_trends WHERE passport_internal_id=%s
-                    ON CONFLICT (passport_internal_id) DO NOTHING
-                    """,
-                    (internal_id, old_id),
-                )
-                cursor.execute("DELETE FROM vulnerability_passports WHERE internal_id=%s", (old_id,))
-                replaced += 1
+                if len(candidates) == 1:
+                    old = candidates[0]
+                    id_replacements.append((old["internal_id"], new_id))
+
             if values:
                 cursor.executemany(
                     """
@@ -2678,6 +2612,82 @@ def upsert_vulnerability_passports(
                     """,
                     values,
                 )
+            if id_replacements:
+                cursor.execute(
+                    """
+                    CREATE TEMP TABLE passport_id_replacements (
+                        old_id TEXT PRIMARY KEY,
+                        new_id TEXT NOT NULL
+                    ) ON COMMIT DROP
+                    """
+                )
+                cursor.executemany(
+                    "INSERT INTO passport_id_replacements(old_id, new_id) VALUES (%s, %s)",
+                    id_replacements,
+                )
+                cursor.execute(
+                    """
+                    UPDATE vulnerability_passports AS target
+                    SET raw_detail_json = COALESCE(target.raw_detail_json, previous.raw_detail_json),
+                        first_seen = LEAST(target.first_seen, previous.first_seen),
+                        detail_updated_at = CASE WHEN target.raw_detail_json IS NULL
+                            THEN NULL ELSE target.detail_updated_at END
+                    FROM passport_id_replacements AS replacement
+                    JOIN vulnerability_passports AS previous
+                      ON previous.internal_id = replacement.old_id
+                    WHERE target.internal_id = replacement.new_id
+                    """
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM asset_card_vulnerability_passports AS old_link
+                    USING passport_id_replacements AS replacement,
+                          asset_card_vulnerability_passports AS new_link
+                    WHERE old_link.passport_internal_id = replacement.old_id
+                      AND new_link.passport_internal_id = replacement.new_id
+                      AND new_link.asset_vulnerability_id = old_link.asset_vulnerability_id
+                    """
+                )
+                cursor.execute(
+                    """
+                    UPDATE asset_card_vulnerability_passports AS link
+                    SET passport_internal_id = replacement.new_id
+                    FROM passport_id_replacements AS replacement
+                    WHERE link.passport_internal_id = replacement.old_id
+                    """
+                )
+                cursor.execute(
+                    """
+                    UPDATE remediation_cases AS remediation
+                    SET passport_internal_id = replacement.new_id
+                    FROM passport_id_replacements AS replacement
+                    WHERE remediation.passport_internal_id = replacement.old_id
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO vulnerability_passport_trends (
+                        passport_internal_id, description, is_trend_since,
+                        vendors_json, affected_components_json, source_pdql,
+                        pdql_token, synced_at
+                    )
+                    SELECT replacement.new_id, trend.description, trend.is_trend_since,
+                           trend.vendors_json, trend.affected_components_json,
+                           trend.source_pdql, trend.pdql_token, trend.synced_at
+                    FROM vulnerability_passport_trends AS trend
+                    JOIN passport_id_replacements AS replacement
+                      ON replacement.old_id = trend.passport_internal_id
+                    ON CONFLICT (passport_internal_id) DO NOTHING
+                    """
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM vulnerability_passports AS previous
+                    USING passport_id_replacements AS replacement
+                    WHERE previous.internal_id = replacement.old_id
+                    """
+                )
+                replaced = len(id_replacements)
         links_created = reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
     return {
         "saved": len(values),

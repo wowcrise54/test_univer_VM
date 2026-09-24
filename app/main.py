@@ -952,8 +952,11 @@ def startup() -> None:
 def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse:
     trace_id = getattr(request.state, "trace_id", None) or current_trace_id()
     request_id = getattr(request.state, "request_id", None)
+    programming_error = isinstance(exc, psycopg.ProgrammingError)
+    status_code = 500 if programming_error else 503
     UVICORN_LOGGER.error(
-        "api.database.failed method=%s path=%s trace_id=%s request_id=%s",
+        "api.database.failed status=%s method=%s path=%s trace_id=%s request_id=%s",
+        status_code,
         request.method,
         request.url.path,
         trace_id,
@@ -962,13 +965,29 @@ def database_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse
     )
     log_exception(
         "database",
-        "api.database.failed",
+        "api.database.query_failed" if programming_error else "api.database.failed",
         method=request.method,
         path=request.url.path,
         database=db.database_label(),
     )
+    if programming_error:
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "detail": {
+                    "code": "INTERNAL_DATABASE_QUERY_ERROR",
+                    "message": "An internal database query failed.",
+                    "operator_message": "Внутренняя ошибка запроса приложения к БД. PostgreSQL доступна; передайте журнал ошибки администратору.",
+                    "component": "application",
+                    "retryable": False,
+                    "trace_id": trace_id,
+                    "request_id": request_id,
+                    "context": {},
+                }
+            },
+        )
     return JSONResponse(
-        status_code=503,
+        status_code=status_code,
         content={
             "detail": {
                 "code": "DATABASE_UNAVAILABLE",
