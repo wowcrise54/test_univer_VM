@@ -272,6 +272,68 @@ class ScanPostprocessClientTests(unittest.TestCase):
         self.assertEqual(result, {"id": "task-gone", "mode": "delete_v3", "alreadyDeleted": True})
         client.session.close()
 
+    def test_put_delete_treats_http_not_found_as_already_deleted(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=404, content=b"", ok=False)
+        client.session.put = MagicMock(return_value=response)
+
+        result = client.delete_scanner_task("token", "task-gone", mode="put_v4")
+
+        self.assertEqual(result, {"id": "task-gone", "mode": "put_v4", "alreadyDeleted": True})
+        client.session.put.assert_called_once()
+        client.session.close()
+
+    def test_delete_treats_api_not_found_message_as_already_deleted(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=400, content=b'{"message":"Scanner task not found"}', ok=False)
+        response.json.return_value = {"message": "Scanner task not found"}
+        client.session.delete = MagicMock(return_value=response)
+
+        result = client.delete_scanner_task("token", "task-gone")
+
+        self.assertEqual(result, {"id": "task-gone", "mode": "delete_v3", "alreadyDeleted": True})
+        client.session.close()
+
+    def test_delete_treats_plain_text_not_found_as_already_deleted(self):
+        client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
+            api_url="https://fixture",
+            token_url="https://fixture/token",
+            access_token="token",
+        ))
+        response = MagicMock(status_code=400, content=b"Scanner task not found", ok=False)
+        response.json.side_effect = ValueError("invalid JSON")
+        response.text = "Scanner task not found"
+        client.session.delete = MagicMock(return_value=response)
+
+        result = client.delete_scanner_task("token", "task-gone")
+
+        self.assertEqual(result, {"id": "task-gone", "mode": "delete_v3", "alreadyDeleted": True})
+        client.session.close()
+
+    def test_delete_impl_removes_local_task_when_remote_task_is_missing(self):
+        with (
+            patch.object(main, "require_mpvm", return_value=(MagicMock(), "token")),
+            patch.object(main.db, "delete_scan_task") as delete_local,
+        ):
+            client, _token = main.require_mpvm()
+            client.delete_scanner_task.return_value = {
+                "id": "task-gone", "mode": "delete_v3", "alreadyDeleted": True,
+            }
+            result = main.delete_scanner_task_impl(
+                "task-gone", main.DeleteScannerTaskRequest(mode="delete_v3"),
+            )
+
+        self.assertTrue(result["alreadyDeleted"])
+        delete_local.assert_called_once_with("task-gone")
+
     def test_asset_removal_wait_continues_after_empty_accepted_response(self):
         client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
             api_url="https://fixture",

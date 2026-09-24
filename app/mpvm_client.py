@@ -638,6 +638,8 @@ class MpVmClient:
                 json=put_payload or {"isDeleted": True},
                 timeout=self.auth.timeout,
             )
+            if not response.ok and is_scanner_task_not_found_response(response):
+                return {"id": task_id, "mode": mode, "alreadyDeleted": True}
             self._raise_for_status(response, "delete scanner task via PUT v4")
             return response.json() if response.content else {"id": task_id, "mode": mode}
 
@@ -646,7 +648,7 @@ class MpVmClient:
             headers=self._bearer_headers(access_token),
             timeout=self.auth.timeout,
         )
-        if response.status_code == 404:
+        if not response.ok and is_scanner_task_not_found_response(response):
             return {"id": task_id, "mode": mode, "alreadyDeleted": True}
         self._raise_for_status(response, "delete scanner task")
         return response.json() if response.content else {"id": task_id, "mode": mode}
@@ -1478,6 +1480,16 @@ def is_scanner_task_not_found(message: str | None) -> bool:
         or "task not found" in normalized
         or ("задач" in normalized and "не найден" in normalized)
     )
+
+
+def is_scanner_task_not_found_response(response: requests.Response) -> bool:
+    if response.status_code == 404:
+        return True
+    try:
+        message = json.dumps(response.json(), ensure_ascii=False, default=str)
+    except ValueError:
+        message = response.text
+    return is_scanner_task_not_found(message)
 
 
 def normalize_url(url: str | None) -> str:
