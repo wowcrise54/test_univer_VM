@@ -18,6 +18,8 @@ def build_retry_adapter() -> HTTPAdapter:
         # applied it. Mutations are retried only by the workflow layer, where
         # an idempotency key and persisted progress are available.
         allowed_methods=("GET", "HEAD", "OPTIONS"),
+        raise_on_status=False,
+        respect_retry_after_header=True,
     )
     return HTTPAdapter(max_retries=retry)
 

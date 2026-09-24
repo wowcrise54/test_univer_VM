@@ -8130,6 +8130,19 @@ def decode_csv_bytes(content: bytes) -> str:
 
 
 def http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, MpVmApiError) and exc.status_code == 429:
+        headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+        return HTTPException(
+            status_code=429,
+            detail={
+                "code": "MPVM_RATE_LIMITED",
+                "message": str(exc),
+                "operator_message": "MP VM ограничил частоту запросов. Повторите позже.",
+                "component": "mpvm",
+                "retryable": True,
+            },
+            headers=headers,
+        )
     return HTTPException(status_code=502, detail=str(exc))
 
 
