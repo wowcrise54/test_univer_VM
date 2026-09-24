@@ -3494,6 +3494,13 @@ def _execute_vulnerability_passport_query(
                     "fetch", f"Получено {loaded} из {total} паспортов." if total else f"Получено {loaded} паспортов. Общий объём уточняется.",
                 )
             ) if progress else None,
+            retry_callback=(
+                lambda loaded, total, offset, attempt: progress(
+                    min(75, max(3, round(loaded * 75 / total))) if total else 3,
+                    "fetch_retry",
+                    f"MP VM вернул 404 для страницы offset={offset}. Повтор {attempt}/3; уже получено {loaded} паспортов.",
+                )
+            ) if progress else None,
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
@@ -6182,6 +6189,7 @@ def fetch_asset_grid_records(
     limit: int | None,
     batch_size: int,
     progress_callback: Callable[[int, int | None], None] | None = None,
+    retry_callback: Callable[[int, int | None, int, int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     batches: list[dict[str, Any]] = []
@@ -6191,12 +6199,29 @@ def fetch_asset_grid_records(
 
     while limit is None or offset < limit:
         current_limit = batch_size if limit is None else min(batch_size, limit - offset)
-        raw_response = client.fetch_asset_grid_data(
-            token,
-            pdql_token,
-            limit=current_limit,
-            offset=offset,
-        )
+        for attempt in range(4):
+            try:
+                raw_response = client.fetch_asset_grid_data(
+                    token,
+                    pdql_token,
+                    limit=current_limit,
+                    offset=offset,
+                )
+                break
+            except MpVmApiError as exc:
+                if exc.status_code != 404 or "non-JSON response" not in str(exc):
+                    raise
+                if attempt == 3:
+                    raise MpVmApiError(
+                        f"MP VM вернул 404 при чтении assets_grid/data: offset={offset}, "
+                        f"limit={current_limit}, получено до ошибки {len(records)} записей. "
+                        "Страница недоступна после 3 повторов; проверьте журнал MP VM "
+                        "или прокси для этого offset. Неполная выгрузка не сохранена.",
+                        status_code=404,
+                    ) from exc
+                if retry_callback:
+                    retry_callback(len(records), expected_total, offset, attempt + 1)
+                time.sleep(2**attempt)
         if first_response is None:
             first_response = raw_response
         batch_records = extract_asset_grid_records(raw_response)
