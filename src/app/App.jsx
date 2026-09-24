@@ -260,6 +260,7 @@ function ActivePage({ routeId, ...props }) {
         busy={props.busy}
         runBusy={props.runBusy}
         showAlert={props.showAlert}
+        currentUser={props.currentUser}
       />
     );
   }
