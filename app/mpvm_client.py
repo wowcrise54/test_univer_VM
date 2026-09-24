@@ -122,6 +122,17 @@ ASSET_RESOLUTION_PDQL = (
 class MpVmApiError(RuntimeError):
     """Raised when MP VM returns an unexpected API response."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
 
 @dataclass(frozen=True)
 class AuthConfig:
@@ -1086,7 +1097,11 @@ class MpVmClient:
         message = f"MP VM API failed to {action}: HTTP {response.status_code}"
         if body:
             message += f"; response: {body[:1000]}"
-        raise MpVmApiError(message)
+        raise MpVmApiError(
+            message,
+            status_code=response.status_code,
+            retry_after=response.headers.get("Retry-After"),
+        )
 
     @staticmethod
     def _response_summary(response: requests.Response) -> str:
