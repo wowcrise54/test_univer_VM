@@ -237,19 +237,17 @@ class VmWorkflowRepository:
     def finalize_campaign_verification(self, campaign_id: str, workflow_id: str, failed_assets: builtins.list[str]) -> None:
         with db.connect() as conn:
             conn.execute(
-                """UPDATE remediation_cases rc SET verification_status=CASE WHEN rc.status='resolved' THEN 'passed' ELSE 'failed' END,
-                   verification_message=CASE WHEN rc.status='resolved' THEN 'Отсутствие находки подтверждено свежей полной карточкой.'
-                     ELSE 'Находка сохранилась или результат проверки неполон.' END,version=version+1,updated_at=NOW()
+                """UPDATE remediation_cases rc SET
+                   verification_status=CASE WHEN rc.asset_id=ANY(%s::text[]) THEN 'failed'
+                     WHEN rc.status='resolved' THEN 'passed' ELSE 'failed' END,
+                   verification_message=CASE WHEN rc.asset_id=ANY(%s::text[]) THEN 'Сканирование актива завершилось с ошибкой.'
+                     WHEN rc.status='resolved' THEN 'Отсутствие находки подтверждено свежей полной карточкой.'
+                     ELSE 'Находка сохранилась или результат проверки неполон.' END,
+                   version=version+1,updated_at=NOW()
                    FROM remediation_campaign_cases cc WHERE cc.campaign_id=%s AND cc.case_id=rc.case_id
-                   AND rc.verification_workflow_id=%s""", (campaign_id, workflow_id)
+                   AND rc.verification_workflow_id=%s""",
+                (failed_assets, failed_assets, campaign_id, workflow_id),
             )
-            if failed_assets:
-                conn.execute(
-                    """UPDATE remediation_cases rc SET verification_status='failed',verification_message='Сканирование актива завершилось с ошибкой.',
-                       version=version+1,updated_at=NOW() FROM remediation_campaign_cases cc
-                       WHERE cc.campaign_id=%s AND cc.case_id=rc.case_id AND rc.asset_id=ANY(%s)""",
-                    (campaign_id, failed_assets),
-                )
 
     def overview(self) -> dict[str, Any]:
         with db.connect() as conn:

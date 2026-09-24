@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 from .. import db
@@ -30,7 +31,7 @@ class AssetGroupRepository:
     def members(self, group_id: str, **pagination: Any) -> dict[str, Any]:
         return db.list_local_asset_group_members(group_id, **pagination)
 
-    def member_ids(self, group_id: str) -> list[str]:
+    def member_ids(self, group_id: str) -> builtins.list[str]:
         return db.list_local_asset_group_member_ids(group_id)
 
     def set_override(self, group_id: str, asset_id: str, action: str, *, actor: str | None) -> dict[str, Any]:

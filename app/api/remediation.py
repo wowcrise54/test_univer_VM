@@ -63,10 +63,7 @@ def _service(request: Request):
 
 def _require_permissions(request: Request, *required: str) -> None:
     user = getattr(request.state, "user", None) or {}
-    permissions = set(
-        user.get("permissions")
-        or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ())
-    )
+    permissions = app_auth.effective_permissions(user)
     missing = sorted(set(required) - permissions)
     if missing:
         raise HTTPException(

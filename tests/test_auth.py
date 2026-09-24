@@ -37,6 +37,39 @@ def test_viewer_cannot_modify_data():
     assert response.json()["detail"]["code"] == "PERMISSION_DENIED"
 
 
+def test_denied_mutation_is_audited_before_handler_runs():
+    with (
+        patch.object(auth, "get_session_user", return_value=VIEWER),
+        patch.object(auth, "audit_event") as audit,
+        patch.object(main.db, "get_operation") as get_operation,
+    ):
+        response = TestClient(main.app).post("/api/operations/example/cancel")
+
+    assert response.status_code == 403
+    get_operation.assert_not_called()
+    assert audit.call_args.kwargs["decision"] == "deny"
+    assert audit.call_args.kwargs["permission_key"] == "operations.cancel"
+
+
+def test_unknown_api_write_is_denied_by_default():
+    with patch.object(auth, "get_session_user", return_value=ADMIN), patch.object(auth, "audit_event"):
+        response = TestClient(main.app).post("/api/not-a-route")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+
+def test_cross_site_mutation_is_rejected_before_session_lookup():
+    with patch.object(auth, "get_session_user") as get_session_user:
+        response = TestClient(main.app).post(
+            "/api/operations/example/cancel", headers={"sec-fetch-site": "cross-site"}
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CROSS_SITE_REQUEST"
+    get_session_user.assert_not_called()
+
+
 def test_operator_cannot_manage_users():
     with patch.object(auth, "get_session_user", return_value=OPERATOR), patch.object(auth, "audit_event"):
         response = TestClient(main.app).get("/api/auth/users")
@@ -64,6 +97,15 @@ def test_operator_template_is_intentionally_restricted():
     assert "automations.manage" not in permissions
     assert "remediation.policy" not in permissions
     assert "security.users.read" not in permissions
+
+
+def test_effective_permissions_uses_assigned_roles_then_legacy_role():
+    assert auth.effective_permissions({"role": "viewer", "permissions": ["operations.cancel"]}) == {
+        "operations.cancel"
+    }
+    assert auth.effective_permissions({"role": "viewer", "permissions": []}) == set(
+        auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
+    )
 
 
 def test_all_registered_api_routes_have_an_explicit_policy():

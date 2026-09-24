@@ -513,6 +513,14 @@ def logout(request:Request,response:Response)->dict[str,Any]:
 _UUID_PATH = re.compile(r"/[0-9a-fA-F-]{16,}")
 
 
+def effective_permissions(user: dict[str, Any]) -> set[str]:
+    assigned = user.get("permissions")
+    if isinstance(assigned, (list, tuple, set, frozenset)) and assigned:
+        return {str(permission) for permission in assigned}
+    role = user.get("role")
+    return set(BUILTIN_ROLE_PERMISSIONS.get(role if isinstance(role, str) else "", ()))
+
+
 def required_permission(method:str,path:str)->str|None:
     """Declarative policy map for every API domain; unknown writes are denied."""
     method=method.upper()

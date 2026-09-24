@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -11,10 +11,9 @@ from .schemas import (
     AssetGroupFromVulnerabilityRequest,
     AssetGroupOverrideRequest,
     AssetGroupPreviewRequest,
-    AssetGroupWorkflowRequest,
     AssetGroupUpdateRequest,
+    AssetGroupWorkflowRequest,
 )
-
 
 router = APIRouter(prefix="/api/asset-groups", tags=["asset-groups"])
 
@@ -27,7 +26,7 @@ def _actor(request: Request) -> str | None:
     return getattr(request.state, "user", {}).get("username")
 
 
-def _raise_domain_error(exc: Exception) -> None:
+def _raise_domain_error(exc: Exception) -> NoReturn:
     if isinstance(exc, LookupError):
         raise HTTPException(404, detail={"code": "ASSET_GROUP_NOT_FOUND", "message": str(exc)}) from exc
     if isinstance(exc, ValueError):
