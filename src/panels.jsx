@@ -3570,6 +3570,40 @@ function VulnerabilityPassportsPanel({
       }
     });
 
+  const refreshAllPassports = () =>
+    runBusy("passportRefresh", async () => {
+      const result = await api("/api/vulnerability-passports/query", {
+        method: "POST",
+        body: JSON.stringify({
+          pdql: defaults?.vulnerability_passport_pdql || form.pdql,
+          utc_offset: defaults?.utc_offset || form.utc_offset || null,
+          group_ids: [],
+          asset_ids: [],
+          include_nested_groups: true,
+          limit: null,
+          batch_size: 5000,
+          save_to_db: true,
+          load_details: true,
+        }),
+      });
+      setRows(result.records || []);
+      setPassportTotal(result.total || 0);
+      setPassportSourceToken(null);
+      setPassportJob(result.detail_job || null);
+      setPassportSearch("");
+      setSelected(null);
+      setDetail(null);
+      setPassportPage(1);
+      setQueryRaw(null);
+      const saved = result.db?.saved || 0;
+      const replaced = result.db?.replaced || 0;
+      const ambiguous = result.db?.ambiguous || 0;
+      showAlert(
+        `Обновление завершено: доступно ${formatCount(result.total)}, сохранено ${formatCount(saved)}, заменено после смены ID: ${formatCount(replaced)}${ambiguous ? `, неоднозначных совпадений оставлено без изменений: ${formatCount(ambiguous)}` : ""}${result.detail_job ? `; деталей в очереди: ${formatCount(result.detail_job.eligible_count)}` : ""}.`,
+        ambiguous ? "info" : "success",
+      );
+    });
+
   const loadLocalPassports = (
     page = 1,
     announce = true,
@@ -3797,9 +3831,14 @@ function VulnerabilityPassportsPanel({
       ) : null}
       <div className="action-row">
         {canManagePassports ? (
-          <Button busy={busy.passportQuery} onClick={queryPassports}>
-            Выполнить PDQL
-          </Button>
+          <>
+            <Button busy={busy.passportRefresh} onClick={refreshAllPassports}>
+              Обновить
+            </Button>
+            <Button busy={busy.passportQuery} onClick={queryPassports}>
+              Выполнить PDQL
+            </Button>
+          </>
         ) : null}
         <Button
           variant="secondary"
