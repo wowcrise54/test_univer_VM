@@ -40,8 +40,7 @@ class VmWorkflowRepository:
         if idempotency_key:
             replay = self.by_idempotency_key(idempotency_key)
             if replay:
-                if replay["kind"] != kind:
-                    raise ValueError("Idempotency key belongs to another workflow kind.")
+                self._validate_idempotency_replay(replay, kind=kind, request=request, retry_of=retry_of)
                 return replay, True
         workflow_id = str(uuid.uuid4())
         try:
@@ -62,10 +61,26 @@ class VmWorkflowRepository:
             if not idempotency_key:
                 raise
             replay = self._wait_for_idempotent_workflow(idempotency_key)
-            if replay is None or replay["kind"] != kind:
+            if replay is None:
                 raise
+            self._validate_idempotency_replay(replay, kind=kind, request=request, retry_of=retry_of)
             return replay, True
         return self.get(workflow_id) or {}, False
+
+    @staticmethod
+    def _validate_idempotency_replay(
+        replay: dict[str, Any], *, kind: str, request: dict[str, Any], retry_of: str | None,
+    ) -> None:
+        if replay.get("kind") != kind:
+            raise ValueError("Idempotency key belongs to another workflow kind.")
+        replay_retry_of = replay.get("retry_of")
+        if (replay_retry_of is None) != (retry_of is None) or (
+            replay_retry_of is not None and str(replay_retry_of) != str(retry_of)
+        ):
+            raise ValueError("Idempotency key belongs to another workflow operation.")
+        if (replay.get("request") or {}) != (request or {}):
+            message = "different scan request" if kind == "scan" else "different workflow request"
+            raise ValueError(f"Idempotency key was already used with a {message}.")
 
     def _wait_for_idempotent_workflow(self, key: str, attempts: int = 25) -> dict[str, Any] | None:
         """Read the workflow a racing request committed; the winner's transaction may lag."""
@@ -222,19 +237,17 @@ class VmWorkflowRepository:
     def finalize_campaign_verification(self, campaign_id: str, workflow_id: str, failed_assets: builtins.list[str]) -> None:
         with db.connect() as conn:
             conn.execute(
-                """UPDATE remediation_cases rc SET verification_status=CASE WHEN rc.status='resolved' THEN 'passed' ELSE 'failed' END,
-                   verification_message=CASE WHEN rc.status='resolved' THEN 'Отсутствие находки подтверждено свежей полной карточкой.'
-                     ELSE 'Находка сохранилась или результат проверки неполон.' END,version=version+1,updated_at=NOW()
+                """UPDATE remediation_cases rc SET
+                   verification_status=CASE WHEN rc.asset_id=ANY(%s::text[]) THEN 'failed'
+                     WHEN rc.status='resolved' THEN 'passed' ELSE 'failed' END,
+                   verification_message=CASE WHEN rc.asset_id=ANY(%s::text[]) THEN 'Сканирование актива завершилось с ошибкой.'
+                     WHEN rc.status='resolved' THEN 'Отсутствие находки подтверждено свежей полной карточкой.'
+                     ELSE 'Находка сохранилась или результат проверки неполон.' END,
+                   version=version+1,updated_at=NOW()
                    FROM remediation_campaign_cases cc WHERE cc.campaign_id=%s AND cc.case_id=rc.case_id
-                   AND rc.verification_workflow_id=%s""", (campaign_id, workflow_id)
+                   AND rc.verification_workflow_id=%s""",
+                (failed_assets, failed_assets, campaign_id, workflow_id),
             )
-            if failed_assets:
-                conn.execute(
-                    """UPDATE remediation_cases rc SET verification_status='failed',verification_message='Сканирование актива завершилось с ошибкой.',
-                       version=version+1,updated_at=NOW() FROM remediation_campaign_cases cc
-                       WHERE cc.campaign_id=%s AND cc.case_id=rc.case_id AND rc.asset_id=ANY(%s)""",
-                    (campaign_id, failed_assets),
-                )
 
     def overview(self) -> dict[str, Any]:
         with db.connect() as conn:

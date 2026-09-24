@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app import auth
+from app.repositories.vm_workflows import VmWorkflowRepository
 from app.services.vm_workflows import VmPreflightBlocked, VmWorkflowService
 
 
@@ -154,6 +155,79 @@ def test_asset_group_verification_keeps_reconcile_enabled():
     assert workflow["request"]["options"]["mode"] == "group_verification"
 
 
+def test_asset_group_replay_is_validated_against_the_persisted_request():
+    existing = {
+        "workflow_id": "wf-existing",
+        "kind": "verification",
+        "status": "running",
+        "request": {
+            "asset_group_id": "group-1",
+            "asset_ids": ["asset-1"],
+            "options": {"reconcile": False, "mode": "group_scan"},
+        },
+    }
+
+    class ValidatingRepository(FakeRepository):
+        def __init__(self):
+            super().__init__()
+            self.created = []
+
+        def create(self, **values):
+            self.created.append(values)
+            VmWorkflowRepository._validate_idempotency_replay(
+                existing,
+                kind=values["kind"],
+                request=values["request"],
+                retry_of=values.get("retry_of"),
+            )
+            return existing, True
+
+    repository = ValidatingRepository()
+    runner = MagicMock()
+    service = VmWorkflowService(repository, runner, remediation=object())
+
+    with pytest.raises(ValueError, match="different workflow request"):
+        service.start_asset_group_scan(
+            asset_group_id="group-2",
+            asset_ids=["asset-2"],
+            options={"template_task_id": "template-2"},
+            actor="operator",
+            idempotency_key="same-click",
+        )
+
+    assert repository.created == [{
+        "kind": "verification",
+        "request": {
+            "asset_group_id": "group-2",
+            "asset_ids": ["asset-2"],
+            "options": {
+                "template_task_id": "template-2",
+                "reconcile": False,
+                "mode": "group_scan",
+            },
+        },
+        "requested_by": "operator",
+        "idempotency_key": "same-click",
+    }]
+
+
+def test_resume_monitors_workflow_with_persisted_child_operation_ids():
+    repository = MagicMock()
+    runner = MagicMock()
+    repository.active.return_value = [{
+        "workflow_id": "wf-multi",
+        "operation_id": None,
+        "result": {"operation_ids": ["op-1", "op-2"]},
+    }]
+    service = VmWorkflowService(repository, runner, remediation=object())
+
+    service.resume()
+
+    runner.submit.assert_called_once()
+    assert runner.submit.call_args.args[:2] == ("vm-workflow", service._run)
+    assert runner.submit.call_args.args[2:] == ("wf-multi", True)
+
+
 def test_group_scan_reconcile_step_is_skipped_after_postprocess():
     repository = MagicMock()
     runner = MagicMock()
@@ -226,6 +300,32 @@ def test_reconciliation_error_is_isolated_and_workflow_completes_with_errors():
     assert run_update["status"] == "completed_with_errors"
     assert run_update["result"]["reconciliation"]["created"] == 1
     assert run_update["result"]["reconciliation_errors"][0]["asset_id"] == "asset-1"
+
+
+def test_campaign_finalization_uses_operation_subject_and_start_error_asset_ids():
+    repository = MagicMock()
+    runner = MagicMock()
+    remediation = MagicMock()
+    remediation.reconcile_asset.return_value = {"created": 0, "reopened": 0, "resolved": 0}
+    service = VmWorkflowService(repository, runner, remediation=remediation)
+    workflow = {
+        "workflow_id": "wf-campaign",
+        "kind": "verification",
+        "campaign_id": "campaign-1",
+        "request": {"asset_ids": ["asset-1", "asset-2"], "options": {"reconcile": True}},
+        "result": {"start_errors": [{"asset_id": "asset-2", "message": "start failed"}]},
+    }
+    failed = [{
+        "operation_id": "op-1",
+        "status": "failed",
+        "subject": {"id": "asset-1"},
+    }]
+
+    service._reconcile("wf-campaign", workflow, failed, failed)
+
+    repository.finalize_campaign_verification.assert_called_once_with(
+        "campaign-1", "wf-campaign", ["asset-1", "asset-2"],
+    )
 
 
 def test_reconciliation_runs_independent_assets_in_parallel():

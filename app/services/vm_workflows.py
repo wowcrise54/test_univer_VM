@@ -90,7 +90,7 @@ class VmWorkflowService:
         if self.status_provider and mpvm.get("state") != "ok":
             blocking.append({"code": "MPVM_UNAVAILABLE", "message": mpvm.get("message") or "MP VM недоступен."})
 
-        targets = []
+        targets: builtins.list[str] = []
         if task:
             targets = task.get("include_targets") or (task.get("payload") or {}).get("include", {}).get("targets") or []
             if not targets:
@@ -143,15 +143,17 @@ class VmWorkflowService:
         self, *, task_id: str, options: dict[str, Any], actor: str | None, idempotency_key: str | None,
     ) -> tuple[dict[str, Any], bool]:
         if idempotency_key and hasattr(self.repository, "by_idempotency_key"):
-            replay = self.repository.by_idempotency_key(idempotency_key)
-            if replay:
-                if replay.get("kind") != "scan":
+            existing = self.repository.by_idempotency_key(idempotency_key)
+            if existing:
+                if existing.get("kind") != "scan":
                     raise ValueError("Idempotency key belongs to another workflow kind.")
-                if not self._identical_scan_request(replay, task_id=task_id, options=options):
+                if existing.get("retry_of") is not None:
+                    raise ValueError("Idempotency key belongs to another workflow operation.")
+                if not self._identical_scan_request(existing, task_id=task_id, options=options):
                     raise ValueError(
                         "Idempotency key was already used with a different scan request.",
                     )
-                return replay, True
+                return existing, True
         preflight = self.scan_preflight(task_id=task_id, options=options)
         if not preflight["ready"]:
             raise VmPreflightBlocked(preflight)
@@ -252,12 +254,6 @@ class VmWorkflowService:
         self, *, asset_group_id: str, asset_ids: builtins.list[str], options: dict[str, Any],
         actor: str | None, idempotency_key: str | None,
     ) -> tuple[dict[str, Any], bool]:
-        if idempotency_key and hasattr(self.repository, "by_idempotency_key"):
-            replay = self.repository.by_idempotency_key(idempotency_key)
-            if replay:
-                if replay.get("kind") != "verification":
-                    raise ValueError("Idempotency key belongs to another workflow kind.")
-                return replay, True
         targets = builtins.list(dict.fromkeys(str(value) for value in asset_ids if value))
         workflow, replay = self.repository.create(
             kind="verification",
@@ -349,7 +345,7 @@ class VmWorkflowService:
 
     def resume(self) -> None:
         for workflow in self.repository.active():
-            self._schedule(workflow["workflow_id"], monitor_only=bool(workflow.get("operation_id")))
+            self._schedule(workflow["workflow_id"], monitor_only=bool(self._operation_ids(workflow)))
 
     def _schedule(self, workflow_id: str, monitor_only: bool = False) -> None:
         with self._lock:

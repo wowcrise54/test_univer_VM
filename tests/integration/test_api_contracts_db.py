@@ -316,3 +316,24 @@ def test_vm_workflow_contract_404_and_202(test_db):
         assert replay.status_code == 202
         assert replay.json()["workflow_id"] == body["workflow_id"]
         assert replay.json()["idempotent_replay"] is True
+
+
+
+def test_vm_workflow_retry_idempotency_conflict_returns_409(test_db, monkeypatch):
+    _make_user("contract.operator", OPERATOR)
+    operator = _login("contract.operator")
+
+    workflow_id = "00000000-0000-4000-8000-000000000001"
+
+    class RetryConflictService:
+        def retry(self, workflow_id, actor, idempotency_key):
+            raise ValueError("Idempotency key belongs to another workflow operation.")
+
+    monkeypatch.setattr(main.app.state.container.services, "vm_workflows", RetryConflictService())
+    response = operator.post(
+        f"/api/vm/workflows/{workflow_id}/retry",
+        headers={"X-Idempotency-Key": "contract-retry-1"},
+    )
+
+    assert response.status_code == 409
+    assert _detail_code(response) == "IDEMPOTENCY_KEY_CONFLICT"

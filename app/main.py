@@ -578,7 +578,7 @@ async def application_auth_middleware(request: Request, call_next):
     if path in {"/api/auth/me", "/api/auth/logout"}:
         return await call_next(request)
     permission = app_auth.required_permission(request.method, path)
-    effective = set(user.get("permissions") or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ()))
+    effective = app_auth.effective_permissions(user)
     if permission and permission not in effective:
         app_auth.audit_event(request=request, user=user, event_type="access", decision="deny", permission_key=permission, target_type="api", target_id=path)
         return auth_error(403, "PERMISSION_DENIED", f"Недостаточно прав: {permission}.")

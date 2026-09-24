@@ -10,7 +10,7 @@ router = APIRouter(tags=["operator"])
 def _permissions(request: Request) -> set[str]:
     from .. import auth
     user = getattr(request.state, "user", {}) or {}
-    return set(user.get("permissions") or auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ()))
+    return auth.effective_permissions(user)
 
 
 @router.get("/api/attention")

@@ -5,3 +5,6 @@ pytest-cov==6.2.1
 pypdf==6.1.1
 ruff==0.12.8
 types-requests==2.32.4.20250611
+types-openpyxl==3.1.5.20260827
+types-reportlab==5.0.0.20260911
+pip-audit==2.10.1

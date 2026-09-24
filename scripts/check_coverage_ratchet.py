@@ -8,7 +8,8 @@ from pathlib import Path
 def percentage(path: Path, kind: str) -> float:
     report = json.loads(path.read_text(encoding="utf-8"))
     if kind == "python":
-        return float(report["totals"]["percent_covered"])
+        totals = report["totals"]
+        return float(totals.get("percent_statements_covered", totals["percent_covered"]))
     return float(report["total"]["lines"]["pct"])
 
 

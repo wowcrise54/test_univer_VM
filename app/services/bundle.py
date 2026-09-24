@@ -4,13 +4,13 @@ import builtins
 from typing import TYPE_CHECKING, Any
 
 from ..repositories import RepositoryBundle
+from .asset_groups import AssetGroupService
+from .attention import AttentionService
+from .compliance import ComplianceService
 from .remediation import CoverageService, RemediationService
 from .risk import RiskService
 from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
-from .compliance import ComplianceService
-from .asset_groups import AssetGroupService
-from .attention import AttentionService
 
 if TYPE_CHECKING:
     from ..core.runtime import OperationRunner

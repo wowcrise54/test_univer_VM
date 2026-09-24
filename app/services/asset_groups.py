@@ -100,7 +100,7 @@ class AssetGroupService:
                 results.append({"group_id": group_id, "success": True, "result": value})
             except Exception as exc:
                 results.append({"group_id": group_id, "success": False, "error": str(exc)})
-        succeeded = sum(item["success"] for item in results)
+        succeeded = sum(1 for item in results if item["success"])
         return {"processed": len(results), "succeeded": succeeded, "failed": len(results) - succeeded, "results": results}
 
     def precheck_stats(self) -> dict[str, int]:

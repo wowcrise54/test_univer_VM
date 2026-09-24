@@ -44,6 +44,7 @@ def _write_sheet(sheet, headers: list[str], rows: list[list[Any]]) -> None:
 def render_compliance_xlsx(dataset: ComplianceDataset) -> bytes:
     workbook = Workbook()
     summary_sheet = workbook.active
+    assert summary_sheet is not None
     summary_sheet.title = "Сводка"
     summary_rows = [
         ["Контур", "Внешний" if dataset.scope == "internet" else "Организация"],
@@ -108,19 +109,19 @@ def render_compliance_pdf(dataset: ComplianceDataset) -> bytes:
         )
     ]
     summary = Table(summary_data, colWidths=[95 * mm, 35 * mm], repeatRows=1)
-    common = [("FONTNAME", (0, 0), (-1, -1), font), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), .3, colors.HexColor("#AAB7C4")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F6F8")])]
-    summary.setStyle(TableStyle(common))
+    common = TableStyle([("FONTNAME", (0, 0), (-1, -1), font), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), .3, colors.HexColor("#AAB7C4")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F6F8")])])
+    summary.setStyle(common)
     story.extend([summary, Paragraph("Критические уязвимости", heading)])
     finding_headers = ["Актив", "IP", "Тип", "Дата сканирования", "CVE/ID", "Уязвимость", "CVSS"]
     finding_rows = [[row.get("asset_id"), row.get("ip_address"), row.get("asset_type"), row.get("scan_at"), row.get("cve") or row.get("vulnerability_id"), row.get("vulnerability_name"), row.get("cvss_score")] for row in dataset.findings]
     table = Table([[ _paragraph(value, body) for value in finding_headers]] + [[_paragraph(value, body) for value in row] for row in finding_rows], colWidths=[34*mm, 26*mm, 28*mm, 42*mm, 32*mm, 80*mm, 15*mm], repeatRows=1)
-    table.setStyle(TableStyle(common))
+    table.setStyle(common)
     story.append(table)
     story.extend([PageBreak(), Paragraph("Не соответствует требованиям по свежести", heading)])
     stale_headers = ["Актив", "IP", "Тип", "Категория", "Дата сканирования", "Возраст, дней", "Причина"]
     stale_rows = [[row.get("asset_id"), row.get("ip_address"), row.get("asset_type"), row.get("asset_category"), row.get("scan_at"), row.get("age_days"), row.get("freshness_reason")] for row in dataset.stale_assets]
     stale_table = Table([[_paragraph(value, body) for value in stale_headers]] + [[_paragraph(value, body) for value in row] for row in stale_rows], colWidths=[38*mm, 28*mm, 35*mm, 34*mm, 45*mm, 25*mm, 50*mm], repeatRows=1)
-    stale_table.setStyle(TableStyle(common))
+    stale_table.setStyle(common)
     story.append(stale_table)
     document.build(story)
     return output.getvalue()

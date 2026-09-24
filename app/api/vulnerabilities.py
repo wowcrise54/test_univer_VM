@@ -113,10 +113,7 @@ def vulnerability_hosts(
             sort_dir=sort_dir,
         )
         user = getattr(request.state, "user", None) or {}
-        permissions = set(
-            user.get("permissions")
-            or app_auth.BUILTIN_ROLE_PERMISSIONS.get(user.get("role"), ())
-        )
+        permissions = app_auth.effective_permissions(user)
         if "remediation.read" not in permissions:
             for row in result.get("rows", []):
                 row.pop("remediation", None)

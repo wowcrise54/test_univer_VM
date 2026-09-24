@@ -17,7 +17,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import requests
 from requests.adapters import HTTPAdapter
 
-from .diagnostics import log_event
+from .diagnostics import log_event, redact
 from .mpvm import build_retry_adapter, build_session, resolve_access_token
 
 
@@ -1108,7 +1108,9 @@ class MpVmClient:
         try:
             data = response.json()
         except ValueError:
-            return response.text[:1000].replace("\n", " ").strip()
+            # Plain text has no field names to distinguish diagnostics from
+            # credentials. Never echo an untrusted upstream body to clients.
+            return "non-JSON response"
         return compact_json_summary(data)
 
 
@@ -1543,9 +1545,9 @@ def status_strings(value: Any) -> set[str]:
 
 def compact_json_summary(data: Any) -> str:
     try:
-        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))[:1000]
+        return json.dumps(redact(data), ensure_ascii=False, separators=(",", ":"))[:1000]
     except TypeError:
-        return str(data)[:1000]
+        return "unserializable response"
 
 
 def dedupe_keep_order(items: list[Any]) -> list[Any]:

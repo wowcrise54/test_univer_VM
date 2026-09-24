@@ -4,13 +4,13 @@ import builtins
 from typing import Any
 
 from .. import db
+from .asset_groups import AssetGroupRepository
+from .attention import AttentionRepository
+from .compliance import ComplianceRepository
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
 from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
-from .compliance import ComplianceRepository
-from .asset_groups import AssetGroupRepository
-from .attention import AttentionRepository
 
 
 class OperationsRepository:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 # module prefix -> threshold key; a file matches the first prefix in list order.
@@ -52,6 +51,9 @@ def main() -> int:
     args = parser.parse_args()
 
     report = json.loads(args.report.read_text(encoding="utf-8"))
+    if not report.get("meta", {}).get("branch_coverage"):
+        print("Coverage threshold gate failed: report has no branch measurement")
+        return 1
     if args.thresholds.exists():
         thresholds = {**DEFAULT_THRESHOLDS, **json.loads(args.thresholds.read_text(encoding="utf-8"))}
     else:

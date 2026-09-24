@@ -1,14 +1,14 @@
 from fastapi import APIRouter
 
+from .asset_groups import router as asset_groups_router
+from .attention import router as attention_router
+from .compliance import dashboard_router as compliance_dashboard_router
+from .compliance import report_router as compliance_report_router
 from .remediation import coverage_router
 from .remediation import router as remediation_router
 from .risk import router as risk_router
 from .vm import router as vm_router
 from .vulnerabilities import router as vulnerabilities_router
-from .compliance import dashboard_router as compliance_dashboard_router
-from .compliance import report_router as compliance_report_router
-from .asset_groups import router as asset_groups_router
-from .attention import router as attention_router
 
 system_router = APIRouter(tags=["system"])
 session_router = APIRouter(tags=["session"])

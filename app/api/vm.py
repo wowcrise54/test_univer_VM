@@ -94,7 +94,10 @@ def retry_workflow(
     request: Request, workflow_id: str,
     idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
 ) -> dict:
-    result, replay = _service(request).retry(workflow_id, _actor(request), idempotency_key)
+    try:
+        result, replay = _service(request).retry(workflow_id, _actor(request), idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": str(exc)}) from exc
     if not result:
         raise HTTPException(409, detail={"code": "VM_WORKFLOW_NOT_RETRYABLE", "message": "VM workflow cannot be retried."})
     return {"workflow": result, "workflow_id": result["workflow_id"], "idempotent_replay": replay}
