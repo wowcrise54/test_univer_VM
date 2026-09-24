@@ -3383,6 +3383,7 @@ function VulnerabilityPassportsPanel({
   const [passportTotal, setPassportTotal] = useState(0);
   const [passportSourceToken, setPassportSourceToken] = useState(null);
   const [passportJob, setPassportJob] = useState(null);
+  const [passportRefreshJob, setPassportRefreshJob] = useState(null);
   const [passportWindowOpen, setPassportWindowOpen] = useState(false);
   const [pendingPassportDelete, setPendingPassportDelete] = useState(null);
   const [passportSort, togglePassportSort] = useTableSort();
@@ -3454,6 +3455,55 @@ function VulnerabilityPassportsPanel({
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [passportWindowOpen]);
+
+  useEffect(() => {
+    if (!canManagePassports) return undefined;
+    let alive = true;
+    api("/api/vulnerability-passports/refresh-jobs/latest")
+      .then((result) => {
+        if (alive) setPassportRefreshJob(result.job || null);
+      })
+      .catch((error) => {
+        if (alive) showAlert(error.message || String(error), "error");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [canManagePassports, showAlert]);
+
+  useEffect(() => {
+    if (!passportRefreshJob?.operation_id || !ACTIVE_PASSPORT_JOB_STATUSES.has(passportRefreshJob.status))
+      return undefined;
+    let alive = true;
+    let timerId;
+    const poll = async () => {
+      try {
+        const next = await api(`/api/vulnerability-passports/refresh-jobs/${encodeURIComponent(passportRefreshJob.operation_id)}`);
+        if (!alive) return;
+        setPassportRefreshJob(next);
+        if (ACTIVE_PASSPORT_JOB_STATUSES.has(next.status)) {
+          timerId = window.setTimeout(poll, 1000);
+          return;
+        }
+        if (next.status === "completed" || next.status === "completed_with_errors") {
+          setPassportJob(next.result?.detail_job || null);
+          await fetchPassportPage(1, "", null);
+          setPassportSearch("");
+          setPassportSourceToken(null);
+          showAlert(`Обновление завершено: сохранено ${formatCount(next.result?.db?.saved || 0)} паспортов.${next.status === "completed_with_errors" ? " Тренды не обновлены." : ""}`, next.status === "completed_with_errors" ? "info" : "success");
+        } else {
+          showAlert(next.message || `Обновление: ${passportJobStatusLabel(next.status)}.`, next.status === "failed" ? "error" : "info");
+        }
+      } catch (error) {
+        if (alive) timerId = window.setTimeout(poll, 3000);
+      }
+    };
+    timerId = window.setTimeout(poll, 500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timerId);
+    };
+  }, [passportRefreshJob?.operation_id, passportRefreshJob?.status, fetchPassportPage, showAlert]);
 
   useEffect(() => {
     if (!canManagePassports) return undefined;
@@ -3572,37 +3622,18 @@ function VulnerabilityPassportsPanel({
 
   const refreshAllPassports = () =>
     runBusy("passportRefresh", async () => {
-      const result = await api("/api/vulnerability-passports/query", {
-        method: "POST",
-        body: JSON.stringify({
-          pdql: defaults?.vulnerability_passport_pdql || form.pdql,
-          utc_offset: defaults?.utc_offset || form.utc_offset || null,
-          group_ids: [],
-          asset_ids: [],
-          include_nested_groups: true,
-          limit: null,
-          batch_size: 5000,
-          save_to_db: true,
-          load_details: true,
-        }),
-      });
-      setRows(result.records || []);
-      setPassportTotal(result.total || 0);
-      setPassportSourceToken(null);
-      setPassportJob(result.detail_job || null);
-      setPassportSearch("");
-      setSelected(null);
-      setDetail(null);
-      setPassportPage(1);
-      setQueryRaw(null);
-      const saved = result.db?.saved || 0;
-      const replaced = result.db?.replaced || 0;
-      const ambiguous = result.db?.ambiguous || 0;
-      showAlert(
-        `Обновление завершено: доступно ${formatCount(result.total)}, сохранено ${formatCount(saved)}, заменено после смены ID: ${formatCount(replaced)}${ambiguous ? `, неоднозначных совпадений оставлено без изменений: ${formatCount(ambiguous)}` : ""}${result.detail_job ? `; деталей в очереди: ${formatCount(result.detail_job.eligible_count)}` : ""}.`,
-        ambiguous ? "info" : "success",
-      );
+      const result = await api("/api/vulnerability-passports/refresh-jobs", { method: "POST" });
+      setPassportRefreshJob(result.job);
+      showAlert("Обновление паспортов запущено. Прогресс показан под кнопкой.", "info");
     });
+
+  const cancelPassportRefresh = () => {
+    if (!passportRefreshJob?.operation_id) return;
+    runBusy("passportRefreshCancel", async () => {
+      const result = await api(`/api/vulnerability-passports/refresh-jobs/${encodeURIComponent(passportRefreshJob.operation_id)}/cancel`, { method: "POST" });
+      setPassportRefreshJob(result);
+    });
+  };
 
   const loadLocalPassports = (
     page = 1,
@@ -3752,6 +3783,8 @@ function VulnerabilityPassportsPanel({
         ),
       )
     : 100;
+  const passportRefreshActive = Boolean(passportRefreshJob && ACTIVE_PASSPORT_JOB_STATUSES.has(passportRefreshJob.status));
+  const passportRefreshPercent = Math.max(0, Math.min(100, Number(passportRefreshJob?.progress_percent || 0)));
 
   return (
     <Panel
@@ -3832,10 +3865,14 @@ function VulnerabilityPassportsPanel({
       <div className="action-row">
         {canManagePassports ? (
           <>
-            <Button busy={busy.passportRefresh} onClick={refreshAllPassports}>
+            <Button
+              busy={busy.passportRefresh}
+              disabled={passportRefreshActive || ACTIVE_PASSPORT_JOB_STATUSES.has(passportJob?.status)}
+              onClick={refreshAllPassports}
+            >
               Обновить
             </Button>
-            <Button busy={busy.passportQuery} onClick={queryPassports}>
+            <Button busy={busy.passportQuery} disabled={passportRefreshActive} onClick={queryPassports}>
               Выполнить PDQL
             </Button>
           </>
@@ -3852,6 +3889,24 @@ function VulnerabilityPassportsPanel({
           <span>{formatCount(passportTotal)}</span>
         </div>
       </div>
+      {canManagePassports && passportRefreshJob ? (
+        <section className={`passport-job passport-job--${passportRefreshJob.status}`} aria-live="polite">
+          <div className="passport-job__header">
+            <div>
+              <strong>Обновление списка паспортов: {passportJobStatusLabel(passportRefreshJob.status)}</strong>
+              <span>{passportRefreshPercent}% · {passportRefreshJob.message}</span>
+            </div>
+            {passportRefreshActive ? (
+              <Button variant="tiny-danger" busy={busy.passportRefreshCancel} disabled={passportRefreshJob.status === "cancelling"} onClick={cancelPassportRefresh}>
+                Остановить
+              </Button>
+            ) : null}
+          </div>
+          <div className="passport-job__track" role="progressbar" aria-label="Обновление списка паспортов" aria-valuemin="0" aria-valuemax="100" aria-valuenow={passportRefreshPercent}>
+            <span style={{ width: `${passportRefreshPercent}%` }} />
+          </div>
+        </section>
+      ) : null}
       {canManagePassports && passportJob ? (
         <section
           className={`passport-job passport-job--${passportJob.status}`}

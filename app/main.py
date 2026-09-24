@@ -50,6 +50,8 @@ configure_diagnostics()
 
 from . import db
 from . import auth as app_auth
+from .repositories import passport_refresh
+from .services import passport_refresh as passport_refresh_service
 from .api.routers import (
     API_ROUTERS,
     asset_cards_router,
@@ -905,6 +907,7 @@ def startup() -> None:
         )
         CONTAINER.operation_runner.submit("maintenance", app_auth.cleanup_audit_events, 365)
         db.interrupt_active_vulnerability_passport_detail_jobs()
+        passport_refresh.interrupt_active()
         db.interrupt_active_asset_card_build_jobs()
         db.release_scan_postprocess_leases()
         db.sync_operations_from_sources()
@@ -1225,6 +1228,8 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
         )
     elif operation["kind"] == "passport_detail_sync":
         cancel_vulnerability_passport_detail_job(operation["source_id"])
+    elif operation["kind"] == "passport_catalog_refresh":
+        cancel_vulnerability_passport_refresh_job(operation["source_id"])
     elif operation["kind"] == "scan_postprocess":
         cancel_scan_postprocess_run(operation["source_id"])
     elif operation["kind"] == "automation_run":
@@ -3386,6 +3391,73 @@ def query_vulnerability_passports(
     payload: VulnerabilityPassportQueryRequest,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
+    return _execute_vulnerability_passport_query(payload, background_tasks)
+
+
+@passports_router.post("/api/vulnerability-passports/refresh-jobs", status_code=202)
+def create_vulnerability_passport_refresh_job(background_tasks: BackgroundTasks) -> dict[str, Any]:
+    require_mpvm()
+    active_detail = db.get_active_vulnerability_passport_detail_job()
+    if active_detail:
+        raise HTTPException(status_code=409, detail={"message": "Загрузка деталей паспортов уже выполняется.", "job": active_detail})
+    payload = VulnerabilityPassportQueryRequest(
+        pdql=VULNER_PASSPORT_PDQL,
+        utc_offset=os.getenv("MPVM_UTC_OFFSET") or os.getenv("MP10_UTC_OFFSET") or "+05:00",
+        limit=None, batch_size=5000, save_to_db=True, load_details=True,
+    )
+    operation_id = str(uuid.uuid4())
+    try:
+        operation = passport_refresh.create(operation_id, payload.model_dump())
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(status_code=409, detail={"message": "Обновление паспортов уже выполняется.", "job": passport_refresh.latest()}) from exc
+    cancel_event = CONTAINER.operation_runner.cancellations.register("passport-refresh", operation_id)
+    background_tasks.add_task(
+        run_vulnerability_passport_refresh_job, operation_id, payload, cancel_event,
+    )
+    return {"job": operation}
+
+
+def run_vulnerability_passport_refresh_job(
+    operation_id: str,
+    payload: VulnerabilityPassportQueryRequest,
+    cancel_event: threading.Event,
+) -> None:
+    try:
+        passport_refresh_service.run(
+            operation_id, payload, _execute_vulnerability_passport_query,
+            CONTAINER.operation_runner.submit, cancel_event,
+        )
+    finally:
+        CONTAINER.operation_runner.cancellations.remove("passport-refresh", operation_id)
+
+
+@passports_router.get("/api/vulnerability-passports/refresh-jobs/latest")
+def latest_vulnerability_passport_refresh_job() -> dict[str, Any]:
+    return {"job": passport_refresh.latest()}
+
+
+@passports_router.get("/api/vulnerability-passports/refresh-jobs/{operation_id}")
+def vulnerability_passport_refresh_job(operation_id: str) -> dict[str, Any]:
+    job = passport_refresh.get(operation_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Passport refresh job not found.")
+    return job
+
+
+@passports_router.post("/api/vulnerability-passports/refresh-jobs/{operation_id}/cancel")
+def cancel_vulnerability_passport_refresh_job(operation_id: str) -> dict[str, Any]:
+    job = passport_refresh.get(operation_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Passport refresh job not found.")
+    CONTAINER.operation_runner.cancellations.cancel("passport-refresh", operation_id)
+    return passport_refresh.request_cancel(operation_id) or job
+
+
+def _execute_vulnerability_passport_query(
+    payload: VulnerabilityPassportQueryRequest,
+    background_tasks: BackgroundTasks,
+    progress: Callable[[int, str, str], None] | None = None,
+) -> dict[str, Any]:
     if payload.save_to_db and payload.load_details:
         active_job = db.get_active_vulnerability_passport_detail_job()
         if active_job:
@@ -3400,6 +3472,8 @@ def query_vulnerability_passports(
     client, token = require_mpvm()
     query_started = time.perf_counter()
     try:
+        if progress:
+            progress(2, "query", "Создание запроса в MP VM.")
         pdql_token = client.create_pdql_token(
             token,
             payload.pdql,
@@ -3414,14 +3488,24 @@ def query_vulnerability_passports(
             pdql_token=pdql_token,
             limit=payload.limit,
             batch_size=payload.batch_size,
+            progress_callback=(
+                lambda loaded, total: progress(
+                    min(75, max(3, round(loaded * 75 / total))) if total else 3,
+                    "fetch", f"Получено {loaded} из {total} паспортов." if total else f"Получено {loaded} паспортов. Общий объём уточняется.",
+                )
+            ) if progress else None,
         )
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
     grid_finished = time.perf_counter()
 
+    if progress:
+        progress(78, "normalize", "Проверка и объединение паспортов.")
     normalized = dedupe_vulnerability_passports(
         [normalize_vulnerability_passport_record(record) for record in records]
     )
+    if progress:
+        progress(82, "save", f"Сохранение {len(normalized)} паспортов в БД.")
     db_result = (
         db.upsert_vulnerability_passports(normalized, source_pdql=payload.pdql, pdql_token=pdql_token)
         if payload.save_to_db
@@ -3429,6 +3513,8 @@ def query_vulnerability_passports(
     )
     trend_sync = None
     if payload.save_to_db:
+        if progress:
+            progress(90, "trends", "Обновление трендов уязвимостей.")
         try:
             full_catalog_sync = (
                 " ".join(payload.pdql.split())
@@ -3465,6 +3551,8 @@ def query_vulnerability_passports(
     saved_finished = time.perf_counter()
     detail_job = None
     if payload.save_to_db and payload.load_details:
+        if progress:
+            progress(96, "details", "Подготовка фоновой загрузки деталей.")
         internal_ids = [item.get("internal_id") for item in normalized]
         candidates = db.vulnerability_passport_detail_refresh_candidates(
             internal_ids,
@@ -6093,6 +6181,7 @@ def fetch_asset_grid_records(
     pdql_token: str,
     limit: int | None,
     batch_size: int,
+    progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     batches: list[dict[str, Any]] = []
@@ -6115,6 +6204,8 @@ def fetch_asset_grid_records(
         if batch_total is not None:
             expected_total = batch_total
         records.extend(batch_records)
+        if progress_callback:
+            progress_callback(len(records), expected_total)
         batches.append(
             {
                 "offset": offset,

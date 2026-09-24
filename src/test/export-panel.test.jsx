@@ -170,4 +170,26 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
     );
     expect(screen.getByRole("button", { name: "Сохранённые" })).toBeEnabled();
   });
+
+  it("restores a running catalog refresh with visible percent and disables a second start", async () => {
+    api.mockImplementation(async (path) => {
+      if (path === "/api/vulnerability-passports/refresh-jobs/latest") {
+        return { job: { operation_id: "refresh-1", status: "running", progress_percent: 42, message: "Получено 420 из 1000 паспортов." } };
+      }
+      if (path === "/api/vulnerability-passports/detail-jobs/active") return { job: null };
+      return { rows: [], total: 0 };
+    });
+    render(
+      <VulnerabilityPassportsPanel
+        defaults={null}
+        busy={{}}
+        runBusy={vi.fn()}
+        showAlert={vi.fn()}
+        currentUser={{ permissions: ["passports.read", "passports.manage"] }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("progressbar", { name: "Обновление списка паспортов" })).toHaveAttribute("aria-valuenow", "42"));
+    expect(screen.getByText(/Получено 420 из 1000 паспортов/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeDisabled();
+  });
 });

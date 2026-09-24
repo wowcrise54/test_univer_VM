@@ -2680,13 +2680,14 @@ def upsert_vulnerability_passports(
                     ON CONFLICT (passport_internal_id) DO NOTHING
                     """
                 )
-                cursor.execute(
-                    """
-                    DELETE FROM vulnerability_passports AS previous
-                    USING passport_id_replacements AS replacement
-                    WHERE previous.internal_id = replacement.old_id
-                    """
-                )
+                # A single large DELETE pays for all FK checks in one statement
+                # and can exceed PostgreSQL statement_timeout on large catalogs.
+                for offset in range(0, len(id_replacements), 1000):
+                    old_ids = [old_id for old_id, _ in id_replacements[offset : offset + 1000]]
+                    cursor.execute(
+                        "DELETE FROM vulnerability_passports WHERE internal_id = ANY(%s)",
+                        (old_ids,),
+                    )
                 replaced = len(id_replacements)
         links_created = reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
     return {
@@ -6794,6 +6795,7 @@ def decode_operation(row: dict[str, Any]) -> dict[str, Any]:
             "asset_card_build",
             "asset_card_bulk_refresh",
             "passport_detail_sync",
+            "passport_catalog_refresh",
             "scan_postprocess",
             "automation_run",
         },

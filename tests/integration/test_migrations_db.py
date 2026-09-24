@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20260911_0023``);
+* the migration graph has a single, expected head (``20260924_0024``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
@@ -30,7 +30,7 @@ import psycopg
 
 from app import db, main
 
-EXPECTED_HEAD = "20260911_0023"
+EXPECTED_HEAD = "20260924_0024"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -58,6 +58,8 @@ ALTERED_COLUMNS = {
 }
 
 INDEX_0023 = "idx_asset_card_vulnerability_passports_finding"
+INDEX_0024 = "idx_remediation_cases_passport_internal_id"
+UNIQUE_0024 = "uq_active_passport_catalog_refresh"
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +178,8 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert DROPPED_AT_BASE <= _tables(url), "upgrade missing migration tables"
         assert EXPAND_CONTRACT_TABLE in _tables(url)
         assert _has_index(url, INDEX_0023), "0023 index missing after upgrade"
+        assert _has_index(url, INDEX_0024), "0024 FK index missing after upgrade"
+        assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after upgrade"
@@ -194,6 +198,8 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         for table, column in ALTERED_COLUMNS:
             assert not _has_column(url, table, column), f"{table}.{column} should be dropped at base"
         assert not _has_index(url, INDEX_0023), "0023 index should be dropped at base"
+        assert not _has_index(url, INDEX_0024), "0024 FK index should be dropped at base"
+        assert not _has_index(url, UNIQUE_0024), "0024 concurrency index should be dropped at base"
 
         # 3. Re-upgrade to head: everything is restored.
         _run_alembic(url, "upgrade", "head")
@@ -201,6 +207,8 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert DROPPED_AT_BASE <= _tables(url), "re-upgrade missing migration tables"
         assert EXPAND_CONTRACT_TABLE in _tables(url)
         assert _has_index(url, INDEX_0023), "0023 index missing after re-upgrade"
+        assert _has_index(url, INDEX_0024), "0024 FK index missing after re-upgrade"
+        assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after re-upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after re-upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after re-upgrade"
@@ -226,8 +234,8 @@ def test_migration_0023_is_idempotent(migrated_db):
 
         # Fresh install: the baseline schema_statements already creates the index,
         # so upgrading through 0023 must not fail with a duplicate-index error.
-        _run_alembic(url, "upgrade", "head")
-        assert _current_revisions(url) == [EXPECTED_HEAD]
+        _run_alembic(url, "upgrade", "20260911_0023")
+        assert _current_revisions(url) == ["20260911_0023"]
         assert _has_index(url, INDEX_0023)
 
         # Downgrade one step (drops the index) then re-apply 0023.
@@ -235,9 +243,12 @@ def test_migration_0023_is_idempotent(migrated_db):
         assert _current_revisions(url) == [HEAD_PARENT]
         assert not _has_index(url, INDEX_0023), "0023 index should be dropped by downgrade"
 
+        _run_alembic(url, "upgrade", "20260911_0023")
+        assert _current_revisions(url) == ["20260911_0023"]
+        assert _has_index(url, INDEX_0023), "0023 index should be restored by upgrade"
         _run_alembic(url, "upgrade", "head")
         assert _current_revisions(url) == [EXPECTED_HEAD]
-        assert _has_index(url, INDEX_0023), "0023 index should be restored by upgrade"
+        assert _has_index(url, INDEX_0024)
 
 
 # --------------------------------------------------------------------------- #
