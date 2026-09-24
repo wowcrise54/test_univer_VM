@@ -1052,7 +1052,6 @@ function TaskListPanel({
     created_at: (task) => task.created_at,
     status: (task) => task.status,
   });
-  const [mode, setMode] = useState("delete_v3");
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [postprocessDetail, setPostprocessDetail] = useState(null);
@@ -1108,14 +1107,19 @@ function TaskListPanel({
     if (!taskId) return;
     setDeletingId(taskId);
     try {
-      await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/delete`, {
+      const result = await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/delete`, {
         method: "POST",
         headers: { "X-Idempotency-Key": createIdempotencyKey("task-delete") },
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode: "auto" }),
       });
       if (selectedTaskId === taskId) setSelectedTaskId(null);
       await refreshTasks();
-      showAlert(`Задача удалена: ${taskId}`, "success");
+      showAlert(
+        result.localOnly
+          ? `Задача удалена только локально: ${taskId}`
+          : `Задача удалена в MP VM: ${taskId}`,
+        "success",
+      );
     } catch (error) {
       showAlert(error.message || String(error), "error");
     } finally {
@@ -1148,12 +1152,7 @@ function TaskListPanel({
         title="Задачи сканирования"
         description="Выберите задачу, чтобы открыть результат и продолжить работу."
         action={
-          <TaskToolbar
-            mode={mode}
-            setMode={setMode}
-            refreshTasks={refreshTasks}
-            busy={busy.refreshTasks}
-          />
+          <TaskToolbar refreshTasks={refreshTasks} busy={busy.refreshTasks} />
         }
         className="task-list-panel"
       >
@@ -1317,15 +1316,14 @@ function TaskListPanel({
       </Panel>
       <ConfirmDialog
         open={Boolean(pendingDeleteId)}
-        title="Удалить задачу из MP VM?"
-        description="Это удалённое действие изменит MP VM, а после успеха запись исчезнет из локального списка."
+        title="Проверить и удалить задачу?"
+        description="Сначала приложение проверит наличие задачи в MP VM. Если задача найдена, она будет удалена там; если её нет — удалится только локальная запись."
         impact={[
-          `Метод удаления: ${mode}`,
-          "Запущенная задача может перестать быть доступной в MP VM",
-          "Локальная запись удалится только после подтверждённого ответа MP VM",
+          "При недоступности MP VM удаление остановится, локальная запись сохранится",
+          "Найденная задача удаляется через DELETE v3",
         ]}
         requireText={pendingDeleteId || ""}
-        confirmLabel="Удалить в MP VM"
+        confirmLabel="Проверить и удалить"
         busy={Boolean(deletingId)}
         onClose={() => setPendingDeleteId(null)}
         onConfirm={() => deleteTask(pendingDeleteId)}
@@ -1501,17 +1499,9 @@ function postprocessRemovalLabel(status) {
   return "—";
 }
 
-function TaskToolbar({ mode, setMode, refreshTasks, busy }) {
+function TaskToolbar({ refreshTasks, busy }) {
   return (
     <div className="task-toolbar">
-      <select
-        value={mode}
-        onChange={(event) => setMode(event.target.value)}
-        title="Метод удаления в MP VM"
-      >
-        <option value="delete_v3">DELETE v3</option>
-        <option value="put_v4">PUT v4</option>
-      </select>
       <Button
         variant="icon"
         onClick={refreshTasks}

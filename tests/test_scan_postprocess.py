@@ -334,6 +334,84 @@ class ScanPostprocessClientTests(unittest.TestCase):
         self.assertTrue(result["alreadyDeleted"])
         delete_local.assert_called_once_with("task-gone")
 
+    def test_delete_impl_can_remove_local_task_without_contacting_mpvm(self):
+        with (
+            patch.object(main, "require_mpvm") as require_mpvm,
+            patch.object(main.db, "delete_scan_task") as delete_local,
+        ):
+            result = main.delete_scanner_task_impl(
+                "task-orphaned", main.DeleteScannerTaskRequest(mode="local_only"),
+            )
+
+        require_mpvm.assert_not_called()
+        delete_local.assert_called_once_with("task-orphaned")
+        self.assertEqual(result, {"id": "task-orphaned", "mode": "local_only", "localOnly": True})
+
+    def test_auto_delete_removes_only_local_task_when_remote_list_does_not_contain_id(self):
+        client = MagicMock()
+        client.list_remote_scanner_tasks.return_value = {"items": []}
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "delete_scan_task") as delete_local,
+        ):
+            result = main.delete_scanner_task_impl(
+                "task-orphaned", main.DeleteScannerTaskRequest(mode="auto"),
+            )
+
+        client.list_remote_scanner_tasks.assert_called_once()
+        client.delete_scanner_task.assert_not_called()
+        delete_local.assert_called_once_with("task-orphaned")
+        self.assertTrue(result["localOnly"])
+
+    def test_auto_delete_removes_remote_and_local_task_when_remote_id_exists(self):
+        client = MagicMock()
+        client.list_remote_scanner_tasks.return_value = {"items": [{"id": "task-1"}]}
+        client.delete_scanner_task.return_value = {"id": "task-1", "mode": "delete_v3"}
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "delete_scan_task") as delete_local,
+        ):
+            result = main.delete_scanner_task_impl(
+                "task-1", main.DeleteScannerTaskRequest(mode="auto"),
+            )
+
+        client.delete_scanner_task.assert_called_once_with("token", "task-1", mode="delete_v3")
+        delete_local.assert_called_once_with("task-1")
+        self.assertTrue(result["remoteFound"])
+
+    def test_auto_delete_checks_later_remote_pages_for_task_id(self):
+        client = MagicMock()
+        first_page = {"items": [{"id": f"task-{index}"} for index in range(50)]}
+        client.list_remote_scanner_tasks.side_effect = [first_page, {"items": [{"id": "task-target"}]}]
+        client.delete_scanner_task.return_value = {"id": "task-target", "mode": "delete_v3"}
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "delete_scan_task"),
+        ):
+            result = main.delete_scanner_task_impl(
+                "task-target", main.DeleteScannerTaskRequest(mode="auto"),
+            )
+
+        self.assertEqual(client.list_remote_scanner_tasks.call_count, 2)
+        client.delete_scanner_task.assert_called_once_with("token", "task-target", mode="delete_v3")
+        self.assertTrue(result["remoteFound"])
+
+    def test_auto_delete_keeps_local_task_when_remote_check_fails(self):
+        client = MagicMock()
+        client.list_remote_scanner_tasks.side_effect = mpvm_client.MpVmApiError("temporary failure")
+        with (
+            patch.object(main, "require_mpvm", return_value=(client, "token")),
+            patch.object(main.db, "delete_scan_task") as delete_local,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.delete_scanner_task_impl(
+                    "task-1", main.DeleteScannerTaskRequest(mode="auto"),
+                )
+
+        self.assertEqual(raised.exception.status_code, 502)
+        client.delete_scanner_task.assert_not_called()
+        delete_local.assert_not_called()
+
     def test_asset_removal_wait_continues_after_empty_accepted_response(self):
         client = mpvm_client.MpVmClient(mpvm_client.AuthConfig(
             api_url="https://fixture",

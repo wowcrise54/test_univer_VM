@@ -1765,17 +1765,26 @@ def delete_scanner_task_idempotent(
             raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": "Idempotency key belongs to another operation.", "component": "operations"})
         return {**(replay.get("result") or {}), "idempotent_replay": True, "operation_id": replay["operation_id"]}
     operation_id = str(uuid.uuid4())
+    if payload.mode == "auto":
+        initial_stage = "checking_remote_task"
+        initial_message = "Checking scanner task in MP VM before deletion."
+    elif payload.mode == "local_only":
+        initial_stage = "deleting_local_task"
+        initial_message = "Deleting scanner task from local database."
+    else:
+        initial_stage = "deleting_remote_task"
+        initial_message = "Deleting scanner task from MP VM."
     db.register_operation(
         operation_id,
         kind="task_delete",
         source_id=operation_id,
         status="running",
-        stage="deleting_remote_task",
+        stage=initial_stage,
         progress_percent=10,
         subject_type="scanner_task",
         subject_id=task_id,
         subject_label=task_id,
-        message="Deleting scanner task from MP VM.",
+        message=initial_message,
         request={"mode": payload.mode},
         idempotency_key=clean_key,
     )
@@ -1808,7 +1817,11 @@ def delete_scanner_task_idempotent(
         subject_type="scanner_task",
         subject_id=task_id,
         subject_label=task_id,
-        message="Scanner task deleted from MP VM.",
+        message=(
+            "Scanner task deleted from local database."
+            if result.get("localOnly")
+            else "Scanner task deleted from MP VM."
+        ),
         request={"mode": payload.mode},
         result=result,
         idempotency_key=clean_key,
@@ -5855,8 +5868,20 @@ def build_scanned_asset_card(
 
 
 def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) -> dict[str, Any]:
+    if payload.mode == "local_only":
+        db.delete_scan_task(task_id)
+        return {"id": task_id, "mode": payload.mode, "localOnly": True}
+
     client, token = require_mpvm()
     try:
+        if payload.mode == "auto":
+            if not remote_scanner_task_exists(client, token, task_id):
+                db.delete_scan_task(task_id)
+                return {"id": task_id, "mode": payload.mode, "localOnly": True, "remoteFound": False}
+            response = client.delete_scanner_task(token, task_id, mode="delete_v3")
+            db.delete_scan_task(task_id)
+            return {**response, "mode": payload.mode, "remoteFound": True}
+
         response = client.delete_scanner_task(
             token,
             task_id,
@@ -5867,6 +5892,66 @@ def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) ->
         return response
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
+
+
+def remote_scanner_task_exists(client: MpVmClient, token: str, task_id: str) -> bool:
+    page_size = 50
+    max_pages = 101
+    for page_number in range(max_pages):
+        response = client.list_remote_scanner_tasks(
+            token,
+            offset=page_number * page_size,
+            limit=page_size,
+        )
+        if not is_remote_scanner_task_list_response(response):
+            raise MpVmApiError("Unexpected remote scanner task list response while checking task existence.")
+        rows = extract_remote_scanner_task_rows(response)
+        for row in rows:
+            if remote_scanner_task_row_is_deleted(row):
+                continue
+            if remote_scanner_task_row_id(row) == task_id:
+                return True
+        if len(rows) < page_size:
+            return False
+    raise MpVmApiError("Could not confirm scanner task absence after reading 5000 remote tasks.")
+
+
+def is_remote_scanner_task_list_response(value: Any) -> bool:
+    if isinstance(value, list):
+        return True
+    if not isinstance(value, dict):
+        return False
+    for key in ("items", "data", "rows", "records", "values", "content"):
+        nested = value.get(key)
+        if isinstance(nested, list):
+            return True
+        if isinstance(nested, dict) and is_remote_scanner_task_list_response(nested):
+            return True
+    return False
+
+
+def remote_scanner_task_row_id(row: dict[str, Any]) -> str | None:
+    sources = [row]
+    for key in ("payload", "configuration", "config", "scannerTask", "task"):
+        nested = row.get(key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+    for source in sources:
+        for key in ("id", "taskId", "task_id", "uuid"):
+            value = source.get(key)
+            if value is not None:
+                return str(value)
+    return None
+
+
+def remote_scanner_task_row_is_deleted(row: dict[str, Any]) -> bool:
+    if row.get("isDeleted") is True or row.get("deleted") is True:
+        return True
+    return any(
+        isinstance(row.get(key), dict)
+        and (row[key].get("isDeleted") is True or row[key].get("deleted") is True)
+        for key in ("payload", "configuration", "config", "scannerTask", "task")
+    )
 
 
 def remove_assets_after_export(

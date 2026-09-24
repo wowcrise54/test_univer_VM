@@ -99,7 +99,7 @@ class AssetGroupFromVulnerabilityRequest(BaseModel):
 
 
 class DeleteScannerTaskRequest(BaseModel):
-    mode: Literal["delete_v3", "put_v4"] = "delete_v3"
+    mode: Literal["delete_v3", "put_v4", "local_only", "auto"] = "delete_v3"
     put_payload: dict[str, Any] | None = None
 
 
