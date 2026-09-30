@@ -7,6 +7,7 @@ const ROUTES = [
   "/tasks",
   "/operations",
   "/export",
+  "/dashboards",
   "/vulnerabilities",
   "/remediation",
   "/asset-cards",
@@ -176,6 +177,7 @@ function defaultApiResponse(path) {
           "saved_views.read",
           "saved_views.manage",
           "diagnostics.write",
+          "diagnostics.read",
           "security.users.read",
           "security.roles.read",
           "security.audit.read",
@@ -592,7 +594,7 @@ test.describe("risk history states", () => {
         route.fulfill({ json: POPULATED_TRENDS }),
     });
 
-    await page.goto("/vulnerabilities");
+    await page.goto("/dashboards");
     await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     await expect(history.locator(".risk-trend__chart")).toBeVisible();
@@ -607,7 +609,7 @@ test.describe("risk history states", () => {
         route.fulfill({ json: EMPTY_TRENDS }),
     });
 
-    await page.goto("/vulnerabilities");
+    await page.goto("/dashboards");
     await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     await expect(history.locator(".vulnerability-empty")).toBeVisible();
@@ -634,7 +636,7 @@ test.describe("risk history states", () => {
           : route.fulfill({ json: EMPTY_TRENDS }),
     });
 
-    await page.goto("/vulnerabilities");
+    await page.goto("/dashboards");
     await page.getByText("История риска", { exact: true }).click();
     const history = page.locator(".risk-trend");
     const error = history.getByRole("alert");
@@ -645,4 +647,127 @@ test.describe("risk history states", () => {
     await expect(history.locator(".vulnerability-empty")).toBeVisible();
     await expect(error).toHaveCount(0);
   });
+});
+
+test("task selection, results, and a new task are separate actions", async ({
+  page,
+}) => {
+  await installApiMock(page, {
+    "/api/scanner-tasks": (route) =>
+      route.fulfill({
+        json: [
+          {
+            mp_task_id: "task-select-1",
+            name: "Audit alpha",
+            status: "finished",
+            include_targets: ["10.1.1.1"],
+            payload: {
+              name: "Audit alpha",
+              include: { targets: ["10.1.1.1"] },
+            },
+          },
+        ],
+      }),
+    "/api/scanner-tasks/task-select-1/results": (route) =>
+      route.fulfill({ json: { items: [], total: 0 } }),
+  });
+  await page.goto("/tasks");
+  await page.getByText("Audit alpha", { exact: true }).first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByLabel("Название задачи")).toHaveValue("Audit alpha");
+  await page.getByRole("button", { name: "Результаты", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Результаты задачи" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Закрыть", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Новая задача", exact: true }).click();
+  await expect(page.getByLabel("Название задачи")).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Создать задачу", exact: true }),
+  ).toBeVisible();
+});
+
+test("operation diagnostics shows a download failure and permits a retry", async ({
+  page,
+}) => {
+  let attempts = 0;
+  await installApiMock(page, {
+    "/api/operations": (route) =>
+      route.fulfill({ json: { rows: [OPERATION], total: 1 } }),
+    "/api/operations/operation-e2e-001": (route) =>
+      route.fulfill({ json: OPERATION }),
+    "/api/operations/operation-e2e-001/diagnostics": (route) => {
+      attempts += 1;
+      if (attempts === 1)
+        return route.fulfill({
+          status: 503,
+          json: {
+            detail: {
+              message: "Archive temporarily unavailable",
+              retryable: true,
+            },
+          },
+        });
+      return route.fulfill({
+        contentType: "application/zip",
+        headers: {
+          "content-disposition":
+            'attachment; filename="operation-diagnostics.zip"',
+        },
+        body: Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"),
+      });
+    },
+  });
+  await page.goto("/operations");
+  await page.getByRole("button", { name: "Открыть", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Скачать диагностику", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Archive temporarily unavailable",
+  );
+  const downloadPromise = page.waitForEvent("download");
+  await dialog
+    .getByRole("button", { name: "Скачать диагностику", exact: true })
+    .click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("operation-diagnostics.zip");
+  expect(await download.failure()).toBeNull();
+});
+
+test("vulnerability results wait for applied asset selection", async ({
+  page,
+}) => {
+  const selections = [];
+  await installApiMock(page, {
+    "/api/asset-cards/local": (route) =>
+      route.fulfill({
+        json: {
+          rows: [{ asset_id: "host-e2e-1", display_name: "Selected server" }],
+          total: 1,
+        },
+      }),
+    "/api/vulnerabilities/summary": (route, url) => {
+      selections.push(url.searchParams.get("asset_id"));
+      return route.fulfill({
+        json: defaultApiResponse("/api/vulnerabilities/summary"),
+      });
+    },
+  });
+  await page.goto("/vulnerabilities");
+  await expect(
+    page.getByRole("button", { name: "Применить фильтры" }),
+  ).toBeVisible();
+  await expect(page.getByText("История риска", { exact: true })).toHaveCount(0);
+  expect(selections).toEqual([]);
+  await page.getByLabel("Актив", { exact: true }).fill("host-e2e-1");
+  await page.getByRole("button", { name: "Применить фильтры" }).click();
+  await expect.poll(() => selections).toEqual(["host-e2e-1"]);
 });

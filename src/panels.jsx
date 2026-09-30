@@ -8,6 +8,7 @@ import React, {
 import { createPortal } from "react-dom";
 import { api, createIdempotencyKey, downloadApiFile } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
+import { useTaskForm } from "./features/tasks/useTaskForm.js";
 import {
   filterOptions,
   formatCount,
@@ -315,109 +316,12 @@ function TaskBuilderPanel({
   session,
   systemStatus,
 }) {
-  const emptyForm = useMemo(
-    () => ({
-      name: "",
-      description: "Windows audit vulnerability collection",
-      scope_id: "",
-      profile_id: "",
-      credential_id: "",
-      credential_transport: "windows",
-      host_discovery_profile_id: "",
-      include_targets: "",
-      exclude_targets: "",
-      agent_ids: "",
-      host_discovery_enabled: false,
-      is_fqdn_priority: true,
-      time_zone: defaults?.utc_offset || "+05:00",
-      precheck_enabled: false,
-      precheck_profile_id: "",
-      precheck_timeout_minutes: "10",
-      precheck_max_runtime_minutes: "5",
-      precheck_poll_seconds: "10",
-      task_timeout_minutes: "120",
-      task_poll_seconds: "15",
-      require_clean_jobs: false,
-    }),
-    [defaults?.utc_offset],
-  );
-  const [form, setForm] = useState(emptyForm);
-  const [draftLoaded, setDraftLoaded] = useState(false);
-
-  useEffect(() => {
-    if (draftLoaded) return;
-    try {
-      const saved = JSON.parse(
-        window.localStorage.getItem("mpvm.task-draft.v1") || "null",
-      );
-      if (saved?.version === 1 && saved.form && !selectedTask) {
-        setForm((current) => ({ ...current, ...saved.form }));
-      }
-    } catch (_error) {
-      window.localStorage.removeItem("mpvm.task-draft.v1");
-    }
-    setDraftLoaded(true);
-  }, [draftLoaded, selectedTask]);
-
-  useEffect(() => {
-    if (!draftLoaded) return undefined;
-    const timer = window.setTimeout(() => {
-      window.localStorage.setItem(
-        "mpvm.task-draft.v1",
-        JSON.stringify({
-          version: 1,
-          saved_at: new Date().toISOString(),
-          form,
-        }),
-      );
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [draftLoaded, form]);
-
-  useEffect(() => {
-    setForm((value) => ({
-      ...value,
-      time_zone: value.time_zone || defaults?.utc_offset || "+05:00",
-    }));
-  }, [defaults?.utc_offset]);
-
-  useEffect(() => {
-    if (!selectedTask) return;
-    const payload = selectedTask.payload || {};
-    setForm((current) => ({
-      name: payload.name || selectedTask.name || "",
-      description: payload.description || "",
-      scope_id: payload.scope || "",
-      profile_id: payload.profile || "",
-      credential_id:
-        selectedTask.credential_id ||
-        payload.overrides?.transports?.terminal?.ssh?.connection?.auth
-          ?.ref_value ||
-        payload.overrides?.transports?.windows?.wmi_and_rpc_and_re?.connection
-          ?.auth?.ref_value ||
-        "",
-      credential_transport: payload.overrides?.transports?.terminal?.ssh
-        ? "ssh"
-        : "windows",
-      host_discovery_profile_id: payload.hostDiscovery?.profile || "",
-      include_targets: (payload.include?.targets || []).join("\n"),
-      exclude_targets: (payload.exclude?.targets || []).join("\n"),
-      agent_ids: (payload.agents?.agentIds || []).join("\n"),
-      host_discovery_enabled: Boolean(payload.hostDiscovery?.enabled),
-      is_fqdn_priority: payload.isFqdnPriority !== false,
-      time_zone:
-        payload.triggerParameters?.timeZone || defaults?.utc_offset || "+05:00",
-      precheck_enabled: current.precheck_enabled,
-      precheck_profile_id: current.precheck_profile_id,
-      precheck_timeout_minutes: current.precheck_timeout_minutes,
-      precheck_max_runtime_minutes: current.precheck_max_runtime_minutes,
-      precheck_poll_seconds: current.precheck_poll_seconds,
-      task_timeout_minutes: current.task_timeout_minutes,
-      task_poll_seconds: current.task_poll_seconds,
-      require_clean_jobs: current.require_clean_jobs,
-    }));
-  }, [selectedTask, defaults?.utc_offset]);
-
+  const { form, setForm, startNewTask } = useTaskForm({
+    defaults,
+    selectedTask,
+    selectedTaskId,
+    setSelectedTaskId,
+  });
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
   const payload = () => ({
@@ -528,6 +432,11 @@ function TaskBuilderPanel({
       id="task-builder"
       title="Конструктор задачи сканирования"
       description="Основные параметры задачи и запуск сканирования."
+      action={
+        <Button variant="secondary" onClick={startNewTask}>
+          Новая задача
+        </Button>
+      }
     >
       <div className="form-grid form-grid--two task-primary-fields">
         <Field label="Название задачи">
@@ -1150,7 +1059,7 @@ function TaskListPanel({
       <Panel
         id="tasks"
         title="Задачи сканирования"
-        description="Выберите задачу, чтобы открыть результат и продолжить работу."
+        description="Выберите задачу для редактирования. Результаты открываются отдельной кнопкой."
         action={
           <TaskToolbar refreshTasks={refreshTasks} busy={busy.refreshTasks} />
         }
@@ -1238,11 +1147,12 @@ function TaskListPanel({
                       key={taskId}
                       tabIndex={0}
                       aria-selected={isSelected}
-                      onClick={() => openTaskResults(task)}
+                      onClick={() => setSelectedTaskId(taskId)}
                       onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
-                          openTaskResults(task);
+                          setSelectedTaskId(taskId);
                         }
                       }}
                     >
@@ -1279,6 +1189,15 @@ function TaskListPanel({
                       <td>{lastRunText(task)}</td>
                       <td>
                         <PostprocessSummary run={task.postprocess} />
+                        <Button
+                          variant="tiny"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            return openTaskResults(task);
+                          }}
+                        >
+                          Результаты
+                        </Button>
                       </td>
                     </tr>
                   );

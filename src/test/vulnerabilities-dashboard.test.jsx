@@ -275,21 +275,30 @@ function renderDashboard(
   currentUser = {
     permissions: ["assets.read", "remediation.read", "remediation.manage"],
   },
+  mode = "vulnerabilities",
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
     },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
-      <VulnerabilitiesDashboard currentUser={currentUser} showAlert={vi.fn()} />
+      <VulnerabilitiesDashboard
+        mode={mode}
+        currentUser={currentUser}
+        showAlert={vi.fn()}
+      />
     </QueryClientProvider>,
   );
+  if (mode === "vulnerabilities")
+    fireEvent.click(screen.getByRole("button", { name: "Применить фильтры" }));
+  return view;
 }
 
 describe("vulnerability dashboard", () => {
   beforeEach(() => {
+    window.history.replaceState({}, "", "/vulnerabilities");
     api.mockReset();
     api.mockImplementation((path) => Promise.resolve(responseFor(path)));
   });
@@ -357,7 +366,7 @@ describe("vulnerability dashboard", () => {
       }
       return Promise.resolve(responseFor(path));
     });
-    renderDashboard();
+    renderDashboard(undefined, "dashboards");
     fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
 
     const heading = await screen.findByRole("heading", {
@@ -472,7 +481,7 @@ describe("vulnerability dashboard", () => {
       }
       return Promise.resolve(responseFor(path));
     });
-    renderDashboard();
+    renderDashboard(undefined, "dashboards");
     fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
 
     expect(
@@ -557,7 +566,7 @@ describe("vulnerability dashboard", () => {
   });
 
   it("opens resolution statistics and renders its KPIs", async () => {
-    renderDashboard();
+    renderDashboard(undefined, "dashboards");
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Статистика устранений" }),
@@ -768,7 +777,7 @@ describe("vulnerability dashboard", () => {
   });
 
   it("renders historical risk deltas and switches the aggregation period", async () => {
-    renderDashboard();
+    renderDashboard(undefined, "dashboards");
     fireEvent.click(screen.getByText("История риска").closest("summary"));
 
     const heading = await screen.findByRole("heading", {
@@ -807,7 +816,7 @@ describe("vulnerability dashboard", () => {
       }
       return Promise.resolve(responseFor(path));
     });
-    renderDashboard();
+    renderDashboard(undefined, "dashboards");
     fireEvent.click(screen.getByText("История риска").closest("summary"));
 
     expect(

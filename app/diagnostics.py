@@ -650,17 +650,21 @@ def build_diagnostic_archive(
     trace_id: str | None = None,
     job_id: str | None = None,
     output_path: Path | None = None,
+    operation_snapshot: Mapping[str, Any] | None = None,
+    operation_events: Sequence[Mapping[str, Any]] = (),
 ) -> Path:
-    if not trace_id and not job_id:
+    if not trace_id and not job_id and operation_snapshot is None:
         raise ValueError("trace_id or job_id is required")
     config = _CONFIG or configure_diagnostics()
     archive_dir = config.log_dir.parent / "diagnostics"
     archive_dir.mkdir(parents=True, exist_ok=True)
-    identifier = trace_id or job_id or "unknown"
-    output = output_path or archive_dir / f"diagnostic-{identifier}-{int(time.time())}.zip"
+    identifier = trace_id or job_id or new_trace_id()
+    output = output_path or archive_dir / f"diagnostic-{identifier}-{int(time.time())}-{new_trace_id()}.zip"
     events: list[str] = []
     counts: dict[str, int] = {}
-    for path in sorted(config.log_dir.glob("*.jsonl*")):
+    flush_diagnostics()
+    log_paths = sorted(config.log_dir.glob("*.jsonl*")) if trace_id or job_id else []
+    for path in log_paths:
         if not path.is_file():
             continue
         # errors.jsonl intentionally mirrors ERROR records from their source channel.
@@ -688,11 +692,30 @@ def build_diagnostic_archive(
         "job_id": job_id,
         "event_count": len(events),
         "event_counts": counts,
+        "logs_available": bool(events),
+        "operation_event_count": len(operation_events),
         "configuration": redact(asdict(config)),
     }
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2, default=str))
         archive.writestr("events.jsonl", "\n".join(events) + ("\n" if events else ""))
+        if operation_snapshot is not None:
+            archive.writestr(
+                "operation.json",
+                json.dumps(redact(operation_snapshot), ensure_ascii=False, indent=2, default=str),
+            )
+            archive.writestr(
+                "operation-events.jsonl",
+                "".join(json.dumps(redact(event), ensure_ascii=False, default=str) + "\n" for event in operation_events),
+            )
+        archive.writestr(
+            "README.txt",
+            "Архив диагностики содержит обезличенные данные.\n"
+            + ("Логи операции включены в events.jsonl.\n" if events else
+               "Логи операции отсутствуют: подходящие записи не найдены или срок хранения истёк.\n")
+            + ("Снимок операции: operation.json; сохранённые события: operation-events.jsonl.\n"
+               if operation_snapshot is not None else ""),
+        )
     log_event(
         "app",
         "diagnostic.archive.created",

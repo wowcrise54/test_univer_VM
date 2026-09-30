@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAlerts } from "../features/notifications/useAlerts.js";
 import { api } from "../api/client.js";
 
 const EMPTY_LOOKUPS = {
@@ -107,7 +108,7 @@ export function useAppData(routeId) {
   );
   const [lookups, setLookups] = useState(EMPTY_LOOKUPS);
   const [selectedTaskId, setSelectedTaskId] = useState(null);
-  const [alerts, setAlerts] = useState([]);
+  const { alerts, showAlert, dismissAlert } = useAlerts();
   const [busy, setBusy] = useState({});
   const [assetFilters, setAssetFilters] = useState({});
   const [operationQuery, setOperationQuery] = useState(DEFAULT_OPERATION_QUERY);
@@ -198,19 +199,6 @@ export function useAppData(routeId) {
       verify_tls: value.verify_tls ?? current.verify_tls,
     }));
   }, [sessionQuery.data]);
-
-  const showAlert = useCallback((message, type = "info") => {
-    const id = Date.now() + "-" + Math.random();
-    setAlerts((items) => {
-      if (items.some((item) => item.message === message && item.type === type))
-        return items;
-      return [{ id, message, type }, ...items].slice(0, 4);
-    });
-    window.setTimeout(
-      () => setAlerts((items) => items.filter((item) => item.id !== id)),
-      9000,
-    );
-  }, []);
 
   const runBusy = useCallback(
     (key, fn, options = {}) => {
@@ -349,6 +337,7 @@ export function useAppData(routeId) {
     setSelectedTaskId,
     setSession,
     showAlert,
+    dismissAlert,
     summary: assetsData.summary || null,
     assetsError: assetsQueryResult.error || null,
     assetsLoading:

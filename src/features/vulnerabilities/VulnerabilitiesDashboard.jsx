@@ -57,8 +57,11 @@ const SOURCE_LABELS = {
 
 export function VulnerabilitiesDashboard({
   currentUser,
+  mode = "vulnerabilities",
+  onNavigate = (path) => window.location.assign(path),
   showAlert = () => {},
 }) {
+  const isDashboards = mode === "dashboards";
   const permissions = new Set(currentUser?.permissions || []);
   const canReadRemediation = permissions.has("remediation.read");
   const canManageRemediation =
@@ -67,7 +70,17 @@ export function VulnerabilitiesDashboard({
     permissions.has("remediation.manage");
   const canManageAssetGroups = permissions.has("asset_groups.manage");
   const [workspace, setWorkspace] = useState("current");
-  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
+  const [draftFilters, setDraftFilters] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return Object.fromEntries(
+      Object.entries(EMPTY_FILTERS).map(([key, value]) => [
+        key,
+        isDashboards ? value : params.get(key) || value,
+      ]),
+    );
+  });
+  const [applied, setApplied] = useState(false);
+  const [selectionRevision, setSelectionRevision] = useState(0);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [trendDays, setTrendDays] = useState(30);
   const [trendingContext, setTrendingContext] = useState("all");
@@ -99,6 +112,9 @@ export function VulnerabilitiesDashboard({
     resolutionQuery,
   } = useVulnerabilityDashboard({
     filters,
+    mode,
+    applied,
+    selectionRevision,
     trendDays,
     trendingContext,
     vulnerabilityOffset,
@@ -107,7 +123,7 @@ export function VulnerabilitiesDashboard({
     hostOffset,
     hostSort,
     resolutionDays,
-    resolutionEnabled: workspace === "resolved",
+    resolutionEnabled: canReadRemediation && workspace === "resolved",
   });
 
   useEffect(() => {
@@ -131,6 +147,7 @@ export function VulnerabilitiesDashboard({
     setSelected(null);
     setHostOffset(0);
     setHostSort(DEFAULT_HOST_SORT);
+    setHostFinding(null);
   };
 
   const applyFilters = (nextFilters) => {
@@ -147,6 +164,8 @@ export function VulnerabilitiesDashboard({
     };
     setDraftFilters(normalized);
     setFilters(normalized);
+    setApplied(true);
+    setSelectionRevision((current) => current + 1);
     resetResultState();
   };
 
@@ -157,10 +176,20 @@ export function VulnerabilitiesDashboard({
 
   const selectVulnerability = (row, trigger) => {
     if (!row?.selector) return;
+    if (isDashboards) {
+      onNavigate(
+        "/vulnerabilities?" +
+          new URLSearchParams({
+            q: row.cve || row.vulnerability_id || row.name,
+          }),
+      );
+      return;
+    }
     drilldownTriggerRef.current = trigger || null;
     setSelected(row);
     setHostOffset(0);
     setHostSort(DEFAULT_HOST_SORT);
+    setHostFinding(null);
   };
 
   const changeVulnerabilitySort = (key, initialDirection = "asc") => {
@@ -181,10 +210,12 @@ export function VulnerabilitiesDashboard({
       resolutionQuery.refetch();
       return;
     }
-    trendsQuery.refetch();
-    trendingPassportsQuery.refetch();
-    summaryQuery.refetch();
-    vulnerabilitiesQuery.refetch();
+    if (isDashboards) {
+      trendsQuery.refetch();
+      trendingPassportsQuery.refetch();
+    }
+    if (isDashboards || applied) summaryQuery.refetch();
+    if (!isDashboards && applied) vulnerabilitiesQuery.refetch();
     if (selected?.selector) hostsQuery.refetch();
   };
 
@@ -313,24 +344,32 @@ export function VulnerabilitiesDashboard({
 
   return (
     <Panel
-      id="vulnerabilities"
-      title="Уязвимости"
-      description="Оцените риск и перейдите к затронутым хостам."
+      id={isDashboards ? "dashboards" : "vulnerabilities"}
+      title={isDashboards ? "Дашборды" : "Уязвимости"}
+      description={
+        isDashboards
+          ? "Общая аналитика риска, история и контроль."
+          : "Задайте условия и примените выборку для анализа уязвимостей."
+      }
       className="vulnerability-dashboard"
       action={
-        <Button variant="secondary" busy={refreshing} onClick={refresh}>
-          Перечитать срез
-        </Button>
+        isDashboards || applied ? (
+          <Button variant="secondary" busy={refreshing} onClick={refresh}>
+            Перечитать срез
+          </Button>
+        ) : null
       }
     >
-      <VulnerabilityWorkspaceTabs
-        value={workspace}
-        canReadRemediation={canReadRemediation}
-        onChange={(value) => {
-          setWorkspace(value);
-          setHostFinding(null);
-        }}
-      />
+      {isDashboards ? (
+        <VulnerabilityWorkspaceTabs
+          value={workspace}
+          canReadRemediation={canReadRemediation}
+          onChange={(value) => {
+            setWorkspace(value);
+            setHostFinding(null);
+          }}
+        />
+      ) : null}
 
       {workspace === "compliance" ? (
         <ComplianceDashboard enabled showAlert={showAlert} />
@@ -342,136 +381,171 @@ export function VulnerabilitiesDashboard({
         />
       ) : (
         <>
-          <VulnerabilityFilters
-            filters={draftFilters}
-            assetOptions={assetFilterOptions}
-            onChange={setDraftFilters}
-            onSubmit={submitFilters}
-            onReset={() => applyFilters(EMPTY_FILTERS)}
-            busy={refreshing}
-          />
-
-          <MetricGlossary />
-
-          {summaryQuery.isPending ? (
-            <LoadingState label="Загружаю сводку по уязвимостям…" />
-          ) : summaryQuery.isError ? (
-            <QueryError
-              title="Не удалось загрузить сводку"
-              error={summaryQuery.error}
-              retryLabel="Повторить загрузку сводки"
-              onRetry={summaryQuery.refetch}
-            />
-          ) : (
-            <>
-              {summary.coverage?.complete === false ? (
-                <div className="vulnerability-coverage-warning" role="note">
-                  <strong>Неполные данные.</strong>
-                  <span>
-                    Часть групп усечена; значения показывают нижнюю оценку.
-                  </span>
-                </div>
-              ) : null}
-              <KpiGrid totals={summary.totals || {}} />
-              <div className="vulnerability-primary-insight">
-                <SeverityBreakdown
-                  rows={summary.by_severity || []}
-                  selectedSeverity={filters.severity}
-                  onSelect={(severity) =>
-                    applyFilters({
-                      ...filters,
-                      severity: filterSeverity(severity),
-                    })
-                  }
-                />
-              </div>
-              <Disclosure
-                title="Охват и приоритеты"
-                description="Свежесть данных и лидеры по риску"
-                meta={
-                  summary.coverage?.complete === false
-                    ? "Неполный охват"
-                    : "Актуальный срез"
-                }
-              >
-                <DashboardContext summary={summary} />
-                <div className="vulnerability-insights-grid">
-                  <TopVulnerabilities
-                    rows={summary.top_vulnerabilities || []}
-                    selectedSelector={selected?.selector}
-                    onSelect={selectVulnerability}
-                  />
-                  <TopHosts rows={summary.top_hosts || []} />
-                </div>
-              </Disclosure>
-            </>
-          )}
-
-          <VulnerabilityTable
-            rows={vulnerabilityRows}
-            total={vulnerabilityTotal}
-            offset={vulnerabilityOffset}
-            sort={vulnerabilitySort}
-            selectedSelector={selected?.selector}
-            pending={vulnerabilitiesQuery.isPending}
-            fetching={vulnerabilitiesQuery.isFetching}
-            error={vulnerabilitiesQuery.error}
-            onRetry={vulnerabilitiesQuery.refetch}
-            onSort={changeVulnerabilitySort}
-            onSelect={selectVulnerability}
-            onOpenPassport={openPassport}
-            onPage={setVulnerabilityOffset}
-          />
-
-          {selected?.selector ? (
-            <HostDrilldown
-              selected={selected}
-              rows={hostRows}
-              total={hostTotal}
-              offset={hostOffset}
-              sort={hostSort}
-              pending={hostsQuery.isPending}
-              fetching={hostsQuery.isFetching}
-              error={hostsQuery.error}
-              headingRef={hostHeadingRef}
-              canReadRemediation={canReadRemediation}
-              canManageRemediation={canManageRemediation}
-              canManageAssetGroups={canManageAssetGroups}
-              assetGroupBusy={assetGroupBusy}
-              remediationBusyAssetId={remediationBusyAssetId}
-              onRetry={hostsQuery.refetch}
-              onSort={changeHostSort}
-              onPage={setHostOffset}
-              onClose={closeDrilldown}
-              onOpenPassport={openPassport}
-              onOpenFinding={setHostFinding}
-              onStartRemediation={startRemediation}
-              onCreateAssetGroup={createAssetGroup}
+          {!isDashboards ? (
+            <VulnerabilityFilters
+              filters={draftFilters}
+              assetOptions={assetFilterOptions}
+              onChange={setDraftFilters}
+              onSubmit={submitFilters}
+              onReset={() => setDraftFilters(EMPTY_FILTERS)}
+              busy={refreshing}
             />
           ) : null}
-          <Disclosure
-            title="Новые сигналы"
-            description="Трендовые уязвимости и паспорта"
-            meta="Дополнительно"
-          >
-            <TrendingVulnerabilities
-              query={trendingPassportsQuery}
-              context={trendingContext}
-              onContextChange={setTrendingContext}
-              onOpenPassport={openPassport}
-            />
-          </Disclosure>
-          <Disclosure
-            title="История риска"
-            description="Динамика, дельты и полнота срезов"
-            meta={`${trendDays} дней`}
-          >
-            <RiskTrendSection
-              query={trendsQuery}
-              periodDays={trendDays}
-              onPeriodChange={setTrendDays}
-            />
-          </Disclosure>
+          {isDashboards || applied ? (
+            <>
+              <MetricGlossary />
+
+              {summaryQuery.isPending ? (
+                <LoadingState label="Загружаю сводку по уязвимостям…" />
+              ) : summaryQuery.isError ? (
+                <QueryError
+                  title="Не удалось загрузить сводку"
+                  error={summaryQuery.error}
+                  retryLabel="Повторить загрузку сводки"
+                  onRetry={summaryQuery.refetch}
+                />
+              ) : (
+                <>
+                  {summary.coverage?.complete === false ? (
+                    <div className="vulnerability-coverage-warning" role="note">
+                      <strong>Неполные данные.</strong>
+                      <span>
+                        Часть групп усечена; значения показывают нижнюю оценку.
+                      </span>
+                    </div>
+                  ) : null}
+                  <KpiGrid totals={summary.totals || {}} />
+                  <div className="vulnerability-primary-insight">
+                    <SeverityBreakdown
+                      rows={summary.by_severity || []}
+                      selectedSeverity={filters.severity}
+                      onSelect={(severity) =>
+                        isDashboards
+                          ? onNavigate(
+                              "/vulnerabilities?" +
+                                new URLSearchParams({
+                                  severity: filterSeverity(severity),
+                                }),
+                            )
+                          : applyFilters({
+                              ...filters,
+                              severity: filterSeverity(severity),
+                            })
+                      }
+                    />
+                  </div>
+                  <Disclosure
+                    title="Охват и приоритеты"
+                    description="Свежесть данных и лидеры по риску"
+                    meta={
+                      summary.coverage?.complete === false
+                        ? "Неполный охват"
+                        : "Актуальный срез"
+                    }
+                  >
+                    <DashboardContext summary={summary} />
+                    <div className="vulnerability-insights-grid">
+                      <TopVulnerabilities
+                        rows={summary.top_vulnerabilities || []}
+                        selectedSelector={selected?.selector}
+                        onSelect={selectVulnerability}
+                      />
+                      <TopHosts
+                        rows={summary.top_hosts || []}
+                        onSelect={
+                          isDashboards
+                            ? (row) =>
+                                onNavigate(
+                                  "/vulnerabilities?" +
+                                    new URLSearchParams({
+                                      asset_id: row.asset_id,
+                                    }),
+                                )
+                            : undefined
+                        }
+                      />
+                    </div>
+                  </Disclosure>
+                </>
+              )}
+
+              {!isDashboards ? (
+                <VulnerabilityTable
+                  rows={vulnerabilityRows}
+                  total={vulnerabilityTotal}
+                  offset={vulnerabilityOffset}
+                  sort={vulnerabilitySort}
+                  selectedSelector={selected?.selector}
+                  pending={vulnerabilitiesQuery.isPending}
+                  fetching={vulnerabilitiesQuery.isFetching}
+                  error={vulnerabilitiesQuery.error}
+                  onRetry={vulnerabilitiesQuery.refetch}
+                  onSort={changeVulnerabilitySort}
+                  onSelect={selectVulnerability}
+                  onOpenPassport={openPassport}
+                  onPage={setVulnerabilityOffset}
+                />
+              ) : null}
+
+              {selected?.selector ? (
+                <HostDrilldown
+                  selected={selected}
+                  rows={hostRows}
+                  total={hostTotal}
+                  offset={hostOffset}
+                  sort={hostSort}
+                  pending={hostsQuery.isPending}
+                  fetching={hostsQuery.isFetching}
+                  error={hostsQuery.error}
+                  headingRef={hostHeadingRef}
+                  canReadRemediation={canReadRemediation}
+                  canManageRemediation={canManageRemediation}
+                  canManageAssetGroups={canManageAssetGroups}
+                  assetGroupBusy={assetGroupBusy}
+                  remediationBusyAssetId={remediationBusyAssetId}
+                  onRetry={hostsQuery.refetch}
+                  onSort={changeHostSort}
+                  onPage={setHostOffset}
+                  onClose={closeDrilldown}
+                  onOpenPassport={openPassport}
+                  onOpenFinding={setHostFinding}
+                  onStartRemediation={startRemediation}
+                  onCreateAssetGroup={createAssetGroup}
+                />
+              ) : null}
+              {isDashboards ? (
+                <>
+                  <Disclosure
+                    title="Новые сигналы"
+                    description="Трендовые уязвимости и паспорта"
+                    meta="Дополнительно"
+                  >
+                    <TrendingVulnerabilities
+                      query={trendingPassportsQuery}
+                      context={trendingContext}
+                      onContextChange={setTrendingContext}
+                      onOpenPassport={openPassport}
+                    />
+                  </Disclosure>
+                  <Disclosure
+                    title="История риска"
+                    description="Динамика, дельты и полнота срезов"
+                    meta={`${trendDays} дней`}
+                  >
+                    <RiskTrendSection
+                      query={trendsQuery}
+                      periodDays={trendDays}
+                      onPeriodChange={setTrendDays}
+                    />
+                  </Disclosure>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <EmptyState>
+              Задайте условия выборки и нажмите «Применить фильтры».
+            </EmptyState>
+          )}
           {hostFinding ? (
             <HostFindingModal
               selected={selected}
@@ -522,7 +596,7 @@ function VulnerabilityWorkspaceTabs({ value, canReadRemediation, onChange }) {
         aria-current={value === "current" ? "page" : undefined}
         onClick={() => onChange("current")}
       >
-        Текущие уязвимости
+        Обзор риска
       </button>
       <button
         type="button"
@@ -847,7 +921,7 @@ function VulnerabilityFilters({
   return (
     <form
       className="vulnerability-filters"
-      aria-label="Фильтры дашборда уязвимостей"
+      aria-label="Условия выборки уязвимостей"
       onSubmit={onSubmit}
     >
       <Field label="Уязвимость">
@@ -871,14 +945,14 @@ function VulnerabilityFilters({
           onChange={(event) => update("asset_id", event.target.value)}
           placeholder="Точный ID актива"
         />
-        <datalist id="vulnerability-filter-asset-options">
-          {assetOptions.map((option) => (
-            <option value={option.value} key={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </datalist>
       </Field>
+      <datalist id="vulnerability-filter-asset-options">
+        {assetOptions.map((option) => (
+          <option value={option.value} key={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </datalist>
       <Field label="ОС">
         <input
           value={filters.os}
@@ -1541,7 +1615,7 @@ function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
   );
 }
 
-function TopHosts({ rows }) {
+function TopHosts({ rows, onSelect }) {
   const maximum = Math.max(
     0,
     ...rows.map((row) => Number(row.findings || row.finding_count || 0)),
@@ -1565,7 +1639,22 @@ function TopHosts({ rows }) {
                   <span />
                 </span>
                 <span className="ranking-row__content">
-                  <strong>{hostLabel(row)}</strong>
+                  <strong>
+                    {onSelect && row.asset_id ? (
+                      <button
+                        type="button"
+                        className="vulnerability-host-link"
+                        aria-label={
+                          "Показать уязвимости актива " + hostLabel(row)
+                        }
+                        onClick={() => onSelect(row)}
+                      >
+                        {hostLabel(row)}
+                      </button>
+                    ) : (
+                      hostLabel(row)
+                    )}
+                  </strong>
                   <span>{row.ip_address || row.fqdn || "Адрес не указан"}</span>
                   <small>
                     {formatCount(findings)} findings ·{" "}

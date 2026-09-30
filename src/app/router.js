@@ -1,48 +1,81 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { recordFrontendEvent } from "../diagnostics.js";
-import { defaultRoutePath, normalizeRoutePath, routeById, routeByPath } from "./navigation.js";
+import {
+  defaultRoutePath,
+  normalizeRoutePath,
+  routeById,
+  routeByPath,
+} from "./navigation.js";
 
 function routePathFromHash(hash) {
   const id = String(hash || "").replace(/^#/, "");
   return routeById(id)?.path || null;
 }
 
-function currentBrowserPath() {
-  if (typeof window === "undefined") return defaultRoutePath;
-  const legacyPath = window.location.pathname === "/" ? routePathFromHash(window.location.hash) : null;
-  return normalizeRoutePath(legacyPath || window.location.pathname);
+function currentBrowserLocation() {
+  if (typeof window === "undefined")
+    return { path: defaultRoutePath, search: "" };
+  const legacyPath =
+    window.location.pathname === "/"
+      ? routePathFromHash(window.location.hash)
+      : null;
+  return {
+    path: normalizeRoutePath(legacyPath || window.location.pathname),
+    search: window.location.search,
+  };
 }
 
 export function useRouter() {
-  const [path, setPath] = useState(currentBrowserPath);
+  const [location, setLocation] = useState(currentBrowserLocation);
+  const { path, search } = location;
 
   useEffect(() => {
-    const initialPath = currentBrowserPath();
-    if (typeof window !== "undefined" && window.location.pathname !== initialPath) {
-      window.history.replaceState({}, "", initialPath);
+    const initialLocation = currentBrowserLocation();
+    if (
+      typeof window !== "undefined" &&
+      window.location.pathname !== initialLocation.path
+    ) {
+      window.history.replaceState(
+        {},
+        "",
+        initialLocation.path + initialLocation.search,
+      );
     }
-    setPath(initialPath);
+    setLocation(initialLocation);
 
     const handlePopState = () => {
-      const nextPath = currentBrowserPath();
-      setPath((currentPath) => {
-        recordFrontendEvent("ui.navigation", { from: currentPath, to: nextPath, navigation_type: "popstate" });
-        return nextPath;
+      const nextLocation = currentBrowserLocation();
+      setLocation((currentLocation) => {
+        recordFrontendEvent("ui.navigation", {
+          from: currentLocation.path,
+          to: nextLocation.path,
+          navigation_type: "popstate",
+        });
+        return nextLocation;
       });
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  const navigate = useCallback((targetPath) => {
-    const nextPath = normalizeRoutePath(targetPath);
-    if (nextPath === path) return;
-    recordFrontendEvent("ui.navigation", { from: path, to: nextPath, navigation_type: "push" });
-    window.history.pushState({}, "", nextPath);
-    setPath(nextPath);
-    window.scrollTo({ top: 0, behavior: "instant" });
-  }, [path]);
+  const navigate = useCallback(
+    (targetPath) => {
+      const target = new URL(String(targetPath || "/"), window.location.origin);
+      const nextPath = normalizeRoutePath(target.pathname);
+      const nextSearch = target.search;
+      if (nextPath === path && nextSearch === search) return;
+      recordFrontendEvent("ui.navigation", {
+        from: path,
+        to: nextPath,
+        navigation_type: "push",
+      });
+      window.history.pushState({}, "", nextPath + nextSearch);
+      setLocation({ path: nextPath, search: nextSearch });
+      window.scrollTo({ top: 0, behavior: "instant" });
+    },
+    [path, search],
+  );
 
   const route = useMemo(() => routeByPath(path), [path]);
-  return { navigate, path, route };
+  return { navigate, path, search, route };
 }

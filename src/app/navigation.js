@@ -26,7 +26,13 @@ export const workflowSteps = [
     label: "Находки",
     hint: "Риск и активы",
     path: "/vulnerabilities",
-    routes: ["vulnerabilities", "asset-cards", "passports", "asset-query"],
+    routes: [
+      "dashboards",
+      "vulnerabilities",
+      "asset-cards",
+      "passports",
+      "asset-query",
+    ],
   },
   {
     id: "fix",
@@ -124,15 +130,26 @@ export const routes = [
     description: "CSV-отчёты и управляемый экспорт для операторов.",
   },
   {
+    id: "dashboards",
+    requiredPermission: "assets.read",
+    group: "primary",
+    icon: "◈",
+    path: "/dashboards",
+    label: "Дашборды",
+    title: "Дашборды",
+    description:
+      "Общая аналитика, история риска, контроль и статистика устранений.",
+  },
+  {
     id: "vulnerabilities",
     requiredPermission: "assets.read",
     group: "primary",
     icon: "◈",
     path: "/vulnerabilities",
     label: "Уязвимости",
-    title: "Обзор уязвимостей",
+    title: "Уязвимости",
     description:
-      "Общая статистика, критичность и переход от уязвимости к затронутым хостам.",
+      "Выборка уязвимостей по заданным условиям, графики и затронутые хосты.",
   },
   {
     id: "remediation",

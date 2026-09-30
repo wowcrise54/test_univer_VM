@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { api } from "../api/client.js";
 import { Button, Disclosure, Field, Panel, Toggle } from "../shared/ui.jsx";
@@ -13,6 +13,7 @@ const DEFAULT_SCHEDULE = {
 
 export function AutomationsPage({ showAlert }) {
   const [tab, setTab] = useState("schedules");
+  const [unreadOnly, setUnreadOnly] = useState(true);
   const [busy, setBusy] = useState({});
   const busyRef = useRef(new Set());
   const [scheduleForm, setScheduleForm] = useState(DEFAULT_SCHEDULE);
@@ -37,8 +38,17 @@ export function AutomationsPage({ showAlert }) {
         : false,
   });
   const notificationsQuery = useQuery({
-    queryKey: ["automations", "notifications"],
-    queryFn: () => api("/api/notifications"),
+    queryKey: [
+      "automations",
+      "notifications",
+      unreadOnly ? "unread" : "history",
+    ],
+    queryFn: () =>
+      api(
+        unreadOnly
+          ? "/api/notifications?unread_only=true"
+          : "/api/notifications",
+      ),
   });
   const scannerTasksQuery = useQuery({
     queryKey: ["automations", "scanner-tasks"],
@@ -298,6 +308,8 @@ export function AutomationsPage({ showAlert }) {
       {tab === "notifications" && (
         <NotificationsPanel
           notifications={notifications}
+          unreadOnly={unreadOnly}
+          setUnreadOnly={setUnreadOnly}
           query={notificationsQuery}
           busy={busy}
           perform={perform}
@@ -603,15 +615,61 @@ function RunsPanel({
   );
 }
 
-function NotificationsPanel({ notifications, query, busy, perform }) {
+function NotificationsPanel({
+  notifications,
+  query,
+  busy,
+  perform,
+  unreadOnly,
+  setUnreadOnly,
+}) {
+  const queryClient = useQueryClient();
+  const [readIds, setReadIds] = useState(() => new Set());
+  const allRows = notifications.rows.map((item) =>
+    readIds.has(item.notification_id) ? { ...item, is_read: true } : item,
+  );
+  const rows = unreadOnly ? allRows.filter((item) => !item.is_read) : allRows;
+  const unread = Math.max(
+    0,
+    (notifications.unread || 0) -
+      notifications.rows.filter(
+        (item) => !item.is_read && readIds.has(item.notification_id),
+      ).length,
+  );
+  const markRead = async (item) => {
+    await api("/api/notifications/" + item.notification_id + "/read", {
+      method: "POST",
+    });
+    setReadIds((current) => new Set([...current, item.notification_id]));
+    await queryClient.invalidateQueries({
+      queryKey: ["automations", "notifications"],
+      refetchType: "none",
+    });
+  };
   return (
     <Panel
       id="automation-panel-notifications"
       role="tabpanel"
       aria-labelledby="automation-tab-notifications"
       title="Центр уведомлений"
-      description={`Непрочитанных: ${notifications.unread || 0}`}
+      description={"Непрочитанных: " + unread}
     >
+      <div className="operation-detail-actions" aria-label="Режим уведомлений">
+        <Button
+          variant="secondary"
+          aria-pressed={unreadOnly}
+          onClick={() => setUnreadOnly(true)}
+        >
+          Непрочитанные
+        </Button>
+        <Button
+          variant="secondary"
+          aria-pressed={!unreadOnly}
+          onClick={() => setUnreadOnly(false)}
+        >
+          История
+        </Button>
+      </div>
       <div className="automation-notifications">
         {query.isPending ? (
           <div className="query-state" role="status">
@@ -622,7 +680,7 @@ function NotificationsPanel({ notifications, query, busy, perform }) {
           <AutomationQueryError label="уведомления" query={query} />
         ) : null}
         {!query.isPending && !query.isError
-          ? notifications.rows.map((item) => (
+          ? rows.map((item) => (
               <article
                 key={item.notification_id}
                 className={`automation-notification automation-notification--${item.level} ${item.is_read ? "is-read" : ""}`}
@@ -639,10 +697,8 @@ function NotificationsPanel({ notifications, query, busy, perform }) {
                     variant="tiny"
                     busy={busy[`notification:read:${item.notification_id}`]}
                     onClick={() =>
-                      perform(`notification:read:${item.notification_id}`, () =>
-                        api(`/api/notifications/${item.notification_id}/read`, {
-                          method: "POST",
-                        }),
+                      perform("notification:read:" + item.notification_id, () =>
+                        markRead(item),
                       )
                     }
                   >
@@ -652,7 +708,7 @@ function NotificationsPanel({ notifications, query, busy, perform }) {
               </article>
             ))
           : null}
-        {!query.isPending && !query.isError && !notifications.rows.length ? (
+        {!query.isPending && !query.isError && !rows.length ? (
           <div className="query-state">Уведомлений пока нет.</div>
         ) : null}
       </div>

@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Sidebar, Topbar, WorkflowRail } from "../app/layout.jsx";
+import { AlertStack, Sidebar, Topbar, WorkflowRail } from "../app/layout.jsx";
 import {
   normalizeRoutePath,
   routeById,
@@ -41,9 +42,7 @@ describe("guided application shell", () => {
     expect(
       screen.getByRole("link", { name: "Уязвимости" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("Ещё").closest("summary"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Ещё").closest("summary")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute(
       "aria-current",
       "page",
@@ -107,5 +106,30 @@ describe("guided application shell", () => {
     );
     expect(navigate).toHaveBeenCalledWith("/connection");
     expect(screen.getByText("Нет подключения")).toBeInTheDocument();
+  });
+});
+
+describe("dismissible notifications", () => {
+  it("removes one notification without clearing the other messages", () => {
+    function Notifications() {
+      const [alerts, setAlerts] = useState([
+        { id: "first", message: "Сканирование запущено", type: "info" },
+        { id: "second", message: "Архив готов", type: "success" },
+      ]);
+      return (
+        <AlertStack
+          alerts={alerts}
+          onDismiss={(id) =>
+            setAlerts((items) => items.filter((item) => item.id !== id))
+          }
+        />
+      );
+    }
+    render(<Notifications />);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Закрыть уведомление" })[0],
+    );
+    expect(screen.queryByText("Сканирование запущено")).not.toBeInTheDocument();
+    expect(screen.getByText("Архив готов")).toBeInTheDocument();
   });
 });
