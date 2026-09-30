@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import tempfile
@@ -156,6 +157,93 @@ class DiagnosticLoggingTests(unittest.TestCase):
         self.assertIn("ui.test.failed", content)
         self.assertIn("trace-ui", content)
         self.assertNotIn("plain-password", content)
+
+
+    def test_archive_without_logs_contains_safe_operation_and_events(self):
+        self.configure()
+        from app import main
+
+        diagnostics.log_event("app", "unrelated", job_id="other-job", message="unrelated-secret")
+        diagnostics.flush_diagnostics()
+        operation = {
+            "operation_id": "operation-1",
+            "kind": "automation_run", "status": "failed",
+            "message": "Failed with Bearer top-secret",
+            "request": {"password": "request-secret"},
+            "result": {"unsafe": "result-secret"},
+            "events": [{
+                "id": "event-1", "stage": "failed", "message": "Bearer event-secret",
+                "status": "failed", "details": {"password": "nested-secret"},
+            }],
+        }
+        with patch.object(main.db, "get_operation", return_value=operation):
+            response = main.operation_diagnostics("operation-1")
+        with zipfile.ZipFile(response.path) as archive:
+            snapshot = json.loads(archive.read("operation.json"))
+            event_lines = archive.read("operation-events.jsonl").decode("utf-8")
+            manifest = json.loads(archive.read("manifest.json"))
+            readme = archive.read("README.txt").decode("utf-8")
+            all_content = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist())
+        self.assertEqual(snapshot["operation_id"], "operation-1")
+        self.assertEqual(snapshot["status"], "failed")
+        self.assertNotIn("request", snapshot)
+        self.assertNotIn("result", snapshot)
+        self.assertIn("event-1", event_lines)
+        self.assertEqual(manifest["event_count"], 0)
+        self.assertEqual(manifest["logs_available"], False)
+        self.assertIn("отсутствуют", readme)
+        for secret in ("top-secret", "event-secret", "request-secret", "result-secret", "nested-secret", "unrelated-secret"):
+            self.assertNotIn(secret, all_content)
+
+    def test_archive_download_preserves_permission_and_missing_operation(self):
+        self.configure()
+        from fastapi.testclient import TestClient
+        from app import main
+        client = TestClient(main.app)
+        for role in ("viewer", "operator"):
+            with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": role}), patch.object(main.db, "get_operation") as get_operation:
+                response = client.get("/api/operations/missing/diagnostics")
+                self.assertEqual(response.status_code, 403)
+                get_operation.assert_not_called()
+        with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}), patch.object(main.db, "get_operation", return_value=None):
+            response = client.get("/api/operations/missing/diagnostics")
+            self.assertEqual(response.status_code, 404)
+    def test_authorized_download_returns_a_usable_zip_without_log_identifiers(self):
+        self.configure()
+        from fastapi.testclient import TestClient
+        from app import main
+
+        operation = {"operation_id": "operation-ok", "status": "completed", "events": []}
+        user = {"id": 1, "role": "custom", "permissions": ["diagnostics.read"]}
+        with patch.object(main.app_auth, "get_session_user", return_value=user), patch.object(main.db, "get_operation", return_value=operation):
+            response = TestClient(main.app).get("/api/operations/operation-ok/diagnostics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/zip")
+        self.assertIn(".zip", response.headers["content-disposition"])
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(json.loads(archive.read("operation.json"))["operation_id"], "operation-ok")
+    def test_default_archives_with_a_shared_trace_never_overwrite_each_other(self):
+        self.configure()
+        with patch.object(diagnostics.time, "time", return_value=1790770000):
+            first = diagnostics.build_diagnostic_archive(
+                trace_id="shared-trace", operation_snapshot={"operation_id": "operation-first"},
+            )
+            second = diagnostics.build_diagnostic_archive(
+                trace_id="shared-trace", operation_snapshot={"operation_id": "operation-second"},
+            )
+        self.assertNotEqual(first, second)
+        with zipfile.ZipFile(first) as archive:
+            self.assertEqual(json.loads(archive.read("operation.json"))["operation_id"], "operation-first")
+        with zipfile.ZipFile(second) as archive:
+            self.assertEqual(json.loads(archive.read("operation.json"))["operation_id"], "operation-second")
+        explicit = Path(self.temp_dir.name) / "requested.zip"
+        returned = diagnostics.build_diagnostic_archive(
+            trace_id="shared-trace", output_path=explicit,
+            operation_snapshot={"operation_id": "operation-explicit"},
+        )
+        self.assertEqual(returned, explicit)
+        with zipfile.ZipFile(explicit) as archive:
+            self.assertEqual(json.loads(archive.read("operation.json"))["operation_id"], "operation-explicit")
 
 
 if __name__ == "__main__":

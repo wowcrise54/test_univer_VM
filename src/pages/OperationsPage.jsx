@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, createIdempotencyKey } from "../api/client.js";
+import { api, createIdempotencyKey, downloadApiFile } from "../api/client.js";
 import {
   ActionMenu,
   Button,
@@ -9,6 +9,8 @@ import {
   useDialogAccessibility,
 } from "../shared/ui.jsx";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
+
+import { useOperationDetail } from "../features/operations/useOperationDetail.js";
 
 const PAGE_SIZE = 50;
 const ACTIVE_STATUSES = new Set([
@@ -24,6 +26,7 @@ const ATTENTION_STATUSES = new Set([
 ]);
 
 export function OperationsPage({
+  currentUser,
   operations = [],
   total = 0,
   updatedAt,
@@ -40,7 +43,15 @@ export function OperationsPage({
   const [filters, setFilters] = useState({ q: "", status: "", kind: "" });
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState(null);
+  const {
+    selected,
+    openDetail,
+    closeDetail,
+    refreshDetail,
+    updateDetail,
+    detailError,
+    detailBusy,
+  } = useOperationDetail();
   const [returnFocus, setReturnFocus] = useState(null);
   const [savedViews, setSavedViews] = useState([]);
   const [viewName, setViewName] = useState("");
@@ -94,15 +105,8 @@ export function OperationsPage({
         ? null
         : new URLSearchParams(window.location.search).get("operation");
     if (!operationId) return;
-    api(`/api/operations/${encodeURIComponent(operationId)}`)
-      .then(setSelected)
-      .catch((loadError) =>
-        showAlert?.(
-          `Не удалось открыть операцию: ${loadError.message || String(loadError)}`,
-          "error",
-        ),
-      );
-  }, [showAlert]);
+    openDetail({ operation_id: operationId });
+  }, [openDetail]);
 
   useEffect(() => {
     if (offset && offset >= total) {
@@ -111,29 +115,6 @@ export function OperationsPage({
       );
     }
   }, [offset, total]);
-
-  const selectedOperationId = selected?.operation_id;
-  const selectedStatus = selected?.status;
-  useEffect(() => {
-    if (!selectedOperationId || !ACTIVE_STATUSES.has(selectedStatus))
-      return undefined;
-    let cancelled = false;
-    const refreshDetail = async () => {
-      try {
-        const detail = await api(
-          `/api/operations/${encodeURIComponent(selectedOperationId)}`,
-        );
-        if (!cancelled) setSelected(detail);
-      } catch {
-        // Keep the last valid detail visible; the global status banner reports outages.
-      }
-    };
-    const timer = window.setInterval(refreshDetail, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [selectedOperationId, selectedStatus]);
 
   const refreshCurrent = () =>
     Promise.all([refreshOperations?.(request), refreshOperationSummary?.()]);
@@ -150,40 +131,43 @@ export function OperationsPage({
 
   const openOperation = (operation, trigger) => {
     setReturnFocus(trigger || null);
-    return runBusy(`operation:${operation.operation_id}`, async () => {
-      const detail = await api(
-        `/api/operations/${encodeURIComponent(operation.operation_id)}`,
-      );
-      setSelected(detail);
-      return detail;
-    });
+    return runBusy("operation:" + operation.operation_id, () =>
+      openDetail(operation),
+    );
   };
 
   const cancelOperation = (operation) =>
-    runBusy(`operationCancel:${operation.operation_id}`, async () => {
-      const result = await api(
-        `/api/operations/${encodeURIComponent(operation.operation_id)}/cancel`,
-        { method: "POST" },
+    runBusy("operationCancel:" + operation.operation_id, async () => {
+      const result = await updateDetail(operation, () =>
+        api(
+          "/api/operations/" +
+            encodeURIComponent(operation.operation_id) +
+            "/cancel",
+          { method: "POST" },
+        ),
       );
-      setSelected(result);
       await refreshCurrent();
       showAlert("Запрос на остановку операции принят.", "info");
       return result;
     });
 
   const retryOperation = (operation) =>
-    runBusy(`operationRetry:${operation.operation_id}`, async () => {
-      const result = await api(
-        `/api/operations/${encodeURIComponent(operation.operation_id)}/retry`,
-        {
-          method: "POST",
-          headers: { "X-Idempotency-Key": createIdempotencyKey("retry") },
-        },
-      );
-      setSelected(result.operation || null);
+    runBusy("operationRetry:" + operation.operation_id, async () => {
+      const detail = await updateDetail(operation, async () => {
+        const result = await api(
+          "/api/operations/" +
+            encodeURIComponent(operation.operation_id) +
+            "/retry",
+          {
+            method: "POST",
+            headers: { "X-Idempotency-Key": createIdempotencyKey("retry") },
+          },
+        );
+        return result.operation || null;
+      });
       await refreshCurrent();
       showAlert("Повтор операции поставлен в очередь.", "success");
-      return result;
+      return detail;
     });
 
   const saveCurrentView = () =>
@@ -558,8 +542,13 @@ export function OperationsPage({
       </Panel>
       {selected ? (
         <OperationDetail
+          key={selected.operation_id}
           operation={selected}
-          onClose={() => setSelected(null)}
+          onClose={closeDetail}
+          currentUser={currentUser}
+          detailError={detailError}
+          detailBusy={detailBusy}
+          onRefresh={refreshDetail}
           onCancel={cancelOperation}
           onRetry={retryOperation}
           busy={busy}
@@ -572,12 +561,33 @@ export function OperationsPage({
 
 function OperationDetail({
   operation,
+  currentUser,
+  detailError,
+  detailBusy,
+  onRefresh,
   onClose,
   onCancel,
   onRetry,
   busy,
   returnFocus,
 }) {
+  const [downloadError, setDownloadError] = useState(null);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const downloadDiagnostic = async () => {
+    setDownloadBusy(true);
+    try {
+      await downloadApiFile(
+        "/api/operations/" +
+          encodeURIComponent(operation.operation_id) +
+          "/diagnostics",
+      );
+      setDownloadError(null);
+    } catch (error) {
+      setDownloadError(error);
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
   const dialogRef = useDialogAccessibility(true, onClose, returnFocus);
   const drawer = (
     <div
@@ -644,13 +654,47 @@ function OperationDetail({
               Повторить
             </Button>
           ) : null}
-          <a
-            className="button secondary"
-            href={`/api/operations/${encodeURIComponent(operation.operation_id)}/diagnostics`}
+          {currentUser?.permissions?.includes("diagnostics.read") ? (
+            <Button
+              variant="secondary"
+              aria-label="Скачать диагностику"
+              busy={downloadBusy}
+              onClick={downloadDiagnostic}
+            >
+              Скачать диагностику
+            </Button>
+          ) : null}
+          <Button
+            variant="secondary"
+            aria-label="Обновить детали"
+            busy={detailBusy}
+            onClick={onRefresh}
           >
-            Диагностика
-          </a>
+            Обновить детали
+          </Button>
         </div>
+        {detailError ? (
+          <p role="alert">
+            Не удалось обновить детали:{" "}
+            {detailError.message || String(detailError)}
+          </p>
+        ) : null}
+        {downloadError ? (
+          <div role="alert">
+            <p>
+              Не удалось скачать диагностику:{" "}
+              {downloadError.message || String(downloadError)}
+            </p>
+            <Button
+              variant="secondary"
+              aria-label="Повторить скачивание"
+              busy={downloadBusy}
+              onClick={downloadDiagnostic}
+            >
+              Повторить скачивание
+            </Button>
+          </div>
+        ) : null}
         <Disclosure
           title="Хронология"
           description="Этапы и изменения состояния"

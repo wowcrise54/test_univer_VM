@@ -6,6 +6,7 @@ import { PassportsPage } from "../pages/PassportsPage.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
 import { AutomationsPage } from "../pages/AutomationsPage.jsx";
 import { TasksPage } from "../pages/TasksPage.jsx";
+import { DashboardsPage } from "../pages/DashboardsPage.jsx";
 import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
 import { RemediationPage } from "../pages/RemediationPage.jsx";
 import {
@@ -27,16 +28,22 @@ export function App() {
 }
 
 function AuthenticatedApp({ auth }) {
-  const { navigate, path, route } = useRouter();
+  const { navigate, path, search, route } = useRouter();
   const routeAllowed = !route || canAccessRoute(route, auth.user);
   return (
     <AppDataProvider routeId={routeAllowed ? route?.id : "forbidden"}>
-      <AppShell navigate={navigate} path={path} route={route} auth={auth} />
+      <AppShell
+        navigate={navigate}
+        path={path}
+        search={search}
+        route={route}
+        auth={auth}
+      />
     </AppDataProvider>
   );
 }
 
-function AppShell({ navigate, path, route, auth }) {
+function AppShell({ navigate, path, search, route, auth }) {
   const appData = useAppDataContext();
   const routeAllowed = !route || canAccessRoute(route, auth.user);
   const visibleRoute = routeAllowed
@@ -82,8 +89,9 @@ function AppShell({ navigate, path, route, auth }) {
         {activeRouteId === "vm" ? (
           <WorkflowRail activeRouteId={activeRouteId} onNavigate={navigate} />
         ) : null}
-        <AlertStack alerts={appData.alerts} />
+        <AlertStack alerts={appData.alerts} onDismiss={appData.dismissAlert} />
         <ActivePage
+          key={`${activeRouteId}:${search}`}
           routeId={activeRouteId}
           onNavigate={navigate}
           currentUser={auth.user}
@@ -186,6 +194,7 @@ function ActivePage({ routeId, ...props }) {
   if (routeId === "operations") {
     return (
       <OperationsPage
+        currentUser={props.currentUser}
         operations={props.operations}
         total={props.operationsTotal}
         updatedAt={props.operationsUpdatedAt}
@@ -204,9 +213,19 @@ function ActivePage({ routeId, ...props }) {
   if (routeId === "automations") {
     return <AutomationsPage showAlert={props.showAlert} />;
   }
+  if (routeId === "dashboards") {
+    return (
+      <DashboardsPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
   if (routeId === "vulnerabilities") {
     return (
       <VulnerabilitiesPage
+        onNavigate={props.onNavigate}
         currentUser={props.currentUser}
         showAlert={props.showAlert}
       />

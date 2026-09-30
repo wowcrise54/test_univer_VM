@@ -1799,3 +1799,32 @@ td code,
     animation: none;
   }
 }
+
+.alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.alert > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alert-dismiss {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.alert-dismiss:hover,
+.alert-dismiss:focus-visible {
+  background: rgb(0 0 0 / 8%);
+}

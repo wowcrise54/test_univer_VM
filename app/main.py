@@ -35,7 +35,6 @@ load_dotenv(ROOT_DIR / ".env")
 
 from .diagnostics import (
     configure_diagnostics,
-    build_diagnostic_archive,
     current_trace_id,
     diagnostic_context,
     log_event,
@@ -45,6 +44,8 @@ from .diagnostics import (
     redact,
     set_diagnostic_context,
 )
+
+from .services.operation_diagnostics import build_operation_diagnostic_archive
 
 configure_diagnostics()
 
@@ -1316,10 +1317,7 @@ def operation_diagnostics(operation_id: str) -> FileResponse:
     operation = db.get_operation(operation_id)
     if not operation:
         raise HTTPException(status_code=404, detail={"code": "OPERATION_NOT_FOUND", "message": "Operation not found.", "component": "operations"})
-    path = build_diagnostic_archive(
-        trace_id=operation.get("trace_id") or None,
-        job_id=None if operation.get("trace_id") else operation.get("source_id"),
-    )
+    path = build_operation_diagnostic_archive(operation)
     return FileResponse(path, media_type="application/zip", filename=path.name)
 
 

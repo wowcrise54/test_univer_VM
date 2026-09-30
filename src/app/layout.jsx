@@ -488,7 +488,7 @@ export function WorkflowRail({ activeRouteId, onNavigate }) {
   );
 }
 
-export function AlertStack({ alerts }) {
+export function AlertStack({ alerts, onDismiss }) {
   if (!alerts.length) return null;
   return (
     <div className="alerts" aria-live="polite" aria-relevant="additions text">
@@ -498,7 +498,17 @@ export function AlertStack({ alerts }) {
           role={alert.type === "error" ? "alert" : "status"}
           key={alert.id}
         >
-          {alert.message}
+          <span>{alert.message}</span>
+          {onDismiss ? (
+            <button
+              type="button"
+              className="alert-dismiss"
+              aria-label="Закрыть уведомление"
+              onClick={() => onDismiss(alert.id)}
+            >
+              ×
+            </button>
+          ) : null}
         </div>
       ))}
     </div>

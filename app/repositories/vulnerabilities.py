@@ -1452,6 +1452,7 @@ class VulnerabilityAnalyticsRepository:
         self,
         *,
         selector: str,
+        asset_id: str | None = None,
         host_q: str | None = None,
         os: str | None = None,
         asset_type: str | None = None,
@@ -1488,6 +1489,7 @@ class VulnerabilityAnalyticsRepository:
             severity=severity,
             source=source,
             selector=selector,
+            asset_id=asset_id,
         )
         aggregate = """
             , aggregated_hosts AS (
