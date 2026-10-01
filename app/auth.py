@@ -521,48 +521,7 @@ def effective_permissions(user: dict[str, Any]) -> set[str]:
     return set(BUILTIN_ROLE_PERMISSIONS.get(role if isinstance(role, str) else "", ()))
 
 
-def required_permission(method:str,path:str)->str|None:
-    """Declarative policy map for every API domain; unknown writes are denied."""
-    method=method.upper()
-    if path.startswith("/api/vm/workflows/") and path.endswith("/cancel"): return "operations.cancel"
-    if path.startswith("/api/vm/workflows/") and path.endswith("/retry"): return "operations.retry"
-    if path=="/api/vm/workflows/scan/preflight": return "tasks.read"
-    if path=="/api/vm/workflows/scan": return "tasks.execute"
-    if path.startswith("/api/vm"): return "operations.read"
-    if path.startswith("/api/auth/users"): return "security.users.read" if method in {"GET","HEAD"} else "security.users.manage"
-    if path.startswith("/api/auth/roles") or path=="/api/auth/permissions": return "security.roles.read" if method in {"GET","HEAD"} else "security.roles.manage"
-    if path.startswith("/api/auth/audit"): return "security.audit.read"
-    if path.startswith("/api/diagnostics/frontend"): return "diagnostics.write"
-    if path.startswith("/api/session/connect") or path.startswith("/api/session/disconnect"): return "connection.manage"
-    if path.startswith("/api/session") or path.startswith("/api/mpvm/lookups") or path.startswith("/api/mpvm/scanner-tasks/remote"): return "connection.read"
-    if path.startswith("/api/operations/") and path.endswith("/diagnostics"): return "diagnostics.read"
-    if path.startswith("/api/operations"):
-        if path.endswith("/cancel"): return "operations.cancel"
-        if path.endswith("/retry"): return "operations.retry"
-        return "operations.read"
-    if path.startswith("/api/saved-views"): return "saved_views.read" if method in {"GET","HEAD"} else "saved_views.manage"
-    if path.startswith("/api/scanner-tasks"):
-        if any(path.endswith(s) for s in ("/start","/stop","/validate","/retry-false")): return "tasks.execute"
-        return "tasks.read" if method in {"GET","HEAD"} else "tasks.manage"
-    if path.startswith("/api/reports/") or path.startswith("/api/asset-card-query/export") or (path.startswith("/api/exports/") and method=="GET"): return "imports_exports.read"
-    if path.startswith("/api/import") or path.startswith("/api/exports/pdql"): return "imports_exports.manage"
-    if path.startswith("/api/risk"): return "risk.read"
-    if path.startswith("/api/assets/context"): return "risk.read" if method in {"GET","HEAD"} else "risk.manage"
-    if path.startswith("/api/asset-groups") and any(path.endswith(s) for s in ("/scan","/verify")): return "tasks.execute"
-    if path.startswith("/api/asset-groups"): return "asset_groups.read" if method in {"GET","HEAD"} else "asset_groups.manage"
-    if path.startswith("/api/assets") or path.startswith("/api/vulnerabilities") or path.startswith("/api/coverage"): return "assets.read"
-    if path.startswith("/api/asset-card-query"): return "asset_cards.read"
-    if path.startswith("/api/asset-cards"):
-        if any(marker in path for marker in ("/build","/refresh-scan")): return "asset_cards.build" if method not in {"GET","HEAD"} else "asset_cards.read"
-        return "asset_cards.read" if method in {"GET","HEAD"} or path.endswith("/query-assets") else "asset_cards.manage"
-    if path.startswith("/api/vulnerability-passports"):
-        return "passports.read" if method in {"GET","HEAD"} else "passports.manage"
-    if path.startswith("/api/remediation/policy"): return "remediation.read" if method in {"GET","HEAD"} else "remediation.policy"
-    if path.startswith("/api/remediation"): return "remediation.read" if method in {"GET","HEAD"} else "remediation.manage"
-    if path.startswith("/api/automations"):
-        if any(path.endswith(s) for s in ("/run","/cancel","/retry")): return "automations.execute"
-        return "automations.read" if method in {"GET","HEAD"} else "automations.manage"
-    if path.startswith("/api/notifications"): return "notifications.read" if method in {"GET","HEAD"} else "notifications.manage"
-    if path in {"/api/attention", "/api/search"}: return "system.read"
-    if path.startswith("/api/system") or path=="/api/defaults": return "system.read"
-    return "system.read" if method in {"GET","HEAD"} else "__deny__"
+def required_permission(method: str, path: str) -> str:
+    from .api.permissions import required_permission as explicit_permission
+
+    return explicit_permission(method, path)

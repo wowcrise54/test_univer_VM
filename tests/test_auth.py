@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, main
@@ -59,6 +60,34 @@ def test_unknown_api_write_is_denied_by_default():
     assert response.json()["detail"]["code"] == "PERMISSION_DENIED"
 
 
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/not-a-route"),
+    ("HEAD", "/api/not-a-route"),
+    ("GET", "/api/system/new-sensitive-report"),
+    ("GET", "/api/operations/example/new-sensitive-report"),
+    ("DELETE", "/api/operations/example"),
+])
+def test_unmapped_methods_and_routes_are_denied_even_for_admin(method, path):
+    with patch.object(auth, "get_session_user", return_value=ADMIN), patch.object(auth, "audit_event"):
+        response = TestClient(main.app).request(method, path)
+    assert response.status_code == 403
+
+
+def test_new_registered_read_route_requires_its_own_permission_policy():
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.middleware("http")(main.application_auth_middleware)
+
+    @app.get("/api/system/new-sensitive-report")
+    def sensitive_report():
+        return {"sensitive": "must not reach handler"}
+
+    with patch.object(auth, "get_session_user", return_value=VIEWER), patch.object(auth, "audit_event"):
+        response = TestClient(app).get("/api/system/new-sensitive-report")
+    assert response.status_code == 403
+
+
 def test_cross_site_mutation_is_rejected_before_session_lookup():
     with patch.object(auth, "get_session_user") as get_session_user:
         response = TestClient(main.app).post(
@@ -109,15 +138,78 @@ def test_effective_permissions_uses_assigned_roles_then_legacy_role():
 
 
 def test_all_registered_api_routes_have_an_explicit_policy():
+    from app.api.permissions import ROUTE_PERMISSIONS
+
     public = main.PUBLIC_API_PATHS | {"/api/auth/me", "/api/auth/logout"}
     missing = []
-    for route in main.app.routes:
-        path = getattr(route, "path", "")
-        for method in getattr(route, "methods", set()):
-            if path.startswith("/api/") and path not in public and method != "OPTIONS":
-                if auth.required_permission(method, path) == "__deny__":
-                    missing.append(f"{method} {path}")
+    for path, methods in main.app.openapi()["paths"].items():
+        for method in methods:
+            if path.startswith("/api/") and path not in public and method != "parameters":
+                if (method.upper(), path) not in ROUTE_PERMISSIONS:
+                    missing.append(f"{method.upper()} {path}")
     assert missing == []
+
+
+def test_hidden_static_route_does_not_inherit_dynamic_route_permission():
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.middleware("http")(main.application_auth_middleware)
+
+    @app.get("/api/operations/new-secret", include_in_schema=False)
+    def hidden_report():
+        return {"secret": "must not be returned"}
+
+    @app.get("/api/operations/{operation_id}")
+    def operation(operation_id: str):
+        return {"operation_id": operation_id}
+
+    with patch.object(auth, "get_session_user", return_value=VIEWER), patch.object(auth, "audit_event"):
+        client = TestClient(app)
+        assert client.get("/api/operations/new-secret").status_code == 403
+        assert client.get("/api/operations/known-id").status_code == 200
+
+
+def test_separate_head_handler_requires_its_own_policy():
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.middleware("http")(main.application_auth_middleware)
+
+    @app.head("/api/operations/{operation_id}", include_in_schema=False)
+    def sensitive_head(operation_id: str):
+        raise AssertionError("unmapped HEAD must not run")
+
+    @app.get("/api/operations/{operation_id}")
+    def operation(operation_id: str):
+        return {"operation_id": operation_id}
+
+    with patch.object(auth, "get_session_user", return_value=VIEWER), patch.object(auth, "audit_event"):
+        response = TestClient(app).head("/api/operations/known-id")
+    assert response.status_code == 403
+
+
+def test_shared_get_head_handler_uses_its_explicit_get_policy():
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.middleware("http")(main.application_auth_middleware)
+
+    @app.api_route("/api/operations/{operation_id}", methods=["GET", "HEAD"])
+    def operation(operation_id: str):
+        return {"operation_id": operation_id}
+
+    with patch.object(auth, "get_session_user", return_value=VIEWER), patch.object(auth, "audit_event"):
+        assert TestClient(app).head("/api/operations/known-id").status_code == 200
+
+
+@pytest.mark.parametrize("method,path,expected", [
+    ("HEAD", "/api/operations/known-id", "operations.read"),
+    ("GET", "/api/no-policy", "__deny__"),
+    ("POST", "/api/operations/known-id", "__deny__"),
+])
+def test_compatibility_permission_resolver_is_explicit(method, path, expected):
+    assert auth.required_permission(method, path) == expected
 
 
 def test_sensitive_permission_does_not_require_password_confirmation():

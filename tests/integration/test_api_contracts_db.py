@@ -128,18 +128,18 @@ def test_unknown_mutation_routes_are_denied_for_everyone(test_db):
         ).fetchone()
         conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role_id))
     client = _login("contract.super")
-    # method-matrix contract: a route only allows its declared methods (405,
-    # answered by the framework before the auth middleware), and the policy
-    # function itself is deny-by-default for unknown mutation paths
-    assert client.post("/api/assets").status_code == 405
-    assert client.delete("/api/assets").status_code == 405
+    # Methods without an explicit route policy are denied before reaching the
+    # handler, including unsupported mutations of an existing read-only path.
+    assert client.post("/api/assets").status_code == 403
+    assert client.delete("/api/assets").status_code == 403
     # deny-by-default applies to paths outside every known domain prefix
     assert auth.required_permission("POST", "/api/unknown-mutation") == "__deny__"
     assert auth.required_permission("DELETE", "/api/unknown-mutation") == "__deny__"
     # and reads always resolve to a known read permission, never None
     assert auth.required_permission("GET", "/api/assets") == "assets.read"
     assert auth.required_permission("GET", "/api/vulnerabilities") == "assets.read"
-    assert auth.required_permission("GET", "/api/asset-cards") == "asset_cards.read"
+    assert auth.required_permission("GET", "/api/asset-cards/known-id") == "asset_cards.read"
+    assert auth.required_permission("GET", "/api/asset-cards") == "__deny__"
 
 
 # ---------------------------------------------------------------------------
@@ -173,40 +173,21 @@ def test_openapi_contains_every_registered_api_route(test_db):
 
 def test_every_non_public_api_route_has_an_explicit_policy(test_db):
     """Adding a new /api route must require an explicit authorization policy.
-
-    Reads may fall back to ``system.read``; every mutation must map to a real
-    permission key (or ``__deny__``), never None.
     """
-    from app.main import PUBLIC_API_PATHS
+    from app.api.permissions import ROUTE_PERMISSIONS
 
-    registered = set()
-    for route in main.app.routes:
-        methods = getattr(route, "methods", None)
-        path = getattr(route, "path", "")
-        if not path.startswith("/api/") or not methods:
+    public = main.PUBLIC_API_PATHS | {"/api/auth/me", "/api/auth/logout"}
+    problems = []
+    for path, methods in main.app.openapi()["paths"].items():
+        if not path.startswith("/api/") or path in public:
             continue
         for method in methods:
-            if method == "OPTIONS":
+            if method == "parameters":
                 continue
-            if path in PUBLIC_API_PATHS:
-                continue
-            registered.add((method.upper(), path))
-
-    # Exercise the policy function against parameterized routes with a sample.
-    problems = []
-    for method, path in sorted(registered):
-        sample_path = path
-        for placeholder in ("{user_id}", "{role_id}", "{case_id}", "{workflow_id}",
-                            "{operation_id}", "{job_id}", "{group_id}", "{finding_id}"):
-            if placeholder in sample_path:
-                sample_path = sample_path.replace(placeholder, "1")
-        permission = auth.required_permission(method, sample_path)
-        if method in {"GET", "HEAD", "OPTIONS"}:
-            assert permission is not None, f"{method} {path} has no read policy"
-        else:
-            if permission is None or permission not in auth.PERMISSIONS and permission != "__deny__":
-                problems.append(f"{method} {path} -> {permission!r}")
-    assert problems == [], "mutations without a known permission policy: " + "; ".join(problems)
+            permission = ROUTE_PERMISSIONS.get((method.upper(), path))
+            if permission not in auth.PERMISSIONS:
+                problems.append(f"{method.upper()} {path} -> {permission!r}")
+    assert problems == [], "routes without an explicit permission policy: " + "; ".join(problems)
 
 
 # ---------------------------------------------------------------------------

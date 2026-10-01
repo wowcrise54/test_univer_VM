@@ -506,6 +506,7 @@ describe("risk workspace workflows", () => {
     );
     expect(payload("/api/assets/context", "PATCH")).toEqual({
       asset_ids: ["asset-1"],
+      expected_versions: { "asset-1": 0 },
       values: {
         criticality: "high",
         environment: "test",

@@ -15,8 +15,8 @@ class RiskService:
     def summary(self) -> dict[str, Any]:
         return self.repository.summary()
 
-    def set_contexts(self, asset_ids: list[str], values: dict[str, Any], actor: str | None) -> dict[str, Any]:
-        return self.repository.set_contexts(asset_ids, values, actor)
+    def set_contexts(self, asset_ids: list[str], values: dict[str, Any], actor: str | None, expected_versions: dict[str, int] | None = None) -> dict[str, Any]:
+        return self.repository.set_contexts(asset_ids, values, actor, expected_versions)
 
     def import_contexts(self, csv_text: str, actor: str | None) -> dict[str, Any]:
         return self.repository.import_csv(csv_text, actor)

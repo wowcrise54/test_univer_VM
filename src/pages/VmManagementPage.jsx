@@ -187,7 +187,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     </section>
 
     {selectedWorkflowId ? <WorkflowDrawer item={workflow.data} loading={workflow.isLoading} onClose={() => { setSelectedWorkflowId(null); setQuery({}); }} onCancel={() => workflowAction("cancel")} onRetry={() => workflowAction("retry")} /> : null}
-    {selectedCampaignId ? <CampaignDrawer item={campaign.data} loading={campaign.isLoading} permissions={permissions} showAlert={showAlert} onWorkflow={openWorkflow} onRefresh={refresh} onClose={() => { setSelectedCampaignId(null); setQuery({}); }} /> : null}
+    {selectedCampaignId ? <CampaignDrawer key={selectedCampaignId} item={campaign.data} loading={campaign.isLoading} permissions={permissions} showAlert={showAlert} onWorkflow={openWorkflow} onRefresh={refresh} onReread={() => campaign.refetch()} onClose={() => { setSelectedCampaignId(null); setQuery({}); }} /> : null}
   </div>;
 }
 
@@ -273,20 +273,25 @@ function WorkflowDrawer({ item, loading, onClose, onCancel, onRetry }) {
     </>}</aside></div>;
 }
 
-function CampaignDrawer({ item, loading, permissions, showAlert, onWorkflow, onRefresh, onClose }) {
+function CampaignDrawer({ item, loading, permissions, showAlert, onWorkflow, onRefresh, onReread, onClose }) {
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (item) setDraft({ name: item.name, assignee: item.assignee || "", due_at: inputDate(item.due_at), status: item.status, comment: item.comment || "" }); }, [item]);
-  const save = async () => { setBusy(true); try { await api(`/api/remediation/campaigns/${item.campaign_id}`, { method: "PATCH", body: JSON.stringify({ ...draft, due_at: draft.due_at || null }) }); showAlert("Кампания обновлена.", "success"); await onRefresh(); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
+  const [conflict, setConflict] = useState(false);
+  useEffect(() => { if (item && !draft) setDraft(campaignDraft(item)); }, [item, draft]);
+  const save = async () => { setBusy(true); try { const next = await api(`/api/remediation/campaigns/${item.campaign_id}`, { method: "PATCH", body: JSON.stringify({ ...draft, due_at: draft.due_at || null }) }); setDraft(campaignDraft(next)); showAlert("Кампания обновлена.", "success"); await onRefresh(); } catch (error) { if (error.code === "VERSION_CONFLICT") setConflict(true); showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
+  const reread = async () => { setBusy(true); try { const result = await onReread(); if (result.error) throw result.error; setDraft(campaignDraft(result.data)); setConflict(false); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   const verify = async () => { setBusy(true); try { const result = await api(`/api/remediation/campaigns/${item.campaign_id}/verify`, { method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("campaign-verify") } }); showAlert("Проверочное сканирование запущено.", "success"); onWorkflow(result.workflow_id); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer vm-campaign-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-campaign-title"><header><div><span>Кампания устранения</span><h2 id="vm-campaign-title">{item?.name || "Загрузка…"}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     {loading || !item || !draft ? <p>Загрузка кампании…</p> : <><div className="form-grid"><label>Название<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Ответственный<input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} /></label><label>Срок<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Статус<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>{["draft", "active", "completed", "cancelled"].map((value) => <option key={value} value={value}>{campaignLabel(value)}</option>)}</select></label><label className="span-2">Комментарий<textarea value={draft.comment} onChange={(event) => setDraft({ ...draft, comment: event.target.value })} /></label></div>
-      <div className="action-row"><Button busy={busy} disabled={!permissions.has("risk.manage")} onClick={save}>Сохранить</Button><Button busy={busy} disabled={!permissions.has("tasks.execute") || !permissions.has("risk.manage") || !permissions.has("remediation.manage")} onClick={verify}>Запустить проверку</Button></div>
+      {conflict ? <div role="alert" className="inline-error">Кампания изменена другим оператором. Перечитайте её перед повторным сохранением.<Button busy={busy} variant="secondary" onClick={reread}>Перечитать кампанию</Button></div> : null}
+      <div className="action-row"><Button busy={busy} disabled={conflict || !permissions.has("risk.manage")} onClick={save}>Сохранить</Button><Button busy={busy} disabled={!permissions.has("tasks.execute") || !permissions.has("risk.manage") || !permissions.has("remediation.manage")} onClick={verify}>Запустить проверку</Button></div>
       {item.asset_group_id ? <p className="vm-workflow-time">Группа активов: <a href={`/asset-groups?group=${encodeURIComponent(item.asset_group_id)}`}>{item.asset_group_name || item.asset_group_id}</a></p> : null}
       <h3>Кейсы · {item.cases?.length || 0}</h3><div className="vm-case-list">{(item.cases || []).map((entry) => <a href={`/remediation?case=${encodeURIComponent(entry.case_id)}`} key={entry.case_id}><span className={`severity severity--${entry.severity}`}>{entry.severity}</span><div><strong>{entry.cve || entry.title}</strong><small>{entry.asset_id} · {entry.verification_status || "none"}</small></div><b>{entry.status}</b></a>)}</div>
       <details><summary>История кампании ({item.events?.length || 0})</summary><ul className="audit-list">{(item.events || []).map((event) => <li key={event.event_id}><strong>{event.event_type}</strong> · {date(event.created_at)}</li>)}</ul></details>
     </>}</aside></div>;
 }
+
+function campaignDraft(item) { return { name: item.name, assignee: item.assignee || "", due_at: inputDate(item.due_at), status: item.status, comment: item.comment || "", expected_version: item.version }; }
 
 function queryValue(key) { return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key); }
 function navigateHref(href, onNavigate) {

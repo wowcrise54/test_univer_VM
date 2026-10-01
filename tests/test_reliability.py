@@ -61,9 +61,10 @@ class SystemStatusTests(unittest.TestCase):
             patch.object(main.db, "sync_operations_from_sources"),
             patch.object(main, "start_asset_search_backfill"),
             patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}),
-            TestClient(main.app) as client,
         ):
-            response = client.get("/api/not-found")
+            # A mapped route can still return 404. Unmapped routes are now
+            # deliberately denied by the authorization policy before routing.
+            response = TestClient(main.app).get("/api/exports/not-found-recovery-test.csv")
 
         self.assertEqual(response.status_code, 404)
         detail = response.json()["detail"]

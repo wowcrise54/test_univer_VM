@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..domain.errors import DomainError
+
 router = APIRouter(tags=["risk"])
 
 
@@ -20,6 +22,7 @@ class ContextValues(BaseModel):
 class ContextUpdate(BaseModel):
     asset_ids: list[str] = Field(min_length=1, max_length=500)
     values: ContextValues
+    expected_versions: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
 
 class ContextCsvImport(BaseModel):
@@ -36,6 +39,7 @@ class CampaignCreate(BaseModel):
 
 
 class CampaignUpdate(BaseModel):
+    expected_version: int | None = Field(default=None, ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=200)
     assignee: str | None = Field(default=None, max_length=200)
     due_at: datetime | None = None
@@ -56,10 +60,13 @@ def actor(request: Request) -> str | None:
 def update_context(request: Request, payload: ContextUpdate) -> dict:
     try:
         return service(request).set_contexts(
-            payload.asset_ids, payload.values.model_dump(exclude_unset=True), actor(request)
+            payload.asset_ids, payload.values.model_dump(exclude_unset=True), actor(request),
+            **({"expected_versions": payload.expected_versions} if payload.expected_versions is not None else {}),
         )
     except ValueError as exc:
         raise HTTPException(422, detail={"code": "INVALID_ASSET_CONTEXT", "message": str(exc)}) from exc
+    except DomainError as exc:
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": exc.message, "context": exc.context}) from exc
 
 
 @router.post("/api/assets/context/import")
@@ -116,9 +123,12 @@ def get_campaign(request: Request, campaign_id: str) -> dict:
 
 @router.patch("/api/remediation/campaigns/{campaign_id}")
 def update_campaign(request: Request, campaign_id: str, payload: CampaignUpdate) -> dict:
-    result = service(request).update_campaign(
-        campaign_id, payload.model_dump(exclude_unset=True, mode="json"), actor(request)
-    )
+    try:
+        result = service(request).update_campaign(
+            campaign_id, payload.model_dump(exclude_unset=True, mode="json"), actor(request)
+        )
+    except DomainError as exc:
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": exc.message, "context": exc.context}) from exc
     if not result:
         raise HTTPException(404, detail={"code": "CAMPAIGN_NOT_FOUND", "message": "Campaign not found."})
     return result

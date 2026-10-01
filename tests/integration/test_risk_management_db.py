@@ -196,3 +196,147 @@ def test_explicit_null_tags_clear_previous_tags_as_allowed_by_http_schema(risk_d
     with db.connect() as conn:
         current = conn.execute("SELECT tags,version FROM asset_contexts WHERE asset_id='asset-a'").fetchone()
         assert current["tags"] == [] and current["version"] == 2
+
+
+@pytest.mark.parametrize("payload,want", [
+    ('{"exploit": false}', False),
+    ('{"description": "exploit available"}', None),
+    ('{"exploit": "true"}', None),
+    ('{"unrelated": {"exploit": true}}', None),
+    ('not-json exploit', None),
+    ('{"description": "\\u0000"}', None),
+    ('{"value": 1e1000000}', None),
+    ('{"exploit": true}', True),
+])
+def test_exploitation_evidence_requires_explicit_boolean(risk_data, payload, want):
+    now = db.now_utc()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO vulnerability_passports(internal_id,raw_detail_json,first_seen,last_seen) VALUES(%s,%s,%s,%s)", ("evidence", payload, now, now))
+        conn.execute("UPDATE remediation_cases SET passport_internal_id='evidence' WHERE case_id='case-critical'")
+    row = next(row for row in risk_data.queue()["rows"] if row["case_id"] == "case-critical")
+    assert row["exploitation_evidence"] is want
+    assert ("exploitation:local-passport" in row["risk_factors"]) is (want is True)
+    assert row["exploitation_evidence_source"] == ("raw_detail_json:exploit" if want is not None else None)
+    assert row["exploitation_evidence_updated_at"] == (now if want is not None else None)
+
+
+def test_stale_context_batch_rolls_back_values_and_audit(risk_data):
+    from app.domain.errors import DomainError
+    risk_data.set_contexts(["asset-b"], {"owner": "current"}, "first")
+    with pytest.raises(DomainError) as error:
+        risk_data.set_contexts(["asset-a", "asset-b"], {"owner": "stale"}, "second", expected_versions={"asset-a": 0, "asset-b": 0})
+    assert error.value.code == "VERSION_CONFLICT" and error.value.status_code == 409
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM asset_context_events").fetchone()["n"] == 1
+        assert conn.execute("SELECT 1 FROM asset_contexts WHERE asset_id='asset-a'").fetchone() is None
+        assert conn.execute("SELECT owner FROM asset_contexts WHERE asset_id='asset-b'").fetchone()["owner"] == "current"
+    risk_data.set_contexts(["asset-b"], {"owner": "fresh"}, "second", expected_versions={"asset-b": 1})
+    row = next(row for row in risk_data.queue()["rows"] if row["asset_id"] == "asset-b")
+    assert row["context_version"] == 2
+
+
+def test_stale_campaign_cannot_overwrite_or_append_audit(risk_data):
+    from app.domain.errors import DomainError
+    campaign = risk_data.create_campaign({"name": "Campaign", "case_ids": ["case-critical"]}, "first")
+    key = campaign["campaign_id"]
+    risk_data.update_campaign(key, {"name": "Current", "expected_version": campaign["version"]}, "second")
+    with pytest.raises(DomainError) as error:
+        risk_data.update_campaign(key, {"name": "Stale", "expected_version": campaign["version"]}, "third")
+    assert error.value.code == "VERSION_CONFLICT" and error.value.status_code == 409
+    current = risk_data.get_campaign(key)
+    assert current["name"] == "Current" and current["version"] == 2
+    assert len(current["events"]) == 2
+
+
+def test_exploitation_conflicting_sources_remain_unknown_and_writes_rederive(risk_data):
+    now = db.now_utc()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO vulnerability_passports(internal_id,raw_detail_json,metrics_json,first_seen,last_seen) VALUES(%s,%s,%s,%s,%s)", ("conflicting", '{"exploit": true}', '{"exploit": false}', now, now))
+        conn.execute("UPDATE remediation_cases SET passport_internal_id='conflicting' WHERE case_id='case-critical'")
+    unknown = next(row for row in risk_data.queue()["rows"] if row["case_id"] == "case-critical")
+    assert unknown["exploitation_evidence"] is None
+    assert unknown["exploitation_evidence_source"] is None
+    with db.connect() as conn:
+        conn.execute("UPDATE vulnerability_passports SET raw_detail_json='{}' WHERE internal_id='conflicting'")
+    negative = next(row for row in risk_data.queue()["rows"] if row["case_id"] == "case-critical")
+    assert negative["exploitation_evidence"] is False
+    assert negative["exploitation_evidence_source"] == "metrics_json:exploit"
+    assert negative["risk_score"] == unknown["risk_score"]
+
+
+def test_context_creation_race_allows_one_snapshot_writer(risk_data):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.domain.errors import DomainError
+
+    ready = Barrier(2)
+
+    def write(owner):
+        ready.wait(timeout=5)
+        try:
+            risk_data.set_contexts(["asset-a"], {"owner": owner}, owner, expected_versions={"asset-a": 0})
+            return "saved"
+        except DomainError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(write, ["first", "second"]))
+    assert sorted(results) == ["VERSION_CONFLICT", "saved"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT version FROM asset_contexts WHERE asset_id='asset-a'").fetchone()["version"] == 1
+        assert conn.execute("SELECT COUNT(*) n FROM asset_context_events").fetchone()["n"] == 1
+
+
+def test_risk_http_conflicts_return_409_without_overwriting(risk_data):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.risk import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.state.container = SimpleNamespace(services=SimpleNamespace(risk=risk_data))
+    risk_data.set_contexts(["asset-a"], {"owner": "current"}, "first")
+    campaign = risk_data.create_campaign({"name": "Campaign", "case_ids": ["case-critical"]}, "first")
+    client = TestClient(app, raise_server_exceptions=False)
+    for path, payload in (
+        ("/api/assets/context", {"asset_ids": ["asset-a"], "values": {"owner": "stale"}, "expected_versions": {"asset-a": 0}}),
+        (f"/api/remediation/campaigns/{campaign['campaign_id']}", {"name": "Stale", "expected_version": 99}),
+    ):
+        response = client.patch(path, json=payload)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "VERSION_CONFLICT"
+
+
+def test_campaign_empty_patch_checks_supplied_snapshot(risk_data):
+    from app.domain.errors import DomainError
+    campaign = risk_data.create_campaign({"name": "Campaign", "case_ids": ["case-critical"]}, "first")
+    key = campaign["campaign_id"]
+    with pytest.raises(DomainError):
+        risk_data.update_campaign(key, {"expected_version": 99}, "second")
+    unchanged = risk_data.update_campaign(key, {"expected_version": 1}, "second")
+    assert unchanged["version"] == 1 and len(unchanged["events"]) == 1
+    assert risk_data.update_campaign(MISSING_CAMPAIGN, {"expected_version": 1}, "second") is None
+
+
+def test_context_partial_expectations_preserve_legacy_targets(risk_data):
+    result = risk_data.set_contexts(["asset-b", "asset-a"], {"owner": "owner"}, "first", expected_versions={"asset-a": 0})
+    assert result == {"updated_count": 2, "asset_ids": ["asset-b", "asset-a"]}
+
+
+def test_csv_concurrent_context_edit_is_reported_without_overwrite(risk_data, monkeypatch):
+    original = risk_data.repository.set_contexts
+
+    def concurrent_write(asset_ids, values, actor, expected_versions=None):
+        original(asset_ids, {"owner": "other operator"}, "concurrent")
+        return original(asset_ids, values, actor, expected_versions)
+
+    monkeypatch.setattr(risk_data.repository, "set_contexts", concurrent_write)
+    result = risk_data.import_contexts("asset_id,owner\nasset-a,stale import\n", "importer")
+    assert result["matched"] == 0 and result["errors"][0]["line"] == 2
+    with db.connect() as conn:
+        assert conn.execute("SELECT owner,version FROM asset_contexts WHERE asset_id='asset-a'").fetchone() == {"owner": "other operator", "version": 1}
+        assert conn.execute("SELECT COUNT(*) n FROM asset_context_events").fetchone()["n"] == 1

@@ -5,7 +5,9 @@ from dataclasses import dataclass
 
 from ..mpvm_client import MpVmClient
 from ..repositories import RepositoryBundle
+from ..repositories.readiness import ReadinessRepository
 from ..services import ServiceBundle
+from ..services.recovery import DatabaseRecovery
 from .config import Settings
 from .runtime import OperationRunner
 
@@ -31,6 +33,7 @@ class AppContainer:
             scan_postprocess_workers,
         )
         self.settings = settings
+        self.database_recovery = DatabaseRecovery(probe=ReadinessRepository().probe)
         self.session = RuntimeSession()
         self.repositories = RepositoryBundle(coverage_stale_days=settings.coverage_stale_days)
         self.operation_runner = OperationRunner(
@@ -60,4 +63,5 @@ class AppContainer:
         self.operation_runner.start()
 
     def shutdown(self) -> None:
+        self.database_recovery.stop()
         self.operation_runner.shutdown(wait=False)

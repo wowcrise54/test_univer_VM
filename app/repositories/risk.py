@@ -7,8 +7,9 @@ import uuid
 from typing import Any
 
 from .. import db
+from ..domain.errors import DomainError
 
-MODEL_VERSION = "local-risk-v1"
+MODEL_VERSION = "local-risk-v2"
 CONTEXT_VALUES = {
     "criticality": {"critical", "high", "medium", "low"},
     "environment": {"production", "test", "development"},
@@ -42,16 +43,21 @@ class RiskRepository:
             clean["owner"] = str(clean["owner"] or "").strip()[:200] or None
         return clean
 
-    def set_contexts(self, asset_ids: list[str], values: dict[str, Any], actor: str | None) -> dict[str, Any]:
+    def set_contexts(self, asset_ids: list[str], values: dict[str, Any], actor: str | None, expected_versions: dict[str, int] | None = None) -> dict[str, Any]:
         clean = self._validate(values)
         if not clean:
             raise ValueError("No context fields supplied.")
         updated: list[str] = []
         with db.connect() as conn:
-            for asset_id in dict.fromkeys(asset_ids):
-                if not conn.execute("SELECT 1 FROM asset_cards WHERE asset_id=%s", (asset_id,)).fetchone():
+            for asset_id in sorted(set(asset_ids)):
+                # Lock the parent even when no context exists: concurrent creation
+                # must not bypass a caller's expected version zero.
+                if not conn.execute("SELECT 1 FROM asset_cards WHERE asset_id=%s FOR UPDATE", (asset_id,)).fetchone():
                     continue
                 current = conn.execute("SELECT * FROM asset_contexts WHERE asset_id=%s", (asset_id,)).fetchone()
+                version = int(current["version"]) if current else 0
+                if expected_versions is not None and asset_id in expected_versions and expected_versions[asset_id] != version:
+                    raise DomainError("VERSION_CONFLICT", "Asset context changed. Read it again before saving.", status_code=409, context={"asset_id": asset_id, "current_version": version})
                 merged: dict[str, Any] = {
                     "criticality": "medium",
                     "environment": "production",
@@ -83,7 +89,7 @@ class RiskRepository:
                     (asset_id, actor, json.dumps(clean)),
                 )
                 updated.append(asset_id)
-        return {"updated_count": len(updated), "asset_ids": updated}
+        return {"updated_count": len(updated), "asset_ids": [asset_id for asset_id in dict.fromkeys(asset_ids) if asset_id in updated]}
 
     def import_csv(self, text: str, actor: str | None) -> dict[str, Any]:
         reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
@@ -91,7 +97,8 @@ class RiskRepository:
         unmatched: list[str] = []
         errors: list[dict[str, Any]] = []
         with db.connect() as conn:
-            cards = conn.execute("SELECT asset_id,ip_address,fqdn FROM asset_cards").fetchall()
+            cards = conn.execute("SELECT c.asset_id,c.ip_address,c.fqdn,COALESCE(x.version,0) context_version FROM asset_cards c LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id").fetchall()
+        versions = {r["asset_id"]: r["context_version"] for r in cards}
         by_id = {str(r["asset_id"]).lower(): r["asset_id"] for r in cards}
         by_ip = {str(r["ip_address"]).lower(): r["asset_id"] for r in cards if r.get("ip_address")}
         by_fqdn = {str(r["fqdn"]).lower(): r["asset_id"] for r in cards if r.get("fqdn")}
@@ -107,9 +114,10 @@ class RiskRepository:
                     values["owner"] = row["owner"]
                 if row.get("tags") is not None:
                     values["tags"] = [v.strip() for v in row["tags"].split(",")]
-                self.set_contexts([asset_id], values, actor)
+                self.set_contexts([asset_id], values, actor, {asset_id: versions[asset_id]})
+                versions[asset_id] += 1
                 matched += 1
-            except ValueError as exc:
+            except (ValueError, DomainError) as exc:
                 errors.append({"line": line, "message": str(exc)})
         return {"matched": matched, "unmatched": unmatched, "errors": errors}
 
@@ -154,10 +162,13 @@ class RiskRepository:
                 f"""SELECT c.*,card.display_name,card.ip_address,card.fqdn,
                 COALESCE(x.criticality,'medium') criticality,COALESCE(x.environment,'production') environment,
                 COALESCE(x.exposure,'internal') exposure,x.owner,COALESCE(x.tags,'[]'::jsonb) tags,{score} risk_score
-                ,EXISTS(SELECT 1 FROM vulnerability_passports vp WHERE vp.internal_id=c.passport_internal_id
-                  AND vp.exploitation_evidence) exploitation_evidence
+                ,COALESCE(x.version,0) context_version
+                ,vp.exploitation_evidence,vp.exploitation_evidence_source
+                ,CASE WHEN vp.exploitation_evidence IS NOT NULL THEN
+                    CASE WHEN vp.exploitation_evidence_source LIKE 'raw_detail_json:%%' THEN COALESCE(vp.detail_updated_at,vp.last_seen)
+                    ELSE vp.last_seen END END exploitation_evidence_updated_at
                 ,COALESCE(spread.n,0)::int affected_hosts
-                {source_sql}
+                {source_sql} LEFT JOIN vulnerability_passports vp ON vp.internal_id=c.passport_internal_id
                 WHERE {where} ORDER BY risk_score DESC,c.due_at NULLS LAST,c.case_id LIMIT %s OFFSET %s""",
                 (*params, limit, offset),
             ).fetchall()
@@ -277,7 +288,7 @@ class RiskRepository:
     def update_campaign(self, campaign_id: str, values: dict[str, Any], actor: str | None) -> dict[str, Any] | None:
         allowed = {"name", "assignee", "due_at", "comment", "status", "asset_group_id"}
         clean = {k: v for k, v in values.items() if k in allowed}
-        if not clean:
+        if not clean and values.get("expected_version") is None:
             return self.get_campaign(campaign_id)
         assignments = []
         params = []
@@ -285,12 +296,18 @@ class RiskRepository:
             assignments.append(f"{key}=%s")
             params.append(value)
         with db.connect() as conn:
-            row = conn.execute(
+            current = conn.execute("SELECT version FROM remediation_campaigns WHERE campaign_id=%s FOR UPDATE", (campaign_id,)).fetchone()
+            if not current:
+                return None
+            expected = values.get("expected_version")
+            if expected is not None and expected != current["version"]:
+                raise DomainError("VERSION_CONFLICT", "Campaign changed. Read it again before saving.", status_code=409, context={"campaign_id": campaign_id, "current_version": current["version"]})
+            if not clean:
+                return self.get_campaign(campaign_id)
+            conn.execute(
                 f"UPDATE remediation_campaigns SET {','.join(assignments)},version=version+1,updated_at=NOW() WHERE campaign_id=%s RETURNING campaign_id",
                 (*params, campaign_id),
-            ).fetchone()
-            if not row:
-                return None
+            )
             conn.execute(
                 "INSERT INTO remediation_campaign_events(campaign_id,actor_username,event_type,changes_json) VALUES(%s,%s,'updated',%s)",
                 (campaign_id, actor, json.dumps(clean)),

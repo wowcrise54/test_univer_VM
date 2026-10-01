@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20260924_0024``);
+* the migration graph has a single, expected head (``20261001_0025``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
@@ -30,7 +30,7 @@ import psycopg
 
 from app import db, main
 
-EXPECTED_HEAD = "20260924_0024"
+EXPECTED_HEAD = "20261001_0025"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -55,6 +55,7 @@ ALTERED_COLUMNS = {
     ("remediation_cases", "verification_status"),   # 0011
     ("remediation_campaigns", "asset_group_id"),    # 0018
     ("vulnerability_passports", "exploitation_evidence"),  # 0022 (generated)
+    ("vulnerability_passports", "exploitation_evidence_source"),  # 0025 (generated)
 }
 
 INDEX_0023 = "idx_asset_card_vulnerability_passports_finding"

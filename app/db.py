@@ -157,7 +157,10 @@ def init_db() -> None:
 def schema_statements() -> list[str]:
     """Return the idempotent baseline schema used by Alembic and legacy startup."""
 
+    from .repositories.risk_evidence_schema import EVIDENCE_COLUMNS_SQL, FUNCTIONS_SQL
+
     return [
+        *FUNCTIONS_SQL,
         """
         CREATE TABLE IF NOT EXISTS scan_tasks (
             id BIGSERIAL PRIMARY KEY,
@@ -263,10 +266,7 @@ def schema_statements() -> list[str]:
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
             detail_updated_at TEXT,
-            exploitation_evidence BOOLEAN GENERATED ALWAYS AS (
-                LOWER(COALESCE(raw_detail_json, '') || COALESCE(metrics_json, '') || COALESCE(raw_record_json, ''))
-                SIMILAR TO '%(exploit|exploited|эксплуат)%'
-            ) STORED
+            """ + EVIDENCE_COLUMNS_SQL + """
         )
         """,
         """

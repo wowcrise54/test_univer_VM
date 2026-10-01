@@ -4,6 +4,7 @@ from .asset_groups import router as asset_groups_router
 from .attention import router as attention_router
 from .compliance import dashboard_router as compliance_dashboard_router
 from .compliance import report_router as compliance_report_router
+from .health import router as health_router
 from .remediation import coverage_router
 from .remediation import router as remediation_router
 from .risk import router as risk_router
@@ -28,6 +29,7 @@ auth_router = APIRouter(prefix="/api/auth", tags=["application-auth"])
 API_ROUTERS = (
     auth_router,
     system_router,
+    health_router,
     session_router,
     tasks_router,
     operations_router,

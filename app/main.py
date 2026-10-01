@@ -536,6 +536,7 @@ def get_automation_service() -> AutomationService:
 
 
 def shutdown() -> None:
+    CONTAINER.database_recovery.stop()
     if AUTOMATION_SERVICE is not None:
         AUTOMATION_SERVICE.stop_scheduler()
     CONTAINER.shutdown()
@@ -550,6 +551,8 @@ PUBLIC_API_PATHS = {
     "/api/auth/login",
     "/api/auth/bootstrap-status",
     "/api/health",
+    "/api/live",
+    "/api/ready",
 }
 AUDITED_PERMISSIONS = {
     "security.users.manage", "security.roles.manage", "connection.manage",
@@ -580,7 +583,9 @@ async def application_auth_middleware(request: Request, call_next):
     request.state.user = user
     if path in {"/api/auth/me", "/api/auth/logout"}:
         return await call_next(request)
-    permission = app_auth.required_permission(request.method, path)
+    from .api.authorization import request_permission
+
+    permission = request_permission(request)
     effective = app_auth.effective_permissions(user)
     if permission and permission not in effective:
         app_auth.audit_event(request=request, user=user, event_type="access", decision="deny", permission_key=permission, target_type="api", target_id=path)
@@ -663,7 +668,7 @@ ASSET_SEARCH_BACKFILL_LOCK = threading.Lock()
 ASSET_SEARCH_BACKFILL_RUNNING = False
 
 
-def start_asset_search_backfill() -> None:
+def start_asset_search_backfill(*, strict: bool = False) -> None:
     global ASSET_SEARCH_BACKFILL_RUNNING
     with ASSET_SEARCH_BACKFILL_LOCK:
         if ASSET_SEARCH_BACKFILL_RUNNING:
@@ -671,6 +676,8 @@ def start_asset_search_backfill() -> None:
         try:
             coverage = db.asset_card_search_index_coverage()
         except psycopg.Error:
+            if strict:
+                raise
             return
         if (
             coverage["indexed_cards"] >= coverage["total_cards"]
@@ -898,42 +905,16 @@ def startup() -> None:
     global DATABASE_STARTUP_ERROR
     CONTAINER.start()
     log_event("app", "app.startup.started", process_id=os.getpid())
-    try:
-        db.init_db()
-        app_auth.ensure_rbac_catalog()
-        app_auth.ensure_bootstrap_admin(
-            SETTINGS.bootstrap_admin_username,
-            SETTINGS.bootstrap_admin_password,
-            SETTINGS.bootstrap_admin_display_name,
-        )
-        CONTAINER.operation_runner.submit("maintenance", app_auth.cleanup_audit_events, 365)
-        db.interrupt_active_vulnerability_passport_detail_jobs()
-        passport_refresh.interrupt_active()
-        db.interrupt_active_asset_card_build_jobs()
-        db.release_scan_postprocess_leases()
-        db.sync_operations_from_sources()
-        ensure_vulnerability_snapshot_baseline()
-        CONTAINER.services.remediation.reconcile_all()
-        CONTAINER.services.remediation.ensure_daily_digest(
-            webhook_enabled=bool(SETTINGS.automation_webhook_url)
-        )
-        DATABASE_STARTUP_ERROR = None
-    except psycopg.Error as exc:
-        DATABASE_STARTUP_ERROR = str(exc)
-        log_exception("app", "app.startup.database_failed", database=db.database_label())
+    from sys import modules
+
+    from .services.startup import database_startup_steps
+
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     configure_session_from_env()
-    if DATABASE_STARTUP_ERROR is None:
-        start_asset_search_backfill()
-        try:
-            automation = get_automation_service()
-            automation.resume_runs()
-            automation.start_scheduler()
-        except psycopg.Error:
-            log_exception("app", "automation.startup.failed", database=db.database_label())
-    resume_scan_postprocess_runs()
-    if DATABASE_STARTUP_ERROR is None:
-        CONTAINER.services.vm_workflows.resume()
+    CONTAINER.database_recovery.configure(database_startup_steps(modules[__name__]))
+    state = CONTAINER.database_recovery.check()
+    DATABASE_STARTUP_ERROR = None if state["ready"] else state.get("reason", "RecoveryPending")
+    CONTAINER.database_recovery.start()
     scan_log(
         logging.INFO,
         "worker_limits",
@@ -1089,12 +1070,13 @@ def auth_audit(limit: int = 200, offset: int = 0) -> dict[str, Any]:
 @system_router.get("/api/health")
 def health() -> dict[str, Any]:
     connected = mpvm_session_connected()
+    state = CONTAINER.database_recovery.check()
     return {
         "ok": True,
         "app": "mpvm-rest-client",
         "database": db.database_label(),
-        "database_ready": DATABASE_STARTUP_ERROR is None,
-        "database_error": DATABASE_STARTUP_ERROR,
+        "database_ready": state["ready"],
+        "database_error": state.get("reason"),
         "connected": connected,
         "api_url": SESSION.api_url,
         "background_workers": {
@@ -1110,27 +1092,14 @@ def health() -> dict[str, Any]:
 def system_status() -> dict[str, Any]:
     global DATABASE_STARTUP_ERROR
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    database_error = None
+    readiness = CONTAINER.database_recovery.check()
+    database_state = "ok" if readiness["database_ready"] else "down"
+    database_error = None if readiness["ready"] else readiness.get("reason")
+    DATABASE_STARTUP_ERROR = database_error
     circuit = db.database_circuit_status()
-    if circuit["open"]:
-        database_state = "down"
-        database_error = circuit.get("reason") or "CircuitOpen"
-        DATABASE_STARTUP_ERROR = circuit.get("message") or "Database connection circuit is open."
-    else:
-        try:
-            with db.connect() as conn:
-                conn.execute("SELECT 1")
-            DATABASE_STARTUP_ERROR = None
-            database_state = "ok"
-            circuit = db.database_circuit_status()
-        except psycopg.Error as exc:
-            database_state = "down"
-            database_error = type(exc).__name__
-            DATABASE_STARTUP_ERROR = str(exc)
-            circuit = db.database_circuit_status()
     connected = mpvm_session_connected()
     mpvm_state = "ok" if connected else "degraded"
-    workers_state = "ok" if database_state == "ok" else "down"
+    workers_state = "ok" if readiness["ready"] else "down"
     components = {
         "application": {"state": "ok", "message": "Приложение работает.", "retryable": False},
         "database": {
@@ -1159,7 +1128,7 @@ def system_status() -> dict[str, Any]:
             },
         },
     }
-    overall = "ok" if database_state == "ok" and connected else "degraded"
+    overall = "ok" if readiness["ready"] and connected else "degraded"
     return {"state": overall, "checked_at": checked_at, "components": components}
 
 
@@ -4708,7 +4677,7 @@ def schedule_scan_postprocess(run_id: str, auth: AuthConfig, token: str) -> None
     future.add_done_callback(forget)
 
 
-def resume_scan_postprocess_runs() -> None:
+def resume_scan_postprocess_runs(*, strict: bool = False) -> None:
     if not SESSION.client or not SESSION.access_token:
         scan_log(logging.DEBUG, "resume_skipped_no_session")
         return
@@ -4717,6 +4686,8 @@ def resume_scan_postprocess_runs() -> None:
         docker_cleanup_runs = db.list_pending_docker_group_cleanups()
         runs = db.list_resumable_scan_postprocess_runs()
     except psycopg.Error:
+        if strict:
+            raise
         SCAN_LOG.exception("[scan-postprocess] failed to list resumable runs")
         return
     scan_log(logging.INFO, "refresh_task_cleanup_resume", pending_count=len(refresh_cleanup_runs))

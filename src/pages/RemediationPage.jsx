@@ -302,6 +302,8 @@ function RiskWorkspace({ showAlert, onRefresh }) {
   const [assetGroupId, setAssetGroupId] = useState("");
   const [level, setLevel] = useState("");
   const [checked, setChecked] = useState([]);
+  const [contextConflict, setContextConflict] = useState(false);
+  const [contextVersions, setContextVersions] = useState({});
   const [context, setContext] = useState({
     criticality: "medium",
     environment: "production",
@@ -374,14 +376,19 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     try {
       await api("/api/assets/context", {
         method: "PATCH",
-        body: JSON.stringify({ asset_ids: assetIds, values: context }),
+        body: JSON.stringify({ asset_ids: assetIds, values: context,
+          expected_versions: Object.fromEntries(assetIds.map((id) => [id, contextVersions[id]])),
+        }),
       });
       showAlert(
         `Контекст обновлён для активов: ${assetIds.length}.`,
         "success",
       );
+      setChecked([]);
+      setContextVersions({});
       await load();
     } catch (error) {
+      if (error.code === "VERSION_CONFLICT") setContextConflict(true);
       showAlert(error.operatorMessage || error.message, "error");
     }
   };
@@ -410,7 +417,7 @@ function RiskWorkspace({ showAlert, onRefresh }) {
         <div>
           <h3>Приоритетная очередь</h3>
           <p>
-            Локальная модель {summary.risk_model_version || "local-risk-v1"}:
+            Локальная модель {summary.risk_model_version || "local-risk-v2"}:
             критичность актива, доступность, CVSS, возраст и SLA.
           </p>
         </div>
@@ -472,7 +479,7 @@ function RiskWorkspace({ showAlert, onRefresh }) {
           <option value="internal">Внутренний</option>
           <option value="isolated">Изолированный</option>
         </select>
-        <button disabled={!checked.length} onClick={updateContext}>
+        <button disabled={!checked.length || contextConflict || loading} onClick={updateContext}>
           Применить к активам
         </button>
         <label className="button button--secondary">
@@ -485,6 +492,9 @@ function RiskWorkspace({ showAlert, onRefresh }) {
           />
         </label>
       </div>
+      {contextConflict ? <div role="alert" className="inline-error">Контекст изменён другим оператором. Перечитайте данные и выберите активы заново.
+        <Button variant="secondary" onClick={async () => { await load(); setChecked([]); setContextVersions({}); setContextConflict(false); }}>Перечитать контекст</Button>
+      </div> : null}
       <div className="action-row">
         <select
           aria-label="Группа активов кампании"
@@ -530,13 +540,16 @@ function RiskWorkspace({ showAlert, onRefresh }) {
                       type="checkbox"
                       aria-label={`Выбрать ${row.cve || row.title}`}
                       checked={checked.includes(row.case_id)}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        if (event.target.checked && !data.rows.some((item) => item.asset_id === row.asset_id && checked.includes(item.case_id))) {
+                          setContextVersions((value) => ({ ...value, [row.asset_id]: row.context_version ?? 0 }));
+                        }
                         setChecked(
                           event.target.checked
                             ? [...checked, row.case_id]
                             : checked.filter((id) => id !== row.case_id),
-                        )
-                      }
+                        );
+                      }}
                     />
                   </td>
                   <td>

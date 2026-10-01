@@ -7,7 +7,7 @@ from app.repositories.risk import MODEL_VERSION, RiskRepository, _risk_sql
 
 def test_risk_model_is_versioned_and_bounded():
     sql = _risk_sql()
-    assert MODEL_VERSION == "local-risk-v1"
+    assert MODEL_VERSION == "local-risk-v2"
     assert "LEAST(100" in sql
     assert "GREATEST(0" in sql
     assert "criticality" in sql
