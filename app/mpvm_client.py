@@ -583,7 +583,9 @@ class MpVmClient:
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         if isinstance(data, dict):
-            items = data.get("items") or data.get("data")
+            items = data.get("items")
+            if not isinstance(items, list):
+                items = data.get("data")
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
         raise MpVmApiError(f"Unexpected {collection_type} collection response: {compact_json_summary(data)}")

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import requests
 
 from app.automations.service import AutomationService, AutomationStepCancelled
 from app.core.config import Settings
@@ -251,13 +253,15 @@ class DefinitionTests(unittest.TestCase):
             "dry_run": False,
             "cancel_requested": False,
             "definition": {
-                "steps": [{
-                    "step_id": "asset-card",
-                    "type": "asset_card_build",
-                    "config": {"asset_id": "asset-1"},
-                    "on_error": "stop",
-                    "max_retries": 0,
-                }]
+                "steps": [
+                    {
+                        "step_id": "asset-card",
+                        "type": "asset_card_build",
+                        "config": {"asset_id": "asset-1"},
+                        "on_error": "stop",
+                        "max_retries": 0,
+                    }
+                ]
             },
             "steps": [{"step_index": 0, "step_id": "asset-card", "status": "pending", "output": {}}],
         }
@@ -327,6 +331,28 @@ class DefinitionTests(unittest.TestCase):
         register.assert_called_once()
         submit.assert_called_once()
 
+    def test_resume_runs_finishes_cancelled_and_ambiguous_work_and_resubmits_safe_runs(self):
+        repository = FakeRepository()
+        repository.resumable_runs = lambda: [
+            {"run_id": "cancelled", "cancel_requested": True, "steps": []},
+            {"run_id": "ambiguous", "cancel_requested": False, "steps": [{"status": "running"}]},
+            {
+                "run_id": "resumable",
+                "cancel_requested": False,
+                "steps": [{"status": "completed"}, {"status": "pending"}],
+            },
+        ]
+        automation = service(repository)
+        with patch.object(automation, "_finish_run") as finish, patch.object(automation.runner, "submit") as submit:
+            automation.resume_runs()
+
+        self.assertEqual(
+            [(call.args[0], call.args[1]) for call in finish.call_args_list],
+            [("cancelled", "cancelled"), ("ambiguous", "needs_attention")],
+        )
+        self.assertIn("outcome was ambiguous", finish.call_args_list[1].kwargs["error"])
+        submit.assert_called_once_with("automation-run", automation.execute_run, "resumable")
+
 
 class SchedulerTests(unittest.TestCase):
     def test_unknown_timezone_is_rejected(self):
@@ -354,6 +380,31 @@ class SchedulerTests(unittest.TestCase):
         automation.scheduler_tick(datetime(2026, 7, 8, 10, 0, tzinfo=UTC))
         self.assertEqual(repository.created_runs[0]["status"], "skipped")
         self.assertEqual(repository.advanced[0][1]["status"], "skipped:missed")
+
+    def test_active_run_and_unavailable_service_account_record_distinct_skip_reasons(self):
+        current = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        for reason, active, account_ready in (
+            ("overlap", True, True),
+            ("service_account_unavailable", False, False),
+        ):
+            repository = FakeRepository()
+            repository.schedules = [
+                {
+                    "schedule_id": f"schedule-{reason}",
+                    "runbook_id": "runbook-1",
+                    "cron_expression": "* * * * *",
+                    "timezone": "UTC",
+                    "next_run_at": (current - timedelta(seconds=10)).isoformat(),
+                }
+            ]
+            repository.has_active_run = lambda _runbook_id, value=active: value
+            automation = service(repository)
+            automation.service_account_ready = lambda value=account_ready: value
+            automation.scheduler_tick(current)
+
+            self.assertEqual(repository.created_runs[0]["status"], "skipped")
+            self.assertEqual(repository.advanced[0][1]["status"], f"skipped:{reason}")
+            self.assertEqual(repository.notifications[0]["event_type"], "automation.skipped")
 
 
 class WebhookTests(unittest.TestCase):
@@ -390,6 +441,73 @@ class WebhookTests(unittest.TestCase):
         expected = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
         self.assertEqual(post.call_args.kwargs["headers"]["X-MPVM-Signature"], f"sha256={expected}")
         self.assertEqual(repository.finished_deliveries[0][1]["status"], "delivered")
+
+    def test_failed_webhook_attempts_use_backoff_and_stop_after_four_tries(self):
+        now = datetime(2026, 7, 8, 10, 0, tzinfo=UTC)
+        expected_delays = {1: 60, 2: 300, 3: 1800}
+        for previous_attempt in range(4):
+            repository = FakeRepository()
+            repository.deliveries = [
+                {
+                    "delivery_id": f"delivery-{previous_attempt}",
+                    "notification_id": f"event-{previous_attempt}",
+                    "attempt": previous_attempt,
+                    "level": "warning",
+                    "title": "Retry",
+                    "message": "Try again",
+                    "event_type": "automation.retry",
+                    "details": {"batch": 1},
+                    "notification_created_at": now.isoformat(),
+                }
+            ]
+            automation = service(
+                repository,
+                automation_webhook_url="https://hooks.example.test/mpvm",
+                automation_webhook_secret="secret",
+            )
+            with patch("app.automations.service.requests.post", return_value=SimpleNamespace(status_code=503)):
+                automation.webhook_tick(now)
+
+            kwargs = repository.finished_deliveries[0][1]
+            self.assertEqual(kwargs["attempt"], previous_attempt + 1)
+            if previous_attempt < 3:
+                self.assertEqual(kwargs["status"], "pending")
+                self.assertEqual(
+                    kwargs["next_attempt_at"],
+                    (now + timedelta(seconds=expected_delays[previous_attempt + 1])).isoformat(timespec="seconds"),
+                )
+            else:
+                self.assertEqual(kwargs["status"], "failed")
+                self.assertNotIn("next_attempt_at", kwargs)
+            self.assertEqual(kwargs["response_status"], 503)
+
+    def test_webhook_request_errors_are_retried(self):
+        repository = FakeRepository()
+        repository.deliveries = [
+            {
+                "delivery_id": "delivery-error",
+                "notification_id": "event-error",
+                "attempt": 0,
+                "level": "error",
+                "title": "Failure",
+                "message": "Try again",
+                "event_type": "automation.failure",
+                "details": {},
+                "notification_created_at": "2026-07-08T10:00:00+00:00",
+            }
+        ]
+        automation = service(
+            repository,
+            automation_webhook_url="https://hooks.example.test/mpvm",
+            automation_webhook_secret="secret",
+        )
+        with patch("app.automations.service.requests.post", side_effect=requests.ConnectionError("socket closed")):
+            automation.webhook_tick(datetime(2026, 7, 8, 10, 0, tzinfo=UTC))
+
+        kwargs = repository.finished_deliveries[0][1]
+        self.assertEqual(kwargs["status"], "pending")
+        self.assertIsNone(kwargs["response_status"])
+        self.assertEqual(kwargs["error"], "socket closed")
 
 
 if __name__ == "__main__":

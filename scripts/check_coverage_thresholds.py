@@ -81,6 +81,22 @@ def main() -> int:
         if pct + 1e-9 < floor:
             failures.append(f"{key} branch coverage {pct:.1f}% below floor {floor:.1f}%")
 
+    for file, floors in thresholds.get("module_floors", {}).items():
+        data = report["files"].get(file)
+        if data is None:
+            failures.append(f"{file} is missing from the coverage report")
+            continue
+        summary = data["summary"]
+        actual = {
+            "lines": branch_pct(int(summary["covered_lines"]), int(summary["num_statements"])),
+            "branches": branch_pct(int(summary.get("covered_branches", 0)), int(summary.get("num_branches", 0))),
+        }
+        for metric, floor in floors.items():
+            pct = actual[metric]
+            print(f"{file}: {metric} {pct:.1f}% floor {floor:.1f}%")
+            if pct + 1e-9 < floor:
+                failures.append(f"{file} {metric} coverage {pct:.1f}% below floor {floor:.1f}%")
+
     if failures:
         print("Coverage threshold gate failed: " + "; ".join(failures))
         return 1

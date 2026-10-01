@@ -433,7 +433,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
             {activePreset ? (
               <div className="asset-query-preset-search">
                 <label>
-                  <span>{activePreset.kind === "os" ? "Название ОС" : activePreset.id === "software-vendors" ? "Вендор ПО" : "Название ПО"}</span>
+                  <span>{activePreset.kind === "os" ? "Название ОС" : activePreset.id === "software-vendors" ? "Вендор ПО" : "Название ПО (часть названия)"}</span>
                   <input
                     aria-label={activePreset.kind === "os" ? "Название ОС в пресете" : activePreset.id === "software-vendors" ? "Вендор ПО в пресете" : "Название ПО в пресете"}
                     value={presetSearch[activePreset.kind === "os" ? "os_name" : activePreset.id === "software-vendors" ? "vendor" : "software_name"] || ""}

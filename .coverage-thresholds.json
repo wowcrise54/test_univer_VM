@@ -1,4 +1,110 @@
 {
-  "critical_branch": 52.0,
-  "other_branch": 49.0
+  "critical_branch": 90.3,
+  "other_branch": 65.1,
+  "module_floors": {
+    "app/diagnostics.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/core/config.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/mpvm/auth.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/ldap.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/repositories/risk.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/repositories/asset_groups.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/services/risk.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/services/asset_groups.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/services/operation_diagnostics.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/asset_groups.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/risk.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/compliance.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/attention.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/vm.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/remediation.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/api/vulnerabilities.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/automations/repository.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/automations/service.py": {
+      "lines": 99.6,
+      "branches": 99.2
+    },
+    "app/repositories/remediation.py": {
+      "lines": 98.9,
+      "branches": 96.5
+    },
+    "app/services/vm_workflows.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/domain/compliance.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/repositories/compliance.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/services/compliance.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/repositories/attention.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/repositories/passport_refresh.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    },
+    "app/services/passport_refresh.py": {
+      "lines": 100.0,
+      "branches": 100.0
+    }
+  }
 }

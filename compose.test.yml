@@ -5,11 +5,35 @@ services:
       dockerfile: Dockerfile.test
     environment:
       MPVM_DATABASE_URL: postgresql://test:test@test-postgres:5432/mpvm_test
+      COVERAGE_FILE: /tmp/mpvm-test.coverage
     volumes:
       - .:/workspace:ro
+      - ./output:/workspace/output
     depends_on:
       test-postgres:
         condition: service_healthy
+
+  frontend-tests:
+    profiles: [frontend]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.test
+      target: frontend
+    network_mode: none
+    volumes:
+      - ./output:/workspace/output
+
+  e2e:
+    profiles: [frontend]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.test
+      target: e2e
+    network_mode: none
+    environment:
+      CI: "true"
+    volumes:
+      - ./output:/workspace/output
 
   test-postgres:
     image: postgres:16-alpine

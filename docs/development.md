@@ -100,36 +100,10 @@ alembic upgrade head
 
 ## Тесты, lint и сборка
 
-Backend-тесты определены в `pyproject.toml` (`tests/`); marker `integration` требует доступный PostgreSQL:
-
-```powershell
-python -m pytest
-python -m pytest -m integration
-```
-
-Frontend и браузерные проверки:
-
-```powershell
-npm test
-npm run test:coverage
-npm run test:e2e
-```
-
-Playwright запускает Vite на `http://127.0.0.1:4173`; отчёты и артефакты сохраняются в `output/playwright/`. Проверки качества и production-сборка:
-
-```powershell
-ruff check app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py
-mypy app/core app/api app/domain app/mpvm app/repositories app/services app/factory.py
-npm run lint
-npm run format:check
-npm run build
-```
-
-`npm run quality` объединяет frontend lint, unit-тесты и сборку. `npm run coverage:check` требует предварительно созданные отчёты `output/coverage-python.json` и `output/coverage-js/coverage-summary.json`.
+Все проверки выполняются только в Docker. [Тестирование в Docker](testing.md) описывает отдельную PostgreSQL, образы с test-зависимостями, backend/frontend/e2e команды и пороги покрытия. Не используйте рабочую PostgreSQL для интеграционных тестов.
 
 ## Подтверждённые проблемы и диагностика
 
-- **Vitest `ERR_REQUIRE_ESM`.** В текущем окружении зафиксирована зависимостная проблема цепочки `jsdom` → `html-encoding-sniffer` → `@exodus/bytes`; переход на Node 26 сам по себе её не устраняет. Не интерпретируйте это как успешный frontend-тест и не отключайте тесты для зелёного результата.
 - **Нет подключения к PostgreSQL.** Проверьте, что сервис `postgres` здоров (`docker compose ps`), и что host-DSN указывает на `localhost:55432`, а контейнерный — на `postgres:5432`. Приложение ограничивает время подключения и временно открывает circuit breaker после ошибки.
 - **Планировщик после перезапуска не действует от browser-сессии.** Для плановых запусков нужны server-side `MPVM_*` учётные данные; сессия, созданная только в браузере, не сохраняется как service account.
 - **Ошибки интеграции с MP VM.** Проверяйте `GET /api/system/status`, JSONL в `MPVM_LOG_DIR` (по умолчанию `output/logs`) и корреляционные заголовки `X-Trace-ID`/`X-Request-ID`. Для self-signed TLS используйте `MPVM_INSECURE=true` только в лабораторном контуре.

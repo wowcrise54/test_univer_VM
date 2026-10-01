@@ -297,6 +297,50 @@ describe("asset query UI", () => {
     expect(screen.getByText("10.0.0.15")).toBeInTheDocument();
   });
 
+  it("searches by part of a software name and opens the exact returned product", async () => {
+    configureApi();
+    const defaultApi = api.getMockImplementation();
+    api.mockImplementation((path, options = {}) => {
+      if (path === "/api/asset-card-query/presets/software-search" &&
+          JSON.parse(options.body).software_name === "git") {
+        return Promise.resolve({
+          rows: [{ soft_name: "GitLab CE", soft_version: "16.1", count: 1 }],
+          total: 1, offset: 0,
+        });
+      }
+      return defaultApi(path, options);
+    });
+    renderPage();
+    await screen.findByRole("option", { name: "Поиск определённого ПО на активах" });
+    fireEvent.change(screen.getByLabelText("Готовый пресет"), {
+      target: { value: "software-search" },
+    });
+    await screen.findByText("3.2.1");
+    expect(screen.getByText("Название ПО (часть названия)")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Название ПО в пресете"), {
+      target: { value: "git" },
+    });
+    fireEvent.change(screen.getByLabelText("Маска версии в пресете"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await screen.findByText("16.1");
+    const search = api.mock.calls.filter(([path]) =>
+      path === "/api/asset-card-query/presets/software-search").at(-1);
+    expect(JSON.parse(search[1].body)).toMatchObject({
+      software_name: "git", software_version_like: "", offset: 0,
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Показать активы" })
+      .find((button) => !button.disabled));
+    await waitFor(() => {
+      const call = api.mock.calls.find(([path]) =>
+        path === "/api/asset-card-query/presets/software-search/assets");
+      expect(JSON.parse(call[1].body)).toMatchObject({
+        software_name: "GitLab CE", software_version: "16.1",
+      });
+    });
+  });
+
   it("submits software filters for an ordinary preset", async () => {
     configureApi({ presetSearch: false });
     renderPage();

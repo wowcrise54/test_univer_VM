@@ -38,16 +38,21 @@ class FakeRunner:
 class FakeRepository:
     def __init__(self):
         self.workflow = {"workflow_id": "wf-1", "kind": "scan", "status": "queued", "steps": [], "request": {}}
+
     def create(self, **values):
         self.workflow = {**self.workflow, "kind": values["kind"], "request": values["request"]}
         return self.workflow, False
-    def get(self, _workflow_id): return self.workflow
+
+    def get(self, _workflow_id):
+        return self.workflow
 
 
 def test_scan_workflow_is_persisted_before_it_is_scheduled():
     repository, runner = FakeRepository(), FakeRunner()
     service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
-    workflow, replay = service.start_scan(task_id="task-1", options={"wait_for_finish": True}, actor="operator", idempotency_key="key-1")
+    workflow, replay = service.start_scan(
+        task_id="task-1", options={"wait_for_finish": True}, actor="operator", idempotency_key="key-1"
+    )
     assert not replay
     assert workflow["request"]["task_id"] == "task-1"
     assert runner.submitted[0][0] == "vm-workflow"
@@ -65,14 +70,23 @@ def test_scan_preflight_separates_warnings_from_blocking_conflicts():
     repository, runner = FakeRepository(), FakeRunner()
     repository.active = lambda: []
     service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
-    service.task_provider = lambda: [{
-        "mp_task_id": "task-1", "name": "Production",
-        "include_targets": ["10.0.0.1", "10.0.0.2"],
-    }]
+    service.task_provider = lambda: [
+        {
+            "mp_task_id": "task-1",
+            "name": "Production",
+            "include_targets": ["10.0.0.1", "10.0.0.2"],
+        }
+    ]
     service.status_provider = lambda: {"components": {"mpvm": {"state": "ok"}}}
-    service.operation_provider = lambda: {"rows": [{
-        "operation_id": "op-1", "status": "running", "request": {"task_id": "task-1"},
-    }]}
+    service.operation_provider = lambda: {
+        "rows": [
+            {
+                "operation_id": "op-1",
+                "status": "running",
+                "request": {"task_id": "task-1"},
+            }
+        ]
+    }
 
     warning = service.scan_preflight(task_id="task-1", options={"require_clean_jobs": False})
     blocked = service.scan_preflight(task_id="task-1", options={"require_clean_jobs": True})
@@ -101,15 +115,21 @@ def test_start_scan_repeats_preflight_and_does_not_create_blocked_workflow():
 
 def test_repeated_start_returns_idempotent_workflow_before_new_preflight():
     repository, runner = FakeRepository(), FakeRunner()
-    existing = {"workflow_id": "wf-existing", "kind": "scan", "status": "running",
-                "request": {"task_id": "task-1", "options": {"require_clean_jobs": True}}}
+    existing = {
+        "workflow_id": "wf-existing",
+        "kind": "scan",
+        "status": "running",
+        "request": {"task_id": "task-1", "options": {"require_clean_jobs": True}},
+    }
     repository.by_idempotency_key = lambda _key: existing
     service = VmWorkflowService(cast(Any, repository), cast(Any, runner), remediation=object())
     service.task_provider = lambda: []
 
     workflow, replay = service.start_scan(
-        task_id="task-1", options={"require_clean_jobs": True},
-        actor="operator", idempotency_key="same-click",
+        task_id="task-1",
+        options={"require_clean_jobs": True},
+        actor="operator",
+        idempotency_key="same-click",
     )
 
     assert replay is True
@@ -195,30 +215,34 @@ def test_asset_group_replay_is_validated_against_the_persisted_request():
             idempotency_key="same-click",
         )
 
-    assert repository.created == [{
-        "kind": "verification",
-        "request": {
-            "asset_group_id": "group-2",
-            "asset_ids": ["asset-2"],
-            "options": {
-                "template_task_id": "template-2",
-                "reconcile": False,
-                "mode": "group_scan",
+    assert repository.created == [
+        {
+            "kind": "verification",
+            "request": {
+                "asset_group_id": "group-2",
+                "asset_ids": ["asset-2"],
+                "options": {
+                    "template_task_id": "template-2",
+                    "reconcile": False,
+                    "mode": "group_scan",
+                },
             },
-        },
-        "requested_by": "operator",
-        "idempotency_key": "same-click",
-    }]
+            "requested_by": "operator",
+            "idempotency_key": "same-click",
+        }
+    ]
 
 
 def test_resume_monitors_workflow_with_persisted_child_operation_ids():
     repository = MagicMock()
     runner = MagicMock()
-    repository.active.return_value = [{
-        "workflow_id": "wf-multi",
-        "operation_id": None,
-        "result": {"operation_ids": ["op-1", "op-2"]},
-    }]
+    repository.active.return_value = [
+        {
+            "workflow_id": "wf-multi",
+            "operation_id": None,
+            "result": {"operation_ids": ["op-1", "op-2"]},
+        }
+    ]
     service = VmWorkflowService(repository, runner, remediation=object())
 
     service.resume()
@@ -284,7 +308,10 @@ def test_reconciliation_error_is_isolated_and_workflow_completes_with_errors():
     repository = MagicMock()
     runner = MagicMock()
     remediation = MagicMock()
-    remediation.reconcile_asset.side_effect = [RuntimeError("asset unavailable"), {"created": 1, "reopened": 0, "resolved": 0}]
+    remediation.reconcile_asset.side_effect = [
+        RuntimeError("asset unavailable"),
+        {"created": 1, "reopened": 0, "resolved": 0},
+    ]
     service = VmWorkflowService(repository, runner, remediation=remediation)
     workflow = {
         "workflow_id": "wf-1",
@@ -315,16 +342,20 @@ def test_campaign_finalization_uses_operation_subject_and_start_error_asset_ids(
         "request": {"asset_ids": ["asset-1", "asset-2"], "options": {"reconcile": True}},
         "result": {"start_errors": [{"asset_id": "asset-2", "message": "start failed"}]},
     }
-    failed = [{
-        "operation_id": "op-1",
-        "status": "failed",
-        "subject": {"id": "asset-1"},
-    }]
+    failed = [
+        {
+            "operation_id": "op-1",
+            "status": "failed",
+            "subject": {"id": "asset-1"},
+        }
+    ]
 
     service._reconcile("wf-campaign", workflow, failed, failed)
 
     repository.finalize_campaign_verification.assert_called_once_with(
-        "campaign-1", "wf-campaign", ["asset-1", "asset-2"],
+        "campaign-1",
+        "wf-campaign",
+        ["asset-1", "asset-2"],
     )
 
 
@@ -365,6 +396,130 @@ def test_reconciliation_runs_independent_assets_in_parallel():
     assert repository.update_run.call_args.kwargs["result"]["reconciliation"]["created"] == 3
 
 
+def test_cancel_cancels_workflow_and_all_unique_child_operations_even_if_one_cancel_fails():
+    repository = MagicMock()
+    runner = MagicMock()
+    workflow = {
+        "workflow_id": "wf-cancel",
+        "kind": "verification",
+        "result": {"operation_ids": ["op-1", "op-2", "op-1"]},
+        "operation_id": "op-3",
+    }
+    repository.request_cancel.return_value = workflow
+    repository.get.return_value = {**workflow, "cancel_requested": True}
+    cancelled_operations = []
+
+    def cancel_operation(operation_id):
+        cancelled_operations.append(operation_id)
+        if operation_id == "op-2":
+            raise RuntimeError("operation already finished")
+
+    service = VmWorkflowService(repository, runner, remediation=object())
+    service.operation_canceller = cancel_operation
+
+    result = service.cancel("wf-cancel")
+
+    assert result["cancel_requested"] is True
+    assert runner.cancellations.cancel.call_args.args == ("vm-workflow", "wf-cancel")
+    assert cancelled_operations == ["op-3", "op-1", "op-2"]
+
+
+def test_retry_reconciliation_reuses_child_results_and_only_reschedules_monitor():
+    repository = MagicMock()
+    runner = MagicMock()
+    source = {
+        "workflow_id": "wf-failed",
+        "kind": "verification",
+        "status": "failed",
+        "can_retry": True,
+        "task_id": "task-1",
+        "campaign_id": "campaign-1",
+        "request": {"asset_ids": ["asset-1"], "options": {"reconcile": True}, "campaign_id": "campaign-1"},
+        "result": {"operation_ids": ["op-1", "op-2"]},
+        "steps": [
+            {"step_key": "targets", "status": "completed", "result": {"asset_ids": ["asset-1"]}},
+            {"step_key": "scan", "status": "completed", "operation_id": "op-1", "result": {"started": 2}},
+            {"step_key": "postprocess", "status": "completed", "operation_id": "op-2", "result": {"done": 2}},
+            {"step_key": "reconcile", "status": "failed"},
+        ],
+    }
+    retried = {**source, "workflow_id": "wf-retry", "status": "queued"}
+    repository.get.side_effect = [source, retried]
+    repository.create.return_value = (retried, False)
+    service = VmWorkflowService(repository, runner, remediation=object())
+
+    result, replay = service.retry("wf-failed", "operator", "retry-1")
+
+    assert replay is False
+    assert result["workflow_id"] == "wf-retry"
+    assert repository.set_campaign_verification.call_args.args == ("campaign-1", "wf-retry", "queued")
+    assert [call.kwargs["status"] for call in repository.update_step.call_args_list] == [
+        "completed",
+        "completed",
+        "completed",
+        "pending",
+    ]
+    run_update = repository.update_run.call_args.kwargs
+    assert run_update["status"] == "running"
+    assert run_update["stage"] == "reconcile"
+    assert run_update["progress_percent"] == 90
+    assert run_update["result"]["operation_ids"] == ["op-1", "op-2"]
+    runner.submit.assert_called_once_with("vm-workflow", service._run, "wf-retry", True)
+
+
+def test_monitor_reports_child_progress_then_reconciles_terminal_operations():
+    repository = MagicMock()
+    runner = MagicMock()
+    workflow = {
+        "workflow_id": "wf-monitor",
+        "request": {"asset_ids": ["asset-1"]},
+        "steps": [{"step_key": "postprocess", "progress_percent": 0}],
+    }
+    repository.get.return_value = workflow
+    service = VmWorkflowService(repository, runner, remediation=object())
+    token = threading.Event()
+    operations = [
+        {"operation_id": "op-1", "status": "completed", "progress_percent": 100},
+        {"operation_id": "op-2", "status": "completed", "progress_percent": 50},
+    ]
+
+    with patch.object(service, "_operation", side_effect=operations), patch.object(service, "_reconcile") as reconcile:
+        service._monitor("wf-monitor", ["op-1", "op-2"], token)
+
+    step_update = repository.update_step.call_args.kwargs
+    assert step_update["progress_percent"] == 75
+    assert step_update["message"] == "Обработано операций: 2 из 2."
+    assert repository.update_run.call_args.kwargs["progress_percent"] == 76
+    reconcile.assert_called_once_with("wf-monitor", workflow, operations, [])
+
+
+def test_run_persists_a_rejected_scan_start_as_failed():
+    repository = MagicMock()
+    runner = MagicMock()
+    workflow = {
+        "workflow_id": "wf-start-error",
+        "kind": "scan",
+        "status": "queued",
+        "stage": "starting",
+        "request": {"task_id": "task-1", "options": {}},
+        "steps": [{"step_key": "scan", "status": "running"}],
+        "result": {},
+    }
+    repository.get.return_value = workflow
+    service = VmWorkflowService(repository, runner, remediation=object())
+    service.scan_starter = lambda *_args: {"status": "error", "error": "task unavailable"}
+
+    service._run("wf-start-error", monitor_only=False)
+
+    failed_step = [call for call in repository.update_step.call_args_list if call.args[1] == "scan"][-1]
+    assert failed_step.kwargs["status"] == "failed"
+    assert "task unavailable" in failed_step.kwargs["error"]["message"]
+    run_update = repository.update_run.call_args.kwargs
+    assert run_update["status"] == "failed"
+    assert run_update["error"]["message"] == "task unavailable"
+    runner.cancellations.remove.assert_called_once_with("vm-workflow", "wf-start-error")
+
+
 # ---------------------------------------------------------------------------
 # Regression: idempotency key reuse with a *different* scan request.
 #
@@ -376,7 +531,9 @@ def test_reconciliation_runs_independent_assets_in_parallel():
 def test_repeated_idempotency_key_with_different_task_id_is_rejected():
     repository, runner = FakeRepository(), FakeRunner()
     existing = {
-        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "workflow_id": "wf-existing",
+        "kind": "scan",
+        "status": "running",
         "request": {"task_id": "task-1", "options": {}},
     }
     repository.by_idempotency_key = lambda _key: existing
@@ -384,7 +541,10 @@ def test_repeated_idempotency_key_with_different_task_id_is_rejected():
 
     with pytest.raises(ValueError) as exc_info:
         service.start_scan(
-            task_id="task-2", options={}, actor="operator", idempotency_key="same-click",
+            task_id="task-2",
+            options={},
+            actor="operator",
+            idempotency_key="same-click",
         )
 
     assert "different scan request" in str(exc_info.value)
@@ -394,7 +554,9 @@ def test_repeated_idempotency_key_with_different_task_id_is_rejected():
 def test_repeated_idempotency_key_with_changed_options_is_rejected():
     repository, runner = FakeRepository(), FakeRunner()
     existing = {
-        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "workflow_id": "wf-existing",
+        "kind": "scan",
+        "status": "running",
         "request": {"task_id": "task-1", "options": {"require_clean_jobs": False}},
     }
     repository.by_idempotency_key = lambda _key: existing
@@ -414,7 +576,9 @@ def test_repeated_idempotency_key_with_changed_options_is_rejected():
 def test_identical_idempotent_scan_replay_still_returns_existing_workflow():
     repository, runner = FakeRepository(), FakeRunner()
     existing = {
-        "workflow_id": "wf-existing", "kind": "scan", "status": "running",
+        "workflow_id": "wf-existing",
+        "kind": "scan",
+        "status": "running",
         "request": {"task_id": "task-1", "options": {"require_clean_jobs": True}},
     }
     repository.by_idempotency_key = lambda _key: existing
@@ -440,17 +604,20 @@ def test_identical_idempotent_scan_replay_still_returns_existing_workflow():
 
 def test_ldap_login_rejects_disabled_local_user():
     """A locally disabled account stays disabled even when LDAP verifies it."""
-    from app import main
     from fastapi.testclient import TestClient
+
+    from app import main
 
     identity = {"username": "ivan.petrov", "display_name": "Ivan Petrov", "role": "viewer"}
 
-    with patch.object(auth, "authenticate", lambda u, p: None), \
-         patch.object(auth, "resolve_ldap_identity", lambda u, p: identity), \
-         patch.object(auth, "_local_user_record", return_value=None), \
-         patch.object(auth, "_provision_ldap_user") as provision, \
-         patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "connect", side_effect=_fake_connect({"is_active": False})):
+    with (
+        patch.object(auth, "authenticate", lambda u, p: None),
+        patch.object(auth, "resolve_ldap_identity", lambda u, p: identity),
+        patch.object(auth, "_local_user_record", return_value=None),
+        patch.object(auth, "_provision_ldap_user") as provision,
+        patch.object(auth, "audit_event"),
+        patch.object(auth.db, "connect", side_effect=_fake_connect({"is_active": False})),
+    ):
         response = TestClient(main.app).post(
             "/api/auth/login",
             json={"username": "ivan.petrov", "password": "secret"},

@@ -184,6 +184,15 @@ class AutomationService:
     ) -> dict[str, Any]:
         replay = self.repository.get_run_by_idempotency_key(idempotency_key)
         if replay:
+            request = {
+                "runbook_id": runbook_id,
+                "dry_run": dry_run,
+                "trigger_type": trigger_type,
+                "schedule_id": schedule_id,
+                "scheduled_for": scheduled_for,
+            }
+            if any(replay.get(field) != value for field, value in request.items()):
+                raise ValueError("Idempotency key was already used with a different automation run request.")
             return {**replay, "idempotent_replay": True}
         version = self.repository.get_version(runbook_id)
         if not version:
@@ -241,7 +250,19 @@ class AutomationService:
                 if persisted_steps.get(index, {}).get("status") == "completed":
                     continue
                 current = self.repository.get_run(run_id, include_steps=False)
-                if current and current.get("cancel_requested"):
+                if not current:
+                    db.register_operation(
+                        run_id,
+                        kind="automation_run",
+                        source_id=run_id,
+                        status="cancelled",
+                        stage="cancelled",
+                        progress_percent=100,
+                        message="Automation run removed before step execution.",
+                        finished_at=db.now_utc(),
+                    )
+                    return
+                if current.get("cancel_requested"):
                     self.repository.set_step_status(run_id, index, "cancelled")
                     self._finish_run(run_id, "cancelled", context)
                     return
