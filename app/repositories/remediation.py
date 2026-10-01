@@ -854,7 +854,7 @@ class CoverageRepository:
         if issue in issue_map:
             clauses.append(issue_map[issue])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        sql = f"""WITH latest_operation AS (
+        base_sql = """WITH latest_operation AS (
             SELECT DISTINCT ON (subject_id) subject_id,status,operation_id FROM operations
             WHERE kind='asset_card_build' ORDER BY subject_id,created_at DESC
         ), base AS (
@@ -869,11 +869,16 @@ class CoverageRepository:
             FROM assets asset FULL OUTER JOIN asset_cards card
               ON card.asset_id=COALESCE(NULLIF(asset.mp_asset_id,''),asset.asset_key)
             LEFT JOIN latest_operation op ON op.subject_id=COALESCE(card.asset_id,NULLIF(asset.mp_asset_id,''),asset.asset_key)
-        ) SELECT *, COUNT(*) OVER() total FROM base {where}
+        )"""
+        sql = f"""{base_sql} SELECT *, COUNT(*) OVER() total FROM base {where}
           ORDER BY (missing_card OR stale OR truncated OR last_refresh_failed) DESC,display_name,asset_id LIMIT %s OFFSET %s"""
         with db.connect() as conn:
             rows = conn.execute(sql, (*params, limit, offset)).fetchall()
-        total = int(rows[0]["total"]) if rows else 0
+            if rows:
+                total = int(rows[0]["total"])
+            else:
+                total_row = conn.execute(f"{base_sql} SELECT COUNT(*) AS total FROM base {where}", params).fetchone()
+                total = int(total_row["total"] if total_row else 0)
         return {"rows": [dict(row) for row in rows], "total": total, "stale_days": stale_days}
 
     def summary(self, *, stale_days: int) -> dict[str, Any]:

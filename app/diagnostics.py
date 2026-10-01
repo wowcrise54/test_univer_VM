@@ -735,12 +735,10 @@ def _main() -> int:
     bundle.add_argument("--job-id")
     bundle.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if args.command == "bundle":
-        path = build_diagnostic_archive(trace_id=args.trace_id, job_id=args.job_id, output_path=args.output)
-        flush_diagnostics()
-        print(path)
-        return 0
-    return 2
+    path = build_diagnostic_archive(trace_id=args.trace_id, job_id=args.job_id, output_path=args.output)
+    flush_diagnostics()
+    print(path)
+    return 0
 
 
 atexit.register(shutdown_diagnostics)

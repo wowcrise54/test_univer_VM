@@ -193,3 +193,12 @@ def test_false_precheck_runs_expose_targets_and_retry_capability(monkeypatch: py
 
     assert result["rows"][0]["false_targets"] == ["10.0.0.2"]
     assert result["rows"][0]["retryable"] is True
+
+
+def test_service_rejects_group_disappearing_after_initial_evaluation():
+    repository = MagicMock()
+    repository.create.return_value = {"group_id": "group-1"}
+    repository.evaluate.return_value = {"status": "completed"}
+    repository.get.return_value = None
+    with pytest.raises(LookupError, match="not found after creation"):
+        AssetGroupService(repository).create(name="Group", description="", parent_id=None, query={})

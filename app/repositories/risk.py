@@ -37,7 +37,7 @@ class RiskRepository:
             if key in clean and clean[key] not in allowed:
                 raise ValueError(f"Unsupported {key}.")
         if "tags" in clean:
-            clean["tags"] = sorted({str(v).strip() for v in clean["tags"] if str(v).strip()})[:50]
+            clean["tags"] = sorted({str(v).strip() for v in (clean["tags"] or []) if str(v).strip()})[:50]
         if "owner" in clean:
             clean["owner"] = str(clean["owner"] or "").strip()[:200] or None
         return clean
@@ -139,9 +139,15 @@ class RiskRepository:
         where = " AND ".join(clauses)
         limit = min(max(int(filters.get("limit", 50)), 1), 500)
         offset = max(int(filters.get("offset", 0)), 0)
+        # Count and page must evaluate the same score, including host spread.
+        source_sql = """FROM remediation_cases c
+            JOIN asset_cards card ON card.asset_id=c.asset_id
+            LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id
+            LEFT JOIN (SELECT vulnerability_key,COUNT(*) n FROM remediation_cases GROUP BY vulnerability_key) spread
+              ON spread.vulnerability_key=c.vulnerability_key"""
         with db.connect() as conn:
             total_row = conn.execute(
-                f"SELECT COUNT(*) count FROM remediation_cases c LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id WHERE {where}",
+                f"SELECT COUNT(*) count {source_sql} WHERE {where}",
                 params,
             ).fetchone()
             rows = conn.execute(
@@ -151,8 +157,7 @@ class RiskRepository:
                 ,EXISTS(SELECT 1 FROM vulnerability_passports vp WHERE vp.internal_id=c.passport_internal_id
                   AND vp.exploitation_evidence) exploitation_evidence
                 ,COALESCE(spread.n,0)::int affected_hosts
-                FROM remediation_cases c JOIN asset_cards card ON card.asset_id=c.asset_id LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id
-                LEFT JOIN (SELECT vulnerability_key,COUNT(*) n FROM remediation_cases GROUP BY vulnerability_key) spread ON spread.vulnerability_key=c.vulnerability_key
+                {source_sql}
                 WHERE {where} ORDER BY risk_score DESC,c.due_at NULLS LAST,c.case_id LIMIT %s OFFSET %s""",
                 (*params, limit, offset),
             ).fetchall()
@@ -221,7 +226,7 @@ class RiskRepository:
             )
             if values.get("assignee") or values.get("due_at"):
                 conn.execute(
-                    """UPDATE remediation_cases c SET assignee=COALESCE(%s,c.assignee),due_at=COALESCE(%s,c.due_at),manual_due=CASE WHEN %s IS NULL THEN manual_due ELSE TRUE END,version=version+1,updated_at=NOW()
+                    """UPDATE remediation_cases c SET assignee=COALESCE(%s,c.assignee),due_at=COALESCE(%s,c.due_at),manual_due=CASE WHEN %s::timestamptz IS NULL THEN manual_due ELSE TRUE END,version=version+1,updated_at=NOW()
                     FROM remediation_campaign_cases cc WHERE cc.campaign_id=%s AND cc.case_id=c.case_id""",
                     (values.get("assignee"), values.get("due_at"), values.get("due_at"), campaign_id),
                 )

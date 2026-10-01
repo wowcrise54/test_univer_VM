@@ -5708,7 +5708,7 @@ ASSET_CARD_QUERY_PRESETS: dict[str, dict[str, Any]] = {
     "windows-software-search": {
         "id": "windows-software-search",
         "name": "Поиск определённого ПО на активах Windows",
-        "description": "Поиск названия и маски версии ПО только на Windows-активах.",
+        "description": "Поиск по части названия без учёта регистра и маске версии ПО только на Windows-активах.",
         "kind": "software",
         "windows_only": True,
         "grouping": "name_version",
@@ -5768,7 +5768,7 @@ ASSET_CARD_QUERY_PRESETS: dict[str, dict[str, Any]] = {
     "software-search": {
         "id": "software-search",
         "name": "Поиск определённого ПО на активах",
-        "description": "Поиск названия и маски версии ПО на всех локальных карточках.",
+        "description": "Поиск по части названия без учёта регистра и маске версии ПО на всех локальных карточках.",
         "kind": "software",
         "windows_only": False,
         "grouping": "name_version",
@@ -5916,7 +5916,7 @@ def query_asset_card_preset(
             if not clean_name and preset.get("search"):
                 raise ValueError("software_name must not be blank.")
             if clean_name:
-                filters.append("soft_name_normalized = LOWER(%s)")
+                filters.append("STRPOS(soft_name_normalized, LOWER(%s)) > 0")
                 params.append(clean_name)
             if clean_version:
                 filters.append("soft_version_normalized LIKE LOWER(%s)")

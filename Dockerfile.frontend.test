@@ -1,0 +1,14 @@
+FROM node:26-alpine AS frontend
+
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY src ./src
+COPY tests/e2e ./tests/e2e
+COPY index.html *.config.js .prettierignore ./
+CMD ["sh", "-c", "npm run test:coverage -- --maxWorkers=2 --coverage.reporter=json-summary --coverage.reportsDirectory=output/coverage-js && npm run lint && npm run format:check && npm run build"]
+
+FROM frontend AS e2e
+RUN apk add --no-cache chromium
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+CMD ["npm", "run", "test:e2e"]
