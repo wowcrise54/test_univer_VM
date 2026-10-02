@@ -134,6 +134,43 @@ describe("task workspace", () => {
     expect(api).not.toHaveBeenCalledWith("/api/scanner-tasks/task-1/results");
   });
 
+  it("keeps task details visible when MP VM returns null connection-check entries", async () => {
+    api.mockImplementation(async (path) => {
+      if (path === "/api/scanner-task-folders") return { rows: [] };
+      if (path.includes("/runs?")) {
+        return {
+          items: [{ id: "run-1", status: "finished" }],
+          has_more: false,
+        };
+      }
+      if (path.endsWith("/runs/run-1/jobs")) {
+        return {
+          items: [
+            {
+              id: "job-1",
+              status: "finished",
+              targets: ["10.0.0.1"],
+              connectionCheckResults: [
+                null,
+                { status: "failed", errors: null },
+              ],
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    renderTasks();
+    await screen.findByText("Night audit");
+    fireEvent.doubleClick(screen.getByText("Night audit").closest("tr"));
+
+    expect(
+      await screen.findByRole("heading", { name: "Задания запуска" }),
+    ).toBeInTheDocument();
+    expect(await screen.findAllByText("10.0.0.1")).toHaveLength(2);
+  });
+
   it("searches by task name or ID and exposes no extra filters", async () => {
     renderTasks();
     await screen.findByText("Night audit");

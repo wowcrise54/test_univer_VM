@@ -115,7 +115,7 @@ export function TaskWorkspace(props) {
           runId,
           loading: false,
           error: null,
-          items: Array.isArray(result?.items) ? result.items : [],
+          items: objectRecords(result?.items),
         });
       } catch (loadError) {
         setJobsState({
@@ -142,7 +142,7 @@ export function TaskWorkspace(props) {
         const result = await api(
           `/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}/runs?offset=${offset}&limit=50`,
         );
-        const items = Array.isArray(result?.items) ? result.items : [];
+        const items = objectRecords(result?.items);
         runsOffsetRef.current = offset + items.length;
         setRunsState((current) => ({
           loading: false,
@@ -509,23 +509,24 @@ export function TaskWorkspace(props) {
                     ))}
                   </tbody>
                 </table>
-                {jobsState.items.some(
-                  (job) => job.connectionCheckResults?.length,
-                ) ? (
+                {jobsState.items.some((job) => connectionChecks(job).length) ? (
                   <div className="task-connection-checks">
                     <h3>Проверки соединения</h3>
                     {jobsState.items.flatMap((job, index) =>
-                      (job.connectionCheckResults || []).map(
-                        (check, checkIndex) => (
-                          <p key={`${index}-${checkIndex}`}>
-                            <strong>{check.transport || "Проверка"}:</strong>{" "}
-                            {check.status || "неизвестно"}
-                            {check.errors?.length
-                              ? ` · ${check.errors.join(", ")}`
-                              : ""}
-                          </p>
-                        ),
-                      ),
+                      connectionChecks(job).map((check, checkIndex) => (
+                        <p key={`${index}-${checkIndex}`}>
+                          <strong>
+                            {typeof check.transport === "string"
+                              ? check.transport
+                              : "Проверка"}
+                            :
+                          </strong>{" "}
+                          {typeof check.status === "string"
+                            ? check.status
+                            : "неизвестно"}
+                          {formatCheckErrors(check.errors)}
+                        </p>
+                      )),
                     )}
                   </div>
                 ) : null}
@@ -1055,6 +1056,26 @@ function taskAgents(task) {
   const agents =
     task.agent_names || task.payload?.agents?.agentIds || task.agent_ids;
   return Array.isArray(agents) ? agents : [];
+}
+
+function objectRecords(value) {
+  return Array.isArray(value)
+    ? value.filter(
+        (item) => item && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+}
+
+function connectionChecks(job) {
+  return objectRecords(job?.connectionCheckResults);
+}
+
+function formatCheckErrors(errors) {
+  if (Array.isArray(errors)) {
+    const messages = errors.filter((item) => typeof item === "string");
+    return messages.length ? ` · ${messages.join(", ")}` : "";
+  }
+  return typeof errors === "string" && errors ? ` · ${errors}` : "";
 }
 
 function taskAccount(task) {
