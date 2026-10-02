@@ -556,7 +556,7 @@ PUBLIC_API_PATHS = {
 }
 AUDITED_PERMISSIONS = {
     "security.users.manage", "security.roles.manage", "connection.manage",
-    "remediation.policy", "diagnostics.read",
+    "remediation.policy", "diagnostics.read", "operations.clear",
 }
 
 
@@ -1153,6 +1153,12 @@ def operations_summary() -> dict[str, Any]:
     return CONTAINER.services.operations.summary()
 
 
+@operations_router.post("/api/operations/clear-history")
+def clear_operations_history(request: Request) -> dict[str, int]:
+    actor = str(request.state.user.get("username") or "unknown")
+    return CONTAINER.services.operations.clear_history(actor=actor)
+
+
 @operations_router.get("/api/operations/{operation_id}")
 def operation_detail(operation_id: str) -> dict[str, Any]:
     operation = CONTAINER.repositories.operations.get(operation_id)
@@ -1423,6 +1429,7 @@ def mpvm_lookups() -> dict[str, Any]:
             "credentials": simplify_named_items(client.list_credentials(token)),
             "scopes": simplify_named_items(client.list_scopes(token)),
             "scanner_profiles": simplify_named_items(client.list_scanner_profiles(token)),
+            "agents": client.list_scanner_agents(token),
         }
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc

@@ -846,7 +846,8 @@ def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 ACTIVE_OPERATION_STATUSES = {"queued", "running", "cancelling", "recovering"}
-ATTENTION_OPERATION_STATUSES = {"failed", "interrupted", "completed_with_errors"}
+ATTENTION_OPERATION_STATUSES = {"failed", "interrupted", "completed_with_errors", "needs_attention"}
+CLEARABLE_OPERATION_STATUSES = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted", "needs_attention"}
 RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync", "automation_run"}
 
 
@@ -912,6 +913,14 @@ def register_operation(
                 trace_id = COALESCE(EXCLUDED.trace_id, operations.trace_id),
                 retry_of = COALESCE(EXCLUDED.retry_of, operations.retry_of),
                 idempotency_key = COALESCE(EXCLUDED.idempotency_key, operations.idempotency_key),
+                cleared_at = CASE
+                    WHEN EXCLUDED.status = ANY(ARRAY['queued', 'running', 'cancelling', 'recovering']) THEN NULL
+                    ELSE operations.cleared_at
+                END,
+                cleared_by = CASE
+                    WHEN EXCLUDED.status = ANY(ARRAY['queued', 'running', 'cancelling', 'recovering']) THEN NULL
+                    ELSE operations.cleared_by
+                END,
                 started_at = COALESCE(EXCLUDED.started_at, operations.started_at),
                 finished_at = COALESCE(EXCLUDED.finished_at, operations.finished_at),
                 updated_at = EXCLUDED.updated_at
@@ -1096,7 +1105,7 @@ def list_operations(
 ) -> dict[str, Any]:
     if sync_sources:
         sync_operations_from_sources()
-    clauses: list[str] = []
+    clauses: list[str] = ["cleared_at IS NULL"]
     params: list[Any] = []
     if status:
         clauses.append("status = %s")
@@ -1146,14 +1155,15 @@ def get_operations_summary(*, sync_sources: bool = False) -> dict[str, Any]:
                 COUNT(*) FILTER (WHERE status = ANY(%s)) AS attention,
                 MAX(updated_at) AS updated_at
             FROM operations
+            WHERE cleared_at IS NULL
             """,
             (sorted(ACTIVE_OPERATION_STATUSES), sorted(ATTENTION_OPERATION_STATUSES)),
         ).fetchone()
         status_rows = conn.execute(
-            "SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status"
+            "SELECT status, COUNT(*) AS count FROM operations WHERE cleared_at IS NULL GROUP BY status ORDER BY status"
         ).fetchall()
         kind_rows = conn.execute(
-            "SELECT kind, COUNT(*) AS count FROM operations GROUP BY kind ORDER BY kind"
+            "SELECT kind, COUNT(*) AS count FROM operations WHERE cleared_at IS NULL GROUP BY kind ORDER BY kind"
         ).fetchall()
     return {
         "total": int(totals["total"] or 0),

@@ -111,7 +111,9 @@ describe("task builder drafts", () => {
 
     expect(screen.getByLabelText("Название задачи")).toHaveValue("");
     expect(screen.getByLabelText("Цели сканирования")).toHaveValue("");
-    expect(screen.getByLabelText("Инфраструктура / scope")).toHaveValue("");
+    expect(screen.getByLabelText("Инфраструктура / scope")).toHaveValue(
+      "scope-1",
+    );
     expect(
       screen.getByLabelText("Поиск профиля по имени или ID: выбор"),
     ).toHaveValue("");
@@ -252,7 +254,7 @@ describe("task builder drafts", () => {
         body: JSON.stringify({
           name: "Independent new task",
           description: "Windows audit vulnerability collection",
-          scope_id: "",
+          scope_id: "scope-1",
           profile_id: "",
           credential_id: null,
           credential_transport: "windows",

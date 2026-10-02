@@ -612,6 +612,68 @@ class MpVmClient:
             return {}
         return response.json()
 
+    def list_scanner_agents(self, access_token: str) -> list[dict[str, str]]:
+        """Return the collectors referenced by MP VM scanner tasks.
+
+        The scanner-task report includes collector IDs and names. MP VM does
+        not expose that lookup alongside scopes/profiles, so collect its
+        distinct agents from the paged v4 task report.
+        """
+        page_size = 1000
+        offset = 0
+        agents: dict[str, str] = {}
+        total: int | None = None
+        while offset < 10000:
+            data = self.list_remote_scanner_tasks(
+                access_token, offset=offset, limit=page_size,
+            )
+            if isinstance(data, list):
+                rows = [item for item in data if isinstance(item, dict)]
+            elif isinstance(data, dict):
+                rows = next(
+                    (value for key in ("items", "rows", "data")
+                     if isinstance((value := data.get(key)), list)),
+                    [],
+                )
+                total_value = data.get("totalCount", data.get("total"))
+                try:
+                    total = int(total_value) if total_value is not None else total
+                except (TypeError, ValueError):
+                    pass
+                rows = [item for item in rows if isinstance(item, dict)]
+            else:
+                rows = []
+
+            for task in rows:
+                agent_data = task.get("agents", task.get("agent"))
+                if isinstance(agent_data, dict):
+                    agent_data = agent_data.get("agents", agent_data.get("agentIds", []))
+                if not isinstance(agent_data, list):
+                    continue
+                for item in agent_data:
+                    if isinstance(item, dict):
+                        agent_id = item.get("id") or item.get("agentId")
+                        agent_name = item.get("name") or item.get("displayName")
+                    else:
+                        agent_id = item
+                        agent_name = item
+                    if agent_id is None:
+                        continue
+                    identifier = str(agent_id).strip()
+                    if identifier:
+                        agents[identifier] = str(agent_name or identifier).strip()
+
+            if len(rows) < page_size:
+                break
+            offset += len(rows)
+            if total is not None and offset >= total:
+                break
+
+        return [
+            {"id": identifier, "name": name}
+            for identifier, name in sorted(agents.items(), key=lambda item: item[1].casefold())
+        ]
+
     def create_scanner_task(self, access_token: str, payload: dict[str, Any]) -> str:
         response = self.session.post(
             self._api_url(SCANNER_TASKS_CREATE_PATH),

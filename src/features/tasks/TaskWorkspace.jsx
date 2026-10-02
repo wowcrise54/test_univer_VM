@@ -336,7 +336,12 @@ export function TaskWorkspace(props) {
         <TaskBuilderPanel
           defaults={defaults}
           lookups={
-            lookups || { scopes: [], scanner_profiles: [], credentials: [] }
+            lookups || {
+              scopes: [],
+              scanner_profiles: [],
+              credentials: [],
+              agents: [],
+            }
           }
           tasks={tasks}
           selectedTask={editorTask}
@@ -707,7 +712,7 @@ export function TaskWorkspace(props) {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr>
+                  <tr className="task-table-message-row">
                     <td
                       colSpan={canManage ? 11 : 10}
                       className="task-table-empty"
@@ -717,7 +722,7 @@ export function TaskWorkspace(props) {
                     </td>
                   </tr>
                 ) : error ? (
-                  <tr>
+                  <tr className="task-table-message-row">
                     <td
                       colSpan={canManage ? 11 : 10}
                       className="task-table-empty"
@@ -727,7 +732,7 @@ export function TaskWorkspace(props) {
                     </td>
                   </tr>
                 ) : !visibleTasks.length ? (
-                  <tr>
+                  <tr className="task-table-message-row">
                     <td
                       colSpan={canManage ? 11 : 10}
                       className="task-table-empty"
@@ -756,7 +761,7 @@ export function TaskWorkspace(props) {
                       }}
                     >
                       {canManage ? (
-                        <td>
+                        <td data-label="Выбрать">
                           <input
                             type="checkbox"
                             aria-label={`Выбрать ${task.name || task.mp_task_id} для перемещения`}
@@ -766,26 +771,38 @@ export function TaskWorkspace(props) {
                           />
                         </td>
                       ) : null}
-                      <td>
+                      <td data-label="Статус">
                         <StatusBadge status={task.status} />
                       </td>
-                      <td>
+                      <td data-label="Название">
                         <strong>{task.name || task.mp_task_id}</strong>
                         <small>{task.mp_task_id}</small>
                       </td>
-                      <td>{taskTargets(task).slice(0, 2).join(", ") || "—"}</td>
-                      <td>
+                      <td data-label="Цели">
+                        {taskTargets(task).slice(0, 2).join(", ") || "—"}
+                      </td>
+                      <td data-label="Профиль">
                         {task.profile_name ||
                           task.profile_id ||
                           task.payload?.profile ||
                           "—"}
                       </td>
-                      <td>{taskCollectionSummary(task)}</td>
-                      <td>{taskAgents(task).slice(0, 2).join(", ") || "—"}</td>
-                      <td>{taskAccount(task) || "—"}</td>
-                      <td>{formatDate(task.created_at)}</td>
-                      <td>{formatDate(task.last_run_at || task.lastRunAt)}</td>
-                      <td>
+                      <td data-label="Параметры сбора">
+                        {taskCollectionSummary(task)}
+                      </td>
+                      <td data-label="Коллекторы">
+                        {taskAgents(task).slice(0, 2).join(", ") || "—"}
+                      </td>
+                      <td data-label="Учётная запись">
+                        {taskAccount(task) || "—"}
+                      </td>
+                      <td data-label="Создана">
+                        {formatDate(task.created_at)}
+                      </td>
+                      <td data-label="Последний запуск">
+                        {formatDate(task.last_run_at || task.lastRunAt)}
+                      </td>
+                      <td data-label="Следующий запуск">
                         {formatDate(
                           task.next_run_at ||
                             task.payload?.triggerParameters?.nextRunAt,

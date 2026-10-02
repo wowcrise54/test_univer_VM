@@ -96,12 +96,16 @@ export function Sidebar({
 }
 
 function NavLink({ route, activePath, activeOperations, onNavigate }) {
+  const showOperationsBadge =
+    route.id === "operations" &&
+    activeOperations > 0 &&
+    activePath !== route.path;
   return (
     <a
       href={route.path}
       title={route.label}
       aria-label={
-        route.id === "operations" && activeOperations
+        showOperationsBadge
           ? `Операции — активных: ${activeOperations}`
           : undefined
       }
@@ -116,7 +120,7 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
       }}
     >
       <span className="nav-label">{route.label}</span>
-      {route.id === "operations" && activeOperations ? (
+      {showOperationsBadge ? (
         <em className="nav-badge" aria-hidden="true">
           {activeOperations}
         </em>

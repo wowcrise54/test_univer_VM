@@ -292,6 +292,7 @@ describe("application data loading and recovery", () => {
       credentials: [],
       scopes: [],
       scanner_profiles: [],
+      agents: [],
     });
     expect(client.getQueryData(["session"])).toEqual({ connected: false });
     act(() => result.current.setLookups({ credentials: [{ id: "new" }] }));

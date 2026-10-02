@@ -27,6 +27,9 @@ class OperationsService:
     def summary(self) -> dict[str, Any]:
         return self._repository.summary()
 
+    def clear_history(self, *, actor: str | None = None) -> dict[str, int]:
+        return self._repository.clear_history(actor=actor)
+
 
 class AssetsService:
     def __init__(self, repositories: RepositoryBundle) -> None:

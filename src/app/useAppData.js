@@ -7,6 +7,7 @@ const EMPTY_LOOKUPS = {
   credentials: [],
   scopes: [],
   scanner_profiles: [],
+  agents: [],
 };
 
 const EMPTY_CONNECTION_DRAFT = {

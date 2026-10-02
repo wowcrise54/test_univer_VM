@@ -116,7 +116,12 @@ function ConnectionPanel({
       lookupRequestRef.current += 1;
       const result = await api("/api/session/disconnect", { method: "POST" });
       setSession(result);
-      setLookups({ credentials: [], scopes: [], scanner_profiles: [] });
+      setLookups({
+        credentials: [],
+        scopes: [],
+        scanner_profiles: [],
+        agents: [],
+      });
       showAlert("Сессия MP VM отключена.", "info");
     });
 
@@ -127,7 +132,7 @@ function ConnectionPanel({
       if (request !== lookupRequestRef.current) return null;
       setLookups(result);
       showAlert(
-        "Справочники загружены: credentials, scopes, scanner profiles.",
+        "Справочники загружены: credentials, scopes, scanner profiles и коллекторы.",
         "success",
       );
     });
@@ -235,7 +240,8 @@ function ConnectionPanel({
           <div className="inline-metric">
             Справочники: <span>{lookups.credentials.length}</span> учётных
             записей · <span>{lookups.scopes.length}</span> scopes ·{" "}
-            <span>{lookups.scanner_profiles.length}</span> профилей
+            <span>{lookups.scanner_profiles.length}</span> профилей ·{" "}
+            <span>{lookups.agents?.length || 0}</span> коллекторов
           </div>
         ) : null}
         <div
@@ -336,6 +342,45 @@ function TaskBuilderPanel({
     setSelectedTaskId,
     copyTask,
   });
+  const scopeOptions = useMemo(
+    () => (Array.isArray(lookups.scopes) ? lookups.scopes : []),
+    [lookups.scopes],
+  );
+  const scannerAgents = useMemo(
+    () => (Array.isArray(lookups.agents) ? lookups.agents : []),
+    [lookups.agents],
+  );
+  const selectedAgentIds = splitTokens(form.agent_ids);
+  const selectedAgentSet = new Set(selectedAgentIds);
+  const agentIdsInLookup = new Set(
+    scannerAgents.map((item) => String(item.id || "")),
+  );
+  const selectableAgents = [
+    ...scannerAgents,
+    ...selectedAgentIds
+      .filter((id) => !agentIdsInLookup.has(id))
+      .map((id) => ({ id, name: id })),
+  ];
+
+  useEffect(() => {
+    if (selectedTaskId || copyTask) return;
+    const onlyScope = scopeOptions.length === 1 ? scopeOptions[0] : null;
+    const onlyAgent = scannerAgents.length === 1 ? scannerAgents[0] : null;
+    if (!onlyScope && !onlyAgent) return;
+    setForm((current) => {
+      const scopeId = onlyScope?.id && !current.scope_id
+        ? String(onlyScope.id)
+        : current.scope_id;
+      const agentIds = onlyAgent?.id && !current.agent_ids?.trim()
+        ? String(onlyAgent.id)
+        : current.agent_ids;
+      if (scopeId === current.scope_id && agentIds === current.agent_ids) {
+        return current;
+      }
+      return { ...current, scope_id: scopeId, agent_ids: agentIds };
+    });
+  }, [copyTask, scannerAgents, scopeOptions, selectedTaskId, setForm]);
+
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
   const payload = () => ({
@@ -612,14 +657,43 @@ function TaskBuilderPanel({
               onChange={(event) => update("time_zone", event.target.value)}
             />
           </Field>
-          <Field label="Коллекторы / agents" wide>
-            <textarea
-              rows={3}
-              value={form.agent_ids}
-              onChange={(event) => update("agent_ids", event.target.value)}
-              placeholder="UUID через запятую или с новой строки"
-            />
-          </Field>
+          <fieldset className="task-agent-picker">
+            <legend>Коллекторы / agents</legend>
+            {selectableAgents.length ? (
+              <div className="task-agent-picker__options">
+                {selectableAgents.map((agent) => {
+                  const id = String(agent.id || "");
+                  return (
+                    <label key={id} className="task-agent-option">
+                      <input
+                        type="checkbox"
+                        checked={selectedAgentSet.has(id)}
+                        onChange={() => {
+                          const next = selectedAgentSet.has(id)
+                            ? selectedAgentIds.filter((item) => item !== id)
+                            : [...selectedAgentIds, id];
+                          update("agent_ids", next.join("\n"));
+                        }}
+                      />
+                      <span>{optionLabel(agent)}</span>
+                      <small>{id}</small>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="task-agent-picker__empty">
+                <span>Список коллекторов пока пуст. Можно указать UUID вручную.</span>
+                <textarea
+                  aria-label="Коллекторы / agents"
+                  rows={2}
+                  value={form.agent_ids}
+                  onChange={(event) => update("agent_ids", event.target.value)}
+                  placeholder="UUID через запятую или с новой строки"
+                />
+              </div>
+            )}
+          </fieldset>
         </div>
       </Disclosure>
 

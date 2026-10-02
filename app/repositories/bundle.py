@@ -7,25 +7,12 @@ from .. import db
 from .asset_groups import AssetGroupRepository
 from .attention import AttentionRepository
 from .compliance import ComplianceRepository
+from .operations import OperationsRepository
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
 from .scanner_task_folders import ScannerTaskFolderRepository
 from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
-
-
-class OperationsRepository:
-    def list(self, **filters: Any) -> dict[str, Any]:
-        return db.list_operations(**filters, sync_sources=True)
-
-    def summary(self) -> dict[str, Any]:
-        return db.get_operations_summary(sync_sources=True)
-
-    def get(self, operation_id: str) -> dict[str, Any] | None:
-        return db.get_operation(operation_id, sync_sources=True)
-
-    def saved_views(self, route: str) -> builtins.list[dict[str, Any]]:
-        return db.list_saved_views(route)
 
 
 class TasksRepository:

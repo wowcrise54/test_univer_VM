@@ -23,6 +23,7 @@ const ATTENTION_STATUSES = new Set([
   "failed",
   "interrupted",
   "completed_with_errors",
+  "needs_attention",
 ]);
 
 export function OperationsPage({
@@ -170,6 +171,26 @@ export function OperationsPage({
       return detail;
     });
 
+  const clearHistory = () => {
+    if (
+      !window.confirm(
+        "Скрыть завершённую историю операций? Записи и хронология останутся сохранены для аудита. Активные операции не будут затронуты.",
+      )
+    ) {
+      return;
+    }
+    return runBusy("clearOperationHistory", async () => {
+      const result = await api("/api/operations/clear-history", {
+        method: "POST",
+      });
+      await refreshCurrent();
+      showAlert(
+        `Скрыто операций: ${result.cleared_count}. Активных оставлено: ${result.active_preserved}.`,
+        "success",
+      );
+    });
+  };
+
   const saveCurrentView = () =>
     runBusy("saveOperationView", async () => {
       const name = viewName.trim();
@@ -233,13 +254,24 @@ export function OperationsPage({
         title="Центр операций"
         description="Активные задания, ошибки и восстановление в одном списке."
         action={
-          <Button
-            variant="secondary"
-            busy={busy.operationsRefresh}
-            onClick={() => runBusy("operationsRefresh", refreshCurrent)}
-          >
-            Обновить
-          </Button>
+          <div className="operation-panel-actions">
+            {currentUser?.permissions?.includes("operations.clear") ? (
+              <Button
+                variant="secondary"
+                busy={busy.clearOperationHistory}
+                onClick={clearHistory}
+              >
+                Очистить историю
+              </Button>
+            ) : null}
+            <Button
+              variant="secondary"
+              busy={busy.operationsRefresh}
+              onClick={() => runBusy("operationsRefresh", refreshCurrent)}
+            >
+              Обновить
+            </Button>
+          </div>
         }
       >
         <div
@@ -302,6 +334,7 @@ export function OperationsPage({
                 "failed",
                 "cancelled",
                 "interrupted",
+                "needs_attention",
               ].map((status) => (
                 <option value={status} key={status}>
                   {statusLabel(status)}
@@ -776,6 +809,7 @@ function statusLabel(status) {
       failed: "Ошибка",
       cancelled: "Отменено",
       interrupted: "Прервано",
+      needs_attention: "Требует внимания",
     }[status] || status
   );
 }

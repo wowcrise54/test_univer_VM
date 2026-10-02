@@ -66,7 +66,7 @@ class AttentionRepository:
                         "updated_at": _iso(item.get("updated_at")),
                     })
             if "operations.read" in permissions:
-                clauses = ["status IN ('failed','interrupted','completed_with_errors')"]
+                clauses = ["cleared_at IS NULL", "status IN ('failed','interrupted','completed_with_errors')"]
                 params = []
                 rows = conn.execute(
                     f"SELECT operation_id,kind,status,subject_label,updated_at,created_at,message FROM operations WHERE {' AND '.join(clauses)}",
@@ -161,7 +161,7 @@ class AttentionRepository:
                 rows = conn.execute("SELECT case_id,title,status,severity FROM remediation_cases WHERE status <> 'resolved' AND (case_id ILIKE %s OR title ILIKE %s) ORDER BY title,case_id LIMIT 100", (pattern, pattern)).fetchall()
                 items += [{"type":"case","id":str(r["case_id"]),"title":r.get("title") or str(r["case_id"]),"subtitle":r.get("severity"),"status":r.get("status"),"href":f"/remediation?case={r['case_id']}"} for r in map(dict, rows)]
             if "operation" in requested and "operations.read" in permissions:
-                rows = conn.execute("SELECT operation_id,subject_label,status,kind FROM operations WHERE operation_id ILIKE %s OR trace_id ILIKE %s OR subject_label ILIKE %s ORDER BY updated_at DESC,operation_id LIMIT 100", (pattern, pattern, pattern)).fetchall()
+                rows = conn.execute("SELECT operation_id,subject_label,status,kind FROM operations WHERE cleared_at IS NULL AND (operation_id ILIKE %s OR trace_id ILIKE %s OR subject_label ILIKE %s) ORDER BY updated_at DESC,operation_id LIMIT 100", (pattern, pattern, pattern)).fetchall()
                 items += [{"type":"operation","id":str(r["operation_id"]),"title":r.get("subject_label") or str(r["operation_id"]),"subtitle":r.get("kind"),"status":r.get("status"),"href":f"/operations?operation={r['operation_id']}"} for r in map(dict, rows)]
         items.sort(key=lambda item: (item["type"], item["title"].lower(), item["id"]))
         offset = decode_cursor(cursor)

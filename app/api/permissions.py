@@ -136,6 +136,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/notifications/{notification_id}/read"): "notifications.manage",
     ("POST", "/api/operations/{operation_id}/cancel"): "operations.cancel",
     ("POST", "/api/operations/{operation_id}/retry"): "operations.retry",
+    ("POST", "/api/operations/clear-history"): "operations.clear",
     ("POST", "/api/remediation/campaigns"): "remediation.manage",
     ("POST", "/api/remediation/campaigns/{campaign_id}/verify"): "remediation.manage",
     ("POST", "/api/remediation/cases/bulk-update"): "remediation.manage",
