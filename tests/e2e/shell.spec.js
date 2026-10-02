@@ -652,6 +652,9 @@ test.describe("risk history states", () => {
 test("task selection, results, and a new task are separate actions", async ({
   page,
 }) => {
+  const pageErrors = [];
+  const historyRequests = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   await installApiMock(page, {
     "/api/scanner-tasks": (route) =>
       route.fulfill({
@@ -668,25 +671,72 @@ test("task selection, results, and a new task are separate actions", async ({
           },
         ],
       }),
-    "/api/scanner-tasks/task-select-1/results": (route) =>
-      route.fulfill({ json: { items: [], total: 0 } }),
+    "/api/scanner-tasks/task-select-1/runs": (route) => {
+      historyRequests.push("runs");
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: "run-e2e-1",
+              status: "finished",
+              startedAt: "2026-10-02T08:00:00Z",
+              startedBy: {
+                id: "user-e2e-1",
+                login: "Administrator",
+                firstName: null,
+                lastName: null,
+              },
+            },
+          ],
+          has_more: false,
+        },
+      });
+    },
+    "/api/scanner-tasks/task-select-1/runs/run-e2e-1/jobs": (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: "job-e2e-1",
+              status: "finished",
+              targets: ["10.1.1.1"],
+              profile: { name: "Unix Audit" },
+            },
+          ],
+        },
+      }),
   });
   await page.goto("/tasks");
   await page.getByText("Audit alpha", { exact: true }).first().click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByLabel("Название задачи")).toHaveValue("Audit alpha");
-  await page.getByRole("button", { name: "Результаты", exact: true }).click();
   await expect(
-    page.getByRole("dialog", { name: "Результаты задачи" }),
+    page.getByRole("heading", { name: "Audit alpha", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Название задачи")).toHaveCount(0);
+  expect(historyRequests).toEqual([]);
+  await page.getByText("task-select-1", { exact: true }).first().dblclick();
+  await expect(
+    page.getByRole("heading", { name: "Запуски", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Administrator", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "10.1.1.1", exact: true }),
   ).toBeVisible();
   await expect(
-    page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Закрыть", exact: true }),
-  ).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("button", { name: "Новая задача", exact: true }).click();
+    page.getByRole("cell", { name: "Unix Audit", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "Основная навигация" }),
+  ).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: "output/playwright/task-details-started-by.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "← К задачам", exact: true }).click();
+  await page
+    .getByRole("button", { name: "+ Создать задачу", exact: true })
+    .click();
   await expect(page.getByLabel("Название задачи")).toHaveValue("");
   await expect(
     page.getByRole("button", { name: "Создать задачу", exact: true }),

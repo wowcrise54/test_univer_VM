@@ -422,15 +422,19 @@ export function TaskWorkspace(props) {
                     onClick={() => void loadJobs(run.id)}
                   >
                     <span className="task-run-item__status">
-                      {run.status || "Запуск"}
+                      {displayText(run.status) || "Запуск"}
                     </span>
                     <strong>
                       {formatDate(run.startedAt || run.createdAt)}
                     </strong>
                     <small>
-                      {run.initiator || run.startedBy || "Запуск MP VM"}
+                      {displayText(run.initiator) ||
+                        displayText(run.startedBy) ||
+                        "Запуск MP VM"}
                     </small>
-                    <span className="task-run-item__id">{run.id}</span>
+                    <span className="task-run-item__id">
+                      {displayText(run.id)}
+                    </span>
                   </button>
                 ))}
                 {runsState.hasMore ? (
@@ -496,15 +500,16 @@ export function TaskWorkspace(props) {
                         <td>{formatDate(job.finishedAt)}</td>
                         <td>{formatDuration(job.startedAt, job.finishedAt)}</td>
                         <td>
-                          {job.agent?.name ||
-                            job.collector?.name ||
-                            job.agent?.id ||
+                          {displayText(job.agent) ||
+                            displayText(job.collector) ||
                             "—"}
                         </td>
                         <td>
-                          {(job.targets || []).join(", ") || job.target || "—"}
+                          {displayTargets(job.targets) ||
+                            displayText(job.target) ||
+                            "—"}
                         </td>
-                        <td>{job.profile?.name || job.profile?.id || "—"}</td>
+                        <td>{displayText(job.profile) || "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1064,6 +1069,32 @@ function objectRecords(value) {
         (item) => item && typeof item === "object" && !Array.isArray(item),
       )
     : [];
+}
+
+function displayText(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  for (const field of [
+    "name",
+    "displayName",
+    "userName",
+    "login",
+    "value",
+    "id",
+  ]) {
+    const label = value[field];
+    if (typeof label === "string" && label) return label;
+    if (typeof label === "number" && Number.isFinite(label))
+      return String(label);
+  }
+  return "";
+}
+
+function displayTargets(value) {
+  return Array.isArray(value)
+    ? value.map(displayText).filter(Boolean).join(", ")
+    : displayText(value);
 }
 
 function connectionChecks(job) {

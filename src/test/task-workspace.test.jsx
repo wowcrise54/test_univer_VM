@@ -3,6 +3,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client.js";
 import { TasksPage } from "../pages/TasksPage.jsx";
+import { recordFrontendEvent } from "../diagnostics.js";
+
+vi.mock("../diagnostics.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  recordFrontendEvent: vi.fn(),
+}));
 
 vi.mock("../api/client.js", () => ({
   api: vi.fn(),
@@ -34,6 +40,7 @@ const tasks = [
 
 function renderTasks(
   permissions = ["tasks.read", "tasks.manage", "tasks.execute"],
+  taskRows = tasks,
 ) {
   function Harness() {
     const [selectedTaskId, setSelectedTaskId] = useState(null);
@@ -51,7 +58,7 @@ function renderTasks(
         currentUser={{ permissions }}
         session={{ connected: true }}
         systemStatus={{ components: { database: { state: "ok" } } }}
-        tasks={tasks}
+        tasks={taskRows}
       />
     );
   }
@@ -60,6 +67,7 @@ function renderTasks(
 
 describe("task workspace", () => {
   beforeEach(() => {
+    recordFrontendEvent.mockClear();
     api.mockReset();
     api.mockImplementation(async (path) => {
       if (path === "/api/scanner-task-folders") return { rows: [] };
@@ -169,6 +177,92 @@ describe("task workspace", () => {
       await screen.findByRole("heading", { name: "Задания запуска" }),
     ).toBeInTheDocument();
     expect(await screen.findAllByText("10.0.0.1")).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      startedBy: {
+        id: "user-1",
+        login: "Administrator",
+        firstName: null,
+        lastName: null,
+      },
+    },
+    { initiator: { name: "Administrator" } },
+    { startedBy: "Administrator" },
+  ])(
+    "renders the run initiator without removing task details: %j",
+    async (initiator) => {
+      api.mockImplementation(async (path) => {
+        if (path === "/api/scanner-task-folders") return { rows: [] };
+        if (path.includes("/runs?")) {
+          return {
+            items: [{ id: "run-1", status: "finished", ...initiator }],
+          };
+        }
+        return { items: [] };
+      });
+
+      renderTasks();
+      await screen.findByText("Night audit");
+      fireEvent.doubleClick(screen.getByText("Night audit").closest("tr"));
+      expect(await screen.findByText("Administrator")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "← К задачам" }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("keeps unexpected rendering failures recoverable and reports the task ID", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      renderTasks(
+        ["tasks.read"],
+        [
+          { ...tasks[0], payload: { description: { unexpected: true } } },
+          tasks[1],
+        ],
+      );
+      await screen.findByText("Night audit");
+      fireEvent.doubleClick(screen.getByText("Night audit").closest("tr"));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Не удалось отобразить задачу",
+      );
+      expect(recordFrontendEvent).toHaveBeenCalledWith(
+        "ui.task_workspace.render_error",
+        expect.objectContaining({ task_id: "task-1" }),
+        expect.objectContaining({ level: "error" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "К списку задач" }));
+      expect(await screen.findByText("Night audit")).toBeInTheDocument();
+      fireEvent.doubleClick(screen.getByText("Domain audit").closest("tr"));
+      expect(
+        await screen.findByRole("heading", { name: "Запуски" }),
+      ).toBeInTheDocument();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it.each([
+    { targets: "10.0.0.1" },
+    { targets: ["10.0.0.1"] },
+    { targets: [null, "10.0.0.1"] },
+  ])("renders job targets supplied as %j", async ({ targets }) => {
+    api.mockImplementation(async (path) => {
+      if (path === "/api/scanner-task-folders") return { rows: [] };
+      if (path.includes("/runs?")) return { items: [{ id: "run-1" }] };
+      return { items: [{ id: "job-1", targets }] };
+    });
+    renderTasks();
+    await screen.findByText("Night audit");
+    fireEvent.doubleClick(screen.getByText("Night audit").closest("tr"));
+    expect(
+      await screen.findByRole("cell", { name: "10.0.0.1" }),
+    ).toBeInTheDocument();
   });
 
   it("searches by task name or ID and exposes no extra filters", async () => {
