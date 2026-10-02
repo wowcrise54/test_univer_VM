@@ -132,4 +132,56 @@ describe("local asset groups management", () => {
     ));
     expect(showAlert).toHaveBeenCalledWith("Проверка запущена: 2 активов.", "success");
   });
+
+  it.each([
+    { status: "stale", member_count: 2, description: "stale groups" },
+    { status: "ready", member_count: 0, description: "empty groups" },
+  ])(
+    "blocks remote group workflows for $description",
+    async ({ status, member_count }) => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation((input) => {
+          const url = String(input);
+          if (url.includes("/precheck-stats"))
+            return response({ runs: 0, success: 0, false: 0, unknown: 0 });
+          if (url.includes("/precheck-runs")) return response({ rows: [] });
+          if (url.includes("/fields")) return response({ rows: [] });
+          if (url.includes("/members"))
+            return response({ rows: [], total: member_count });
+          return response({
+            rows: [
+              {
+                group_id: "group-1",
+                name: "Production",
+                status,
+                member_count,
+                children: [],
+              },
+            ],
+          });
+        });
+
+      renderPage(["asset_groups.read", "tasks.execute"]);
+      fireEvent.click(
+        await screen.findByRole("button", { name: /Production/ }),
+      );
+
+      const scanButton = await screen.findByRole("button", {
+        name: "Сканировать группу",
+      });
+      const verifyButton = screen.getByRole("button", {
+        name: "Проверить устранение",
+      });
+      expect(scanButton).toBeDisabled();
+      expect(verifyButton).toBeDisabled();
+      fireEvent.click(scanButton);
+      fireEvent.click(verifyButton);
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          /\/api\/asset-groups\/group-1\/(scan|verify)$/.test(String(input)),
+        ),
+      ).toBe(false);
+    },
+  );
 });

@@ -322,6 +322,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         with (
             patch.object(main, "require_mpvm", return_value=(MagicMock(), "token")),
             patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main.CONTAINER.services.scanner_task_folders, "unassign_task"),
         ):
             client, _token = main.require_mpvm()
             client.delete_scanner_task.return_value = {
@@ -338,6 +339,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         with (
             patch.object(main, "require_mpvm") as require_mpvm,
             patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main.CONTAINER.services.scanner_task_folders, "unassign_task"),
         ):
             result = main.delete_scanner_task_impl(
                 "task-orphaned", main.DeleteScannerTaskRequest(mode="local_only"),
@@ -353,6 +355,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
             patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main.CONTAINER.services.scanner_task_folders, "unassign_task"),
         ):
             result = main.delete_scanner_task_impl(
                 "task-orphaned", main.DeleteScannerTaskRequest(mode="auto"),
@@ -370,6 +373,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
             patch.object(main.db, "delete_scan_task") as delete_local,
+            patch.object(main.CONTAINER.services.scanner_task_folders, "unassign_task"),
         ):
             result = main.delete_scanner_task_impl(
                 "task-1", main.DeleteScannerTaskRequest(mode="auto"),
@@ -387,6 +391,7 @@ class ScanPostprocessClientTests(unittest.TestCase):
         with (
             patch.object(main, "require_mpvm", return_value=(client, "token")),
             patch.object(main.db, "delete_scan_task"),
+            patch.object(main.CONTAINER.services.scanner_task_folders, "unassign_task"),
         ):
             result = main.delete_scanner_task_impl(
                 "task-target", main.DeleteScannerTaskRequest(mode="auto"),

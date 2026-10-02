@@ -55,6 +55,15 @@ const ACTIVE_BULK_REFRESH_STATUSES = new Set([
   "cancelling",
   "recovering",
 ]);
+const WEEKDAYS = [
+  ["monday", "Пн"],
+  ["tuesday", "Вт"],
+  ["wednesday", "Ср"],
+  ["thursday", "Чт"],
+  ["friday", "Пт"],
+  ["saturday", "Сб"],
+  ["sunday", "Вс"],
+];
 const ASSET_CONFIG_TREE_LIMIT = 200;
 const ASSET_CONFIG_DETAIL_LIMIT = 200;
 const ASSET_VULNERABILITY_FINDING_LIMIT = 100;
@@ -315,12 +324,17 @@ function TaskBuilderPanel({
   showAlert,
   session,
   systemStatus,
+  editorMode = false,
+  copyTask = null,
+  onCancel,
+  onSaved,
 }) {
   const { form, setForm, startNewTask } = useTaskForm({
     defaults,
     selectedTask,
     selectedTaskId,
     setSelectedTaskId,
+    copyTask,
   });
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -338,6 +352,49 @@ function TaskBuilderPanel({
     host_discovery_enabled: form.host_discovery_enabled,
     is_fqdn_priority: form.is_fqdn_priority,
     time_zone: form.time_zone || "+05:00",
+    trigger_parameters: form.schedule_enabled
+      ? {
+          isEnabled: true,
+          fromDate: form.schedule_from_date
+            ? new Date(form.schedule_from_date).toISOString()
+            : new Date().toISOString(),
+          ...(form.schedule_to_date
+            ? { toDate: new Date(form.schedule_to_date).toISOString() }
+            : {}),
+          timeZone: form.time_zone || "+05:00",
+          type: form.schedule_type,
+          ...(form.schedule_type === "Daily" || form.schedule_type === "Weekly" || form.schedule_type === "Fortnightly"
+            ? { atTime: timeWithSeconds(form.schedule_at_time) }
+            : {}),
+          ...(form.schedule_type === "Weekly" || form.schedule_type === "Fortnightly"
+            ? { daysOfWeek: form.schedule_days_of_week }
+            : {}),
+          ...(form.schedule_type === "Periodic"
+            ? { interval: Number(form.schedule_interval), intervalUnit: form.schedule_interval_unit }
+            : {}),
+          ...(form.schedule_type === "RepeatableDaily"
+            ? { startTime: timeWithSeconds(form.schedule_start_time), endTime: timeWithSeconds(form.schedule_end_time), interval: Number(form.schedule_interval), intervalUnit: "Minutes" }
+            : {}),
+          ...(form.schedule_type === "Monthly"
+            ? { dayOfMonth: Number(form.schedule_day_of_month), atTime: timeWithSeconds(form.schedule_at_time) }
+            : {}),
+          ...(form.schedule_type === "CronScheduler"
+            ? { cronExpression: form.schedule_cron_expression }
+            : {}),
+        }
+      : null,
+    denied_scan_settings: form.denied_scan_enabled
+      ? {
+          isEnabled: true,
+          periods: form.denied_periods.map((period) => ({
+            ...period,
+            fromTime: timeWithSeconds(period.fromTime),
+            toTime: timeWithSeconds(period.toTime),
+            daysOfWeek: period.daysOfWeek,
+            timeZone: period.timeZone || form.time_zone || "+05:00",
+          })),
+        }
+      : null,
   });
   const startPayload = () => ({
     precheck_enabled: form.precheck_enabled,
@@ -396,17 +453,48 @@ function TaskBuilderPanel({
       setSelectedTaskId(result.mp_task_id);
       showAlert(`Задача создана: ${result.mp_task_id}`, "success");
       await refreshTasks();
+      onSaved?.(result);
+      return result;
     });
 
   const updateTask = () =>
     runBusy("updateTask", async () => {
       if (!selectedTaskId) throw new Error("Сначала выберите задачу.");
-      await api(`/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}`, {
+      const result = await api(`/api/scanner-tasks/${encodeURIComponent(selectedTaskId)}`, {
         method: "PUT",
         body: JSON.stringify(payload()),
       });
       showAlert(`Задача изменена: ${selectedTaskId}`, "success");
       await refreshTasks();
+      onSaved?.(result);
+      return result;
+    });
+
+  const saveAndRun = () =>
+    runBusy("saveAndRunTask", async () => {
+      let taskId = selectedTaskId;
+      if (taskId) {
+        await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}`, {
+          method: "PUT",
+          body: JSON.stringify(payload()),
+        });
+      } else {
+        const created = await api("/api/scanner-tasks", {
+          method: "POST",
+          body: JSON.stringify(payload()),
+        });
+        taskId = created.mp_task_id;
+        setSelectedTaskId(taskId);
+      }
+      const result = await api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/start`, {
+        method: "POST",
+        headers: { "X-Idempotency-Key": createIdempotencyKey("scan-start") },
+        body: JSON.stringify(startPayload()),
+      });
+      showAlert(startSuccessText(result), "success");
+      await refreshTasks();
+      onSaved?.({ mp_task_id: taskId });
+      return result;
     });
 
   const actionTask = (action, key, successText, body = null) =>
@@ -430,13 +518,14 @@ function TaskBuilderPanel({
   return (
     <Panel
       id="task-builder"
-      title="Конструктор задачи сканирования"
-      description="Основные параметры задачи и запуск сканирования."
-      action={
+      title={editorMode ? (copyTask ? "Копирование задачи" : selectedTaskId ? "Изменение задачи" : "Новая задача") : "Конструктор задачи сканирования"}
+      description={editorMode ? "Настройте сбор, расписание и ограничения сканирования." : "Основные параметры задачи и запуск сканирования."}
+      className={editorMode ? "task-builder task-builder--editor" : "task-builder"}
+      action={editorMode ? null : (
         <Button variant="secondary" onClick={startNewTask}>
           Новая задача
         </Button>
-      }
+      )}
     >
       <div className="form-grid form-grid--two task-primary-fields">
         <Field label="Название задачи">
@@ -533,6 +622,88 @@ function TaskBuilderPanel({
           </Field>
         </div>
       </Disclosure>
+
+      <section className="task-settings-card" aria-labelledby="task-schedule-title">
+        <div className="task-settings-card__header">
+          <div>
+            <h3 id="task-schedule-title">Расписание</h3>
+            <p>Автоматический запуск задачи по часовому поясу</p>
+          </div>
+          <Toggle label="Включить" checked={form.schedule_enabled} onChange={(value) => update("schedule_enabled", value)} />
+        </div>
+        {form.schedule_enabled ? (
+          <div className="form-grid form-grid--two">
+            <Field label="Тип расписания">
+              <select value={form.schedule_type} onChange={(event) => update("schedule_type", event.target.value)}>
+                <option value="Daily">Ежедневно</option>
+                <option value="Periodic">Периодически</option>
+                <option value="RepeatableDaily">Повторять в течение дня</option>
+                <option value="Weekly">Еженедельно</option>
+                <option value="Fortnightly">Раз в две недели</option>
+                <option value="Monthly">Ежемесячно</option>
+                <option value="CronScheduler">Cron</option>
+              </select>
+            </Field>
+            <Field label="Начать с">
+              <input aria-label="Начать расписание с" type="datetime-local" value={form.schedule_from_date} onChange={(event) => update("schedule_from_date", event.target.value)} />
+            </Field>
+            <Field label="Завершить после (опционально)">
+              <input aria-label="Завершить расписание после" type="datetime-local" value={form.schedule_to_date} onChange={(event) => update("schedule_to_date", event.target.value)} />
+            </Field>
+            {["Daily", "Weekly", "Fortnightly", "Monthly"].includes(form.schedule_type) ? (
+              <Field label="Время запуска"><input type="time" value={form.schedule_at_time} onChange={(event) => update("schedule_at_time", event.target.value)} /></Field>
+            ) : null}
+            {["Weekly", "Fortnightly"].includes(form.schedule_type) ? (
+              <fieldset className="task-weekday-picker"><legend>Дни недели</legend>{WEEKDAYS.map(([value, label]) => (
+                <label key={value}><input type="checkbox" checked={form.schedule_days_of_week.includes(value)} onChange={(event) => update("schedule_days_of_week", event.target.checked ? [...form.schedule_days_of_week, value] : form.schedule_days_of_week.filter((day) => day !== value))} /> {label}</label>
+              ))}</fieldset>
+            ) : null}
+            {["Periodic", "RepeatableDaily"].includes(form.schedule_type) ? (
+              <Field label="Интервал"><input type="number" min="1" value={form.schedule_interval} onChange={(event) => update("schedule_interval", event.target.value)} /></Field>
+            ) : null}
+            {form.schedule_type === "Periodic" ? (
+              <Field label="Единица интервала"><select value={form.schedule_interval_unit} onChange={(event) => update("schedule_interval_unit", event.target.value)}><option value="Minutes">Минуты</option><option value="Hours">Часы</option><option value="Days">Дни</option></select></Field>
+            ) : null}
+            {form.schedule_type === "RepeatableDaily" ? (
+              <><Field label="Повторять с"><input type="time" value={form.schedule_start_time} onChange={(event) => update("schedule_start_time", event.target.value)} /></Field><Field label="Повторять до"><input type="time" value={form.schedule_end_time} onChange={(event) => update("schedule_end_time", event.target.value)} /></Field></>
+            ) : null}
+            {form.schedule_type === "Monthly" ? (
+              <Field label="День месяца"><input type="number" min="1" max="31" value={form.schedule_day_of_month} onChange={(event) => update("schedule_day_of_month", event.target.value)} /></Field>
+            ) : null}
+            {form.schedule_type === "CronScheduler" ? (
+              <Field label="Cron выражение"><input value={form.schedule_cron_expression} onChange={(event) => update("schedule_cron_expression", event.target.value)} /></Field>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="task-settings-card" aria-labelledby="task-denied-title">
+        <div className="task-settings-card__header">
+          <div>
+            <h3 id="task-denied-title">Запрещённое время сканирования</h3>
+            <p>Периоды, в которые MP VM не будет выполнять сканирование</p>
+          </div>
+          <Toggle label="Включить" checked={form.denied_scan_enabled} onChange={(value) => {
+            update("denied_scan_enabled", value);
+            if (value && !form.denied_periods.length) update("denied_periods", [{ daysOfWeek: ["saturday", "sunday"], timeZone: form.time_zone, isAllDay: false, fromTime: "00:00:00", toTime: "06:00:00" }]);
+          }} />
+        </div>
+        {form.denied_scan_enabled ? (
+          <div className="task-denied-periods">
+            {form.denied_periods.map((period, index) => (
+              <div className="task-denied-period" key={`denied-${index}`}>
+                <div className="task-settings-card__header"><strong>Период {index + 1}</strong><Button variant="ghost" onClick={() => update("denied_periods", form.denied_periods.filter((_, periodIndex) => periodIndex !== index))}>Удалить</Button></div>
+                <fieldset className="task-weekday-picker"><legend>Дни недели</legend>{WEEKDAYS.map(([value, label]) => (
+                  <label key={value}><input type="checkbox" checked={period.daysOfWeek.includes(value)} onChange={(event) => update("denied_periods", form.denied_periods.map((entry, periodIndex) => periodIndex !== index ? entry : { ...entry, daysOfWeek: event.target.checked ? [...entry.daysOfWeek, value] : entry.daysOfWeek.filter((day) => day !== value) }))} /> {label}</label>
+                ))}</fieldset>
+                <Toggle label="Весь день" checked={period.isAllDay} onChange={(value) => update("denied_periods", form.denied_periods.map((entry, periodIndex) => periodIndex === index ? { ...entry, isAllDay: value } : entry))} />
+                {!period.isAllDay ? <div className="form-grid form-grid--two"><Field label="С"><input type="time" value={period.fromTime} onChange={(event) => update("denied_periods", form.denied_periods.map((entry, periodIndex) => periodIndex === index ? { ...entry, fromTime: event.target.value } : entry))} /></Field><Field label="По"><input type="time" value={period.toTime} onChange={(event) => update("denied_periods", form.denied_periods.map((entry, periodIndex) => periodIndex === index ? { ...entry, toTime: event.target.value } : entry))} /></Field></div> : null}
+              </div>
+            ))}
+            <Button variant="secondary" onClick={() => update("denied_periods", [...form.denied_periods, { daysOfWeek: ["saturday", "sunday"], timeZone: form.time_zone, isAllDay: false, fromTime: "00:00:00", toTime: "06:00:00" }])}>Добавить период</Button>
+          </div>
+        ) : null}
+      </section>
 
       <Disclosure
         title="Подключение и обнаружение"
@@ -692,7 +863,13 @@ function TaskBuilderPanel({
         </section>
       </Disclosure>
 
-      <div className="action-row">
+      {editorMode ? (
+        <footer className="task-editor-footer">
+          <Button busy={selectedTaskId ? busy.updateTask : busy.createTask} onClick={selectedTaskId ? updateTask : createTask}>{selectedTaskId ? "Сохранить" : "Создать задачу"}</Button>
+          <Button variant="secondary" disabled={!preflight.every((item) => item.label === "Выбрана задача" || item.ok)} busy={busy.saveAndRunTask} onClick={saveAndRun}>Сохранить и запустить</Button>
+          <Button variant="ghost" onClick={onCancel}>Отмена</Button>
+        </footer>
+      ) : <div className="action-row">
         {selectedTaskId ? (
           <Button
             disabled={!preflightReady}
@@ -748,7 +925,7 @@ function TaskBuilderPanel({
             </Button>
           </ActionMenu>
         ) : null}
-      </div>
+      </div>}
     </Panel>
   );
 }
@@ -768,6 +945,12 @@ function startSuccessText(result) {
   if (result.postprocess_run_id)
     return `Сканирование запущено. Фоновая обработка: ${result.postprocess_run_id}.${precheckText}`;
   return `Старт запрошен для ${result.id}.${precheckText}`;
+}
+
+function timeWithSeconds(value) {
+  return typeof value === "string" && /^\d{2}:\d{2}$/.test(value)
+    ? `${value}:00`
+    : value;
 }
 
 function jobDuration(startedAt, finishedAt) {

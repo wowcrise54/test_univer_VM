@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from ..mpvm_client import (
@@ -26,6 +26,76 @@ class ConnectionRequest(BaseModel):
     timeout: float = 120
 
 
+Weekday = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+ScheduleType = Literal[
+    "Daily", "Periodic", "RepeatableDaily", "Weekly", "Fortnightly", "Monthly", "CronScheduler"
+]
+
+
+class TaskTriggerParameters(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    isEnabled: bool = False
+    fromDate: str | None = None
+    toDate: str | None = None
+    timeZone: str = "+00:00"
+    type: ScheduleType = "Daily"
+    atTime: str | None = None
+    daysOfWeek: list[Weekday] | None = None
+    interval: int | None = Field(default=None, ge=1)
+    intervalUnit: Literal["Minutes", "Hours", "Days"] | None = None
+    startTime: str | None = None
+    endTime: str | None = None
+    dayOfMonth: int | None = Field(default=None, ge=1, le=31)
+    cronExpression: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def require_schedule_fields(self) -> TaskTriggerParameters:
+        if not self.isEnabled:
+            return self
+        required = {
+            "Daily": (self.atTime,),
+            "Periodic": (self.interval, self.intervalUnit),
+            "RepeatableDaily": (self.interval, self.startTime, self.endTime),
+            "Weekly": (self.atTime, self.daysOfWeek),
+            "Fortnightly": (self.atTime, self.daysOfWeek),
+            "Monthly": (self.atTime, self.dayOfMonth),
+            "CronScheduler": (self.cronExpression,),
+        }[self.type]
+        if any(value is None or value == [] or value == "" for value in required):
+            raise ValueError(f"Schedule type {self.type} is missing required fields.")
+        return self
+
+
+class DeniedScanPeriod(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    daysOfWeek: list[Weekday] = Field(min_length=1)
+    timeZone: str = "+00:00"
+    isAllDay: bool = False
+    fromTime: str | None = None
+    toTime: str | None = None
+
+    @model_validator(mode="after")
+    def require_time_range(self) -> DeniedScanPeriod:
+        if not self.isAllDay and (not self.fromTime or not self.toTime):
+            raise ValueError("A denied scan period requires both fromTime and toTime unless it is all day.")
+        return self
+
+
+class DeniedScanSettings(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    isEnabled: bool = False
+    periods: list[DeniedScanPeriod] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def require_enabled_periods(self) -> DeniedScanSettings:
+        if self.isEnabled and not self.periods:
+            raise ValueError("At least one denied scan period is required when settings are enabled.")
+        return self
+
+
 class ScannerTaskRequest(BaseModel):
     name: str
     description: str | None = ""
@@ -40,6 +110,8 @@ class ScannerTaskRequest(BaseModel):
     host_discovery_profile_id: str | None = None
     time_zone: str = "+05:00"
     is_fqdn_priority: bool = True
+    trigger_parameters: TaskTriggerParameters | None = None
+    denied_scan_settings: DeniedScanSettings | None = None
     raw_payload: dict[str, Any] | None = None
 
 

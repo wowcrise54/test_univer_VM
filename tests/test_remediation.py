@@ -125,10 +125,50 @@ class RemediationServiceTests(unittest.TestCase):
         self.assertEqual(item["status"], "risk_accepted")
         self.assertEqual(self.repository.updates[-1][2], 3)
 
+    def test_expired_exception_is_rejected_without_writing(self):
+        expired = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
+
+        with self.assertRaisesRegex(ValueError, "must be in the future"):
+            self.service.update(
+                "case-1",
+                {
+                    "expected_version": 3,
+                    "status": "false_positive",
+                    "exception_reason": "Reviewed exception",
+                    "exception_expires_at": expired,
+                },
+            )
+
+        self.assertEqual(self.repository.updates, [])
+
     def test_bulk_update_uses_current_version(self):
         result = self.service.bulk_update(["case-1", "case-1", "missing"], {"status": "in_progress"})
         self.assertEqual(result["updated_count"], 1)
         self.assertEqual(self.repository.updates[0][2], 3)
+
+    def test_bulk_update_reports_a_version_conflict_and_continues(self):
+        second_case = {"case_id": "case-2", "version": 8, "status": "open"}
+        update_calls = []
+        get_case = self.repository.get
+
+        def get(case_id):
+            return second_case if case_id == "case-2" else get_case(case_id)
+
+        def update(case_id, changes, *, expected_version, comment):
+            update_calls.append((case_id, expected_version))
+            if case_id == "case-1":
+                raise RuntimeError("VERSION_CONFLICT")
+            return {"case_id": case_id, "version": expected_version + 1, **changes}
+
+        self.repository.get = get  # type: ignore[method-assign]
+        self.repository.update = update  # type: ignore[method-assign]
+
+        result = self.service.bulk_update(["case-1", "case-2", "case-1"], {"status": "in_progress"})
+
+        self.assertEqual(result["conflicts"], ["case-1"])
+        self.assertEqual(result["updated_count"], 1)
+        self.assertEqual(result["updated"][0]["case_id"], "case-2")
+        self.assertEqual(update_calls, [("case-1", 3), ("case-2", 8)])
 
     def test_start_for_finding_reconciles_and_moves_case_to_in_progress(self):
         result = self.service.start_for_finding(
@@ -181,6 +221,24 @@ class RemediationServiceTests(unittest.TestCase):
     def test_resolution_stats_forwards_period_and_recent_limit(self):
         result = self.service.resolution_stats(days=90, recent_limit=20)
         self.assertEqual(result, {"period_days": 90, "recent_limit": 20})
+
+    def test_reconcile_all_keeps_partial_results_when_one_asset_fails(self):
+        self.repository.asset_ids = lambda: ["host-1", "host-broken", "host-3"]  # type: ignore[method-assign]
+
+        def reconcile(asset_id, *, stale_days):
+            if asset_id == "host-broken":
+                raise OSError("temporary database failure")
+            if asset_id == "host-1":
+                return {"created": 1, "reopened": 0, "resolved": 0}
+            return {"created": 0, "reopened": 2, "resolved": 3}
+
+        self.repository.reconcile_asset = reconcile  # type: ignore[method-assign]
+
+        with patch("app.services.remediation.log_exception") as log_exception:
+            result = self.service.reconcile_all()
+
+        self.assertEqual(result, {"created": 1, "reopened": 2, "resolved": 3})
+        log_exception.assert_called_once_with("remediation", "case.reconcile.failed", asset_id="host-broken")
 
 
 class RemediationRepositoryTests(unittest.TestCase):

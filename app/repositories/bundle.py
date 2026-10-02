@@ -9,6 +9,7 @@ from .attention import AttentionRepository
 from .compliance import ComplianceRepository
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
+from .scanner_task_folders import ScannerTaskFolderRepository
 from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 
@@ -78,6 +79,7 @@ class RepositoryBundle:
     def __init__(self, *, coverage_stale_days: int = 14) -> None:
         self.operations = OperationsRepository()
         self.tasks = TasksRepository()
+        self.scanner_task_folders = ScannerTaskFolderRepository()
         self.assets = AssetsRepository()
         self.asset_cards = AssetCardsRepository()
         self.passports = PassportsRepository()

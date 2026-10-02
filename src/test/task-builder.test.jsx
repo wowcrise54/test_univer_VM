@@ -37,6 +37,7 @@ const secondTask = {
   payload: { ...auditTask.payload, name: "Second task" },
 };
 const pageProps = {
+  currentUser: { permissions: ["tasks.read", "tasks.manage", "tasks.execute"] },
   defaults: { utc_offset: "+05:00" },
   lookups: {
     scopes: [{ id: "scope-1", name: "Scope" }],
@@ -79,6 +80,15 @@ function selectTask(name = "Audit task") {
   fireEvent.click(screen.getByText(name, { selector: "td strong" }));
 }
 
+function openNewTask() {
+  fireEvent.click(screen.getByRole("button", { name: /Создать задачу/ }));
+}
+
+function openTaskEditor(name = "Audit task") {
+  selectTask(name);
+  fireEvent.click(screen.getByRole("button", { name: "Изменить" }));
+}
+
 describe("task builder drafts", () => {
   beforeEach(() => {
     Object.defineProperty(window, "localStorage", {
@@ -91,15 +101,14 @@ describe("task builder drafts", () => {
 
   it("starts an independent clean new task after editing an existing task", () => {
     render(<Harness initialSelectedId="task-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить" }));
     changeName("Unsaved audit edit");
     fireEvent.change(screen.getByLabelText("Таймаут задачи, минут"), {
       target: { value: "45" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Новая задача" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openNewTask();
 
-    expect(
-      screen.getByText("Audit task", { selector: "td strong" }).closest("tr"),
-    ).toHaveAttribute("aria-selected", "false");
     expect(screen.getByLabelText("Название задачи")).toHaveValue("");
     expect(screen.getByLabelText("Цели сканирования")).toHaveValue("");
     expect(screen.getByLabelText("Инфраструктура / scope")).toHaveValue("");
@@ -123,6 +132,7 @@ describe("task builder drafts", () => {
 
   it("never replaces the persisted new-task draft with existing-task edits", async () => {
     const view = render(<Harness />);
+    openNewTask();
     changeName("New task draft");
     fireEvent.change(screen.getByLabelText("Цели сканирования"), {
       target: { value: "192.0.2.10" },
@@ -132,11 +142,13 @@ describe("task builder drafts", () => {
         "New task draft",
       ),
     );
-    selectTask();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openTaskEditor();
     changeName("Existing task edit");
     await new Promise((resolve) => window.setTimeout(resolve, 450));
     view.unmount();
     render(<Harness />);
+    openNewTask();
     expect(screen.getByLabelText("Название задачи")).toHaveValue(
       "New task draft",
     );
@@ -154,10 +166,12 @@ describe("task builder drafts", () => {
       }),
     );
     const view = render(<Harness initialSelectedId="task-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить" }));
     changeName("Existing task edit");
     await new Promise((resolve) => window.setTimeout(resolve, 450));
     view.unmount();
     render(<Harness />);
+    openNewTask();
     expect(screen.getByLabelText("Название задачи")).toHaveValue(
       "Saved new draft",
     );
@@ -168,6 +182,7 @@ describe("task builder drafts", () => {
 
   it("keeps unsaved edits when refresh replaces the selected task object", () => {
     const view = render(<Harness initialSelectedId="task-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить" }));
     changeName("Unsaved edit");
     fireEvent.change(screen.getByLabelText("Цели сканирования"), {
       target: { value: "192.0.2.30" },
@@ -196,22 +211,27 @@ describe("task builder drafts", () => {
 
   it("keeps separate unsaved edits when switching between existing tasks", () => {
     render(<Harness initialSelectedId="task-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить" }));
     changeName("First edit");
-    selectTask("Second task");
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openTaskEditor("Second task");
     expect(screen.getByLabelText("Название задачи")).toHaveValue("Second task");
     changeName("Second edit");
-    selectTask();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openTaskEditor();
     expect(screen.getByLabelText("Название задачи")).toHaveValue("First edit");
-    selectTask("Second task");
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openTaskEditor("Second task");
     expect(screen.getByLabelText("Название задачи")).toHaveValue("Second edit");
   });
 
   it("persists the explicit clean reset and creates with only the new form parameters", async () => {
     api.mockResolvedValue({ mp_task_id: "new-task" });
     const view = render(<Harness />);
+    openNewTask();
     changeName("Old new draft");
-    selectTask();
-    fireEvent.click(screen.getByRole("button", { name: "Новая задача" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    openNewTask();
     await waitFor(() =>
       expect(JSON.parse(window.localStorage.getItem(draftKey))?.form.name).toBe(
         "",
@@ -219,6 +239,7 @@ describe("task builder drafts", () => {
     );
     view.unmount();
     render(<Harness />);
+    openNewTask();
     expect(screen.getByLabelText("Название задачи")).toHaveValue("");
     changeName("Independent new task");
     fireEvent.change(screen.getByLabelText("Цели сканирования"), {
@@ -242,8 +263,49 @@ describe("task builder drafts", () => {
           host_discovery_enabled: false,
           is_fqdn_priority: true,
           time_zone: "+05:00",
+          trigger_parameters: null,
+          denied_scan_settings: null,
         }),
       }),
     );
+  });
+
+  it("serializes the weekly schedule and denied scanning periods", async () => {
+    api.mockResolvedValue({ mp_task_id: "scheduled-task" });
+    render(<Harness />);
+    openNewTask();
+    fireEvent.click(screen.getAllByLabelText("Включить")[0]);
+    fireEvent.change(screen.getByLabelText("Тип расписания"), {
+      target: { value: "Weekly" },
+    });
+    fireEvent.change(screen.getByLabelText("Время запуска"), {
+      target: { value: "01:30" },
+    });
+    fireEvent.click(screen.getAllByLabelText("Включить")[1]);
+    fireEvent.click(screen.getByRole("button", { name: "Создать задачу" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/scanner-tasks",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const body = JSON.parse(
+      api.mock.calls.find(([path]) => path === "/api/scanner-tasks")[1].body,
+    );
+    expect(body.trigger_parameters).toMatchObject({
+      isEnabled: true,
+      type: "Weekly",
+      atTime: "01:30:00",
+      daysOfWeek: expect.arrayContaining(["monday"]),
+    });
+    expect(body.denied_scan_settings).toMatchObject({
+      isEnabled: true,
+      periods: [
+        {
+          daysOfWeek: expect.arrayContaining(["saturday", "sunday"]),
+          isAllDay: false,
+        },
+      ],
+    });
   });
 });

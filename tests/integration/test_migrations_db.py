@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20261001_0025``);
+* the migration graph has a single, expected head (``20261002_0026``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
@@ -30,7 +30,7 @@ import psycopg
 
 from app import db, main
 
-EXPECTED_HEAD = "20261001_0025"
+EXPECTED_HEAD = "20261002_0026"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -43,6 +43,8 @@ DROPPED_AT_BASE = {
     "remediation_sla_policy", # 0006 (seeded with policy_id=1)
     "app_roles",              # 0008
     "app_role_permissions",   # 0008
+    "scanner_task_folders",   # 0026
+    "scanner_task_folder_assignments",  # 0026
 }
 
 # 0002 uses the expand/contract strategy: its downgrade is a no-op that keeps
@@ -61,6 +63,7 @@ ALTERED_COLUMNS = {
 INDEX_0023 = "idx_asset_card_vulnerability_passports_finding"
 INDEX_0024 = "idx_remediation_cases_passport_internal_id"
 UNIQUE_0024 = "uq_active_passport_catalog_refresh"
+INDEX_0026 = "idx_scanner_task_folder_assignments_folder"
 
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +184,7 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert _has_index(url, INDEX_0023), "0023 index missing after upgrade"
         assert _has_index(url, INDEX_0024), "0024 FK index missing after upgrade"
         assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after upgrade"
+        assert _has_index(url, INDEX_0026), "0026 folder assignment index missing after upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after upgrade"
@@ -201,6 +205,7 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert not _has_index(url, INDEX_0023), "0023 index should be dropped at base"
         assert not _has_index(url, INDEX_0024), "0024 FK index should be dropped at base"
         assert not _has_index(url, UNIQUE_0024), "0024 concurrency index should be dropped at base"
+        assert not _has_index(url, INDEX_0026), "0026 folder assignment index should be dropped at base"
 
         # 3. Re-upgrade to head: everything is restored.
         _run_alembic(url, "upgrade", "head")
@@ -210,6 +215,7 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert _has_index(url, INDEX_0023), "0023 index missing after re-upgrade"
         assert _has_index(url, INDEX_0024), "0024 FK index missing after re-upgrade"
         assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after re-upgrade"
+        assert _has_index(url, INDEX_0026), "0026 folder assignment index missing after re-upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after re-upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after re-upgrade"

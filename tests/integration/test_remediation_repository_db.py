@@ -219,6 +219,38 @@ def test_start_finding_assigns_severity_sla_and_does_not_duplicate_an_active_cas
     assert len(replay["events"]) == len(started["events"])
 
 
+def test_parallel_start_finding_creates_one_case_and_one_creation_event(test_db):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    repository = RemediationRepository()
+    _asset_with_finding()
+    start_barrier = Barrier(2)
+
+    def start():
+        start_barrier.wait(timeout=10)
+        return _start(repository)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = [future.result(timeout=30) for future in (workers.submit(start), workers.submit(start))]
+
+    assert {item["case_id"] for item in results} == {results[0]["case_id"]}
+    assert {item["status"] for item in results} == {"in_progress"}
+    assert {item["version"] for item in results} == {results[0]["version"]}
+    assert sum(event["event_type"] == "finding_created" for event in results[0]["events"]) == 1
+
+    with db.connect() as conn:
+        case_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM remediation_cases WHERE asset_id='host-1' AND vulnerability_key='id:vuln-1'"
+        ).fetchone()["count"]
+        creation_events = conn.execute(
+            "SELECT COUNT(*) AS count FROM remediation_case_events WHERE event_type='finding_created'"
+        ).fetchone()["count"]
+
+    assert case_count == 1
+    assert creation_events == 1
+
+
 @pytest.mark.parametrize("status", ["risk_accepted", "false_positive"])
 def test_start_requires_explicit_confirmation_before_resuming_an_exception(test_db, status):
     repository = RemediationRepository()

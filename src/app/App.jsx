@@ -166,6 +166,7 @@ function ActivePage({ routeId, ...props }) {
   if (routeId === "tasks") {
     return (
       <TasksPage
+        currentUser={props.currentUser}
         defaults={props.defaults}
         lookups={props.lookups}
         tasks={props.tasks}

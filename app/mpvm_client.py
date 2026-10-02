@@ -712,8 +712,16 @@ class MpVmClient:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def get_task_runs(self, access_token: str, task_id: str, time_from: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"offset": 0, "limit": 1}
+    def get_task_runs(
+        self,
+        access_token: str,
+        task_id: str,
+        time_from: str | None = None,
+        *,
+        offset: int = 0,
+        limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
         if time_from:
             params["timeFrom"] = time_from
         data = self.get_json(access_token, SCANNER_TASK_RUNS_PATH.format(task_id=task_id), params=params)
@@ -1133,6 +1141,8 @@ def build_scanner_task_payload(
     host_discovery_profile_id: str | None = None,
     time_zone: str = "+00:00",
     is_fqdn_priority: bool = True,
+    trigger_parameters: dict[str, Any] | None = None,
+    denied_scan_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     host_discovery: dict[str, Any] = {"enabled": host_discovery_enabled}
     if host_discovery_profile_id:
@@ -1155,11 +1165,8 @@ def build_scanner_task_payload(
             "assetsGroups": [],
         },
         "hostDiscovery": host_discovery,
-        "triggerParameters": build_disabled_daily_trigger(time_zone),
-        "deniedScanSettings": {
-            "isEnabled": False,
-            "periods": [],
-        },
+        "triggerParameters": trigger_parameters or build_disabled_daily_trigger(time_zone),
+        "deniedScanSettings": denied_scan_settings or {"isEnabled": False, "periods": []},
         "isFqdnPriority": is_fqdn_priority,
         "groups": [],
     }

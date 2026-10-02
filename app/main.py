@@ -3905,7 +3905,32 @@ def require_mpvm() -> tuple[MpVmClient, str]:
 
 def scanner_task_payload(payload: ScannerTaskRequest) -> dict[str, Any]:
     if payload.raw_payload:
-        return payload.raw_payload
+        raw = payload.raw_payload
+        include = raw.get("include") if isinstance(raw.get("include"), dict) else {}
+        exclude = raw.get("exclude") if isinstance(raw.get("exclude"), dict) else {}
+        agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
+        discovery = raw.get("hostDiscovery") if isinstance(raw.get("hostDiscovery"), dict) else {}
+        overrides = raw.get("overrides") if isinstance(raw.get("overrides"), dict) else {}
+        transports = overrides.get("transports") if isinstance(overrides.get("transports"), dict) else {}
+        validated = ScannerTaskRequest.model_validate({
+            "name": raw.get("name") or payload.name,
+            "description": raw.get("description") or payload.description,
+            "scope_id": raw.get("scope") or payload.scope_id,
+            "profile_id": raw.get("profile") or payload.profile_id,
+            "include_targets": include.get("targets") or payload.include_targets,
+            "exclude_targets": exclude.get("targets") or payload.exclude_targets,
+            "agent_ids": agents.get("agentIds") or payload.agent_ids,
+            "credential_id": db._credential_id_from_payload(raw) or payload.credential_id,
+            "credential_transport": "ssh" if isinstance(transports.get("terminal"), dict) else payload.credential_transport,
+            "host_discovery_enabled": discovery.get("enabled", payload.host_discovery_enabled),
+            "host_discovery_profile_id": discovery.get("profile") or payload.host_discovery_profile_id,
+            "time_zone": ((raw.get("triggerParameters") or {}).get("timeZone") or payload.time_zone)
+            if isinstance(raw.get("triggerParameters"), dict) else payload.time_zone,
+            "is_fqdn_priority": raw.get("isFqdnPriority", payload.is_fqdn_priority),
+            "trigger_parameters": raw.get("triggerParameters"),
+            "denied_scan_settings": raw.get("deniedScanSettings"),
+        })
+        return scanner_task_payload(validated)
     include_targets = [item.strip() for item in payload.include_targets if item.strip()]
     if not include_targets:
         raise HTTPException(status_code=422, detail="include_targets is required")
@@ -3923,6 +3948,10 @@ def scanner_task_payload(payload: ScannerTaskRequest) -> dict[str, Any]:
         host_discovery_profile_id=payload.host_discovery_profile_id,
         time_zone=payload.time_zone,
         is_fqdn_priority=payload.is_fqdn_priority,
+        trigger_parameters=(payload.trigger_parameters.model_dump(exclude_none=True)
+                            if payload.trigger_parameters else None),
+        denied_scan_settings=(payload.denied_scan_settings.model_dump(exclude_none=True)
+                              if payload.denied_scan_settings else None),
     )
 
 
@@ -5953,6 +5982,7 @@ def build_scanned_asset_card(
 def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) -> dict[str, Any]:
     if payload.mode == "local_only":
         db.delete_scan_task(task_id)
+        CONTAINER.services.scanner_task_folders.unassign_task(task_id)
         return {"id": task_id, "mode": payload.mode, "localOnly": True}
 
     client, token = require_mpvm()
@@ -5960,9 +5990,11 @@ def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) ->
         if payload.mode == "auto":
             if not remote_scanner_task_exists(client, token, task_id):
                 db.delete_scan_task(task_id)
+                CONTAINER.services.scanner_task_folders.unassign_task(task_id)
                 return {"id": task_id, "mode": payload.mode, "localOnly": True, "remoteFound": False}
             response = client.delete_scanner_task(token, task_id, mode="delete_v3")
             db.delete_scan_task(task_id)
+            CONTAINER.services.scanner_task_folders.unassign_task(task_id)
             return {**response, "mode": payload.mode, "remoteFound": True}
 
         response = client.delete_scanner_task(
@@ -5972,6 +6004,7 @@ def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) ->
             put_payload=payload.put_payload,
         )
         db.delete_scan_task(task_id)
+        CONTAINER.services.scanner_task_folders.unassign_task(task_id)
         return response
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc

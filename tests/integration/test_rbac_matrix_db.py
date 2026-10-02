@@ -43,6 +43,7 @@ ROUTES: list[tuple[str, str, str, dict | None]] = [
     ("GET", "/api/assets", "/api/assets", None),
     ("GET", "/api/assets/summary", "/api/assets/summary", None),
     ("GET", "/api/asset-groups/tree", "/api/asset-groups/tree", None),
+    ("GET", "/api/scanner-task-folders", "/api/scanner-task-folders", None),
     ("GET", "/api/vm/workflows", "/api/vm/workflows", None),
     ("GET", "/api/vm/overview", "/api/vm/overview", None),
     ("GET", "/api/remediation/policy", "/api/remediation/policy", None),
@@ -201,3 +202,37 @@ def test_rbac_matrix_differentiates_roles(rbac_matrix):
     assert profiles["viewer"][0] > profiles["none"][0]
     # the four profiles are pairwise distinct
     assert len({profiles[role] for role in ROLES}) == len(ROLES)
+
+
+def test_task_folder_routes_enforce_manage_permission_and_write_audit(rbac_matrix):
+    operator = rbac_matrix["clients"]["operator"]
+    viewer = rbac_matrix["clients"]["viewer"]
+
+    denied = viewer.post("/api/scanner-task-folders", json={"name": "Viewer folder"})
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+    created = operator.post("/api/scanner-task-folders", json={"name": "Night shift"})
+    assert created.status_code == 201, created.text
+    folder_id = created.json()["folder_id"]
+    renamed = operator.patch(f"/api/scanner-task-folders/{folder_id}", json={"name": "Overnight"})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Overnight"
+    assigned = operator.put(
+        "/api/scanner-task-folders/assignments",
+        json={"task_ids": ["rbac-task-1"], "folder_id": folder_id},
+    )
+    assert assigned.status_code == 200
+    assert operator.get("/api/scanner-task-folders").json()["rows"][0]["task_ids"] == ["rbac-task-1"]
+    deleted = operator.delete(f"/api/scanner-task-folders/{folder_id}")
+    assert deleted.status_code == 200
+
+    with db.connect() as conn:
+        audit_rows = conn.execute(
+            """SELECT event_type, target_id FROM app_auth_audit_events
+               WHERE target_type='scanner_task_folder' AND target_id=%s""",
+            (folder_id,),
+        ).fetchall()
+    assert {row["event_type"] for row in audit_rows} >= {
+        "task_folder_created", "task_folder_renamed", "task_folder_deleted"
+    }

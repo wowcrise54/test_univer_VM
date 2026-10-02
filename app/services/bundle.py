@@ -9,6 +9,7 @@ from .attention import AttentionService
 from .compliance import ComplianceService
 from .remediation import CoverageService, RemediationService
 from .risk import RiskService
+from .scanner_task_folders import ScannerTaskFolderService
 from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
 
@@ -44,6 +45,9 @@ class TasksService:
 
     def list(self) -> builtins.list[dict[str, Any]]:
         return self._repository.list()
+
+    def get(self, task_id: str) -> dict[str, Any] | None:
+        return self._repository.get(task_id)
 
 
 class AssetCardsService:
@@ -92,6 +96,7 @@ class ServiceBundle:
         self.operations = OperationsService(repositories)
         self.assets = AssetsService(repositories)
         self.tasks = TasksService(repositories)
+        self.scanner_task_folders = ScannerTaskFolderService(repositories.scanner_task_folders)
         self.asset_cards = AssetCardsService(repositories)
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)

@@ -67,6 +67,9 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/risk/summary"): "risk.read",
     ("GET", "/api/saved-views"): "saved_views.read",
     ("GET", "/api/scanner-tasks"): "tasks.read",
+    ("GET", "/api/scanner-task-folders"): "tasks.read",
+    ("GET", "/api/scanner-tasks/{task_id}/runs"): "tasks.read",
+    ("GET", "/api/scanner-tasks/{task_id}/runs/{run_id}/jobs"): "tasks.read",
     ("GET", "/api/scanner-tasks/{task_id}/postprocess-runs/latest"): "tasks.read",
     ("GET", "/api/scanner-tasks/{task_id}/results"): "tasks.read",
     ("GET", "/api/search"): "system.read",
@@ -142,6 +145,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/reports/vulnerabilities/{report_type}/csv"): "imports_exports.read",
     ("POST", "/api/saved-views"): "saved_views.manage",
     ("POST", "/api/scanner-tasks"): "tasks.manage",
+    ("POST", "/api/scanner-task-folders"): "tasks.manage",
     ("POST", "/api/scanner-tasks/{task_id}/delete"): "tasks.manage",
     ("POST", "/api/scanner-tasks/{task_id}/retry-false"): "tasks.execute",
     ("POST", "/api/scanner-tasks/{task_id}/start"): "tasks.execute",
@@ -164,6 +168,9 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("PUT", "/api/automations/schedules/{schedule_id}"): "automations.manage",
     ("PUT", "/api/remediation/policy"): "remediation.policy",
     ("PUT", "/api/scanner-tasks/{task_id}"): "tasks.manage",
+    ("PUT", "/api/scanner-task-folders/assignments"): "tasks.manage",
+    ("PATCH", "/api/scanner-task-folders/{folder_id}"): "tasks.manage",
+    ("DELETE", "/api/scanner-task-folders/{folder_id}"): "tasks.manage",
     ("PUT", "/api/vulnerability-passports/{passport_id}"): "passports.manage",
 }
 
