@@ -98,6 +98,7 @@
 
 .topbar {
   align-items: center;
+  flex-wrap: wrap;
   min-height: 44px;
   margin-bottom: 22px;
 }
@@ -111,6 +112,14 @@
 
 .topbar__actions {
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.topbar__copy {
+  flex: 1 1 320px;
+  overflow-wrap: anywhere;
 }
 
 .global-search {
@@ -629,7 +638,7 @@ tr.is-selected td {
   gap: 12px;
   min-height: 48px;
   padding: 10px 2px;
-  color: #3e444d;
+  color: var(--text);
   cursor: pointer;
   list-style: none;
 }
@@ -641,8 +650,10 @@ tr.is-selected td {
 
 .disclosure__label {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 .disclosure__label strong {
@@ -660,6 +671,9 @@ tr.is-selected td {
 .disclosure__meta {
   margin-left: auto;
   white-space: nowrap;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .disclosure__chevron {
@@ -671,7 +685,7 @@ tr.is-selected td {
   margin-left: auto;
   border-radius: 6px;
   color: var(--muted);
-  background: #f1f2f4;
+  background: var(--panel-muted);
   font-size: 15px;
 }
 
@@ -814,7 +828,7 @@ tr.is-selected td {
 .asset-query-presets__local {
   display: grid;
   gap: 3px;
-  align-self: center;
+  align-self: start;
   color: #496176;
   font-size: 12px;
 }
@@ -942,7 +956,7 @@ tr.is-selected td {
 }
 
 .query-scope-disclosure {
-  margin: 0;
+  margin: 20px 0 0;
 }
 
 .query-scope-disclosure > summary {
@@ -960,6 +974,25 @@ tr.is-selected td {
 
 .query-rule:last-child {
   border-bottom: 0;
+}
+
+.query-rule__meta {
+  grid-column: 1 / -1;
+  align-self: start;
+  padding-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
+.asset-query-presets__picker label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.asset-query-presets__picker label > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .asset-query-result-options {
@@ -1520,6 +1553,10 @@ tr.is-selected td {
     display: none;
   }
 
+  .query-scope-disclosure {
+    margin-top: 0;
+  }
+
   table {
     min-width: 680px;
   }
@@ -1827,6 +1864,21 @@ td code,
 .alert-dismiss:hover,
 .alert-dismiss:focus-visible {
   background: rgb(0 0 0 / 8%);
+}
+
+@container asset-query-rules (min-width: 821px) {
+  .query-rule {
+    grid-template-columns: minmax(0, 1.7fr) minmax(0, 0.9fr) minmax(0, 1fr) auto;
+  }
+
+  .query-rule__meta {
+    grid-row: 2;
+  }
+
+  .query-rule > button {
+    grid-column: 4;
+    grid-row: 1;
+  }
 }
 
 @container asset-query-rules (max-width: 820px) {

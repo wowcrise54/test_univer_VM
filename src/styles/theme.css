@@ -1095,6 +1095,10 @@ html[data-theme="dark"] .asset-query-presets__local strong {
   color: #73d9c2;
 }
 
+html[data-theme="dark"] .passport-table td code {
+  color: var(--muted);
+}
+
 html[data-theme="dark"] .asset-query-preset-card__eyebrow,
 html[data-theme="dark"] .asset-query-preset-pdql summary,
 html[data-theme="dark"] .query-evidence-details summary {

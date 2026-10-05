@@ -2999,7 +2999,7 @@ td code {
 
 .wide-cell strong {
   display: block;
-  color: #203147;
+  color: var(--text);
 }
 
 .wide-cell span {
@@ -3088,7 +3088,7 @@ td code {
 
 .passport-table .wide-cell strong {
   display: block;
-  color: #203147;
+  color: var(--text);
 }
 
 .passport-table .wide-cell span {
