@@ -952,6 +952,132 @@ html[data-theme="dark"] .severity--empty {
   background: #252d3a;
 }
 
+html[data-theme="dark"] .task-workspace {
+  --task-ink: var(--text);
+  --task-muted: var(--muted);
+  --task-line: var(--line);
+  --task-surface: var(--panel);
+  --task-canvas: var(--bg-soft);
+  --task-blue: #a4b7ff;
+  --task-cyan: #67d4e7;
+  color: var(--text);
+}
+
+html[data-theme="dark"] .task-folder-rail,
+html[data-theme="dark"] .task-inspector,
+html[data-theme="dark"] .task-inspector-empty,
+html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row) {
+  border-color: var(--line);
+  color: var(--text);
+  background: #171d27;
+}
+
+html[data-theme="dark"] .task-folder-rail h2,
+html[data-theme="dark"] .task-folder-item__select,
+html[data-theme="dark"] .task-folder-item.is-active .task-folder-item__select,
+html[data-theme="dark"] .task-summary h2,
+html[data-theme="dark"] .task-inspector-empty h2,
+html[data-theme="dark"] .task-workspace-table td strong {
+  color: var(--text);
+}
+
+html[data-theme="dark"] .task-folder-item.is-active .task-folder-item__select,
+html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected td {
+  background: #263858;
+}
+
+html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row):hover td {
+  background: #222a37;
+}
+
+html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected:hover td {
+  background: #2b3f61;
+}
+
+html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected {
+  border-color: #647cac;
+  box-shadow: 0 0 0 1px rgb(135 162 255 / 18%);
+}
+
+html[data-theme="dark"] .task-workspace-table th {
+  border-color: var(--line);
+  color: #c3cddd;
+  background: #171d27;
+}
+
+html[data-theme="dark"] .task-workspace-table td {
+  border-color: var(--line);
+  color: #c3cddd;
+}
+
+html[data-theme="dark"] .task-workspace-table td::before,
+html[data-theme="dark"] .task-workspace-table td small,
+html[data-theme="dark"] .task-summary dt,
+html[data-theme="dark"] .task-summary > code,
+html[data-theme="dark"] .task-inspector-empty p {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .task-status.is-success {
+  color: #88e0ad;
+}
+
+html[data-theme="dark"] .task-status.is-running {
+  color: #f2c978;
+}
+
+html[data-theme="dark"] .operation-table-shell thead th,
+html[data-theme="dark"] .asset-card-list-table thead th,
+html[data-theme="dark"] .passport-table-shell thead th,
+html[data-theme="dark"] .table-shell thead th,
+html[data-theme="dark"] .mpvm-table-shell thead th {
+  border-color: var(--line);
+  color: #cbd4e2;
+  background: #171d27;
+}
+
+html[data-theme="dark"] .asset-query-presets,
+html[data-theme="dark"] .asset-query-preset-card,
+html[data-theme="dark"] .query-group,
+html[data-theme="dark"] .query-rule {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .asset-query-presets__local,
+html[data-theme="dark"] .asset-query-view label > span,
+html[data-theme="dark"] .asset-query-preset-search label > span,
+html[data-theme="dark"] .asset-query-preset-card p,
+html[data-theme="dark"] .query-group__hint,
+html[data-theme="dark"] .query-rule__meta {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .asset-query-presets__local strong {
+  color: #73d9c2;
+}
+
+html[data-theme="dark"] .asset-query-preset-card__eyebrow,
+html[data-theme="dark"] .asset-query-preset-pdql summary,
+html[data-theme="dark"] .query-evidence-details summary {
+  color: #a9bdff;
+}
+
+html[data-theme="dark"] .asset-query-preset-pdql,
+html[data-theme="dark"] .asset-query-preset-assets {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .automation-schedule-form .field span {
+  color: #d4dbe7;
+}
+
+html[data-theme="dark"] .automation-schedule-form .field small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 html[data-theme="dark"] ::selection {
   color: #f3f6ff;
   background: #3a4d79;

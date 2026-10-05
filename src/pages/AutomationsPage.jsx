@@ -205,7 +205,7 @@ export function AutomationsPage({ showAlert }) {
                 query={scannerTasksQuery}
               />
             ) : null}
-            <div className="form-grid form-grid--four">
+            <div className="form-grid form-grid--four automation-schedule-form">
               <Field label="Задача сканирования MP VM">
                 <select
                   value={scheduleForm.task_id}

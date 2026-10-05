@@ -302,6 +302,22 @@ td small {
   margin-top: 4px;
   color: var(--muted);
 }
+.automation-schedule-form {
+  align-items: start;
+}
+
+@media (max-width: 1450px) {
+  .automation-schedule-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .automation-schedule-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 1200px) {
   .automation-config-grid--three,
   .automation-condition__grid {
