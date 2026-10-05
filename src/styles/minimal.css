@@ -791,7 +791,7 @@ tr.is-selected td {
 }
 
 .account-menu > summary {
-  max-width: 150px;
+  max-width: min(280px, calc(100vw - 32px));
   overflow: hidden;
   text-overflow: ellipsis;
 }

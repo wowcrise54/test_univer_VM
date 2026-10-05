@@ -3,6 +3,24 @@ import { api } from "../api/client.js";
 import { ActionMenu } from "../shared/ui.jsx";
 import { routes, workflowSteps } from "./navigation.js";
 
+function getAccountLabel(user) {
+  const displayName = String(user?.display_name || "").trim();
+  const username = String(user?.username || "").trim();
+  if (!displayName || displayName.toLowerCase() === username.toLowerCase()) {
+    return "Аккаунт";
+  }
+
+  const usernameSuffix = ` ${username}`;
+  if (
+    username &&
+    displayName.toLowerCase().endsWith(usernameSuffix.toLowerCase())
+  ) {
+    return displayName.slice(0, -usernameSuffix.length).trimEnd() || "Аккаунт";
+  }
+
+  return displayName;
+}
+
 function shouldHandleLinkClick(event) {
   return (
     !event.defaultPrevented &&
@@ -294,11 +312,8 @@ export function Topbar({
         ) : null}
         <ActionMenu
           className="account-menu"
-          label={
-            currentUser?.display_name || currentUser?.username || "Аккаунт"
-          }
+          label={getAccountLabel(currentUser)}
         >
-          {currentUser?.username ? <span>{currentUser.username}</span> : null}
           <button type="button" onClick={onLogout}>
             Выйти
           </button>

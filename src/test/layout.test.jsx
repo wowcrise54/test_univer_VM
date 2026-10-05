@@ -108,6 +108,26 @@ describe("guided application shell", () => {
     expect(screen.getByText("Нет подключения")).toBeInTheDocument();
   });
 
+  it("shows the complete profile name without the username", () => {
+    render(
+      <Topbar
+        session={{ connected: true }}
+        route={routeById("tasks")}
+        onNavigate={vi.fn()}
+        currentUser={{
+          display_name: "Морозов Максим Сергеевич t1",
+          username: "t1",
+          permissions: [],
+        }}
+      />,
+    );
+
+    const summary = document.querySelector(".account-menu > summary");
+    expect(summary).toHaveTextContent("Морозов Максим Сергеевич");
+    expect(summary).not.toHaveTextContent("t1");
+    expect(screen.queryByText("t1")).not.toBeInTheDocument();
+  });
+
   it("exposes an accessible theme toggle in the top bar", () => {
     const onToggleTheme = vi.fn();
     render(
