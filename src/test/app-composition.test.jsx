@@ -130,6 +130,7 @@ describe("complete application composition", () => {
     async (path, title) => {
       page(path);
       await screen.findByRole("heading", { level: 1, name: title });
+      expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
       await waitFor(() =>
         expect(api).toHaveBeenCalledWith("/api/system/status"),
       );
@@ -239,9 +240,15 @@ it("derives the active operation badge from rows when the summary has no active 
     return original(path, options);
   });
   page("/operations");
+  await screen.findByTitle("op-completed");
+  expect(screen.getByRole("link", { name: "Операции" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  fireEvent.click(screen.getByRole("link", { name: "Задачи" }));
   expect(
     await screen.findByRole("link", { name: "Операции — активных: 4" }),
-  ).toHaveAttribute("aria-current", "page");
+  ).toHaveAttribute("href", "/operations");
 });
 
 it("denies a protected route when the authenticated identity has no permissions field", async () => {

@@ -17,12 +17,10 @@ html[data-theme="dark"] {
   --orange: #f1bd6b;
   --red: #ff818c;
   --shadow: 0 18px 48px rgb(0 0 0 / 28%);
-  --shadow-surface:
-    0 1px 2px rgb(0 0 0 / 24%), 0 8px 22px rgb(0 0 0 / 12%);
+  --shadow-surface: 0 1px 2px rgb(0 0 0 / 24%), 0 8px 22px rgb(0 0 0 / 12%);
   --shadow-control: 0 1px 2px rgb(0 0 0 / 30%);
   --shadow-popover: 0 14px 36px rgb(0 0 0 / 34%);
-  --shadow-dialog:
-    0 8px 28px rgb(0 0 0 / 38%), 0 28px 72px rgb(0 0 0 / 46%);
+  --shadow-dialog: 0 8px 28px rgb(0 0 0 / 38%), 0 28px 72px rgb(0 0 0 / 46%);
 }
 
 html[data-theme="dark"] body {
@@ -435,7 +433,9 @@ html[data-theme="dark"] .task-inline-error {
 html[data-theme="dark"] .task-folder-item.is-active .task-folder-item__select,
 html[data-theme="dark"] .task-folder-menu button:hover,
 html[data-theme="dark"] .asset-vulnerability-passport-options button:hover,
-html[data-theme="dark"] .asset-vulnerability-passport-options button:focus-visible {
+html[data-theme="dark"]
+  .asset-vulnerability-passport-options
+  button:focus-visible {
   color: #e7ebf2;
   background: #29364b;
 }
@@ -896,7 +896,9 @@ html[data-theme="dark"] .task-back-button {
 
 html[data-theme="dark"] .asset-vulnerability-controls button:hover,
 html[data-theme="dark"] .asset-vulnerability-passport-options button:hover,
-html[data-theme="dark"] .asset-vulnerability-passport-options button:focus-visible,
+html[data-theme="dark"]
+  .asset-vulnerability-passport-options
+  button:focus-visible,
 html[data-theme="dark"] .task-folder-rail > header > button:hover,
 html[data-theme="dark"] .task-workspace-toolbar button:hover,
 html[data-theme="dark"] .task-bulk-actions button:hover,
@@ -963,10 +965,30 @@ html[data-theme="dark"] .task-workspace {
   color: var(--text);
 }
 
+html[data-theme="dark"] .task-search input,
+html[data-theme="dark"] .task-search input:focus {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .task-search:focus-within {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(115 147 255 / 24%);
+}
+
+html[data-theme="dark"] .task-inspector-empty > span {
+  border-color: var(--line);
+  color: var(--blue);
+  background: var(--panel-muted);
+}
+
 html[data-theme="dark"] .task-folder-rail,
 html[data-theme="dark"] .task-inspector,
 html[data-theme="dark"] .task-inspector-empty,
-html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row) {
+html[data-theme="dark"]
+  .task-workspace-table
+  tbody
+  tr:not(.task-table-message-row) {
   border-color: var(--line);
   color: var(--text);
   background: #171d27;
@@ -982,19 +1004,34 @@ html[data-theme="dark"] .task-workspace-table td strong {
 }
 
 html[data-theme="dark"] .task-folder-item.is-active .task-folder-item__select,
-html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected td {
+html[data-theme="dark"]
+  .task-workspace-table
+  tbody
+  tr:not(.task-table-message-row).is-selected
+  td {
   background: #263858;
 }
 
-html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row):hover td {
+html[data-theme="dark"]
+  .task-workspace-table
+  tbody
+  tr:not(.task-table-message-row):hover
+  td {
   background: #222a37;
 }
 
-html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected:hover td {
+html[data-theme="dark"]
+  .task-workspace-table
+  tbody
+  tr:not(.task-table-message-row).is-selected:hover
+  td {
   background: #2b3f61;
 }
 
-html[data-theme="dark"] .task-workspace-table tbody tr:not(.task-table-message-row).is-selected {
+html[data-theme="dark"]
+  .task-workspace-table
+  tbody
+  tr:not(.task-table-message-row).is-selected {
   border-color: #647cac;
   box-shadow: 0 0 0 1px rgb(135 162 255 / 18%);
 }

@@ -553,7 +553,7 @@ export function TaskWorkspace(props) {
       <header className="task-workspace-toolbar">
         <div>
           <p className="task-workspace-eyebrow">MP VM / СКАНИРОВАНИЕ</p>
-          <h1>Задачи</h1>
+          <h2>Задачи</h2>
         </div>
         <div className="task-workspace-toolbar__actions">
           <button type="button" onClick={() => refreshTasks()}>
@@ -695,6 +695,14 @@ export function TaskWorkspace(props) {
           ) : null}
           <div className="task-table-scroll">
             <table className="task-workspace-table">
+              <colgroup>
+                {canManage ? (
+                  <col className="task-workspace-table__select-column" />
+                ) : null}
+                <col className="task-workspace-table__status-column" />
+                <col className="task-workspace-table__name-column" />
+                <col span={8} />
+              </colgroup>
               <thead>
                 <tr>
                   {canManage ? <th aria-label="Выбрать" /> : null}

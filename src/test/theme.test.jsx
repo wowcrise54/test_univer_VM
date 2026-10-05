@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   initializeTheme,
   ThemeProvider,
@@ -16,10 +17,18 @@ function ThemeControl() {
 }
 
 describe("theme preference", () => {
+  let storageWindow;
+
   beforeEach(() => {
-    globalThis.localStorage.clear();
+    storageWindow = new JSDOM("", { url: "https://mpvm.test" }).window;
+    vi.stubGlobal("localStorage", storageWindow.localStorage);
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.style.colorScheme = "";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    storageWindow.close();
   });
 
   it("starts light and saves a dark selection", () => {
