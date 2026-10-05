@@ -1,0 +1,958 @@
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10141c;
+  --bg-soft: #141a23;
+  --panel: #1a202b;
+  --panel-muted: #202733;
+  --text: #e7ebf2;
+  --muted: #a0aaba;
+  --line: #303a49;
+  --line-strong: #465264;
+  --navy: #101724;
+  --navy-2: #1a2638;
+  --blue: #87a2ff;
+  --blue-soft: #243453;
+  --teal: #87a2ff;
+  --green: #6bd49d;
+  --orange: #f1bd6b;
+  --red: #ff818c;
+  --shadow: 0 18px 48px rgb(0 0 0 / 28%);
+  --shadow-surface:
+    0 1px 2px rgb(0 0 0 / 24%), 0 8px 22px rgb(0 0 0 / 12%);
+  --shadow-control: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-popover: 0 14px 36px rgb(0 0 0 / 34%);
+  --shadow-dialog:
+    0 8px 28px rgb(0 0 0 / 38%), 0 28px 72px rgb(0 0 0 / 46%);
+}
+
+html[data-theme="dark"] body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .sidebar {
+  border-color: var(--line);
+  color: var(--text);
+  background: #151a23;
+}
+
+html[data-theme="dark"] .brand__mark,
+html[data-theme="dark"] .nav a.is-active,
+html[data-theme="dark"] .nav a.is-active .nav-icon,
+html[data-theme="dark"] .nav-more summary:hover,
+html[data-theme="dark"] .workflow-step--active {
+  color: var(--blue);
+}
+
+html[data-theme="dark"] .nav a,
+html[data-theme="dark"] .nav-more summary,
+html[data-theme="dark"] .nav-icon,
+html[data-theme="dark"] .workflow-step,
+html[data-theme="dark"] .topbar__eyebrow,
+html[data-theme="dark"] .topbar p,
+html[data-theme="dark"] .field span,
+html[data-theme="dark"] .profile-select label,
+html[data-theme="dark"] .toggle {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .nav a:hover,
+html[data-theme="dark"] .workflow-step:hover,
+html[data-theme="dark"] .nav-more summary:hover {
+  color: var(--text);
+  background: #252d3a;
+}
+
+html[data-theme="dark"] .nav a.is-active,
+html[data-theme="dark"] .workflow-step--active {
+  background: var(--blue-soft);
+}
+
+html[data-theme="dark"] .workflow-step__number {
+  color: var(--muted);
+  background: var(--panel-muted);
+}
+
+html[data-theme="dark"] .workflow-step--active .workflow-step__number {
+  color: #121722;
+  background: var(--blue);
+}
+
+html[data-theme="dark"] .workflow-step--complete .workflow-step__number {
+  color: #88e0ad;
+  background: transparent;
+}
+
+html[data-theme="dark"] .nav-badge {
+  color: #dbe5ff;
+  background: #354a76;
+}
+
+html[data-theme="dark"] .nav-more,
+html[data-theme="dark"] .workflow-rail {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .sidebar-warning,
+html[data-theme="dark"] .alert--error,
+html[data-theme="dark"] .system-banner--down,
+html[data-theme="dark"] .operation-status--failed,
+html[data-theme="dark"] .operation-status--interrupted,
+html[data-theme="dark"] .operation-status--completed_with_errors,
+html[data-theme="dark"] .operation-status--needs_attention,
+html[data-theme="dark"] .query-state--error,
+html[data-theme="dark"] .inline-error,
+html[data-theme="dark"] .passport-load-error,
+html[data-theme="dark"] .vulnerability-error,
+html[data-theme="dark"] .auth-error,
+html[data-theme="dark"] .alert--danger {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .system-banner--degraded,
+html[data-theme="dark"] .task-preflight--blocked,
+html[data-theme="dark"] .task-preflight li,
+html[data-theme="dark"] .freshness--aging,
+html[data-theme="dark"] .freshness--stale,
+html[data-theme="dark"] .freshness--unknown,
+html[data-theme="dark"] .operation-summary .is-stale {
+  border-color: #684e28;
+  color: #f2c978;
+  background: #342916;
+}
+
+html[data-theme="dark"] .task-preflight--ready,
+html[data-theme="dark"] .connection-check--success,
+html[data-theme="dark"] .passport-job--completed,
+html[data-theme="dark"] .passport-job--completed_with_errors,
+html[data-theme="dark"] .alert--success,
+html[data-theme="dark"] .status-chip--ok {
+  border-color: #28563c;
+  color: #88e0ad;
+  background: #173324;
+}
+
+html[data-theme="dark"] .alert--warning,
+html[data-theme="dark"] .system-banner--degraded,
+html[data-theme="dark"] .mini-state {
+  border-color: #684e28;
+  color: #f2c978;
+  background: #342916;
+}
+
+html[data-theme="dark"] .alert--info {
+  border-color: #294d74;
+  color: #bad0ff;
+  background: #20324f;
+}
+
+html[data-theme="dark"] .global-search input,
+html[data-theme="dark"] input,
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] .vm-launcher select,
+html[data-theme="dark"] .vm-launcher input,
+html[data-theme="dark"] .vm-campaign-drawer input,
+html[data-theme="dark"] .vm-campaign-drawer select,
+html[data-theme="dark"] .vm-campaign-drawer textarea {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: #151b25;
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: #8995a7;
+}
+
+html[data-theme="dark"] option {
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] input:focus,
+html[data-theme="dark"] select:focus,
+html[data-theme="dark"] textarea:focus,
+html[data-theme="dark"] .field input:focus-visible,
+html[data-theme="dark"] .field select:focus-visible,
+html[data-theme="dark"] .field textarea:focus-visible,
+html[data-theme="dark"] .profile-select input:focus-visible,
+html[data-theme="dark"] .profile-select select:focus-visible {
+  border-color: #829fff;
+  background: #181f2a;
+  box-shadow: 0 0 0 3px rgb(115 147 255 / 24%);
+}
+
+html[data-theme="dark"] .theme-toggle {
+  display: inline-grid;
+  flex: 0 0 36px;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0;
+  color: #f1c977;
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+html[data-theme="dark"] .theme-toggle:hover {
+  border-color: #67758b;
+  background: #252d3a;
+}
+
+.theme-toggle {
+  display: inline-grid;
+  flex: 0 0 36px;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0;
+  color: #315efb;
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.theme-toggle:hover {
+  background: var(--panel-muted);
+}
+
+.theme-toggle:focus-visible {
+  outline: 3px solid rgb(49 94 251 / 32%);
+  outline-offset: 2px;
+}
+
+html[data-theme="dark"] .global-search__results,
+html[data-theme="dark"] .action-menu__content,
+html[data-theme="dark"] .confirm-dialog,
+html[data-theme="dark"] .passport-modal__window,
+html[data-theme="dark"] .passport-card,
+html[data-theme="dark"] .passport-card__side,
+html[data-theme="dark"] .asset-summary-card,
+html[data-theme="dark"] .operation-drawer,
+html[data-theme="dark"] .vm-drawer,
+html[data-theme="dark"] .asset-modal,
+html[data-theme="dark"] .asset-console,
+html[data-theme="dark"] .asset-tree-pane,
+html[data-theme="dark"] .asset-detail-pane,
+html[data-theme="dark"] .asset-vulnerability-pane,
+html[data-theme="dark"] .asset-group-details,
+html[data-theme="dark"] .asset-detail-heading,
+html[data-theme="dark"] .asset-query-preset-card,
+html[data-theme="dark"] .query-group,
+html[data-theme="dark"] .query-rule,
+html[data-theme="dark"] .automation-step,
+html[data-theme="dark"] .automation-toggle-stack,
+html[data-theme="dark"] .automation-token-field__control,
+html[data-theme="dark"] .automation-query-rule,
+html[data-theme="dark"] .automation-notification,
+html[data-theme="dark"] .vm-kpi,
+html[data-theme="dark"] .vm-campaign-grid > button,
+html[data-theme="dark"] .vulnerability-insight-card,
+html[data-theme="dark"] .trending-vulnerabilities,
+html[data-theme="dark"] .vulnerability-glossary__grid article,
+html[data-theme="dark"] .host-drilldown__summary article,
+html[data-theme="dark"] .resolution-card,
+html[data-theme="dark"] .risk-trend__card,
+html[data-theme="dark"] .campaign-grid article,
+html[data-theme="dark"] .role-notice,
+html[data-theme="dark"] .role-list button,
+html[data-theme="dark"] .task-folder-rail,
+html[data-theme="dark"] .task-folder-menu > div,
+html[data-theme="dark"] .task-new-folder,
+html[data-theme="dark"] .task-inspector,
+html[data-theme="dark"] .task-inspector-empty,
+html[data-theme="dark"] .task-run-item,
+html[data-theme="dark"] .task-delete-confirm,
+html[data-theme="dark"] .task-settings-card,
+html[data-theme="dark"] .task-builder--editor .task-primary-fields,
+html[data-theme="dark"] .task-builder--editor .disclosure {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .asset-query-view,
+html[data-theme="dark"] .asset-console__summary,
+html[data-theme="dark"] .asset-tabs,
+html[data-theme="dark"] .asset-tree-pane__title,
+html[data-theme="dark"] .task-workspace-toolbar,
+html[data-theme="dark"] .task-workspace-toolbar button,
+html[data-theme="dark"] .task-bulk-actions,
+html[data-theme="dark"] .task-bulk-actions button,
+html[data-theme="dark"] .task-history-panel,
+html[data-theme="dark"] .task-history-panel header button,
+html[data-theme="dark"] .task-inline-error button,
+html[data-theme="dark"] .task-new-folder button,
+html[data-theme="dark"] .task-inspector-actions button,
+html[data-theme="dark"] .task-delete-confirm button,
+html[data-theme="dark"] .task-back-button,
+html[data-theme="dark"] .task-editor-footer button,
+html[data-theme="dark"] .task-folder-item,
+html[data-theme="dark"] .task-folder-rail > header > button,
+html[data-theme="dark"] .task-folder-menu button,
+html[data-theme="dark"] .task-agent-option,
+html[data-theme="dark"] .task-history-more,
+html[data-theme="dark"] .task-detail-grid,
+html[data-theme="dark"] .asset-vulnerability-toolbar,
+html[data-theme="dark"] .asset-vulnerability-passport-options,
+html[data-theme="dark"] .asset-summary-side .passport-section,
+html[data-theme="dark"] .passport-placeholder,
+html[data-theme="dark"] .asset-passport-options,
+html[data-theme="dark"] .asset-filter-card,
+html[data-theme="dark"] .asset-view-bar,
+html[data-theme="dark"] .options-card,
+html[data-theme="dark"] .asset-card-builder,
+html[data-theme="dark"] .settings-card,
+html[data-theme="dark"] .vulnerability-glossary,
+html[data-theme="dark"] .automation-config-advanced,
+html[data-theme="dark"] .automation-step__behavior,
+html[data-theme="dark"] .automation-condition,
+html[data-theme="dark"] .risk-workspace,
+html[data-theme="dark"] .trending-vulnerabilities__contexts,
+html[data-theme="dark"] .asset-group-predicate,
+html[data-theme="dark"] .asset-group-preview,
+html[data-theme="dark"] .asset-group-rules,
+html[data-theme="dark"] .asset-tree {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel-muted);
+}
+
+html[data-theme="dark"] .query-group--nested,
+html[data-theme="dark"] .automation-condition.is-enabled,
+html[data-theme="dark"] .automation-danger-option,
+html[data-theme="dark"] .automation-danger-option.is-enabled,
+html[data-theme="dark"] .asset-tree-row:hover,
+html[data-theme="dark"] .asset-group-node:hover {
+  border-color: var(--line-strong);
+  background: #252d3a;
+}
+
+html[data-theme="dark"] .asset-tree-row.is-selected,
+html[data-theme="dark"] .asset-group-node.is-selected,
+html[data-theme="dark"] .task-folder-item.is-active,
+html[data-theme="dark"] .task-run-item.is-active,
+html[data-theme="dark"] .role-list button.is-active,
+html[data-theme="dark"] .asset-query-presets,
+html[data-theme="dark"] .asset-query-preset-card.is-active {
+  color: #dce6ff;
+  background: #263858;
+}
+
+html[data-theme="dark"] .query-group label > span,
+html[data-theme="dark"] .query-rule label > span,
+html[data-theme="dark"] .automation-config-advanced summary,
+html[data-theme="dark"] .automation-step__behavior summary,
+html[data-theme="dark"] .automation-token-field > span,
+html[data-theme="dark"] .asset-group-rule label span,
+html[data-theme="dark"] .asset-group-member-list article > span {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .asset-tabs button,
+html[data-theme="dark"] .task-folder-menu button,
+html[data-theme="dark"] .task-inspector-empty > span,
+html[data-theme="dark"] .task-postprocess__header h3,
+html[data-theme="dark"] .task-postprocess__metrics span,
+html[data-theme="dark"] .asset-console__summary strong,
+html[data-theme="dark"] .asset-detail-heading strong,
+html[data-theme="dark"] .asset-detail-heading code,
+html[data-theme="dark"] .asset-tree-pane__title,
+html[data-theme="dark"] .asset-tree-label,
+html[data-theme="dark"] .asset-vulnerability-toolbar span,
+html[data-theme="dark"] .asset-vulnerability-controls button,
+html[data-theme="dark"] .task-folder-rail,
+html[data-theme="dark"] .task-folder-item,
+html[data-theme="dark"] .task-run-item,
+html[data-theme="dark"] .task-detail-grid {
+  color: var(--text);
+}
+
+html[data-theme="dark"] .asset-console__summary,
+html[data-theme="dark"] .asset-tabs,
+html[data-theme="dark"] .asset-tree-pane,
+html[data-theme="dark"] .asset-detail-pane,
+html[data-theme="dark"] .asset-detail-heading,
+html[data-theme="dark"] .asset-vulnerability-pane,
+html[data-theme="dark"] .asset-vulnerability-toolbar,
+html[data-theme="dark"] .asset-vulnerability-subtabs,
+html[data-theme="dark"] .asset-summary-side,
+html[data-theme="dark"] .passport-modal__bar,
+html[data-theme="dark"] .task-postprocess,
+html[data-theme="dark"] .task-folder-rail,
+html[data-theme="dark"] .task-inspector,
+html[data-theme="dark"] .task-workspace-toolbar,
+html[data-theme="dark"] .task-history-panel,
+html[data-theme="dark"] .task-workspace-table,
+html[data-theme="dark"] .task-jobs-table {
+  border-color: var(--line);
+  background-color: var(--panel);
+}
+
+html[data-theme="dark"] .asset-console__chips span,
+html[data-theme="dark"] .task-postprocess__metrics span,
+html[data-theme="dark"] .asset-summary-side .passport-section,
+html[data-theme="dark"] .asset-vulnerability-passport-options,
+html[data-theme="dark"] .task-agent-option,
+html[data-theme="dark"] .task-history-more {
+  color: #c3d4f2;
+  background: #222f45;
+}
+
+html[data-theme="dark"] .asset-tabs button {
+  color: var(--muted);
+  background: transparent;
+}
+
+html[data-theme="dark"] .asset-tabs button.is-active {
+  border-color: var(--blue);
+  color: #c7d7ff;
+}
+
+html[data-theme="dark"] .asset-tree-row.is-selected {
+  border-color: #40577d;
+  background: #253652;
+}
+
+html[data-theme="dark"] .task-folder-error,
+html[data-theme="dark"] .task-inline-error {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .task-folder-item.is-active .task-folder-item__select,
+html[data-theme="dark"] .task-folder-menu button:hover,
+html[data-theme="dark"] .asset-vulnerability-passport-options button:hover,
+html[data-theme="dark"] .asset-vulnerability-passport-options button:focus-visible {
+  color: #e7ebf2;
+  background: #29364b;
+}
+
+html[data-theme="dark"] .automation-tabs button,
+html[data-theme="dark"] .automation-templates button,
+html[data-theme="dark"] .automation-step__actions button,
+html[data-theme="dark"] .button.secondary,
+html[data-theme="dark"] .upload-button,
+html[data-theme="dark"] .button.tiny,
+html[data-theme="dark"] .button.icon,
+html[data-theme="dark"] .button.tiny-danger,
+html[data-theme="dark"] .logout-button,
+html[data-theme="dark"] .action-menu > summary,
+html[data-theme="dark"] .action-menu__content > button,
+html[data-theme="dark"] .action-menu__content > a,
+html[data-theme="dark"] .action-menu__content > label,
+html[data-theme="dark"] .vm-stage-links button,
+html[data-theme="dark"] .vm-workflow-list > button {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .button.ghost,
+html[data-theme="dark"] .access-tabs button,
+html[data-theme="dark"] .vulnerability-workspace-tabs button,
+html[data-theme="dark"] .trending-vulnerabilities__contexts button {
+  color: var(--muted);
+  background: transparent;
+}
+
+html[data-theme="dark"] .automation-tabs button.is-active,
+html[data-theme="dark"] .vulnerability-workspace-tabs button.is-active,
+html[data-theme="dark"] .vulnerability-workspace-tabs button:hover,
+html[data-theme="dark"] .access-tabs button.is-active {
+  color: #dce6ff;
+  background: #263858;
+}
+
+html[data-theme="dark"] .button.secondary:hover:not(:disabled),
+html[data-theme="dark"] .button.tiny:hover:not(:disabled),
+html[data-theme="dark"] .button.icon:hover:not(:disabled),
+html[data-theme="dark"] .upload-button:hover:not(:has(input:disabled)),
+html[data-theme="dark"] .action-menu > summary:hover,
+html[data-theme="dark"] .action-menu__content > button:hover,
+html[data-theme="dark"] .action-menu__content > a:hover,
+html[data-theme="dark"] .vm-workflow-list > button:hover,
+html[data-theme="dark"] .trending-vulnerabilities__contexts button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: #293241;
+}
+
+html[data-theme="dark"] .button.tiny-danger {
+  border-color: #663740;
+  color: #ff9ca5;
+}
+
+html[data-theme="dark"] .button.primary,
+html[data-theme="dark"] .button.success,
+html[data-theme="dark"] .topbar__next,
+html[data-theme="dark"] .automation-tabs button.is-active,
+html[data-theme="dark"] .automation-step__number,
+html[data-theme="dark"] .sortable-header.is-active .sortable-header__icon,
+html[data-theme="dark"] .vm-launch-steps li.is-active span {
+  color: #121722;
+}
+
+html[data-theme="dark"] .button.danger {
+  color: #211316;
+}
+
+html[data-theme="dark"] .global-search__item {
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .global-search__item:hover,
+html[data-theme="dark"] .global-search__item:focus-visible,
+html[data-theme="dark"] .action-menu[open] > summary,
+html[data-theme="dark"] .action-menu__content > button:hover,
+html[data-theme="dark"] .action-menu__content > a:hover,
+html[data-theme="dark"] .action-menu__content > label:hover {
+  background: #263044;
+}
+
+html[data-theme="dark"] .table-shell,
+html[data-theme="dark"] .mpvm-table-shell,
+html[data-theme="dark"] .table-shell table,
+html[data-theme="dark"] .mpvm-table-shell table {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] th,
+html[data-theme="dark"] .mpvm-task-table th,
+html[data-theme="dark"] .task-results-table th {
+  color: #b2bdcc;
+  background: #202733;
+}
+
+html[data-theme="dark"] td,
+html[data-theme="dark"] th,
+html[data-theme="dark"] .table-shell,
+html[data-theme="dark"] .mpvm-table-shell,
+html[data-theme="dark"] .asset-group-member-list article,
+html[data-theme="dark"] .table-row-details dl {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] td,
+html[data-theme="dark"] .operation-table .operation-subject,
+html[data-theme="dark"] .table-row-details dd,
+html[data-theme="dark"] .asset-group-status,
+html[data-theme="dark"] .asset-group-member-list article > span,
+html[data-theme="dark"] .trending-vulnerability__score,
+html[data-theme="dark"] .trending-vulnerability__context {
+  color: var(--text);
+}
+
+html[data-theme="dark"] tbody tr:hover td,
+html[data-theme="dark"] .table-shell tbody tr:not(.is-selected):hover td,
+html[data-theme="dark"] .mpvm-table-shell tbody tr:not(.is-selected):hover td {
+  background: #222a37;
+}
+
+html[data-theme="dark"] tr.is-selected td,
+html[data-theme="dark"] .table-shell tbody tr.is-selected:hover td,
+html[data-theme="dark"] .mpvm-table-shell tbody tr.is-selected:hover td {
+  background: #273957;
+}
+
+html[data-theme="dark"] .table-shell thead th,
+html[data-theme="dark"] .mpvm-table-shell thead th {
+  background: #202733;
+}
+
+html[data-theme="dark"] .operation-drawer > header,
+html[data-theme="dark"] .vm-drawer > header,
+html[data-theme="dark"] .passport-modal__bar {
+  border-color: var(--line);
+  background: rgb(26 32 43 / 96%);
+}
+
+html[data-theme="dark"] .operation-drawer-overlay,
+html[data-theme="dark"] .vm-drawer-overlay {
+  background: rgb(0 0 0 / 64%);
+}
+
+html[data-theme="dark"] .auth-screen {
+  background: radial-gradient(circle at top, #1c2940, #10141c 56%);
+}
+
+html[data-theme="dark"] .auth-card {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow-dialog);
+}
+
+html[data-theme="dark"] .auth-card > span,
+html[data-theme="dark"] .user-chip span,
+html[data-theme="dark"] .access-tabs button {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .auth-mode {
+  border-color: var(--line);
+  background: #141a23;
+}
+
+html[data-theme="dark"] .auth-mode button {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .auth-mode button.is-active {
+  color: #dce6ff;
+  background: #263858;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .auth-warning,
+html[data-theme="dark"] .sidebar-warning,
+html[data-theme="dark"] .vm-callout--warning,
+html[data-theme="dark"] .vm-preflight--blocked,
+html[data-theme="dark"] .vulnerability-context--warning,
+html[data-theme="dark"] .vulnerability-context--warning > div,
+html[data-theme="dark"] .vulnerability-coverage-warning,
+html[data-theme="dark"] .risk-trend__warning {
+  border-color: #684e28;
+  color: #f2c978;
+  background: #342916;
+}
+
+html[data-theme="dark"] .vm-preflight--ready,
+html[data-theme="dark"] .connection-check--success,
+html[data-theme="dark"] .task-preflight--ready,
+html[data-theme="dark"] .audit-decision--allow,
+html[data-theme="dark"] .asset-group-status.is-ready,
+html[data-theme="dark"] .remediation-status--risk-accepted,
+html[data-theme="dark"] .remediation-status--false-positive,
+html[data-theme="dark"] .risk-trend__delta--success {
+  border-color: #28563c;
+  color: #88e0ad;
+  background: #173324;
+}
+
+html[data-theme="dark"] .task-preflight--blocked,
+html[data-theme="dark"] .audit-decision--deny,
+html[data-theme="dark"] .asset-group-status.is-error,
+html[data-theme="dark"] .remediation-status--open,
+html[data-theme="dark"] .risk-trend__delta--danger {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .asset-group-status {
+  border-color: var(--line);
+  color: var(--muted);
+  background: #252d3a;
+}
+
+html[data-theme="dark"] .operation-status--queued,
+html[data-theme="dark"] .operation-status--running,
+html[data-theme="dark"] .operation-status--cancelling,
+html[data-theme="dark"] .operation-status--recovering {
+  border-color: #294d74;
+  color: #bad0ff;
+  background: #20324f;
+}
+
+html[data-theme="dark"] .system-banner__actions button {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .asset-group-status.is-stale,
+html[data-theme="dark"] .operation-summary .is-stale,
+html[data-theme="dark"] .freshness--aging,
+html[data-theme="dark"] .freshness--stale,
+html[data-theme="dark"] .freshness--unknown {
+  border-color: #684e28;
+  color: #f2c978;
+  background: #342916;
+}
+
+html[data-theme="dark"] .vm-kpi--danger,
+html[data-theme="dark"] .vulnerability-kpi--danger,
+html[data-theme="dark"] .vulnerability-severity--critical,
+html[data-theme="dark"] .vulnerability-severity--high {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: linear-gradient(180deg, #2a1d24, #321f26);
+}
+
+html[data-theme="dark"] .vm-kpi--warning,
+html[data-theme="dark"] .vulnerability-severity--medium,
+html[data-theme="dark"] .risk-score--high,
+html[data-theme="dark"] .risk-score--urgent {
+  color: #f2c978;
+  background: #342916;
+}
+
+html[data-theme="dark"] .vm-kpi--blue,
+html[data-theme="dark"] .vm-status--running,
+html[data-theme="dark"] .vm-status--queued,
+html[data-theme="dark"] .vulnerability-source-badge,
+html[data-theme="dark"] .automation-token-field__control button {
+  color: #bad0ff;
+  background: #20324f;
+}
+
+html[data-theme="dark"] .automation-step__actions button.is-danger,
+html[data-theme="dark"] .automation-danger-option.is-enabled {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .vm-progress,
+html[data-theme="dark"] .vm-launch-steps li span,
+html[data-theme="dark"] .attention-summary span,
+html[data-theme="dark"] .vm-status,
+html[data-theme="dark"] .trending-vulnerability__context,
+html[data-theme="dark"] .trending-vulnerability__tag,
+html[data-theme="dark"] .vulnerability-source-badge--docker,
+html[data-theme="dark"] .vulnerability-source-badge--software,
+html[data-theme="dark"] .remediation-status,
+html[data-theme="dark"] .resolution-severity-row > span,
+html[data-theme="dark"] .risk-trend__periods,
+html[data-theme="dark"] .risk-trend__delta,
+html[data-theme="dark"] .severity-bar,
+html[data-theme="dark"] .vulnerability-dashboard .ranking-row,
+html[data-theme="dark"] .resolution-metric,
+html[data-theme="dark"] .resolution-trend__point > span,
+html[data-theme="dark"] .risk-trend__severity-stack {
+  border-color: var(--line);
+  color: #c1cbd8;
+  background: #252d3a;
+}
+
+html[data-theme="dark"] .trending-vulnerability__context--docker,
+html[data-theme="dark"] .vulnerability-severity--low,
+html[data-theme="dark"] .vulnerability-severity--none,
+html[data-theme="dark"] .vulnerability-severity--empty {
+  border-color: #294d74;
+  color: #bad0ff;
+  background: #20324f;
+}
+
+html[data-theme="dark"] .trending-vulnerability__context--host,
+html[data-theme="dark"] .vulnerability-severity--fixed,
+html[data-theme="dark"] .vulnerability-severity--resolved {
+  border-color: #28563c;
+  color: #88e0ad;
+  background: #173324;
+}
+
+html[data-theme="dark"] .vulnerability-severity--critical,
+html[data-theme="dark"] .vulnerability-severity--high,
+html[data-theme="dark"] .vulnerability-severity--medium {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .severity-bar--critical .ranking-row__track > span {
+  background: rgb(255 129 140 / 17%);
+}
+
+html[data-theme="dark"] .severity-bar--high .ranking-row__track > span,
+html[data-theme="dark"] .severity-bar--medium .ranking-row__track > span {
+  background: rgb(241 189 107 / 17%);
+}
+
+html[data-theme="dark"] .severity-bar--low .ranking-row__track > span,
+html[data-theme="dark"] .ranking-row__track > span {
+  background: rgb(135 162 255 / 14%);
+}
+
+html[data-theme="dark"] .severity-bar--none .ranking-row__track > span {
+  background: rgb(160 170 186 / 12%);
+}
+
+html[data-theme="dark"] .compliance-segments button.is-active,
+html[data-theme="dark"] .trending-vulnerabilities__contexts button.is-active {
+  border-color: #40577d;
+  color: #e3eaff;
+  background: #263858;
+}
+
+html[data-theme="dark"] .vulnerability-context {
+  border-color: #29496d;
+  background: #20324f;
+}
+
+html[data-theme="dark"] .vulnerability-context > div {
+  background: #18283e;
+}
+
+html[data-theme="dark"] .vulnerability-workspace-tabs,
+html[data-theme="dark"] .trending-vulnerabilities__contexts {
+  border-color: var(--line);
+  background: #171e28;
+}
+
+html[data-theme="dark"] .vulnerability-workspace-tabs button:hover,
+html[data-theme="dark"] .vulnerability-workspace-tabs button.is-active,
+html[data-theme="dark"] .trending-vulnerabilities__contexts button.is-active {
+  color: #e3eaff;
+  background: #263858;
+}
+
+html[data-theme="dark"] .query-state,
+html[data-theme="dark"] .empty-cell,
+html[data-theme="dark"] .vulnerability-loading,
+html[data-theme="dark"] .vulnerability-empty {
+  border-color: var(--line);
+  color: var(--muted);
+  background: #171e28;
+}
+
+html[data-theme="dark"] .vulnerability-loading {
+  background: linear-gradient(90deg, #171e28 0%, #273140 45%, #171e28 80%);
+}
+
+html[data-theme="dark"] .state-tag,
+html[data-theme="dark"] .job-result-status--pending,
+html[data-theme="dark"] .vm-status--failed,
+html[data-theme="dark"] .vm-status--completed_with_errors,
+html[data-theme="dark"] .passport-job--failed,
+html[data-theme="dark"] .passport-job--cancelled,
+html[data-theme="dark"] .passport-job--interrupted {
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .job-result-status--success,
+html[data-theme="dark"] .vm-launch-steps li.is-complete {
+  color: #88e0ad;
+}
+
+html[data-theme="dark"] .job-result-status--fail,
+html[data-theme="dark"] .vm-preflight__issue--blocking b,
+html[data-theme="dark"] .danger-text {
+  color: #ff9ca5;
+}
+
+html[data-theme="dark"] .vulnerability-glossary__grid article,
+html[data-theme="dark"] .host-finding-card__facts > div,
+html[data-theme="dark"] .host-finding-card__details section,
+html[data-theme="dark"] .host-finding-card__remediation,
+html[data-theme="dark"] .resolution-card,
+html[data-theme="dark"] .risk-trend__details,
+html[data-theme="dark"] .trending-vulnerability__context {
+  border-color: var(--line);
+  background: #202733;
+}
+
+html[data-theme="dark"] .asset-group-member-list,
+html[data-theme="dark"] .asset-group-member-list article,
+html[data-theme="dark"] .asset-group-facts div,
+html[data-theme="dark"] .asset-tree-row,
+html[data-theme="dark"] .access-tabs,
+html[data-theme="dark"] .user-chip,
+html[data-theme="dark"] .risk-trend__periods {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .asset-group-node__label small,
+html[data-theme="dark"] .asset-group-preview > span,
+html[data-theme="dark"] .asset-group-preview small,
+html[data-theme="dark"] .asset-group-facts dt,
+html[data-theme="dark"] .user-chip span,
+html[data-theme="dark"] .table-cell-meta,
+html[data-theme="dark"] .table-row-details,
+html[data-theme="dark"] .vulnerability-row-cve,
+html[data-theme="dark"] .vulnerability-context span {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .asset-vulnerability-controls button,
+html[data-theme="dark"] .asset-vulnerability-passport-options button,
+html[data-theme="dark"] .task-folder-rail > header > button,
+html[data-theme="dark"] .task-workspace-toolbar button,
+html[data-theme="dark"] .task-bulk-actions button,
+html[data-theme="dark"] .task-history-panel header button,
+html[data-theme="dark"] .task-inspector-actions button,
+html[data-theme="dark"] .task-editor-footer button,
+html[data-theme="dark"] .task-back-button {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .asset-vulnerability-controls button:hover,
+html[data-theme="dark"] .asset-vulnerability-passport-options button:hover,
+html[data-theme="dark"] .asset-vulnerability-passport-options button:focus-visible,
+html[data-theme="dark"] .task-folder-rail > header > button:hover,
+html[data-theme="dark"] .task-workspace-toolbar button:hover,
+html[data-theme="dark"] .task-bulk-actions button:hover,
+html[data-theme="dark"] .task-history-panel header button:hover,
+html[data-theme="dark"] .task-inspector-actions button:hover,
+html[data-theme="dark"] .task-editor-footer button:hover,
+html[data-theme="dark"] .task-back-button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: #29364b;
+}
+
+html[data-theme="dark"] .asset-vulnerability-subtabs,
+html[data-theme="dark"] .asset-collection-row,
+html[data-theme="dark"] .asset-vulnerability-source td,
+html[data-theme="dark"] .asset-docker-package td,
+html[data-theme="dark"] .passport-placeholder,
+html[data-theme="dark"] .green-note {
+  border-color: var(--line);
+  color: var(--text);
+  background: #202733;
+}
+
+html[data-theme="dark"] .asset-vulnerability-finding:hover td {
+  background: #252d3a;
+}
+
+html[data-theme="dark"] .asset-vulnerability-subtabs button.is-active {
+  border-color: var(--blue);
+  color: #dce6ff;
+  background: #263858;
+}
+
+html[data-theme="dark"] .passport-badges span,
+html[data-theme="dark"] .asset-console__chips span,
+html[data-theme="dark"] .score-badge {
+  color: #c3d4f2;
+  background: #222f45;
+}
+
+html[data-theme="dark"] .severity--critical,
+html[data-theme="dark"] .severity--high {
+  border-color: #61333b;
+  color: #ff9ca5;
+  background: #321f26;
+}
+
+html[data-theme="dark"] .severity--medium,
+html[data-theme="dark"] .severity--none,
+html[data-theme="dark"] .severity--empty {
+  border-color: var(--line);
+  color: #c1cbd8;
+  background: #252d3a;
+}
+
+html[data-theme="dark"] ::selection {
+  color: #f3f6ff;
+  background: #3a4d79;
+}

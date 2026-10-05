@@ -18,6 +18,7 @@ import {
 } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useRouter } from "./router.js";
+import { useTheme } from "./theme.jsx";
 import { AuthGate } from "../features/auth/AuthGate.jsx";
 import { UsersPage } from "../features/auth/UsersPage.jsx";
 import { VmManagementPage } from "../pages/VmManagementPage.jsx";
@@ -45,6 +46,7 @@ function AuthenticatedApp({ auth }) {
 
 function AppShell({ navigate, path, search, route, auth }) {
   const appData = useAppDataContext();
+  const { theme, toggleTheme } = useTheme();
   const routeAllowed = !route || canAccessRoute(route, auth.user);
   const visibleRoute = routeAllowed
     ? route
@@ -76,6 +78,8 @@ function AppShell({ navigate, path, search, route, auth }) {
           session={appData.session}
           route={visibleRoute}
           onNavigate={navigate}
+          theme={theme}
+          onToggleTheme={toggleTheme}
           currentUser={auth.user}
           onLogout={auth.logout}
         />

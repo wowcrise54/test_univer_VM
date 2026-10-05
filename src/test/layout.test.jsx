@@ -107,6 +107,27 @@ describe("guided application shell", () => {
     expect(navigate).toHaveBeenCalledWith("/connection");
     expect(screen.getByText("Нет подключения")).toBeInTheDocument();
   });
+
+  it("exposes an accessible theme toggle in the top bar", () => {
+    const onToggleTheme = vi.fn();
+    render(
+      <Topbar
+        session={{ connected: true }}
+        route={routeById("tasks")}
+        onNavigate={vi.fn()}
+        theme="light"
+        onToggleTheme={onToggleTheme}
+        currentUser={{ permissions: [] }}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: "Переключить на тёмную тему",
+    });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(onToggleTheme).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("dismissible notifications", () => {

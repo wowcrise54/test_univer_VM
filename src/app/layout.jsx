@@ -209,7 +209,15 @@ const routeNextActions = {
   automations: { label: "Операции", path: "/operations" },
 };
 
-export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
+export function Topbar({
+  session,
+  route,
+  onNavigate,
+  theme = "light",
+  onToggleTheme,
+  currentUser,
+  onLogout,
+}) {
   const headingRef = useRef(null);
   const permissions = new Set(currentUser?.permissions || []);
   const canReadConnection =
@@ -252,6 +260,16 @@ export function Topbar({ session, route, onNavigate, currentUser, onLogout }) {
       </div>
       <div className="topbar__actions">
         <GlobalSearch onNavigate={onNavigate} />
+        <button
+          type="button"
+          className="theme-toggle"
+          aria-label={`Переключить на ${theme === "dark" ? "светлую" : "тёмную"} тему`}
+          aria-pressed={theme === "dark"}
+          title={`Переключить на ${theme === "dark" ? "светлую" : "тёмную"} тему`}
+          onClick={onToggleTheme}
+        >
+          <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+        </button>
         {canReadConnection ? (
           <div
             className={
