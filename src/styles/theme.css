@@ -28,6 +28,16 @@ html[data-theme="dark"] body {
   color: var(--text);
 }
 
+html[data-theme="dark"] .passport-job {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .passport-job__track {
+  background: var(--line);
+}
+
 html[data-theme="dark"] .sidebar {
   border-color: var(--line);
   color: var(--text);
@@ -914,12 +924,20 @@ html[data-theme="dark"] .task-back-button:hover {
 html[data-theme="dark"] .asset-vulnerability-subtabs,
 html[data-theme="dark"] .asset-collection-row,
 html[data-theme="dark"] .asset-vulnerability-source td,
+html[data-theme="dark"] .asset-vulnerability-group td,
+html[data-theme="dark"] .asset-vulnerability-toolbar > span,
 html[data-theme="dark"] .asset-docker-package td,
 html[data-theme="dark"] .passport-placeholder,
 html[data-theme="dark"] .green-note {
   border-color: var(--line);
   color: var(--text);
   background: #202733;
+}
+
+html[data-theme="dark"] .asset-vulnerability-heading strong,
+html[data-theme="dark"] .asset-vulnerability-group strong,
+html[data-theme="dark"] .asset-vulnerability-toolbar strong {
+  color: var(--text);
 }
 
 html[data-theme="dark"] .asset-vulnerability-finding:hover td {

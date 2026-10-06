@@ -252,6 +252,101 @@ for (const width of [1440, 1011, 768, 390]) {
   });
 }
 
+test("running passport progress and asset vulnerability rows use dark surfaces", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1011, height: 715 });
+  await page.addInitScript(() =>
+    localStorage.setItem("mpvm-client-theme", "dark"),
+  );
+  const job = {
+    operation_id: "dark-progress",
+    status: "running",
+    progress_percent: 82,
+    message: "Сохранение паспортов в БД.",
+  };
+  const card = {
+    asset_id: "dark-asset",
+    display_name: "Dark theme host",
+    loaded_sections: ["summary"],
+    stats: {},
+  };
+  await installApiMock(page, {
+    "/api/vulnerability-passports/refresh-jobs/latest": (route) =>
+      route.fulfill({ json: { job } }),
+    "/api/vulnerability-passports/refresh-jobs/dark-progress": (route) =>
+      route.fulfill({ json: job }),
+    "/api/asset-cards/local": (route) =>
+      route.fulfill({ json: { rows: [card], total: 1 } }),
+    "/api/asset-cards/dark-asset/summary": (route) =>
+      route.fulfill({ json: card }),
+    "/api/asset-cards/dark-asset/vulnerabilities/groups": (route) =>
+      route.fulfill({
+        json: {
+          vulnerabilities: {
+            header: { os_soft_vulnerabilities_count: 2 },
+            sources: [
+              {
+                source: "software",
+                groups: ["linux-image", "containerd"].map((name) => ({
+                  source: "software",
+                  collection_id: name,
+                  name,
+                  vulnerabilities_count: 1,
+                })),
+              },
+            ],
+          },
+        },
+      }),
+  });
+  const expectDarkSurface = async (locator) => {
+    await expect(locator.first()).toBeVisible();
+    const colors = await locator.evaluateAll((elements) =>
+      elements.map((element) => {
+        let surface = element;
+        let background;
+        do {
+          background = getComputedStyle(surface).backgroundColor;
+          surface = surface.parentElement;
+        } while (
+          surface &&
+          (background === "rgba(0, 0, 0, 0)" || background === "transparent")
+        );
+        const rgb = background
+          .match(/[\d.]+/g)
+          .slice(0, 3)
+          .map(Number);
+        return Math.max(...rgb);
+      }),
+    );
+    for (const channel of colors) expect(channel).toBeLessThan(90);
+  };
+  await page.goto("/passports");
+  await expectDarkSurface(page.locator(".passport-job--running"));
+  await expectDarkSurface(page.locator(".passport-job__track"));
+  await expect(
+    page.getByRole("progressbar", { name: "Обновление списка паспортов" }),
+  ).toHaveAttribute("aria-valuenow", "82");
+  await page.screenshot({
+    path: "output/playwright/passport-progress-dark.png",
+    fullPage: true,
+  });
+  await page.goto("/asset-cards");
+  await page
+    .getByRole("button", { name: "Сохранённые карточки", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Открыть", exact: true }).click();
+  await page.getByRole("tab", { name: "Уязвимости", exact: true }).click();
+  await expect(page.locator(".asset-vulnerability-group")).toHaveCount(2);
+  await expectDarkSurface(page.locator(".asset-vulnerability-toolbar > span"));
+  await expectDarkSurface(page.locator(".asset-vulnerability-group td"));
+  await page.screenshot({
+    path: "output/playwright/asset-vulnerabilities-dark.png",
+    fullPage: true,
+  });
+});
+
 function defaultApiResponse(path) {
   if (path === "/api/auth/me") {
     return {
