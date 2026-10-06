@@ -4065,7 +4065,7 @@ function VulnerabilityPassportsPanel({
           <span>{formatCount(passportTotal)}</span>
         </div>
       </div>
-      {canManagePassports && passportRefreshJob ? (
+      {canManagePassports && passportRefreshJob && passportRefreshJob.status !== "completed" ? (
         <section className={`passport-job passport-job--${passportRefreshJob.status}`} aria-live="polite">
           <div className="passport-job__header">
             <div>
@@ -4083,7 +4083,7 @@ function VulnerabilityPassportsPanel({
           </div>
         </section>
       ) : null}
-      {canManagePassports && passportJob ? (
+      {canManagePassports && passportJob && passportJob.status !== "completed" ? (
         <section
           className={`passport-job passport-job--${passportJob.status}`}
           aria-live="polite"

@@ -801,10 +801,8 @@ tr.is-selected td {
 .asset-query-view {
   gap: 8px;
   margin-bottom: 18px;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
+  min-width: 0;
+  container: asset-query-view / inline-size;
 }
 
 .asset-query-presets {
@@ -942,6 +940,16 @@ tr.is-selected td {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
+  box-shadow: none;
+  container: asset-query-group / inline-size;
+}
+
+.query-group legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 0;
+  overflow-wrap: anywhere;
 }
 
 .query-group--nested {
@@ -950,13 +958,20 @@ tr.is-selected td {
 }
 
 .query-group__controls {
-  grid-template-columns: minmax(220px, 0.7fr) minmax(280px, 1.3fr);
+  clear: both;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
   align-items: start;
   gap: 12px;
 }
 
 .query-scope-disclosure {
   margin: 20px 0 0;
+}
+
+.query-group__controls > *,
+.asset-query-view__save > *,
+.asset-query-view__picker > * {
+  min-width: 0;
 }
 
 .query-scope-disclosure > summary {
@@ -1705,7 +1720,6 @@ td code,
 
 .options-card,
 .asset-card-builder,
-.query-group,
 .settings-card,
 .vulnerability-glossary {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
@@ -1864,6 +1878,33 @@ td code,
 .alert-dismiss:hover,
 .alert-dismiss:focus-visible {
   background: rgb(0 0 0 / 8%);
+}
+
+@container asset-query-view (max-width: 900px) {
+  .asset-query-view__save {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .asset-query-view__state {
+    grid-column: 1 / -1;
+  }
+}
+
+@container asset-query-view (max-width: 560px) {
+  .asset-query-view__picker,
+  .asset-query-view__save {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container asset-query-group (max-width: 560px) {
+  .query-group__controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .query-scope-disclosure {
+    margin-top: 0;
+  }
 }
 
 @container asset-query-rules (min-width: 821px) {

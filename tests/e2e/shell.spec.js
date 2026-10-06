@@ -138,6 +138,120 @@ async function installApiMock(page, overrides = {}) {
   });
 }
 
+test("passport refresh disappears on completion and stays hidden after reload", async ({
+  page,
+}) => {
+  let completed = false;
+  await installApiMock(page, {
+    "/api/vulnerability-passports/refresh-jobs/latest": (route) =>
+      route.fulfill({
+        json: {
+          job: {
+            operation_id: "refresh-ui",
+            status: completed ? "completed" : "running",
+            progress_percent: completed ? 100 : 42,
+          },
+        },
+      }),
+    "/api/vulnerability-passports/refresh-jobs/refresh-ui": (route) => {
+      completed = true;
+      return route.fulfill({
+        json: {
+          operation_id: "refresh-ui",
+          status: "completed",
+          progress_percent: 100,
+          result: { db: { saved: 1 } },
+        },
+      });
+    },
+  });
+  await page.goto("/passports");
+  await expect(
+    page.getByRole("progressbar", { name: "Обновление списка паспортов" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("progressbar", { name: "Обновление списка паспортов" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(/Обновление завершено: сохранено 1 паспортов/),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Обновить", exact: true }),
+  ).toBeEnabled();
+  await expect(page.locator(".passport-job--completed")).toHaveCount(0);
+});
+
+for (const width of [1440, 1011, 768, 390]) {
+  test(`asset query controls stay inside their frames at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.addInitScript(() =>
+      localStorage.setItem("mpvm-client-theme", "dark"),
+    );
+    await installApiMock(page);
+    await page.goto("/asset-query");
+    await page.getByText("Сохранение выборки", { exact: true }).click();
+    const group = page.locator("#asset-query > .query-group");
+    await group
+      .locator(".query-group__actions > .action-menu > summary")
+      .click();
+    await page
+      .getByRole("button", { name: "Добавить группу условий", exact: true })
+      .click();
+    await page.getByText("Область совпадений", { exact: true }).first().click();
+    const problems = await page.locator("#asset-query").evaluate((panel) => {
+      const problems = [];
+      const frames = panel.querySelectorAll(".asset-query-view, .query-group");
+      for (const frame of frames) {
+        const bounds = frame.getBoundingClientRect();
+        const legend = frame.querySelector(":scope > legend");
+        if (legend && legend.getBoundingClientRect().top < bounds.top + 8)
+          problems.push("heading intersects frame border");
+        for (const element of frame.querySelectorAll(
+          "input, select, button, legend",
+        )) {
+          if (!element.checkVisibility()) continue;
+          const rect = element.getBoundingClientRect();
+          if (!rect.width || !rect.height) continue;
+          if (
+            rect.left < bounds.left - 1 ||
+            rect.right > bounds.right + 1 ||
+            rect.top < bounds.top - 1 ||
+            rect.bottom > bounds.bottom + 1
+          )
+            problems.push(element.textContent || element.tagName);
+        }
+      }
+      for (const row of panel.querySelectorAll(
+        ".query-rule, .query-group__controls, .asset-query-view__save",
+      )) {
+        const children = [...row.children].filter(
+          (element) => element.getBoundingClientRect().height,
+        );
+        for (let i = 0; i < children.length; i++) {
+          for (let j = i + 1; j < children.length; j++) {
+            const a = children[i].getBoundingClientRect();
+            const b = children[j].getBoundingClientRect();
+            if (
+              Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1
+            )
+              problems.push("overlapping controls");
+          }
+        }
+      }
+      return problems;
+    });
+    expect(problems).toEqual([]);
+    await page.screenshot({
+      path: `output/playwright/asset-query-${width}.png`,
+      fullPage: true,
+    });
+  });
+}
+
 function defaultApiResponse(path) {
   if (path === "/api/auth/me") {
     return {

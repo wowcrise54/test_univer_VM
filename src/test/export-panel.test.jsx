@@ -146,6 +146,87 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
     api.mockReset();
   });
 
+  it.each(["completed", "completed_with_errors", "failed"])(
+    "hides successful catalog jobs but preserves attention status %s",
+    async (status) => {
+      api.mockImplementation(async (path) => {
+        if (path === "/api/vulnerability-passports/refresh-jobs/latest") {
+          return {
+            job: { operation_id: "refresh-1", status, progress_percent: 100 },
+          };
+        }
+        return { job: null };
+      });
+      render(
+        <VulnerabilityPassportsPanel
+          defaults={null}
+          busy={{}}
+          runBusy={vi.fn()}
+          showAlert={vi.fn()}
+          currentUser={{ permissions: ["passports.read", "passports.manage"] }}
+        />,
+      );
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith(
+          "/api/vulnerability-passports/refresh-jobs/latest",
+        ),
+      );
+      if (status === "completed") {
+        expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      } else {
+        expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+      }
+    },
+  );
+
+  it("removes completed detail progress after polling and announces the result", async () => {
+    const showAlert = vi.fn();
+    api.mockImplementation(async (path) => {
+      if (path === "/api/vulnerability-passports/refresh-jobs/latest")
+        return { job: null };
+      if (path === "/api/vulnerability-passports/detail-jobs/active") {
+        return {
+          job: {
+            job_id: "details-1",
+            status: "running",
+            eligible_count: 1,
+            processed_count: 0,
+          },
+        };
+      }
+      if (path === "/api/vulnerability-passports/detail-jobs/details-1") {
+        return {
+          job_id: "details-1",
+          status: "completed",
+          eligible_count: 1,
+          processed_count: 1,
+          loaded_count: 1,
+        };
+      }
+      return { rows: [], total: 0 };
+    });
+    render(
+      <VulnerabilityPassportsPanel
+        defaults={null}
+        busy={{}}
+        runBusy={vi.fn()}
+        showAlert={showAlert}
+        currentUser={{ permissions: ["passports.read", "passports.manage"] }}
+      />,
+    );
+    expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith(
+        "Детали паспортов загружены: 1.",
+        "success",
+      ),
+    );
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(api).toHaveBeenCalledWith(
+      expect.stringContaining("/api/vulnerability-passports/local?"),
+    );
+  });
+
   it("hides PDQL query, detail-job controls, and destructive actions", () => {
     render(
       <VulnerabilityPassportsPanel
@@ -174,9 +255,17 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
   it("restores a running catalog refresh with visible percent and disables a second start", async () => {
     api.mockImplementation(async (path) => {
       if (path === "/api/vulnerability-passports/refresh-jobs/latest") {
-        return { job: { operation_id: "refresh-1", status: "running", progress_percent: 42, message: "Получено 420 из 1000 паспортов." } };
+        return {
+          job: {
+            operation_id: "refresh-1",
+            status: "running",
+            progress_percent: 42,
+            message: "Получено 420 из 1000 паспортов.",
+          },
+        };
       }
-      if (path === "/api/vulnerability-passports/detail-jobs/active") return { job: null };
+      if (path === "/api/vulnerability-passports/detail-jobs/active")
+        return { job: null };
       return { rows: [], total: 0 };
     });
     render(
@@ -188,8 +277,16 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
         currentUser={{ permissions: ["passports.read", "passports.manage"] }}
       />,
     );
-    await waitFor(() => expect(screen.getByRole("progressbar", { name: "Обновление списка паспортов" })).toHaveAttribute("aria-valuenow", "42"));
-    expect(screen.getByText(/Получено 420 из 1000 паспортов/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("progressbar", {
+          name: "Обновление списка паспортов",
+        }),
+      ).toHaveAttribute("aria-valuenow", "42"),
+    );
+    expect(
+      screen.getByText(/Получено 420 из 1000 паспортов/),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Обновить" })).toBeDisabled();
   });
 });
