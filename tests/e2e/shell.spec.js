@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
 
 const API_ROUTE = /^https?:\/\/[^/]+\/api(?:\/|$)/;
 const ROUTES = [
@@ -16,6 +17,212 @@ const ROUTES = [
   "/passports",
 ];
 
+function inspectDarkTheme() {
+  const rgb = (color) => color.match(/[\d.]+/g)?.map(Number) || [];
+  const luminance = (color) => {
+    const channels = rgb(color)
+      .slice(0, 3)
+      .map((v) => {
+        const c = v / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  const problems = [];
+  for (const element of document.querySelectorAll("body *")) {
+    const style = getComputedStyle(element);
+    const bounds = element.getBoundingClientRect();
+    if (!element.checkVisibility() || !bounds.width) continue;
+    const background = rgb(style.backgroundColor);
+    // Small chart marks carry semantic colors; panels and controls are surfaces.
+    if (
+      bounds.width >= 40 &&
+      bounds.height >= 24 &&
+      background.length >= 3 &&
+      (background[3] ?? 1) > 0.9 &&
+      luminance(style.backgroundColor) > 0.5
+    )
+      problems.push({
+        kind: "light-surface",
+        selector: element.className,
+        color: style.backgroundColor,
+      });
+    const isField = element.matches(
+      "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']), textarea, select",
+    );
+    const hasText =
+      (isField &&
+        Boolean(element.value || element.getAttribute("placeholder"))) ||
+      [...element.childNodes].some(
+        (node) =>
+          node.nodeType === Node.TEXT_NODE &&
+          /[\p{L}\p{N}]/u.test(node.textContent),
+      );
+    if (!hasText || element.closest(":disabled, [aria-disabled='true']"))
+      continue;
+    let surface = element;
+    while (
+      surface.parentElement &&
+      (rgb(getComputedStyle(surface).backgroundColor)[3] ?? 1) < 0.9
+    )
+      surface = surface.parentElement;
+    const textStyle =
+      isField && !element.value && element.getAttribute("placeholder")
+        ? getComputedStyle(element, "::placeholder")
+        : style;
+    const fg = luminance(textStyle.color);
+    const bg = luminance(getComputedStyle(surface).backgroundColor);
+    const contrast = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+    const large =
+      parseFloat(style.fontSize) >= 24 ||
+      (parseFloat(style.fontSize) >= 18.66 && Number(style.fontWeight) >= 700);
+    if (contrast < (large ? 3 : 4.5))
+      problems.push({
+        kind: "text-contrast",
+        selector: `${element.tagName.toLowerCase()}.${element.className}`,
+        text: (
+          element.value ||
+          element.getAttribute("placeholder") ||
+          element.textContent
+        )
+          .trim()
+          .slice(0, 60),
+        contrast,
+      });
+  }
+  return {
+    problems,
+    overflow: document.documentElement.scrollWidth > innerWidth + 1,
+  };
+}
+
+test("dark theme keeps controls readable through hover, focus, disabled and menu states", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.addInitScript(() =>
+    localStorage.setItem("mpvm-client-theme", "dark"),
+  );
+  await installApiMock(page);
+  await page.goto("/automations");
+  const primary = page.getByRole("button", {
+    name: "Создать расписание",
+    exact: true,
+  });
+  await primary.hover();
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+  const field = page.getByLabel("Название расписания", { exact: true });
+  await field.focus();
+  await expect(field).toBeFocused();
+  const outline = await field.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { width: style.outlineWidth, style: style.outlineStyle };
+  });
+  expect(outline).toEqual({ width: "2px", style: "solid" });
+  await page.locator(".account-menu > summary").click();
+  const menu = page.locator(".account-menu .action-menu__content");
+  await expect(menu).toBeVisible();
+  const bounds = await menu.boundingBox();
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+  await page.screenshot({
+    path: "output/playwright/theme-audit/mobile-menu.png",
+    fullPage: true,
+  });
+  await page.goto("/vm");
+  const disabled = page.getByRole("button", {
+    name: "Проверить перед запуском",
+    exact: true,
+  });
+  await expect(disabled).toBeDisabled();
+  expect(
+    await disabled.evaluate((element) => getComputedStyle(element).color),
+  ).toBe("rgb(154, 165, 181)");
+});
+
+test("dark sign-in form and theme switching retain readable surfaces", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.addInitScript(() =>
+    localStorage.setItem("mpvm-client-theme", "dark"),
+  );
+  await installApiMock(page, {
+    "/api/auth/me": (route) =>
+      route.fulfill({ status: 401, json: { detail: "Not authenticated" } }),
+  });
+  await page.goto("/connection");
+  await expect(page.locator(".auth-card")).toBeVisible();
+  expect(await page.evaluate(inspectDarkTheme)).toEqual({
+    problems: [],
+    overflow: false,
+  });
+  await page.screenshot({
+    path: "output/playwright/theme-audit/sign-in.png",
+    fullPage: true,
+  });
+  await installApiMock(page);
+  await page.reload();
+  await expectRoute(page, "/connection");
+  await page
+    .getByRole("button", { name: "Переключить на светлую тему" })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page
+    .getByRole("button", { name: "Переключить на тёмную тему" })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator(".nav-more > summary")).toHaveCSS(
+    "background-color",
+    "rgb(28, 34, 44)",
+  );
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+});
+
+for (const width of [1440, 768, 390]) {
+  test(`dark theme visual audit at ${width}px`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.setViewportSize({ width, height: 900 });
+    await page.addInitScript(() =>
+      localStorage.setItem("mpvm-client-theme", "dark"),
+    );
+    await installApiMock(page, {
+      "/api/auth/me": (route) => {
+        const response = defaultApiResponse("/api/auth/me");
+        response.user.permissions.push("asset_groups.read");
+        return route.fulfill({ json: response });
+      },
+    });
+    const audit = [];
+    for (const path of [...ROUTES, "/asset-groups", "/users"]) {
+      await page.goto(path);
+      await expectRoute(page, path);
+      const disclosures = page.locator("main .disclosure > summary");
+      for (const summary of await disclosures.all()) {
+        if (!(await summary.evaluate((element) => element.parentElement.open)))
+          await summary.click();
+      }
+      const result = await page.evaluate(inspectDarkTheme);
+      audit.push({ path, ...result });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({
+        path: `output/playwright/theme-audit/${width}${path}.png`,
+        fullPage: true,
+      });
+    }
+    await mkdir("output/playwright/theme-audit", { recursive: true });
+    await writeFile(
+      `output/playwright/theme-audit/${width}.json`,
+      JSON.stringify(audit, null, 2),
+    );
+    expect(audit.filter((route) => route.overflow)).toEqual([]);
+    expect(audit.filter((route) => route.problems.length)).toEqual([]);
+  });
+}
+
 const EMPTY_TRENDS = {
   scope: "all_saved_asset_cards",
   from: "2026-06-12T00:00:00Z",
@@ -24,6 +231,40 @@ const EMPTY_TRENDS = {
   retention_days: 90,
   rows: [],
 };
+
+for (const width of [1440, 768, 390]) {
+  test(`dark task editor footer stays inside the workspace at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.addInitScript(() =>
+      localStorage.setItem("mpvm-client-theme", "dark"),
+    );
+    await installApiMock(page);
+    await page.goto("/tasks");
+    await page
+      .getByRole("button", { name: "+ Создать задачу", exact: true })
+      .click();
+    const footer = page.locator(".task-editor-footer");
+    await expect(footer).toBeVisible();
+    const workspaceBounds = await page.locator("main.workspace").boundingBox();
+    const footerBounds = await footer.boundingBox();
+    expect(footerBounds.x).toBeGreaterThanOrEqual(workspaceBounds.x);
+    expect(footerBounds.x + footerBounds.width).toBeLessThanOrEqual(
+      workspaceBounds.x + workspaceBounds.width + 1,
+    );
+    expect(await page.evaluate(inspectDarkTheme)).toEqual({
+      problems: [],
+      overflow: false,
+    });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: `output/playwright/theme-audit/${width}/task-editor.png`,
+      fullPage: true,
+    });
+  });
+}
 
 const POPULATED_TRENDS = {
   ...EMPTY_TRENDS,
@@ -359,6 +600,7 @@ test("running passport progress and asset vulnerability rows use dark surfaces",
   await page.getByRole("button", { name: /linux-image \(1\)/ }).click();
   await expect(page.locator(".asset-vulnerability-finding")).toHaveCount(1);
   await expectDarkSurface(page.locator(".asset-vulnerability-finding td"));
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
   await page.screenshot({
     path: "output/playwright/asset-vulnerabilities-dark.png",
     fullPage: true,
@@ -771,6 +1013,9 @@ test.describe("mobile shell", () => {
 test("operation drawer traps focus, closes with Escape, and blocks a duplicate cancel", async ({
   page,
 }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("mpvm-client-theme", "dark"),
+  );
   let cancelRequests = 0;
   await installApiMock(page, {
     "/api/operations": (route) =>
@@ -797,6 +1042,11 @@ test("operation drawer traps focus, closes with Escape, and blocks a duplicate c
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog.locator("button").first()).toBeFocused();
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+  await page.screenshot({
+    path: "output/playwright/theme-audit/operation-drawer.png",
+    fullPage: true,
+  });
 
   await page.keyboard.press("Shift+Tab");
   await expect(dialog.locator(":focus")).toHaveCount(1);
@@ -816,6 +1066,9 @@ test.describe("risk history states", () => {
   test("renders populated history with deltas, severity, and coverage warning", async ({
     page,
   }) => {
+    await page.addInitScript(() =>
+      localStorage.setItem("mpvm-client-theme", "dark"),
+    );
     await installApiMock(page, {
       "/api/vulnerabilities/trends": (route) =>
         route.fulfill({ json: POPULATED_TRENDS }),
@@ -828,6 +1081,11 @@ test.describe("risk history states", () => {
     await expect(history.locator(".risk-trend__delta")).toHaveCount(4);
     await expect(history.locator(".risk-trend__severity-card")).toBeVisible();
     await expect(history.getByRole("note")).toBeVisible();
+    expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+    await page.screenshot({
+      path: "output/playwright/theme-audit/risk-history.png",
+      fullPage: true,
+    });
   });
 
   test("renders a distinct empty history state", async ({ page }) => {
@@ -879,6 +1137,9 @@ test.describe("risk history states", () => {
 test("task selection, results, and a new task are separate actions", async ({
   page,
 }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("mpvm-client-theme", "dark"),
+  );
   const pageErrors = [];
   const historyRequests = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -968,6 +1229,11 @@ test("task selection, results, and a new task are separate actions", async ({
   await expect(
     page.getByRole("button", { name: "Создать задачу", exact: true }),
   ).toBeVisible();
+  expect((await page.evaluate(inspectDarkTheme)).problems).toEqual([]);
+  await page.screenshot({
+    path: "output/playwright/theme-audit/task-editor.png",
+    fullPage: true,
+  });
 });
 
 test("operation diagnostics shows a download failure and permits a retry", async ({

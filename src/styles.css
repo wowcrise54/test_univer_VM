@@ -563,14 +563,14 @@
   display: inline-flex !important;
   border-radius: 999px;
   padding: 5px 9px;
-  color: #1e3a8a !important;
+  color: var(--operation-running-text, #1e3a8a) !important;
   background: #dbeafe;
   font-weight: 850;
   white-space: nowrap;
 }
 
 .operation-status--completed {
-  color: #166534 !important;
+  color: var(--operation-success-text, #166534) !important;
   background: #dcfce7;
 }
 
@@ -578,7 +578,7 @@
 .operation-status--interrupted,
 .operation-status--completed_with_errors,
 .operation-status--needs_attention {
-  color: #991b1b !important;
+  color: var(--operation-error-text, #991b1b) !important;
   background: #fee2e2;
 }
 
@@ -3947,7 +3947,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .task-workspace-table td strong { display: block; overflow: hidden; color: #213b52; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .task-workspace-table td small { display: block; margin-top: 3px; overflow: hidden; color: #8296a8; font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
 .task-workspace-table td:first-child input { accent-color: var(--task-blue); }
-.task-table-empty { height: 130px; color: #8094a6 !important; text-align: center; }
+.task-table-empty { height: 130px; color: var(--task-empty-text, #8094a6) !important; text-align: center; }
 
 .task-agent-picker { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 0; border: 0; }
 .task-agent-picker legend { margin-bottom: 7px; color: #536477; font-size: 0.8rem; font-weight: 750; }
