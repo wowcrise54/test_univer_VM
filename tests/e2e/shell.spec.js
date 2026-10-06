@@ -280,6 +280,21 @@ test("running passport progress and asset vulnerability rows use dark surfaces",
       route.fulfill({ json: { rows: [card], total: 1 } }),
     "/api/asset-cards/dark-asset/summary": (route) =>
       route.fulfill({ json: card }),
+    "/api/asset-cards/dark-asset/vulnerabilities/findings": (route) =>
+      route.fulfill({
+        json: {
+          rows: [
+            {
+              vulnerability_instance_id: "finding-dark",
+              name: "Уязвимость CVE-2025-10263",
+              cve_name: "CVE-2025-10263",
+              cvss_score: 7.5,
+            },
+          ],
+          total: 1,
+          has_more: false,
+        },
+      }),
     "/api/asset-cards/dark-asset/vulnerabilities/groups": (route) =>
       route.fulfill({
         json: {
@@ -341,6 +356,9 @@ test("running passport progress and asset vulnerability rows use dark surfaces",
   await expect(page.locator(".asset-vulnerability-group")).toHaveCount(2);
   await expectDarkSurface(page.locator(".asset-vulnerability-toolbar > span"));
   await expectDarkSurface(page.locator(".asset-vulnerability-group td"));
+  await page.getByRole("button", { name: /linux-image \(1\)/ }).click();
+  await expect(page.locator(".asset-vulnerability-finding")).toHaveCount(1);
+  await expectDarkSurface(page.locator(".asset-vulnerability-finding td"));
   await page.screenshot({
     path: "output/playwright/asset-vulnerabilities-dark.png",
     fullPage: true,

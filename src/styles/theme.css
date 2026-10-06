@@ -940,6 +940,16 @@ html[data-theme="dark"] .asset-vulnerability-toolbar strong {
   color: var(--text);
 }
 
+html[data-theme="dark"] .asset-vulnerability-finding td {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .asset-vulnerability-passport-link {
+  color: var(--blue);
+}
+
 html[data-theme="dark"] .asset-vulnerability-finding:hover td {
   background: #252d3a;
 }
