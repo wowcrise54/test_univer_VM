@@ -71,6 +71,7 @@ from .api.routers import (
     auth_router,
 )
 from .api.schemas import (
+    ASSET_CARD_MAX_DEPTH,
     AssetCardAssetQueryRequest,
     AssetCardBuildBatchJobRequest,
     AssetCardBuildJobRequest,
@@ -2940,7 +2941,7 @@ def _run_asset_card_build_job(
             timeline_timestamp=request.get("timeline_timestamp"),
             limit_per_collection=int(request.get("limit_per_collection") or 5000),
             max_items_per_collection=int(request.get("max_items_per_collection") or 5000),
-            max_depth=int(request.get("max_depth") or 8),
+            max_depth=int(request.get("max_depth") if request.get("max_depth") is not None else ASSET_CARD_MAX_DEPTH),
             docker_vulnerability_pdql=validate_docker_vulnerability_pdql(
                 str(request.get("docker_vulnerability_pdql") or DOCKER_VULNERABILITY_PDQL)
             ),
@@ -5880,7 +5881,7 @@ def build_scanned_asset_card(
         "timeline_timestamp": None,
         "limit_per_collection": 5000,
         "max_items_per_collection": 5000,
-        "max_depth": 8,
+        "max_depth": ASSET_CARD_MAX_DEPTH,
         "parent_operation_id": parent_operation_id,
     }
     logged_active_job_id: str | None = None
@@ -6875,7 +6876,17 @@ def build_asset_card(
                     seen_collections.add(key)
                     unique_collections.append(spec)
 
-            fetch_collection_specs(unique_collections)
+            # Узлы по прямым ссылкам не зависят от коллекций уровня — грузим одновременно.
+            if request_executor and direct_refs and unique_collections:
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="asset-card-direct-nodes") as side:
+                    direct_future = side.submit(copy_context().run, fetch_node_specs, list(direct_refs))
+                    try:
+                        fetch_collection_specs(unique_collections)
+                    finally:
+                        direct_future.result()
+            else:
+                fetch_collection_specs(unique_collections)
+                fetch_node_specs(direct_refs)
             child_refs = list(direct_refs)
             for spec in unique_collections:
                 items = spec.get("items") or []

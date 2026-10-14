@@ -84,7 +84,7 @@ describe("AssetCardsPanel batch builds", () => {
             timeline_timestamp: null,
             limit_per_collection: 5000,
             max_items_per_collection: 5000,
-            max_depth: 8,
+            max_depth: 64,
             docker_vulnerability_pdql: "",
           }),
         }),

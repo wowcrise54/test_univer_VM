@@ -13,6 +13,11 @@ from ..mpvm_client import (
 )
 
 
+# Практически неограниченная глубина обхода карточки актива: цикличность
+# уже отсекается через seen_nodes/seen_collections, поэтому лимит — лишь предохранитель.
+ASSET_CARD_MAX_DEPTH = 64
+
+
 class ConnectionRequest(BaseModel):
     api_url: str
     token_url: str | None = None
@@ -280,7 +285,7 @@ class AssetCardBuildRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
+    max_depth: int = Field(default=ASSET_CARD_MAX_DEPTH, ge=0, le=ASSET_CARD_MAX_DEPTH)
     docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
     save_to_db: bool = True
 
@@ -290,7 +295,7 @@ class AssetCardBuildJobRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
+    max_depth: int = Field(default=ASSET_CARD_MAX_DEPTH, ge=0, le=ASSET_CARD_MAX_DEPTH)
     docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
 
 
@@ -299,7 +304,7 @@ class AssetCardBuildBatchJobRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
+    max_depth: int = Field(default=ASSET_CARD_MAX_DEPTH, ge=0, le=ASSET_CARD_MAX_DEPTH)
     docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
 
     @field_validator("asset_ids", mode="before")
@@ -346,7 +351,7 @@ class AssetCardUpdateRequest(BaseModel):
     timeline_timestamp: int | None = None
     limit_per_collection: int = Field(default=5000, ge=1, le=5000)
     max_items_per_collection: int = Field(default=5000, ge=1, le=50000)
-    max_depth: int = Field(default=8, ge=0, le=8)
+    max_depth: int = Field(default=ASSET_CARD_MAX_DEPTH, ge=0, le=ASSET_CARD_MAX_DEPTH)
     docker_vulnerability_pdql: str = DOCKER_VULNERABILITY_PDQL
 
 

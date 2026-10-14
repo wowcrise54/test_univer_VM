@@ -2115,7 +2115,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
     timeline_timestamp: "",
     limit_per_collection: "5000",
     max_items_per_collection: "5000",
-    max_depth: "8",
+    max_depth: "64",
     docker_vulnerability_pdql: "",
     asset_refresh_parallelism: "",
     save_to_db: true,
@@ -2499,7 +2499,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
           1,
           50000,
         ),
-        max_depth: clampNumber(form.max_depth, 8, 0, 8),
+        max_depth: clampNumber(form.max_depth, 64, 0, 64),
         docker_vulnerability_pdql: form.docker_vulnerability_pdql,
       };
       if (form.save_to_db) {
@@ -2574,7 +2574,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
             1,
             50000,
           ),
-          max_depth: clampNumber(form.max_depth, 8, 0, 8),
+          max_depth: clampNumber(form.max_depth, 64, 0, 64),
           docker_vulnerability_pdql: form.docker_vulnerability_pdql,
         }),
       });
@@ -3001,7 +3001,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                     }
                     type="number"
                     min="0"
-                    max="8"
+                    max="64"
                   />
                 </Field>
                 <Toggle
