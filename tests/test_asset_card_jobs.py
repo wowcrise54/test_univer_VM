@@ -1591,6 +1591,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
     def test_passport_link_reconciliation_ranks_one_os_aware_match(self):
         connection = MagicMock()
         connection.execute.side_effect = [
+            SimpleNamespace(rowcount=1),
             SimpleNamespace(rowcount=3),
             SimpleNamespace(rowcount=2),
         ]
@@ -1602,9 +1603,11 @@ class AssetCardDatabaseTests(unittest.TestCase):
         )
 
         self.assertEqual(created, 2)
-        self.assertEqual(connection.execute.call_count, 2)
-        delete_sql = connection.execute.call_args_list[0].args[0]
-        ranking_sql = connection.execute.call_args_list[1].args[0]
+        self.assertEqual(connection.execute.call_count, 3)
+        self.assertEqual(connection.execute.call_args_list[0].args,
+                         ("SELECT pg_advisory_xact_lock(%s, %s)", db._VULNERABILITY_PASSPORT_WRITE_LOCK))
+        delete_sql = connection.execute.call_args_list[1].args[0]
+        ranking_sql = connection.execute.call_args_list[2].args[0]
         self.assertIn("DELETE FROM asset_card_vulnerability_passports", delete_sql)
         self.assertIn("ROW_NUMBER() OVER", ranking_sql)
         self.assertIn("PARTITION BY finding_id", ranking_sql)

@@ -39,10 +39,9 @@ _DB_CIRCUIT_LOCK = threading.Lock()
 _DB_CIRCUIT_OPEN_UNTIL = 0.0
 _DB_CIRCUIT_ERROR: str | None = None
 _DB_CIRCUIT_REASON: str | None = None
-# All application writers that mutate vulnerability_passports must take this
-# transaction-scoped PostgreSQL advisory lock before acquiring row locks. This
-# prevents concurrent sync, trend, and detail batches from locking passport
-# rows in conflicting orders while keeping readers fully concurrent.
+# Passport, finding and link writers must take this transaction-scoped lock
+# before row locks: link rebuilds lock links before FK KEY SHARE on findings,
+# while card replacement/deletion locks findings before cascading to links.
 _VULNERABILITY_PASSPORT_WRITE_LOCK = (1297106509, 1448301139)
 ASSET_CARD_BUILD_JOB_LIMIT = 2
 _ASSET_CARD_BUILD_ADMISSION_LOCK = (1297106509, 1094927172)
@@ -3783,6 +3782,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
 
     current = now_utc()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         asset_id = canonical_asset_card_id(
             conn,
             remote_asset_id=remote_asset_id,
@@ -3911,6 +3911,7 @@ def replace_asset_card_cache(
     card: dict[str, Any],
     updated_at: str,
 ) -> None:
+    _lock_vulnerability_passport_writes(conn)
     conn.execute("DELETE FROM asset_card_table_rows WHERE asset_id = %s", (asset_id,))
     conn.execute("DELETE FROM asset_card_collection_items WHERE asset_id = %s", (asset_id,))
     conn.execute("DELETE FROM asset_card_collections WHERE asset_id = %s", (asset_id,))
@@ -4484,6 +4485,7 @@ def reconcile_asset_card_vulnerability_passport_links(
 ) -> int:
     """Choose one best passport per finding using vulnerability and host OS context."""
 
+    _lock_vulnerability_passport_writes(conn)
     # A changed passport can become a better candidate than an existing link, so
     # recompute the scoped findings against the complete local passport catalog.
     del passport_ids
@@ -5599,6 +5601,7 @@ def list_asset_card_vulnerability_findings(
 def delete_asset_card(asset_id: str) -> bool:
     init_db()
     with connect() as conn:
+        _lock_vulnerability_passport_writes(conn)
         row = conn.execute(
             "DELETE FROM asset_cards WHERE asset_id = %s RETURNING asset_id",
             (asset_id,),
