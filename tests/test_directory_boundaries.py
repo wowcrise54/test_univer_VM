@@ -115,11 +115,14 @@ def test_directory_search_handles_missing_or_ambiguous_users_and_always_unbinds(
     connection = MagicMock()
     connection.entries = [Entry({"cn": "First"})] * matches
     monkeypatch.setattr(ldap, "_build_connection", lambda *args: connection)
-    result = ldap._search_user(settings, "fixture")
-    assert result == ({"dn": "CN=Fixture,DC=example", "display": "First"} if matches else None)
-    connection.unbind.assert_called_once()
     if matches:
-        assert "используется первая" in caplog.text
+        # An ambiguous filter must reject the login instead of picking an account.
+        with pytest.raises(ldap.LdapError, match="ambiguous_user"):
+            ldap._search_user(settings, "fixture")
+        assert "вход отклонён" in caplog.text
+    else:
+        assert ldap._search_user(settings, "fixture") is None
+    connection.unbind.assert_called_once()
 
 
 @pytest.mark.parametrize("method", ["_search_user", "_in_admin_group"])

@@ -456,7 +456,9 @@ def audit_event(*,request:Request|None,user:dict[str,Any]|None,event_type:str,de
     try:
         with db.connect() as conn: conn.execute("""INSERT INTO app_auth_audit_events(actor_user_id,actor_username,event_type,permission_key,decision,target_type,target_id,ip_address,user_agent,trace_id,request_id,details_json,created_at)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",((user or {}).get("id"),(user or {}).get("username"),event_type,permission_key,decision,target_type,target_id,request.client.host if request and request.client else None,request.headers.get("user-agent") if request else None,getattr(request.state,"trace_id",None) if request else None,getattr(request.state,"request_id",None) if request else None,json.dumps(details or {},ensure_ascii=False),db.now_utc()))
-    except Exception: pass
+    except Exception:
+        # Audit must never break the request, but a lost security event must be visible.
+        logging.getLogger("mpvm.audit").warning("Не удалось записать событие аудита %s/%s", event_type, decision, exc_info=True)
 
 
 def list_audit_events(limit:int=200,offset:int=0)->dict[str,Any]:
@@ -476,19 +478,35 @@ def cleanup_audit_events(retention_days:int=365)->int:
 
 
 class LoginLimiter:
-    def __init__(self,attempts:int=8,window_seconds:int=300):
+    def __init__(self,attempts:int=8,window_seconds:int=300,max_keys:int=10_000):
         self.attempts = attempts
         self.window_seconds = window_seconds
+        self.max_keys = max_keys
         self._entries: defaultdict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
     def check(self,key:str)->None:
         now=time.monotonic()
         with self._lock:
-            entries=self._entries[key]
-            while entries and now-entries[0]>self.window_seconds: entries.popleft()
-            if len(entries)>=self.attempts: raise HTTPException(429,detail={"code":"LOGIN_RATE_LIMIT","message":"Слишком много попыток входа."})
+            # .get(): probing random usernames must not allocate limiter state.
+            entries = self._entries.get(key)
+            if entries is None:
+                return
+            while entries and now - entries[0] > self.window_seconds:
+                entries.popleft()
+            if not entries:
+                self._entries.pop(key, None)
+                return
+            if len(entries) >= self.attempts:
+                raise HTTPException(429, detail={"code": "LOGIN_RATE_LIMIT", "message": "Слишком много попыток входа."})
     def fail(self,key:str)->None:
-        with self._lock: self._entries[key].append(time.monotonic())
+        now = time.monotonic()
+        with self._lock:
+            self._entries[key].append(now)
+            if len(self._entries) > self.max_keys:
+                stale = [item for item, entries in self._entries.items()
+                         if not entries or now - entries[-1] > self.window_seconds]
+                for item in stale:
+                    self._entries.pop(item, None)
     def clear(self,key:str)->None:
         with self._lock: self._entries.pop(key,None)
 
@@ -516,7 +534,10 @@ _UUID_PATH = re.compile(r"/[0-9a-fA-F-]{16,}")
 
 def effective_permissions(user: dict[str, Any]) -> set[str]:
     assigned = user.get("permissions")
-    if isinstance(assigned, (list, tuple, set, frozenset)) and assigned:
+    # An explicitly empty assignment means "no permissions". Falling back to the
+    # role name here would let a custom role called e.g. "admin" inherit the
+    # built-in template; the fallback is only for legacy records without RBAC.
+    if isinstance(assigned, (list, tuple, set, frozenset)):
         return {str(permission) for permission in assigned}
     role = user.get("role")
     return set(BUILTIN_ROLE_PERMISSIONS.get(role if isinstance(role, str) else "", ()))

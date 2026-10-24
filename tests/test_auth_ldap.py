@@ -286,3 +286,12 @@ def test_ldap_required_ou_matches_exact_ou_component():
         "CN=Ivan,OU=Users,DC=example,DC=local",
         settings,
     )
+
+
+def test_password_ok_rejects_empty_password_without_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ldap, "_build_connection", lambda *args, **kwargs: calls.append(args))
+
+    assert ldap._password_ok(SimpleNamespace(), "CN=Ivan,DC=example,DC=local", "") is False
+    assert calls == []
+

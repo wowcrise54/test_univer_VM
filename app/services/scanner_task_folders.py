@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+
 from app.repositories.scanner_task_folders import ScannerTaskFolderRepository
 
 
@@ -23,7 +25,7 @@ class ScannerTaskFolderService:
         if not self._repository.delete(folder_id):
             raise LookupError("Task folder not found.")
 
-    def assign(self, task_ids: list[str], folder_id: str | None, *, actor: str | None) -> None:
+    def assign(self, task_ids: builtins.list[str], folder_id: str | None, *, actor: str | None) -> None:
         clean_ids = list(dict.fromkeys(value.strip() for value in task_ids if value.strip()))
         if folder_id is not None and not self._repository.folder_exists(folder_id):
             raise LookupError("Task folder not found.")

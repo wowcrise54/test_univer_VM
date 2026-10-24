@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, main
-
 
 ADMIN = {"id": 1, "username": "admin", "display_name": "Admin", "role": "admin", "is_active": True}
 OPERATOR = {**ADMIN, "id": 2, "username": "operator", "role": "operator"}
@@ -99,6 +99,17 @@ def test_cross_site_mutation_is_rejected_before_session_lookup():
     get_session_user.assert_not_called()
 
 
+def test_same_site_mutation_is_rejected_before_session_lookup():
+    with patch.object(auth, "get_session_user") as get_session_user:
+        response = TestClient(main.app).post(
+            "/api/operations/example/cancel", headers={"sec-fetch-site": "same-site"}
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CROSS_SITE_REQUEST"
+    get_session_user.assert_not_called()
+
+
 def test_operator_cannot_manage_users():
     with patch.object(auth, "get_session_user", return_value=OPERATOR), patch.object(auth, "audit_event"):
         response = TestClient(main.app).get("/api/auth/users")
@@ -132,9 +143,46 @@ def test_effective_permissions_uses_assigned_roles_then_legacy_role():
     assert auth.effective_permissions({"role": "viewer", "permissions": ["operations.cancel"]}) == {
         "operations.cancel"
     }
-    assert auth.effective_permissions({"role": "viewer", "permissions": []}) == set(
-        auth.BUILTIN_ROLE_PERMISSIONS["viewer"]
-    )
+    assert auth.effective_permissions({"role": "viewer"}) == set(auth.BUILTIN_ROLE_PERMISSIONS["viewer"])
+
+
+def test_empty_permission_assignment_never_falls_back_to_role_name():
+    # A custom role named like a built-in template with no permissions grants nothing.
+    assert auth.effective_permissions({"role": "admin", "permissions": []}) == set()
+
+
+def test_login_limiter_check_does_not_allocate_state_for_unknown_keys():
+    limiter = auth.LoginLimiter(attempts=2, window_seconds=5)
+    for index in range(100):
+        limiter.check(f"ip:user-{index}")
+    assert len(limiter._entries) == 0
+
+
+def test_login_limiter_sweeps_stale_keys_when_over_capacity(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(auth, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    limiter = auth.LoginLimiter(attempts=2, window_seconds=5, max_keys=2)
+    limiter.fail("ip:old")
+    limiter.fail("ip:recent")
+    clock["now"] = 10.0
+    limiter.fail("ip:recent")
+    limiter.fail("ip:new")
+    assert set(limiter._entries) == {"ip:recent", "ip:new"}
+
+
+def test_cors_is_disabled_by_default_and_rejects_wildcard(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.factory import create_app
+
+    for origins in ((), ("*",)):
+        client = TestClient(create_app(static_dir=tmp_path, cors_origins=origins))
+        response = client.get("/missing", headers={"Origin": "https://evil.example", "Cookie": "a=b"})
+        assert "access-control-allow-origin" not in response.headers
+        assert response.headers["x-content-type-options"] == "nosniff"
+    client = TestClient(create_app(static_dir=tmp_path, cors_origins=("https://ok.example",)))
+    response = client.get("/missing", headers={"Origin": "https://ok.example"})
+    assert response.headers["access-control-allow-origin"] == "https://ok.example"
 
 
 def test_all_registered_api_routes_have_an_explicit_policy():

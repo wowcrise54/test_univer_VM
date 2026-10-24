@@ -544,7 +544,7 @@ def shutdown() -> None:
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())
 
 
-app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan)
+app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan, cors_origins=SETTINGS.cors_origins)
 app.state.container = CONTAINER
 
 
@@ -571,7 +571,14 @@ def auth_error(status_code: int, code: str, message: str) -> JSONResponse:
 @app.middleware("http")
 async def application_auth_middleware(request: Request, call_next):
     path = request.url.path
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("sec-fetch-site") == "cross-site":
+    # SameSite=strict still sends the cookie from sibling subdomains, so only
+    # same-origin (or user-initiated "none") browser mutations are accepted,
+    # plus origins explicitly listed in MPVM_CORS_ALLOWED_ORIGINS.
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}
+        and (request.headers.get("origin") or "").rstrip("/") not in SETTINGS.cors_origins
+    ):
         return auth_error(403, "CROSS_SITE_REQUEST", "Межсайтовый запрос отклонён.")
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
@@ -1897,8 +1904,16 @@ def import_csv_text(payload: CsvTextImportRequest) -> dict[str, Any]:
 
 
 @imports_router.post("/api/import/csv-file")
-async def import_csv_file(file: UploadFile = File(...)) -> dict[str, Any]:
-    content = await file.read()
+def import_csv_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    # Sync handler: FastAPI runs it in the threadpool, so the blocking import
+    # no longer stalls the event loop for every other request.
+    max_bytes = SETTINGS.import_max_upload_mb * 1024 * 1024
+    content = file.file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "IMPORT_TOO_LARGE", "message": f"Файл больше {SETTINGS.import_max_upload_mb} МБ.", "component": "imports"},
+        )
     text = decode_csv_bytes(content)
     return db.import_csv_text(text, source="uploaded_csv", csv_filename=file.filename)
 

@@ -115,11 +115,13 @@ def _search_user(settings, username: str) -> dict | None:
         if not entries:
             return None
         if len(entries) > 1:
+            # An ambiguous filter must not silently pick an arbitrary account.
             logger.warning(
-                "LDAP-фильтр %r вернул %d записей, используется первая",
+                "LDAP-фильтр %r вернул %d записей, вход отклонён",
                 settings.ldap_user_filter,
                 len(entries),
             )
+            raise LdapError("ambiguous_user")
         entry = entries[0]
         display = ""
         for attr in (settings.ldap_display_name_attribute, "displayName", "cn"):
@@ -133,6 +135,10 @@ def _search_user(settings, username: str) -> dict | None:
 
 def _password_ok(settings, user_dn: str, password: str) -> bool:
     """Verify the password by re-binding as the located user DN."""
+    # A simple bind with a DN and an empty password is an "unauthenticated
+    # bind" (RFC 4513 §5.1.2) that many directories accept as success.
+    if not password:
+        return False
     check = None
     try:
         check = _build_connection(settings, user_dn, password)
