@@ -91,9 +91,12 @@ class VmWorkflowService:
             blocking.append({"code": "MPVM_UNAVAILABLE", "message": mpvm.get("message") or "MP VM недоступен."})
 
         targets: builtins.list[str] = []
+        asset_groups: builtins.list[str] = []
         if task:
-            targets = task.get("include_targets") or (task.get("payload") or {}).get("include", {}).get("targets") or []
-            if not targets:
+            include = (task.get("payload") or {}).get("include") or {}
+            targets = task.get("include_targets") or include.get("targets") or []
+            asset_groups = include.get("assetsGroups") or []
+            if not targets and not asset_groups:
                 warnings.append({
                     "code": "TARGETS_NOT_EXPLICIT",
                     "message": "В задаче нет явного списка целей; охват будет определён настройками области MP VM.",
@@ -136,6 +139,7 @@ class VmWorkflowService:
                 "last_execution": (task or {}).get("postprocess"),
             },
             "target_count": len(targets),
+            "asset_group_count": len(asset_groups),
             "conflicting_operations": conflicts,
         }
 

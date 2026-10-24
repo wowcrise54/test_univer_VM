@@ -1,0 +1,228 @@
+.team-tasks-page,
+.task-presets-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.team-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.team-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.team-preset-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow-surface);
+}
+
+.team-preset-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.team-preset-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-preset-card dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.team-preset-card dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.team-preset-card dd {
+  margin: 0;
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.team-preset-card .button {
+  justify-self: start;
+}
+
+.team-os-badge {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.team-os-badge--linux {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--green);
+}
+
+.team-table-scroll,
+.preset-table-scroll {
+  overflow-x: auto;
+}
+
+.team-table-scroll td small,
+.preset-table-scroll td small,
+.preset-muted {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.team-history-row td {
+  background: var(--panel-muted);
+}
+
+.team-runs {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.team-runs li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.team-create-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.preset-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.preset-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: end;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.preset-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.preset-fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 14px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 10px 12px 12px;
+}
+
+.preset-fieldset legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 670;
+}
+
+.preset-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.preset-group-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.preset-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 4px 2px 10px;
+  background: var(--panel-muted);
+  font-size: 12px;
+}
+
+.preset-chips button {
+  border: 0;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.preset-chips button:focus-visible {
+  outline: 2px solid var(--blue);
+}
+
+.preset-error {
+  margin: 8px 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.preset-problems {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  color: var(--orange);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .team-preset-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .preset-options {
+    grid-template-columns: 1fr;
+  }
+}

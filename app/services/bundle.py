@@ -10,6 +10,8 @@ from .compliance import ComplianceService
 from .remediation import CoverageService, RemediationService
 from .risk import RiskService
 from .scanner_task_folders import ScannerTaskFolderService
+from .task_presets import TaskPresetService
+from .team_tasks import TeamTasksService
 from .vm_workflows import VmWorkflowService
 from .vulnerabilities import VulnerabilityAnalyticsService
 
@@ -100,6 +102,8 @@ class ServiceBundle:
         self.assets = AssetsService(repositories)
         self.tasks = TasksService(repositories)
         self.scanner_task_folders = ScannerTaskFolderService(repositories.scanner_task_folders)
+        self.task_presets = TaskPresetService(repositories.task_presets)
+        self.team_tasks = TeamTasksService(repositories.task_presets)
         self.asset_cards = AssetCardsService(repositories)
         self.passports = PassportsService(repositories)
         self.asset_query = AssetQueryService(repositories)

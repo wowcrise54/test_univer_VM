@@ -13,6 +13,7 @@ export function TaskWorkspace(props) {
     error,
     loading = false,
     lookups,
+    onNavigate,
     refreshTasks,
     runBusy = (_key, action) => action(),
     selectedTaskId,
@@ -25,6 +26,7 @@ export function TaskWorkspace(props) {
   const permissions = new Set(currentUser?.permissions || []);
   const canManage = permissions.has("tasks.manage");
   const canExecute = permissions.has("tasks.execute");
+  const canManagePresets = permissions.has("task_presets.manage");
   const [view, setView] = useState("list");
   const [folderId, setFolderId] = useState(ALL_TASKS);
   const [query, setQuery] = useState("");
@@ -889,6 +891,18 @@ export function TaskWorkspace(props) {
                       Удалить
                     </button>
                   </>
+                ) : null}
+                {canManagePresets && onNavigate ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onNavigate(
+                        `/task-presets?from_task=${encodeURIComponent(selectedTask.mp_task_id)}`,
+                      )
+                    }
+                  >
+                    Сделать пресетом
+                  </button>
                 ) : null}
                 {canExecute ? (
                   <>

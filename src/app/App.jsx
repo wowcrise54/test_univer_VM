@@ -17,20 +17,39 @@ import {
   WorkflowRail,
 } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
+import { useEffect, useState } from "react";
 import { useRouter } from "./router.js";
 import { useTheme } from "./theme.jsx";
 import { AuthGate } from "../features/auth/AuthGate.jsx";
 import { UsersPage } from "../features/auth/UsersPage.jsx";
 import { VmManagementPage } from "../pages/VmManagementPage.jsx";
 import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
+import { TeamTasksPage } from "../features/team-tasks/TeamTasksPage.jsx";
+import { TaskPresetsPage } from "../features/task-presets/TaskPresetsPage.jsx";
+import { defaultRoutePath, landingPathForUser } from "./navigation.js";
 
 export function App() {
   return <AuthGate>{(auth) => <AuthenticatedApp auth={auth} />}</AuthGate>;
 }
 
 function AuthenticatedApp({ auth }) {
+  const [openedAtRoot] = useState(
+    () => typeof window !== "undefined" && window.location.pathname === "/",
+  );
   const { navigate, path, search, route } = useRouter();
   const routeAllowed = !route || canAccessRoute(route, auth.user);
+  const landingPath = landingPathForUser(auth.user);
+  useEffect(() => {
+    if (
+      openedAtRoot &&
+      path === defaultRoutePath &&
+      landingPath !== defaultRoutePath
+    ) {
+      navigate(landingPath);
+    }
+    // Only the first screen after login is redirected.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openedAtRoot, landingPath]);
   return (
     <AppDataProvider routeId={routeAllowed ? route?.id : "forbidden"}>
       <AppShell
@@ -145,6 +164,17 @@ function ActivePage({ routeId, ...props }) {
       />
     );
   }
+  if (routeId === "scans") {
+    return (
+      <TeamTasksPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "task-presets") {
+    return <TaskPresetsPage showAlert={props.showAlert} />;
+  }
   if (routeId === "users") {
     return (
       <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />
@@ -185,6 +215,7 @@ function ActivePage({ routeId, ...props }) {
         showAlert={props.showAlert}
         session={props.session}
         systemStatus={props.systemStatus}
+        onNavigate={props.onNavigate}
       />
     );
   }

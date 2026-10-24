@@ -11,6 +11,7 @@ from .operations import OperationsRepository
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
 from .scanner_task_folders import ScannerTaskFolderRepository
+from .task_presets import TaskPresetRepository
 from .vm_workflows import VmWorkflowRepository
 from .vulnerabilities import VulnerabilityAnalyticsRepository
 
@@ -67,6 +68,7 @@ class RepositoryBundle:
         self.operations = OperationsRepository()
         self.tasks = TasksRepository()
         self.scanner_task_folders = ScannerTaskFolderRepository()
+        self.task_presets = TaskPresetRepository()
         self.assets = AssetsRepository()
         self.asset_cards = AssetCardsRepository()
         self.passports = PassportsRepository()

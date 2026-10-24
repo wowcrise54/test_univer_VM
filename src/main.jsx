@@ -4,6 +4,7 @@ import { AppProviders } from "./app/providers.jsx";
 import { initializeTheme } from "./app/theme.jsx";
 import { installGlobalDiagnostics } from "./diagnostics.js";
 import "./styles/index.css";
+import "./styles/team-tasks.css";
 
 installGlobalDiagnostics();
 const initialTheme = initializeTheme();

@@ -19,7 +19,7 @@ export const workflowSteps = [
     label: "Сканирование",
     hint: "Запуск и контроль",
     path: "/tasks",
-    routes: ["connection", "tasks", "asset-groups", "operations"],
+    routes: ["connection", "tasks", "scans", "asset-groups", "operations"],
   },
   {
     id: "review",
@@ -61,6 +61,28 @@ export const routes = [
     title: "VM Management",
     description:
       "Единый цикл сканирования, приоритизации, устранения и подтверждения результата.",
+  },
+  {
+    id: "scans",
+    requiredPermission: "tasks.team",
+    group: "primary",
+    icon: "◎",
+    path: "/scans",
+    label: "Сканирование",
+    title: "Сканирование по пресетам",
+    description:
+      "Создание и запуск задач сканирования по готовым пресетам вашей команды.",
+  },
+  {
+    id: "task-presets",
+    requiredPermission: "task_presets.manage",
+    group: "admin",
+    icon: "▤",
+    path: "/task-presets",
+    label: "Пресеты задач",
+    title: "Пресеты задач",
+    description:
+      "Наборы параметров сканирования для инженеров Windows и Linux.",
   },
   {
     id: "users",
@@ -207,6 +229,18 @@ export const routes = [
       "Поиск паспортов уязвимостей и просмотр подробной информации из MP VM.",
   },
 ];
+
+/**
+ * Engineers without the full task workspace start on the preset page instead
+ * of the operator overview.
+ */
+export function landingPathForUser(user) {
+  const permissions = new Set(user?.permissions || []);
+  if (permissions.has("tasks.team") && !permissions.has("tasks.read")) {
+    return "/scans";
+  }
+  return defaultRoutePath;
+}
 
 const legacyRouteRedirects = new Map([["/assets", "/asset-cards"]]);
 
