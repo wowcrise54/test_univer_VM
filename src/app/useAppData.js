@@ -9,6 +9,11 @@ const EMPTY_LOOKUPS = {
   scanner_profiles: [],
   agents: [],
 };
+const MPVM_LOOKUPS_KEY = ["mpvm-lookups"];
+// MP VM dictionaries change rarely, but they must appear after the .env
+// auto-connect and stay current without a manual "refresh" click.
+export const MPVM_LOOKUPS_REFRESH_MS = 5 * 60 * 1000;
+const fetchMpvmLookups = () => api("/api/mpvm/lookups");
 
 const EMPTY_CONNECTION_DRAFT = {
   api_url: "",
@@ -230,10 +235,39 @@ export function useAppData(routeId) {
     [showAlert],
   );
 
+  const lookupsQuery = useQuery({
+    queryKey: MPVM_LOOKUPS_KEY,
+    queryFn: fetchMpvmLookups,
+    enabled: Boolean(session.connected),
+    staleTime: MPVM_LOOKUPS_REFRESH_MS,
+    refetchInterval: MPVM_LOOKUPS_REFRESH_MS,
+  });
+
+  useEffect(() => {
+    if (session.connected && lookupsQuery.data)
+      setLookups({ ...EMPTY_LOOKUPS, ...lookupsQuery.data });
+  }, [session.connected, lookupsQuery.data]);
+
+  const refreshLookups = useCallback(
+    () =>
+      queryClient.fetchQuery({
+        queryKey: MPVM_LOOKUPS_KEY,
+        queryFn: fetchMpvmLookups,
+        staleTime: 0,
+      }),
+    [queryClient],
+  );
+
   const setSession = useCallback(
     (value) => {
       setSessionState(value);
-      if (!value?.connected) setLookups(EMPTY_LOOKUPS);
+      if (!value?.connected) {
+        setLookups(EMPTY_LOOKUPS);
+        queryClient.removeQueries({ queryKey: MPVM_LOOKUPS_KEY });
+      } else {
+        // A (re)connect may target another MP VM: never keep its old lists.
+        void queryClient.invalidateQueries({ queryKey: MPVM_LOOKUPS_KEY });
+      }
       queryClient.setQueryData(["session"], value);
     },
     [queryClient],
@@ -309,6 +343,10 @@ export function useAppData(routeId) {
     connectionDraft,
     defaults: defaultsQuery.data || null,
     lookups,
+    lookupsError: lookupsQuery.error || null,
+    lookupsUpdatedAt: lookupsQuery.dataUpdatedAt
+      ? new Date(lookupsQuery.dataUpdatedAt).toISOString()
+      : null,
     operations,
     operationSummary: operationSummaryQueryResult.data || null,
     operationSummaryError: operationSummaryQueryResult.error || null,
@@ -325,6 +363,7 @@ export function useAppData(routeId) {
       ? new Date(operationsQueryResult.dataUpdatedAt).toISOString()
       : null,
     refreshAssets,
+    refreshLookups,
     refreshOperations,
     refreshOperationSummary,
     refreshSystemStatus,

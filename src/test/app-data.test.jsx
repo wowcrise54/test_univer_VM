@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client.js";
-import { useAppData } from "../app/useAppData.js";
+import { MPVM_LOOKUPS_REFRESH_MS, useAppData } from "../app/useAppData.js";
 
 vi.mock("../api/client.js", () => ({ api: vi.fn() }));
 const healthy = { state: "ok", components: { database: { state: "ok" } } };
@@ -298,6 +298,84 @@ describe("application data loading and recovery", () => {
     act(() => result.current.setLookups({ credentials: [{ id: "new" }] }));
     act(() => result.current.setSession({ connected: true }));
     expect(result.current.lookups.credentials).toEqual([{ id: "new" }]);
+  });
+});
+
+describe("MP VM lookups auto-refresh", () => {
+  const lookupCalls = () =>
+    api.mock.calls.filter(([path]) => path === "/api/mpvm/lookups").length;
+
+  it("loads lookups as soon as the session is connected, without a manual refresh", async () => {
+    responses["/api/mpvm/lookups"] = {
+      credentials: [{ id: "cred-1" }],
+      scopes: [{ id: "scope-1" }],
+      scanner_profiles: [],
+    };
+    const { result } = harness("forbidden");
+    await ready(result);
+    await waitFor(() =>
+      expect(result.current.lookups.credentials).toEqual([{ id: "cred-1" }]),
+    );
+    expect(result.current.lookups.agents).toEqual([]);
+    expect(result.current.lookupsUpdatedAt).toMatch(/^\d{4}-/);
+    expect(result.current.lookupsError).toBeNull();
+  });
+
+  it("does not request lookups while MP VM is disconnected", async () => {
+    responses["/api/session"] = { connected: false };
+    const { result } = harness("forbidden");
+    await waitFor(() => expect(result.current.systemStatus).not.toBeNull());
+    expect(lookupCalls()).toBe(0);
+  });
+
+  it("refreshes lookups periodically while connected", async () => {
+    vi.useFakeTimers();
+    responses["/api/mpvm/lookups"] = { scopes: [{ id: "first" }] };
+    const { result, unmount } = harness("forbidden");
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    await vi.waitFor(() =>
+      expect(result.current.lookups.scopes).toEqual([{ id: "first" }]),
+    );
+    expect(lookupCalls()).toBe(1);
+    responses["/api/mpvm/lookups"] = { scopes: [{ id: "second" }] };
+    await act(async () =>
+      vi.advanceTimersByTimeAsync(MPVM_LOOKUPS_REFRESH_MS + 100),
+    );
+    expect(lookupCalls()).toBe(2);
+    expect(result.current.lookups.scopes).toEqual([{ id: "second" }]);
+    unmount();
+  });
+
+  it("drops cached lookups on disconnect and reloads them after reconnecting", async () => {
+    responses["/api/mpvm/lookups"] = { credentials: [{ id: "old-vm" }] };
+    const { result, client } = harness("forbidden");
+    await ready(result);
+    await waitFor(() =>
+      expect(result.current.lookups.credentials).toEqual([{ id: "old-vm" }]),
+    );
+    act(() => result.current.setSession({ connected: false }));
+    expect(result.current.lookups.credentials).toEqual([]);
+    expect(client.getQueryData(["mpvm-lookups"])).toBeUndefined();
+    responses["/api/mpvm/lookups"] = { credentials: [{ id: "new-vm" }] };
+    act(() => result.current.setSession({ connected: true }));
+    await waitFor(() =>
+      expect(result.current.lookups.credentials).toEqual([{ id: "new-vm" }]),
+    );
+  });
+
+  it("exposes refresh failures and recovers on an explicit refresh", async () => {
+    responses["/api/mpvm/lookups"] = new Error("MP VM timeout");
+    const { result } = harness("forbidden");
+    await ready(result);
+    await waitFor(() =>
+      expect(result.current.lookupsError?.message).toBe("MP VM timeout"),
+    );
+    responses["/api/mpvm/lookups"] = { scopes: [{ id: "retried" }] };
+    await act(async () => result.current.refreshLookups());
+    await waitFor(() =>
+      expect(result.current.lookups.scopes).toEqual([{ id: "retried" }]),
+    );
+    expect(result.current.lookupsError).toBeNull();
   });
 });
 

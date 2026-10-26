@@ -74,20 +74,20 @@ function ConnectionPanel({
   session,
   setSession,
   lookups,
+  lookupsError,
+  lookupsUpdatedAt,
+  refreshLookups,
   setLookups,
   busy,
   runBusy,
   showAlert,
   onNavigate,
 }) {
-  const lookupRequestRef = useRef(0);
-
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
 
   const connect = () =>
     runBusy("session", async () => {
-      lookupRequestRef.current += 1;
       const payload = Object.fromEntries(
         Object.entries(form).map(([key, value]) => [
           key,
@@ -106,14 +106,13 @@ function ConnectionPanel({
         username: result.username ?? current.username,
         verify_tls: result.verify_tls ?? current.verify_tls,
       }));
+      // Lookups load automatically once the session is marked connected.
       showAlert("Подключение к MP VM установлено.", "success");
-      void loadLookups();
       onNavigate?.("/vm");
     });
 
   const disconnect = () =>
     runBusy("session", async () => {
-      lookupRequestRef.current += 1;
       const result = await api("/api/session/disconnect", { method: "POST" });
       setSession(result);
       setLookups({
@@ -125,18 +124,14 @@ function ConnectionPanel({
       showAlert("Сессия MP VM отключена.", "info");
     });
 
-  const loadLookups = () => {
-    const request = ++lookupRequestRef.current;
-    return runBusy("lookups", async () => {
-      const result = await api("/api/mpvm/lookups");
-      if (request !== lookupRequestRef.current) return null;
-      setLookups(result);
+  const loadLookups = () =>
+    runBusy("lookups", async () => {
+      await refreshLookups();
       showAlert(
         "Справочники загружены: credentials, scopes, scanner profiles и коллекторы.",
         "success",
       );
     });
-  };
 
   return (
     <Panel
@@ -249,6 +244,22 @@ function ConnectionPanel({
             записей · <span>{lookups.scopes.length}</span> scopes ·{" "}
             <span>{lookups.scanner_profiles.length}</span> профилей ·{" "}
             <span>{lookups.agents?.length || 0}</span> коллекторов
+            {lookupsUpdatedAt ? (
+              <>
+                {" "}
+                · обновлены{" "}
+                {new Date(lookupsUpdatedAt).toLocaleTimeString("ru-RU")},
+                автообновление каждые 5 мин
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        {session.connected && lookupsError ? (
+          <div className="query-state query-state--error" role="alert">
+            <span>
+              Не удалось обновить справочники:{" "}
+              {lookupsError.operatorMessage || lookupsError.message}
+            </span>
           </div>
         ) : null}
         <div

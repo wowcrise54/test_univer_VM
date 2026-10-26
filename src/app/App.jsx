@@ -188,6 +188,9 @@ function ActivePage({ routeId, ...props }) {
         session={props.session}
         setSession={props.setSession}
         lookups={props.lookups}
+        lookupsError={props.lookupsError}
+        lookupsUpdatedAt={props.lookupsUpdatedAt}
+        refreshLookups={props.refreshLookups}
         setLookups={props.setLookups}
         setConnectionDraft={props.setConnectionDraft}
         busy={props.busy}
