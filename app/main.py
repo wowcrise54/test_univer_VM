@@ -279,6 +279,9 @@ SCAN_POSTPROCESS_CANCEL_EVENTS: dict[str, threading.Event] = {}
 MPVM_ENV_CONNECT_LOCK = threading.Lock()
 MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
 MPVM_ENV_CONNECT_BACKOFF_SECONDS = 30.0
+# Last reason the .env auto-connect failed; surfaced by /api/session so the UI
+# does not silently show "disconnected" while the cause is only in the logs.
+MPVM_ENV_CONNECT_ERROR: str | None = None
 DOCKER_GROUP_CLEANUP_FUTURES: dict[str, Future[Any]] = {}
 DOCKER_GROUP_CLEANUP_FUTURES_LOCK = threading.Lock()
 BACKGROUND_REQUEST_SEMAPHORE = CONTAINER.background_request_semaphore
@@ -1365,7 +1368,7 @@ def defaults() -> dict[str, Any]:
 
 @session_router.post("/api/session/connect")
 def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    global MPVM_ENV_CONNECT_RETRY_AFTER
+    global MPVM_ENV_CONNECT_RETRY_AFTER, MPVM_ENV_CONNECT_ERROR
     try:
         api_url = normalize_url(payload.api_url)
         token_url = normalize_url(payload.token_url) if payload.token_url else build_default_token_url(api_url)
@@ -1393,6 +1396,7 @@ def connect_session(payload: ConnectionRequest, background_tasks: BackgroundTask
     SESSION.username = payload.username
     SESSION.verify_tls = payload.verify_tls
     MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
+    MPVM_ENV_CONNECT_ERROR = None
     # Returning the authenticated session must not wait for stale scan recovery.
     # Recovery is queued after the HTTP response and uses its own bounded executor.
     background_tasks.add_task(resume_connected_workflows)
@@ -1426,6 +1430,7 @@ def session_info() -> dict[str, Any]:
         "token_url": SESSION.token_url,
         "username": SESSION.username,
         "verify_tls": SESSION.verify_tls,
+        "env_connect_error": None if connected else MPVM_ENV_CONNECT_ERROR,
     }
 
 
@@ -3866,7 +3871,7 @@ def configure_session_from_env(*, force: bool = False) -> None:
 
 
 def _configure_session_from_env_unlocked() -> None:
-    global MPVM_ENV_CONNECT_RETRY_AFTER
+    global MPVM_ENV_CONNECT_RETRY_AFTER, MPVM_ENV_CONNECT_ERROR
     api_url = os.getenv("MPVM_API_URL") or os.getenv("MP10_API_URL")
     if not api_url:
         return
@@ -3906,11 +3911,25 @@ def _configure_session_from_env_unlocked() -> None:
         SESSION.username = auth.username
         SESSION.verify_tls = auth.verify_tls
         MPVM_ENV_CONNECT_RETRY_AFTER = 0.0
-    except Exception:
+        MPVM_ENV_CONNECT_ERROR = None
+    except Exception as exc:
         SESSION.client = None
         SESSION.access_token = None
         MPVM_ENV_CONNECT_RETRY_AFTER = time.monotonic() + MPVM_ENV_CONNECT_BACKOFF_SECONDS
+        MPVM_ENV_CONNECT_ERROR = env_connect_error_message(exc)
         log_exception("mpvm", "session.env_connect.failed")
+
+
+def env_connect_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if isinstance(exc, MpVmApiError) and message.startswith("Missing authentication fields:"):
+        message += (
+            ". Задайте в .env MPVM_ACCESS_TOKEN или MPVM_USERNAME, MPVM_PASSWORD и MPVM_CLIENT_SECRET,"
+            " затем пересоздайте контейнер (docker compose up -d)."
+        )
+    elif not message:
+        message = type(exc).__name__
+    return message[:500]
 
 
 def mpvm_session_connected() -> bool:

@@ -156,6 +156,13 @@ function ConnectionPanel({
         ) : null
       }
     >
+      {!session.connected && session.env_connect_error ? (
+        <div className="query-state query-state--error" role="alert">
+          <span>
+            Автоподключение из .env не выполнено: {session.env_connect_error}
+          </span>
+        </div>
+      ) : null}
       <div className="form-grid form-grid--two connection-primary-fields">
         <Field label="Корневой URL API">
           <input

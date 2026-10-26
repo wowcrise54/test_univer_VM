@@ -82,6 +82,63 @@ class ConnectionTokenTests(unittest.TestCase):
         self.assertFalse(result["connected"])
         configure.assert_called_once_with()
 
+    def disconnected_session(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            client=None,
+            access_token=None,
+            api_url=None,
+            token_url=None,
+            username=None,
+            verify_tls=True,
+        )
+
+    def test_env_connect_failure_reason_is_exposed_until_connected(self):
+        runtime_session = self.disconnected_session()
+        env = {"MPVM_API_URL": "https://fixture", "MPVM_CLIENT_ID": "mpx"}
+
+        with (
+            patch.dict(main.os.environ, env, clear=True),
+            patch.object(main, "SESSION", runtime_session),
+            patch.object(main, "MPVM_ENV_CONNECT_ERROR", None),
+            patch.object(main, "MPVM_ENV_CONNECT_RETRY_AFTER", 0.0),
+            patch.object(main, "log_exception"),
+        ):
+            result = main.session_info()
+            self.assertFalse(result["connected"])
+            self.assertIn("Missing authentication fields: username, password, client_secret", result["env_connect_error"])
+            self.assertIn("MPVM_ACCESS_TOKEN", result["env_connect_error"])
+
+            payload = main.ConnectionRequest(api_url="https://fixture", access_token="token-value")
+            main.connect_session(payload, BackgroundTasks())
+            try:
+                self.assertIsNone(main.MPVM_ENV_CONNECT_ERROR)
+                self.assertIsNone(main.session_info()["env_connect_error"])
+            finally:
+                runtime_session.client.session.close()
+
+    def test_env_access_token_connects_and_clears_previous_failure(self):
+        runtime_session = self.disconnected_session()
+        env = {"MPVM_API_URL": "https://fixture", "MPVM_ACCESS_TOKEN": "Bearer env-token"}
+
+        with (
+            patch.dict(main.os.environ, env, clear=True),
+            patch.object(main, "SESSION", runtime_session),
+            patch.object(main, "MPVM_ENV_CONNECT_ERROR", "previous failure"),
+            patch.object(main, "MPVM_ENV_CONNECT_RETRY_AFTER", 0.0),
+        ):
+            main.configure_session_from_env(force=True)
+            try:
+                result = main.session_info()
+                self.assertTrue(result["connected"])
+                self.assertEqual(runtime_session.access_token, "env-token")
+                self.assertIsNone(result["env_connect_error"])
+            finally:
+                runtime_session.client.session.close()
+
+    def test_env_connect_error_message_falls_back_to_exception_type(self):
+        self.assertEqual(main.env_connect_error_message(ValueError()), "ValueError")
+        self.assertEqual(len(main.env_connect_error_message(RuntimeError("x" * 900))), 500)
+
 
 if __name__ == "__main__":
     unittest.main()
