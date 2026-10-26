@@ -135,6 +135,20 @@ class ConnectionTokenTests(unittest.TestCase):
             finally:
                 runtime_session.client.session.close()
 
+    def test_env_connect_error_reports_token_presence_without_value(self):
+        missing = main.MpVmApiError("Missing authentication fields: username, password, client_secret")
+        cases = {
+            "не передана в контейнер": {},
+            "передана, но пустая": {"MPVM_ACCESS_TOKEN": "  "},
+        }
+        for expected, env in cases.items():
+            with self.subTest(expected), patch.dict(main.os.environ, env, clear=True):
+                self.assertIn(f"MPVM_ACCESS_TOKEN: {expected}", main.env_connect_error_message(missing))
+        with patch.dict(main.os.environ, {"MPVM_ACCESS_TOKEN": "secret-token-value"}, clear=True):
+            message = main.env_connect_error_message(missing)
+        self.assertIn("MPVM_ACCESS_TOKEN: задана", message)
+        self.assertNotIn("secret-token-value", message)
+
     def test_env_connect_error_message_falls_back_to_exception_type(self):
         self.assertEqual(main.env_connect_error_message(ValueError()), "ValueError")
         self.assertEqual(len(main.env_connect_error_message(RuntimeError("x" * 900))), 500)

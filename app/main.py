@@ -3923,8 +3923,18 @@ def _configure_session_from_env_unlocked() -> None:
 def env_connect_error_message(exc: Exception) -> str:
     message = str(exc).strip()
     if isinstance(exc, MpVmApiError) and message.startswith("Missing authentication fields:"):
+        # Report only presence, never the value: the variable is fixed when the
+        # container is created, so "not passed" usually means a stale container.
+        token = os.environ.get("MPVM_ACCESS_TOKEN", os.environ.get("MP10_ACCESS_TOKEN"))
+        if token is None:
+            token_state = "не передана в контейнер"
+        elif not token.strip():
+            token_state = "передана, но пустая (проверьте environment: в compose-файле)"
+        else:
+            token_state = "задана"
         message += (
-            ". Задайте в .env MPVM_ACCESS_TOKEN или MPVM_USERNAME, MPVM_PASSWORD и MPVM_CLIENT_SECRET,"
+            f". MPVM_ACCESS_TOKEN: {token_state}."
+            " Задайте в .env MPVM_ACCESS_TOKEN или MPVM_USERNAME, MPVM_PASSWORD и MPVM_CLIENT_SECRET,"
             " затем пересоздайте контейнер (docker compose up -d)."
         )
     elif not message:
