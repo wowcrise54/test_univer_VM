@@ -63,6 +63,14 @@ export function presetToForm(preset) {
   };
 }
 
+export function templateDraftToForm(result) {
+  return {
+    ...presetToForm(result?.draft),
+    template_id: result?.draft?.template_id || null,
+    template_warnings: result?.warnings || [],
+  };
+}
+
 export function formToPayload(form) {
   const payload = {
     name: form.name.trim(),

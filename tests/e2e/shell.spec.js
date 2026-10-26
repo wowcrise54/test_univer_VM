@@ -17,7 +17,7 @@ const ROUTES = [
   "/passports",
 ];
 
-function inspectDarkTheme() {
+function inspectDarkTheme(root = "body") {
   const rgb = (color) => color.match(/[\d.]+/g)?.map(Number) || [];
   const luminance = (color) => {
     const channels = rgb(color)
@@ -29,7 +29,7 @@ function inspectDarkTheme() {
     return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
   };
   const problems = [];
-  for (const element of document.querySelectorAll("body *")) {
+  for (const element of document.querySelectorAll(`${root} *`)) {
     const style = getComputedStyle(element);
     const bounds = element.getBoundingClientRect();
     if (!element.checkVisibility() || !bounds.width) continue;
@@ -1417,6 +1417,152 @@ for (const width of [1440, 768, 390]) {
       () => document.documentElement.scrollWidth > window.innerWidth + 1,
     );
     expect(overflow).toBe(false);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+const PRESET_TEMPLATES = {
+  rows: [
+    {
+      template_id: "windows-vulnerabilities",
+      os_family: "windows",
+      name: "Windows. Поиск уязвимостей",
+      purpose:
+        "Регулярный поиск уязвимостей: собирает только сведения об ОС и приложениях.",
+      module: "Audit",
+      profile_names: ["Windows Audit Vulnerabilities Discovery"],
+      credential: "required",
+      credential_hint:
+        "Доменная учётная запись из группы локальных администраторов (WMI/RPC).",
+      precheck_enabled: true,
+      max_groups_per_task: 5,
+      max_active_tasks: 3,
+      notes: ["Не предназначен для узлов АСУ ТП."],
+    },
+    {
+      template_id: "linux-audit",
+      os_family: "linux",
+      name: "Linux. Полный аудит",
+      purpose:
+        "Полная конфигурация ОС семейства Unix и установленного ПО для поиска уязвимостей и политик.",
+      module: "Audit",
+      profile_names: ["Unix SSH Audit"],
+      credential: "required",
+      credential_hint:
+        "SSH-учётная запись с sudo: ALL=(ALL) ALL или sudo-обёртки из audit_sudo_wrappers.zip.",
+      precheck_enabled: true,
+      max_groups_per_task: 3,
+      max_active_tasks: 2,
+      notes: ["Узлы с ядром Linux 2.6.38 и ниже не будут добавлены."],
+    },
+  ],
+  avoid: [
+    {
+      profile: "Unsafe PenTest",
+      reason: "DoS-проверки могут сделать службы и узлы недоступными.",
+    },
+  ],
+  docs_url:
+    "https://help.ptsecurity.com/ru-RU/projects/vm/28.0/help/7723547531",
+};
+
+function presetAdminApiOverrides() {
+  return {
+    "/api/auth/me": (route) => {
+      const response = defaultApiResponse("/api/auth/me");
+      response.user.permissions.push(
+        "task_presets.read",
+        "task_presets.manage",
+      );
+      return route.fulfill({ json: response });
+    },
+    "/api/task-presets": (route) => route.fulfill({ json: { rows: [] } }),
+    "/api/task-presets/templates": (route) =>
+      route.fulfill({ json: PRESET_TEMPLATES }),
+    "/api/auth/roles": (route) =>
+      route.fulfill({
+        json: {
+          rows: [{ id: 11, key: "engineer_linux", name: "Инженер Linux" }],
+        },
+      }),
+    "/api/task-presets/lookups": (route) =>
+      route.fulfill({
+        json: {
+          scopes: [{ id: "scope-1", name: "Main" }],
+          scanner_profiles: [{ id: "profile-unix", name: "Unix SSH Audit" }],
+          credentials: [{ id: "cred-ssh", name: "ssh-audit" }],
+          agents: [],
+        },
+      }),
+    "/api/task-presets/asset-groups": (route) =>
+      route.fulfill({
+        json: {
+          rows: [{ id: "g-linux", name: "Linux", path: "Root / Linux" }],
+        },
+      }),
+    "POST /api/task-presets/from-template/linux-audit": (route) =>
+      route.fulfill({
+        json: {
+          draft: {
+            template_id: "linux-audit",
+            name: "Linux. Полный аудит",
+            description: "Полный аудит Linux по SSH.",
+            os_family: "linux",
+            scope_id: "scope-1",
+            profile_id: "profile-unix",
+            start_options: {
+              precheck_enabled: true,
+              precheck_profile_id: null,
+            },
+            allowed_asset_groups: [],
+            max_groups_per_task: 3,
+            max_active_tasks: 2,
+            name_prefix: "[Audit][LNX]",
+            role_ids: [11],
+          },
+          warnings: [
+            "Профиль «Windows DC Audit» не найден в MP VM, подставлен «Microsoft Active Directory Audit».",
+          ],
+        },
+      }),
+  };
+}
+
+for (const width of [1440, 768, 390]) {
+  test(`preset templates fit the admin page at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.addInitScript(() =>
+      localStorage.setItem("mpvm-client-theme", "dark"),
+    );
+    const pageErrors = collectPageErrors(page);
+    await installApiMock(page, presetAdminApiOverrides());
+
+    await page.goto("/task-presets");
+    await expectRoute(page, "/task-presets");
+    await expect(
+      page.getByRole("heading", { name: "Windows. Поиск уязвимостей" }),
+    ).toBeVisible();
+    expect(await page.evaluate(inspectDarkTheme, ".task-presets-page")).toEqual(
+      { problems: [], overflow: false },
+    );
+
+    await page
+      .getByRole("button", {
+        name: "Создать пресет по шаблону «Linux. Полный аудит»",
+      })
+      .click();
+    const hint = page.getByRole("note", { name: "Рекомендации шаблона" });
+    await expect(hint).toContainText("Unix SSH Audit");
+    await expect(page.getByLabel("Название", { exact: true })).toBeFocused();
+    await expect(page.getByLabel("Профиль сканирования")).toHaveValue(
+      "profile-unix",
+    );
+    expect(await page.evaluate(inspectDarkTheme, ".task-presets-page")).toEqual(
+      { problems: [], overflow: false },
+    );
     expect(pageErrors).toEqual([]);
   });
 }

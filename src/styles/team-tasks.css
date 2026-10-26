@@ -217,6 +217,52 @@
   font-size: 12px;
 }
 
+.preset-template-card dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preset-template-card .preset-template-profile {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.preset-template-avoid,
+.preset-template-hint {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--panel-muted);
+  font-size: 12px;
+}
+
+.preset-template-hint {
+  margin: 0 0 14px;
+}
+
+.preset-template-hint p {
+  margin: 0;
+}
+
+.preset-template-avoid ul,
+.preset-template-hint ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.preset-template-avoid a {
+  justify-self: start;
+  color: var(--blue);
+}
+
+.preset-template-warnings {
+  color: var(--orange);
+}
+
 @media (max-width: 760px) {
   .team-preset-card dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));

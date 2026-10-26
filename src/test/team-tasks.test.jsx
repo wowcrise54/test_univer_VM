@@ -21,6 +21,7 @@ import {
   formToPayload,
   presetFormProblems,
   presetToForm,
+  templateDraftToForm,
 } from "../features/task-presets/presetForm.js";
 
 vi.mock("../api/client.js", () => ({
@@ -263,7 +264,99 @@ describe("preset form helpers", () => {
       presetFormProblems({ ...emptyPresetForm(), time_zone: "MSK" }),
     ).toContain("Часовой пояс задаётся в формате +05:00.");
   });
+
+  it("turns a template draft into a new preset form", () => {
+    const form = templateDraftToForm({
+      draft: {
+        template_id: "linux-safe-pentest",
+        name: "Linux. Безопасный пентест",
+        os_family: "linux",
+        start_options: { precheck_enabled: false, precheck_profile_id: null },
+        max_active_tasks: 1,
+        role_ids: [11],
+      },
+      warnings: ["Профиль не найден."],
+    });
+    expect(form).toMatchObject({
+      preset_id: null,
+      template_id: "linux-safe-pentest",
+      template_warnings: ["Профиль не найден."],
+      os_family: "linux",
+      precheck_enabled: false,
+      max_active_tasks: 1,
+      role_ids: [11],
+    });
+    expect(formToPayload(form)).not.toHaveProperty("template_id");
+    expect(templateDraftToForm({})).toMatchObject({
+      template_id: null,
+      template_warnings: [],
+    });
+  });
 });
+
+const TEMPLATES = {
+  rows: [
+    {
+      template_id: "linux-audit",
+      os_family: "linux",
+      name: "Linux. Полный аудит",
+      purpose: "Полная конфигурация ОС семейства Unix.",
+      module: "Audit",
+      profile_names: ["Unix SSH Audit"],
+      credential: "required",
+      credential_hint: "SSH-учётная запись с sudo.",
+      precheck_enabled: true,
+      max_groups_per_task: 3,
+      max_active_tasks: 2,
+      notes: ["До 5 минут на актив."],
+    },
+    {
+      template_id: "windows-safe-pentest",
+      os_family: "windows",
+      name: "Windows. Безопасный пентест",
+      purpose: "Уязвимости сетевых служб без учётной записи.",
+      module: "Pentest",
+      profile_names: ["Safe PenTest"],
+      credential: "none",
+      credential_hint: "Не нужна.",
+      precheck_enabled: false,
+      max_groups_per_task: 3,
+      max_active_tasks: null,
+      notes: [],
+    },
+  ],
+  avoid: [{ profile: "Unsafe PenTest", reason: "DoS-проверки." }],
+  docs_url:
+    "https://help.ptsecurity.com/ru-RU/projects/vm/28.0/help/7723547531",
+};
+
+function templateDraft(templateId) {
+  const template = TEMPLATES.rows.find(
+    (item) => item.template_id === templateId,
+  );
+  return {
+    draft: {
+      template_id: templateId,
+      name: template.name,
+      os_family: template.os_family,
+      scope_id: "scope-1",
+      profile_id: "profile-1",
+      start_options: {
+        precheck_enabled: template.precheck_enabled,
+        precheck_profile_id: null,
+      },
+      allowed_asset_groups: [],
+      max_groups_per_task: template.max_groups_per_task,
+      max_active_tasks: template.max_active_tasks,
+      name_prefix: "[Audit][LNX]",
+      role_ids: [10],
+    },
+    warnings:
+      templateId === "linux-audit"
+        ? ["Роль «Инженер Linux» не найдена. Отметьте роли вручную."]
+        : [],
+  };
+}
 
 describe("preset administration", () => {
   beforeEach(() => {
@@ -284,6 +377,9 @@ describe("preset administration", () => {
         };
       if (path === "/api/task-presets/asset-groups")
         return { rows: PRESET.allowed_asset_groups };
+      if (path === "/api/task-presets/templates") return TEMPLATES;
+      if (path.startsWith("/api/task-presets/from-template/"))
+        return templateDraft(path.split("/").pop());
       if (path.startsWith("/api/task-presets/from-task/"))
         return {
           draft: {
@@ -340,6 +436,117 @@ describe("preset administration", () => {
       allowed_asset_groups: [{ id: "g-2" }],
       credential_transport: "windows",
     });
+  });
+
+  it("fills the editor from a recommended template", async () => {
+    const showAlert = vi.fn();
+    renderWithClient(<TaskPresetsPage showAlert={showAlert} />);
+    expect(await screen.findByText("Linux. Полный аудит")).toBeInTheDocument();
+    expect(screen.getByText("Unsafe PenTest")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Рекомендации PT по использованию профилей",
+      }),
+    ).toHaveAttribute("href", TEMPLATES.docs_url);
+    expect(screen.getByText("без лимита")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("ОС"), {
+      target: { value: "linux" },
+    });
+    expect(
+      screen.queryByText("Windows. Безопасный пентест"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Создать пресет по шаблону «Linux. Полный аудит»",
+      }),
+    );
+
+    expect(
+      await screen.findByDisplayValue("Linux. Полный аудит"),
+    ).toHaveFocus();
+    expect(api).toHaveBeenCalledWith(
+      "/api/task-presets/from-template/linux-audit",
+      { method: "POST" },
+    );
+    const hint = screen.getByRole("note", { name: "Рекомендации шаблона" });
+    expect(
+      within(hint).getByText("Учётная запись: SSH-учётная запись с sudo."),
+    ).toBeInTheDocument();
+    expect(
+      within(hint).getByText(
+        "Роль «Инженер Linux» не найдена. Отметьте роли вручную.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Linux (SSH)")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("[Audit][LNX]")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Проверять доступность хостов (precheck) перед сканированием",
+      }),
+    ).toBeChecked();
+    expect(showAlert).toHaveBeenCalledWith(
+      "Черновик заполнен по шаблону. Проверьте предупреждения в форме.",
+      "warning",
+    );
+    expect(
+      screen.queryByRole("button", { name: /по шаблону/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.change(screen.getByLabelText("ОС"), { target: { value: "" } });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Создать пресет по шаблону «Windows. Безопасный пентест»",
+      }),
+    );
+    expect(
+      await screen.findByDisplayValue("Windows. Безопасный пентест"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Проверять доступность хостов (precheck) перед сканированием",
+      }),
+    ).not.toBeChecked();
+    expect(showAlert).toHaveBeenLastCalledWith(
+      "Черновик заполнен по шаблону. Проверьте параметры и выберите разрешённые группы.",
+      "info",
+    );
+  });
+
+  it("reports template failures", async () => {
+    const showAlert = vi.fn();
+    const fallback = api.getMockImplementation();
+    api.mockImplementation(async (path, options) => {
+      if (path.startsWith("/api/task-presets/from-template/"))
+        throw new Error("MP VM не подключён");
+      return fallback(path, options);
+    });
+    const { unmount } = renderWithClient(
+      <TaskPresetsPage showAlert={showAlert} />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Создать пресет по шаблону «Linux. Полный аудит»",
+      }),
+    );
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith("MP VM не подключён", "error"),
+    );
+    expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
+    unmount();
+
+    api.mockImplementation(async (path, options) => {
+      if (path === "/api/task-presets/templates")
+        throw new Error("Каталог недоступен");
+      return fallback(path, options);
+    });
+    renderWithClient(<TaskPresetsPage showAlert={showAlert} />);
+    expect(
+      await screen.findByText(
+        "Не удалось загрузить шаблоны: Каталог недоступен",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("prefills the editor from an existing task and archives presets", async () => {

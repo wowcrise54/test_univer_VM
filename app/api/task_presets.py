@@ -144,6 +144,11 @@ def task_preset_lookups(request: Request) -> dict:
         _raise_domain_error(exc)
 
 
+@router.get("/templates")
+def task_preset_templates(request: Request) -> dict:
+    return _service(request).templates()
+
+
 @router.get("/{preset_id}")
 def get_task_preset(request: Request, preset_id: UUID) -> dict:
     try:
@@ -168,6 +173,14 @@ def task_preset_draft_from_task(request: Request, task_id: str) -> dict:
     if not task:
         raise HTTPException(404, detail={"code": "SCANNER_TASK_NOT_FOUND", "message": "Local scanner task not found."})
     return {"draft": _service(request).draft_from_task(task)}
+
+
+@router.post("/from-template/{template_id}")
+def task_preset_draft_from_template(request: Request, template_id: str) -> dict:
+    try:
+        return _service(request).draft_from_template(template_id)
+    except Exception as exc:
+        _raise_domain_error(exc)
 
 
 @router.put("/{preset_id}")
