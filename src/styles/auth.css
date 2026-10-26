@@ -112,21 +112,227 @@
 }
 .user-create-form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
   gap: 12px;
   align-items: end;
   margin-bottom: 20px;
 }
-.user-create-form label {
+.user-create-form > label {
   display: grid;
   gap: 6px;
+}
+.user-create-form .role-picker,
+.user-create-form__actions {
+  grid-column: 1 / -1;
+}
+.user-create-form__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 .users-page td small {
   display: block;
 }
+.users-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.users-toolbar input {
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+.users-toolbar select {
+  flex: 0 1 220px;
+}
+.users-toolbar__count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+.users-empty {
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+.user-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.role-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.role-chip--system {
+  border-color: transparent;
+  background: var(--accent-soft, var(--blue-soft));
+}
+.role-chips__empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.role-picker {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.role-picker legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font-weight: 700;
+}
+.role-picker__search {
+  width: 100%;
+}
+.role-picker__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+.role-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 9px);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color var(--motion-fast, 120ms);
+}
+.role-option:hover {
+  border-color: var(--line-strong);
+}
+.role-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--blue-soft));
+}
+.role-option:focus-within {
+  outline: 3px solid rgb(49 94 251 / 28%);
+  outline-offset: 1px;
+}
+.role-option input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.role-option__body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.role-option__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.role-option__badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.role-option small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.role-picker__summary,
+.role-picker__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.confirm-dialog.role-assign-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+}
+.role-assign-dialog .confirm-dialog__eyebrow {
+  color: var(--muted);
+}
+.role-assign-dialog h2 {
+  margin-bottom: 0;
+}
+.role-assign-dialog__login {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.role-assign-dialog__diff {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 9px);
+  background: var(--panel-muted);
+  font-size: 13px;
+}
+.role-assign-dialog__diff p {
+  margin: 0;
+}
+.role-assign-dialog__diff small {
+  color: var(--muted);
+}
+.role-diff {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.role-diff--add {
+  background: #e3f6e9;
+  color: #176b36;
+}
+.role-diff--remove {
+  background: #ffe8e8;
+  color: #972b2b;
+}
+html[data-theme="dark"] .role-diff--add {
+  background: rgb(35 122 82 / 25%);
+  color: #8fd9b0;
+}
+html[data-theme="dark"] .role-diff--remove {
+  background: rgb(196 61 75 / 25%);
+  color: #f2a7af;
+}
 @media (max-width: 900px) {
   .user-create-form {
     grid-template-columns: 1fr 1fr;
+  }
+  .users-toolbar input {
+    max-width: none;
   }
   .user-chip {
     display: none;

@@ -41,7 +41,7 @@ beforeEach(() => {
           username: "admin",
           display_name: "Current administrator",
           is_active: true,
-          roles: [{ id: 10 }],
+          roles: [{ id: 10, name: "System admin", is_system: true }],
           last_login_at: "2026-09-30T10:00:00Z",
         },
         {
@@ -150,8 +150,14 @@ describe("user access management", () => {
       screen.queryByRole("button", { name: "Отключить" }),
     ).not.toBeInTheDocument();
     expect(
-      within(rowFor("Other operator")).getByRole("listbox"),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: /Изменить роли/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(rowFor("Current administrator")).getByText("System admin"),
+    ).toBeInTheDocument();
+    expect(
+      within(rowFor("Other operator")).getByText("Нет ролей"),
+    ).toBeVisible();
     expect(api).toHaveBeenCalledTimes(1);
     expect(api).toHaveBeenCalledWith("/api/auth/users");
   });
@@ -160,17 +166,39 @@ describe("user access management", () => {
     page();
     await screen.findByText("Other operator");
     const current = within(rowFor("Current administrator"));
-    expect(current.getByRole("listbox")).toBeDisabled();
+    expect(
+      current.getByRole("button", { name: /Изменить роли/ }),
+    ).toBeDisabled();
     expect(current.getByRole("button", { name: "Отключить" })).toBeDisabled();
     const other = within(rowFor("Other operator"));
-    await actions.selectOptions(other.getByRole("listbox"), ["10", "11"]);
+    await actions.click(
+      other.getByRole("button", { name: "Изменить роли: Other operator" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    const save = dialog.getByRole("button", { name: "Сохранить роли" });
+    expect(save).toBeDisabled();
+    await actions.click(dialog.getByRole("checkbox", { name: /System admin/ }));
+    await actions.click(
+      dialog.getByRole("checkbox", { name: /Custom reader/ }),
+    );
+    expect(
+      dialog.getByText("Выбрано: 2 роли · 1 уникальных прав"),
+    ).toBeVisible();
+    expect(dialog.getByText("Добавить")).toBeVisible();
+    expect(mutation("/api/auth/users/2", "PATCH")).toBeUndefined();
+    await actions.click(save);
     await waitFor(() =>
-      expect(mutation("/api/auth/users/2", "PATCH")).toBeDefined(),
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     expect(JSON.parse(mutation("/api/auth/users/2", "PATCH").body)).toEqual({
       role_ids: [10, 11],
     });
+    expect(showAlert).toHaveBeenCalledWith(
+      "Роли пользователя operator обновлены.",
+      "success",
+    );
     api.mockClear();
+    showAlert.mockClear();
     await actions.click(other.getByRole("button", { name: "Включить" }));
     await waitFor(() =>
       expect(JSON.parse(mutation("/api/auth/users/2", "PATCH").body)).toEqual({
@@ -178,6 +206,116 @@ describe("user access management", () => {
       }),
     );
     expect(showAlert).not.toHaveBeenCalled();
+  });
+
+  it("shows removed roles, requires at least one role and cancels without a request", async () => {
+    data["/api/auth/users"].rows[1].roles = [
+      { id: 10, name: "System admin", is_system: true },
+      { id: 11, name: "Custom reader", is_system: false },
+    ];
+    page();
+    await screen.findByText("Other operator");
+    await actions.click(
+      screen.getByRole("button", { name: "Изменить роли: Other operator" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await actions.click(dialog.getByRole("checkbox", { name: /System admin/ }));
+    expect(dialog.getByText("Снять")).toBeVisible();
+    expect(
+      dialog.getByText(/сессии пользователя будут завершены/),
+    ).toBeVisible();
+    await actions.click(
+      dialog.getByRole("checkbox", { name: /Custom reader/ }),
+    );
+    expect(dialog.getByText("Выберите хотя бы одну роль.")).toBeVisible();
+    expect(
+      dialog.getByRole("button", { name: "Сохранить роли" }),
+    ).toBeDisabled();
+    await actions.click(dialog.getByRole("button", { name: "Отмена" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mutation("/api/auth/users/2", "PATCH")).toBeUndefined();
+  });
+
+  it("keeps the role dialog open when saving fails", async () => {
+    const original = api.getMockImplementation();
+    api.mockImplementation((path, options) =>
+      options?.method
+        ? Promise.reject(
+            Object.assign(new Error("Conflict"), {
+              operatorMessage: "Должен остаться активный администратор.",
+            }),
+          )
+        : original(path, options),
+    );
+    page();
+    await screen.findByText("Other operator");
+    await actions.click(
+      screen.getByRole("button", { name: "Изменить роли: Other operator" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await actions.click(
+      dialog.getByRole("checkbox", { name: /Custom reader/ }),
+    );
+    await actions.click(dialog.getByRole("button", { name: "Сохранить роли" }));
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith(
+        "Должен остаться активный администратор.",
+        "error",
+      ),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(
+      dialog.getByRole("checkbox", { name: /Custom reader/ }),
+    ).toBeChecked();
+  });
+
+  it("filters users by text and by assigned role", async () => {
+    page();
+    await screen.findByText("Other operator");
+    await actions.type(screen.getByLabelText("Поиск пользователя"), "OPERATOR");
+    expect(screen.queryByText("Current administrator")).not.toBeInTheDocument();
+    expect(screen.getByText("1 из 2")).toBeInTheDocument();
+    await actions.clear(screen.getByLabelText("Поиск пользователя"));
+    await actions.selectOptions(screen.getByLabelText("Фильтр по роли"), "10");
+    expect(screen.getByText("Current administrator")).toBeInTheDocument();
+    expect(screen.queryByText("Other operator")).not.toBeInTheDocument();
+    await actions.selectOptions(screen.getByLabelText("Фильтр по роли"), "11");
+    expect(
+      screen.getByText("Нет пользователей по выбранным условиям."),
+    ).toBeInTheDocument();
+  });
+
+  it("builds the role filter from user data when roles cannot be read", async () => {
+    page(["security.users.read"]);
+    await screen.findByText("Other operator");
+    const options = within(
+      screen.getByLabelText("Фильтр по роли"),
+    ).getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual([
+      "Все роли",
+      "System admin",
+    ]);
+  });
+
+  it("searches roles in the picker when the catalog is large", async () => {
+    data["/api/auth/roles"].rows = Array.from({ length: 10 }, (_, index) => ({
+      id: 100 + index,
+      name: `Role ${index}`,
+      description: index === 7 ? "Patch engineers" : "",
+      permission_keys: [],
+      is_system: false,
+      user_count: 0,
+    }));
+    page();
+    await screen.findByText("Other operator");
+    await actions.click(
+      screen.getByRole("button", { name: "Изменить роли: Other operator" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await actions.type(dialog.getByLabelText("Поиск роли"), "patch");
+    expect(dialog.getAllByRole("checkbox")).toHaveLength(1);
+    await actions.type(dialog.getByLabelText("Поиск роли"), "nothing");
+    expect(dialog.getByText("Роли не найдены.")).toBeVisible();
   });
 
   it("creates a user with numeric role IDs and resets the form after submission", async () => {
@@ -191,9 +329,11 @@ describe("user access management", () => {
       "New Operator",
     );
     await actions.type(screen.getByLabelText("Пароль"), "fixture-password");
-    await actions.selectOptions(
-      screen.getByLabelText("Роли", { exact: true }),
-      "11",
+    await actions.click(
+      within(screen.getByRole("group", { name: "Роли" })).getByRole(
+        "checkbox",
+        { name: /Custom reader/ },
+      ),
     );
     await actions.click(screen.getByRole("button", { name: "Создать" }));
     await waitFor(() =>
