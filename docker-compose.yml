@@ -56,7 +56,9 @@ services:
       - -c
       - idle_in_transaction_session_timeout=600000
     ports:
-      - "55432:5432"
+      # Published on loopback only: the default credentials are well known.
+      # Set MPVM_POSTGRES_BIND=0.0.0.0 deliberately to expose it on the network.
+      - "${MPVM_POSTGRES_BIND:-127.0.0.1}:55432:5432"
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-mpvm}"
       POSTGRES_USER: "${POSTGRES_USER:-mpvm}"

@@ -1205,6 +1205,7 @@ def build_scanner_task_payload(
     is_fqdn_priority: bool = True,
     trigger_parameters: dict[str, Any] | None = None,
     denied_scan_settings: dict[str, Any] | None = None,
+    include_asset_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     host_discovery: dict[str, Any] = {"enabled": host_discovery_enabled}
     if host_discovery_profile_id:
@@ -1219,7 +1220,7 @@ def build_scanner_task_payload(
         "include": {
             "assets": [],
             "targets": include_targets,
-            "assetsGroups": [],
+            "assetsGroups": list(include_asset_group_ids or []),
         },
         "exclude": {
             "assets": [],

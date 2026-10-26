@@ -24,7 +24,7 @@ from .ldap import LdapError, resolve_ldap_identity
 
 COOKIE_NAME = "mpvm_app_session"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
-SYSTEM_ROLE_KEYS = {"admin", "operator", "viewer"}
+SYSTEM_ROLE_KEYS = {"admin", "operator", "viewer", "engineer_windows", "engineer_linux"}
 
 PERMISSIONS: dict[str, tuple[str, str]] = {
     "system.read": ("Система", "Просмотр состояния и общих настроек"),
@@ -33,6 +33,9 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "tasks.read": ("Задачи", "Просмотр задач сканирования"),
     "tasks.manage": ("Задачи", "Создание, изменение и удаление задач"),
     "tasks.execute": ("Задачи", "Проверка, запуск и остановка задач"),
+    "tasks.team": ("Задачи", "Задачи своей команды: создание из пресетов, запуск, остановка и удаление"),
+    "task_presets.read": ("Пресеты задач", "Просмотр доступных пресетов задач"),
+    "task_presets.manage": ("Пресеты задач", "Создание и изменение пресетов задач"),
     "operations.read": ("Операции", "Просмотр операций"),
     "operations.cancel": ("Операции", "Остановка операций"),
     "operations.retry": ("Операции", "Повторный запуск операций"),
@@ -73,16 +76,23 @@ VIEWER_PERMISSIONS = {
     if key.endswith(".read") and not key.startswith("security.") and key != "diagnostics.read"
 } | {"diagnostics.write"}
 OPERATOR_PERMISSIONS = VIEWER_PERMISSIONS | {
-    "tasks.manage", "tasks.execute", "operations.cancel", "operations.retry",
+    "tasks.manage", "tasks.execute", "tasks.team", "operations.cancel", "operations.retry",
     "asset_groups.manage",
     "saved_views.manage", "asset_cards.build", "asset_cards.manage",
     "passports.manage", "imports_exports.manage", "notifications.manage",
     "risk.manage", "remediation.manage",
 }
+# Engineers work only with scanner tasks of their team, built from presets.
+ENGINEER_PERMISSIONS = {
+    "system.read", "task_presets.read", "tasks.team", "operations.read",
+    "notifications.read", "notifications.manage", "diagnostics.write",
+}
 BUILTIN_ROLE_PERMISSIONS = {
     "viewer": VIEWER_PERMISSIONS,
     "operator": OPERATOR_PERMISSIONS,
     "admin": set(PERMISSIONS),
+    "engineer_windows": ENGINEER_PERMISSIONS,
+    "engineer_linux": ENGINEER_PERMISSIONS,
 }
 ASSET_CARDS_READONLY_PERMISSIONS = {
     "asset_cards.read",
@@ -94,7 +104,11 @@ ASSET_CARDS_READONLY_PERMISSIONS = {
     "system.read",
 }
 BUILTIN_ROLE_PERMISSIONS["viewer_cards"] = ASSET_CARDS_READONLY_PERMISSIONS
-BUILTIN_ROLE_NAMES = {"admin": "Администратор", "operator": "Оператор", "viewer": "Наблюдатель"}
+BUILTIN_ROLE_NAMES = {
+    "admin": "Администратор", "operator": "Оператор", "viewer": "Наблюдатель",
+    "engineer_windows": "Инженер Windows", "engineer_linux": "Инженер Linux",
+}
+SEEDED_ROLE_KEYS = ("admin", "operator", "viewer", "engineer_windows", "engineer_linux")
 BUILTIN_ROLE_NAMES["viewer_cards"] = "Карточки активов (чтение)"
 
 
@@ -178,11 +192,17 @@ def ensure_rbac_catalog() -> None:
                 domain=EXCLUDED.domain, action=EXCLUDED.action, description=EXCLUDED.description""",
                 (key, domain, key.split(".", 1)[1], description))
         role_ids: dict[str, int] = {}
-        for key in ("admin", "operator", "viewer"):
+        for key in SEEDED_ROLE_KEYS:
+            name = BUILTIN_ROLE_NAMES[key]
+            # A custom role may already use the display name of a newer system role.
+            taken = conn.execute("SELECT 1 FROM app_roles WHERE name=%s AND role_key IS DISTINCT FROM %s",
+                (name, key)).fetchone()
+            if taken:
+                name = f"{name} (системная)"
             row = conn.execute("""INSERT INTO app_roles(role_key,name,description,is_system,created_at,updated_at)
                 VALUES(%s,%s,%s,TRUE,%s,%s) ON CONFLICT(role_key) DO UPDATE SET
                 name=EXCLUDED.name, description=EXCLUDED.description, is_system=TRUE, updated_at=EXCLUDED.updated_at RETURNING id""",
-                (key, BUILTIN_ROLE_NAMES[key], f"Системная роль {BUILTIN_ROLE_NAMES[key].lower()}", current, current)).fetchone()
+                (key, name, f"Системная роль {BUILTIN_ROLE_NAMES[key].lower()}", current, current)).fetchone()
             assert row is not None
             role_ids[key] = int(row["id"])
             conn.execute("DELETE FROM app_role_permissions WHERE role_id=%s", (row["id"],))
@@ -456,7 +476,9 @@ def audit_event(*,request:Request|None,user:dict[str,Any]|None,event_type:str,de
     try:
         with db.connect() as conn: conn.execute("""INSERT INTO app_auth_audit_events(actor_user_id,actor_username,event_type,permission_key,decision,target_type,target_id,ip_address,user_agent,trace_id,request_id,details_json,created_at)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",((user or {}).get("id"),(user or {}).get("username"),event_type,permission_key,decision,target_type,target_id,request.client.host if request and request.client else None,request.headers.get("user-agent") if request else None,getattr(request.state,"trace_id",None) if request else None,getattr(request.state,"request_id",None) if request else None,json.dumps(details or {},ensure_ascii=False),db.now_utc()))
-    except Exception: pass
+    except Exception:
+        # Audit must never break the request, but a lost security event must be visible.
+        logging.getLogger("mpvm.audit").warning("Не удалось записать событие аудита %s/%s", event_type, decision, exc_info=True)
 
 
 def list_audit_events(limit:int=200,offset:int=0)->dict[str,Any]:
@@ -476,19 +498,35 @@ def cleanup_audit_events(retention_days:int=365)->int:
 
 
 class LoginLimiter:
-    def __init__(self,attempts:int=8,window_seconds:int=300):
+    def __init__(self,attempts:int=8,window_seconds:int=300,max_keys:int=10_000):
         self.attempts = attempts
         self.window_seconds = window_seconds
+        self.max_keys = max_keys
         self._entries: defaultdict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
     def check(self,key:str)->None:
         now=time.monotonic()
         with self._lock:
-            entries=self._entries[key]
-            while entries and now-entries[0]>self.window_seconds: entries.popleft()
-            if len(entries)>=self.attempts: raise HTTPException(429,detail={"code":"LOGIN_RATE_LIMIT","message":"Слишком много попыток входа."})
+            # .get(): probing random usernames must not allocate limiter state.
+            entries = self._entries.get(key)
+            if entries is None:
+                return
+            while entries and now - entries[0] > self.window_seconds:
+                entries.popleft()
+            if not entries:
+                self._entries.pop(key, None)
+                return
+            if len(entries) >= self.attempts:
+                raise HTTPException(429, detail={"code": "LOGIN_RATE_LIMIT", "message": "Слишком много попыток входа."})
     def fail(self,key:str)->None:
-        with self._lock: self._entries[key].append(time.monotonic())
+        now = time.monotonic()
+        with self._lock:
+            self._entries[key].append(now)
+            if len(self._entries) > self.max_keys:
+                stale = [item for item, entries in self._entries.items()
+                         if not entries or now - entries[-1] > self.window_seconds]
+                for item in stale:
+                    self._entries.pop(item, None)
     def clear(self,key:str)->None:
         with self._lock: self._entries.pop(key,None)
 
@@ -516,7 +554,10 @@ _UUID_PATH = re.compile(r"/[0-9a-fA-F-]{16,}")
 
 def effective_permissions(user: dict[str, Any]) -> set[str]:
     assigned = user.get("permissions")
-    if isinstance(assigned, (list, tuple, set, frozenset)) and assigned:
+    # An explicitly empty assignment means "no permissions". Falling back to the
+    # role name here would let a custom role called e.g. "admin" inherit the
+    # built-in template; the fallback is only for legacy records without RBAC.
+    if isinstance(assigned, (list, tuple, set, frozenset)):
         return {str(permission) for permission in assigned}
     role = user.get("role")
     return set(BUILTIN_ROLE_PERMISSIONS.get(role if isinstance(role, str) else "", ()))

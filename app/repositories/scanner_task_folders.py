@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import uuid
 from typing import Any
 
@@ -31,6 +32,7 @@ class ScannerTaskFolderRepository:
                    RETURNING folder_id::text AS folder_id, name, created_at, updated_at""",
                 (folder_id, name, actor, actor, now, now),
             ).fetchone()
+        assert row is not None
         return dict(row)
 
     def rename(self, folder_id: str, name: str, *, actor: str | None) -> dict[str, Any] | None:
@@ -59,7 +61,7 @@ class ScannerTaskFolderRepository:
                 (folder_id,),
             ).fetchone() is not None
 
-    def assign(self, task_ids: list[str], folder_id: str | None, *, actor: str | None) -> None:
+    def assign(self, task_ids: builtins.list[str], folder_id: str | None, *, actor: str | None) -> None:
         if not task_ids:
             return
         with db.connect() as conn:

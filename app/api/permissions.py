@@ -173,6 +173,22 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("PATCH", "/api/scanner-task-folders/{folder_id}"): "tasks.manage",
     ("DELETE", "/api/scanner-task-folders/{folder_id}"): "tasks.manage",
     ("PUT", "/api/vulnerability-passports/{passport_id}"): "passports.manage",
+    ("GET", "/api/task-presets"): "task_presets.read",
+    ("GET", "/api/task-presets/asset-groups"): "task_presets.manage",
+    ("GET", "/api/task-presets/lookups"): "task_presets.manage",
+    ("GET", "/api/task-presets/{preset_id}"): "task_presets.read",
+    ("POST", "/api/task-presets"): "task_presets.manage",
+    ("POST", "/api/task-presets/from-task/{task_id}"): "task_presets.manage",
+    ("PUT", "/api/task-presets/{preset_id}"): "task_presets.manage",
+    ("POST", "/api/task-presets/{preset_id}/archive"): "task_presets.manage",
+    ("GET", "/api/team-tasks"): "tasks.team",
+    ("POST", "/api/team-tasks"): "tasks.team",
+    ("PUT", "/api/team-tasks/{task_id}"): "tasks.team",
+    ("POST", "/api/team-tasks/{task_id}/start"): "tasks.team",
+    ("POST", "/api/team-tasks/{task_id}/stop"): "tasks.team",
+    ("POST", "/api/team-tasks/{task_id}/delete"): "tasks.team",
+    ("GET", "/api/team-tasks/{task_id}/runs"): "tasks.team",
+    ("GET", "/api/team-tasks/{task_id}/runs/{run_id}/jobs"): "tasks.team",
 }
 
 _MATCHERS = [(method, compile_path(path)[0], permission)

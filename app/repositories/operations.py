@@ -32,12 +32,13 @@ class OperationsRepository:
                    RETURNING operation_id""",
                 (db.now_utc(), actor, clearable_statuses),
             ).fetchall()
-            active_count = conn.execute(
+            active_row = conn.execute(
                 """SELECT COUNT(*) AS count FROM operations
                    WHERE cleared_at IS NULL AND status = ANY(%s)""",
                 (active_statuses,),
-            ).fetchone()["count"]
+            ).fetchone()
+        assert active_row is not None
         return {
             "cleared_count": len(archived_rows),
-            "active_preserved": int(active_count or 0),
+            "active_preserved": int(active_row["count"] or 0),
         }

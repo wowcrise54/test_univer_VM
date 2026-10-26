@@ -12,7 +12,6 @@ from ..mpvm_client import (
     VULNER_PASSPORT_PDQL,
 )
 
-
 # Практически неограниченная глубина обхода карточки актива: цикличность
 # уже отсекается через seen_nodes/seen_collections, поэтому лимит — лишь предохранитель.
 ASSET_CARD_MAX_DEPTH = 64

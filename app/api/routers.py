@@ -10,6 +10,8 @@ from .remediation import router as remediation_router
 from .risk import router as risk_router
 from .scanner_task_folders import router as scanner_task_folders_router
 from .scanner_task_runs import router as scanner_task_runs_router
+from .task_presets import router as task_presets_router
+from .team_tasks import router as team_tasks_router
 from .vm import router as vm_router
 from .vulnerabilities import router as vulnerabilities_router
 
@@ -36,6 +38,8 @@ API_ROUTERS = (
     tasks_router,
     scanner_task_folders_router,
     scanner_task_runs_router,
+    task_presets_router,
+    team_tasks_router,
     operations_router,
     imports_router,
     assets_router,

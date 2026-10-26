@@ -544,7 +544,7 @@ def shutdown() -> None:
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())
 
 
-app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan)
+app = create_app(static_dir=STATIC_DIR, lifespan=app_lifespan, cors_origins=SETTINGS.cors_origins)
 app.state.container = CONTAINER
 
 
@@ -571,7 +571,14 @@ def auth_error(status_code: int, code: str, message: str) -> JSONResponse:
 @app.middleware("http")
 async def application_auth_middleware(request: Request, call_next):
     path = request.url.path
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("sec-fetch-site") == "cross-site":
+    # SameSite=strict still sends the cookie from sibling subdomains, so only
+    # same-origin (or user-initiated "none") browser mutations are accepted,
+    # plus origins explicitly listed in MPVM_CORS_ALLOWED_ORIGINS.
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}
+        and (request.headers.get("origin") or "").rstrip("/") not in SETTINGS.cors_origins
+    ):
         return auth_error(403, "CROSS_SITE_REQUEST", "Межсайтовый запрос отклонён.")
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
@@ -1897,8 +1904,16 @@ def import_csv_text(payload: CsvTextImportRequest) -> dict[str, Any]:
 
 
 @imports_router.post("/api/import/csv-file")
-async def import_csv_file(file: UploadFile = File(...)) -> dict[str, Any]:
-    content = await file.read()
+def import_csv_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    # Sync handler: FastAPI runs it in the threadpool, so the blocking import
+    # no longer stalls the event loop for every other request.
+    max_bytes = SETTINGS.import_max_upload_mb * 1024 * 1024
+    content = file.file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "IMPORT_TOO_LARGE", "message": f"Файл больше {SETTINGS.import_max_upload_mb} МБ.", "component": "imports"},
+        )
     text = decode_csv_bytes(content)
     return db.import_csv_text(text, source="uploaded_csv", csv_filename=file.filename)
 
@@ -4338,6 +4353,9 @@ def run_precheck_for_scanner_task(
     if targets:
         include = audit_payload.get("include") if isinstance(audit_payload.get("include"), dict) else {}
         include["targets"] = targets
+        if include.get("assetsGroups"):
+            # Group-based tasks are narrowed to the reachable members found by the precheck.
+            include["assetsGroups"] = []
         audit_payload["include"] = include
         update_response = client.update_scanner_task(token, task_id, audit_payload)
         db.record_scan_task(
@@ -9104,6 +9122,54 @@ def start_vm_verification_children(
         except Exception as exc:
             errors.append({"asset_id": asset_id, "message": str(exc)})
     return {"operation_ids": operation_ids, "errors": errors}
+
+
+def start_team_scanner_task(
+    task_id: str, options: dict[str, Any], idempotency_key: str | None, actor: str | None,
+) -> dict[str, Any]:
+    start_options = StartScannerTaskRequest(**options)
+    result = _start_scanner_task_request(task_id, start_options, idempotency_key)
+    operation_id = result.get("operation_id") or result.get("postprocess_run_id")
+    if operation_id:
+        try:
+            workflow = CONTAINER.services.vm_workflows.track_scan(
+                task_id=task_id, operation_id=str(operation_id), options=start_options.model_dump(),
+                actor=actor, idempotency_key=idempotency_key,
+            )
+            result["workflow_id"] = workflow["workflow_id"]
+            result["workflow"] = workflow
+        except psycopg.Error:
+            log_exception("vm-workflow", "team_scan.workflow_tracking_failed", operation_id=operation_id)
+    return result
+
+
+def stop_team_scanner_task(task_id: str) -> dict[str, Any]:
+    client, token = require_mpvm()
+    response = client.stop_scanner_task(token, task_id)
+    db.update_scan_task_status(task_id, "stop_requested", response)
+    return response
+
+
+def _mpvm_call(action: Callable[[MpVmClient, str], Any]) -> Any:
+    client, token = require_mpvm()
+    return action(client, token)
+
+
+CONTAINER.services.task_presets.configure(
+    lookups_provider=mpvm_lookups,
+    groups_provider=lambda: _mpvm_call(lambda client, token: client.get_asset_group_hierarchy(token)),
+)
+CONTAINER.services.team_tasks.configure(
+    create_remote=lambda payload: _mpvm_call(lambda client, token: client.create_scanner_task(token, payload)),
+    update_remote=lambda task_id, payload: _mpvm_call(
+        lambda client, token: client.update_scanner_task(token, task_id, payload),
+    ),
+    start_task=start_team_scanner_task,
+    stop_task=stop_team_scanner_task,
+    delete_task=lambda task_id, key: delete_scanner_task_idempotent(
+        task_id, DeleteScannerTaskRequest(mode="auto"), key,
+    ),
+)
 
 
 CONTAINER.services.vm_workflows.configure(

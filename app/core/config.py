@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     bootstrap_admin_display_name: str = "Administrator"
     auth_session_hours: int = 12
     auth_cookie_secure: bool = False
+    # Comma-separated list of extra origins allowed to call the API with
+    # credentials. Empty (default) disables CORS: the SPA is same-origin.
+    cors_allowed_origins: str = ""
+    import_max_upload_mb: int = 512
     attention_search_enabled: bool = True
     # LDAP (corporate directory) login. Local login is always tried first;
     # LDAP is consulted only when it fails and automatically provisions the
@@ -101,6 +105,7 @@ class Settings(BaseSettings):
         "coverage_stale_days",
         "auth_session_hours",
         "ldap_connect_timeout_seconds",
+        "import_max_upload_mb",
     )
     @classmethod
     def positive_integer(cls, value: int) -> int:
@@ -135,6 +140,10 @@ class Settings(BaseSettings):
         if value and not value.lower().startswith("https://"):
             raise ValueError("automation webhook URL must use HTTPS")
         return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache(maxsize=1)

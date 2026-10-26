@@ -1314,3 +1314,109 @@ test("vulnerability results wait for applied asset selection", async ({
   await page.getByRole("button", { name: "Применить фильтры" }).click();
   await expect.poll(() => selections).toEqual(["host-e2e-1"]);
 });
+
+const ENGINEER_PRESET = {
+  preset_id: "preset-win",
+  name: "Windows. Аудит (WMI/RPC)",
+  description: "Доменная учётка аудита, разовый запуск.",
+  os_family: "windows",
+  max_groups_per_task: 5,
+  max_active_tasks: 3,
+  trigger_parameters: null,
+  is_active: true,
+  version: 1,
+  role_ids: [10],
+  allowed_asset_groups: [
+    { id: "g-servers", name: "Servers", path: "Root / Windows / Servers" },
+    { id: "g-dc", name: "DC", path: "Root / Windows / DC" },
+  ],
+};
+
+function engineerApiOverrides(created) {
+  return {
+    "/api/auth/me": (route) =>
+      route.fulfill({
+        json: {
+          user: {
+            id: 7,
+            username: "win.eng",
+            display_name: "Windows Engineer",
+            role: "Инженер Windows",
+            roles: [
+              { id: 10, key: "engineer_windows", name: "Инженер Windows" },
+            ],
+            permissions: [
+              "system.read",
+              "task_presets.read",
+              "tasks.team",
+              "operations.read",
+              "notifications.read",
+              "notifications.manage",
+              "diagnostics.write",
+            ],
+          },
+        },
+      }),
+    "/api/task-presets": (route) =>
+      route.fulfill({ json: { rows: [ENGINEER_PRESET] } }),
+    "GET /api/team-tasks": (route) =>
+      route.fulfill({ json: { rows: created.rows } }),
+    "POST /api/team-tasks": async (route) => {
+      created.request = route.request().postDataJSON();
+      const task = {
+        mp_task_id: "task-new",
+        name: "Servers 2026-10-24",
+        preset_name: ENGINEER_PRESET.name,
+        preset_is_active: true,
+        os_family: "windows",
+        status: "started",
+        created_by: "win.eng",
+        preset_asset_groups: [ENGINEER_PRESET.allowed_asset_groups[0]],
+        postprocess: { status: "monitoring" },
+      };
+      created.rows = [task];
+      await route.fulfill({
+        status: 201,
+        json: { task, start: { status: "started" }, idempotent_replay: false },
+      });
+    },
+  };
+}
+
+for (const width of [1440, 768, 390]) {
+  test(`engineer creates and starts a preset task at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const pageErrors = collectPageErrors(page);
+    const created = { rows: [], request: null };
+    await installApiMock(page, engineerApiOverrides(created));
+
+    await page.goto("/");
+    await expectRoute(page, "/scans");
+    await expect(page.locator('.nav a[href="/tasks"]')).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Создать задачу" }).click();
+    const dialog = page.getByRole("dialog", { name: ENGINEER_PRESET.name });
+    await dialog.getByLabel("Root / Windows / Servers").check();
+    await dialog.getByRole("button", { name: "Создать и запустить" }).click();
+
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByRole("cell", { name: /Servers 2026-10-24/ }),
+    ).toBeVisible();
+    await expect(page.getByText("Сканирование идёт")).toBeVisible();
+    expect(created.request).toEqual({
+      preset_id: "preset-win",
+      asset_group_ids: ["g-servers"],
+      name: null,
+      description: null,
+      start_now: true,
+    });
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 1,
+    );
+    expect(overflow).toBe(false);
+    expect(pageErrors).toEqual([]);
+  });
+}
