@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..repositories.task_presets import TaskPresetRepository
+from . import preset_templates
 
 LookupsProvider = Callable[[], dict[str, builtins.list[dict[str, Any]]]]
 GroupsProvider = Callable[[], builtins.list[dict[str, Any]]]
@@ -72,6 +73,19 @@ class TaskPresetService:
         if not self.groups_provider:
             raise RuntimeError("Task preset asset groups are not configured.")
         return {"rows": flatten_asset_groups(self.groups_provider())}
+
+    @staticmethod
+    def templates() -> dict[str, Any]:
+        return preset_templates.template_catalogue()
+
+    def draft_from_template(self, template_id: str) -> dict[str, Any]:
+        """Resolve a recommended template against the MP VM lookups into an unsaved preset draft."""
+        template = preset_templates.find_template(template_id)
+        role_key = preset_templates.TEAM_ROLES[template["os_family"]][0]
+        draft, warnings = preset_templates.build_template_draft(
+            template, self.lookups(), self._repository.role_ids_by_keys([role_key]),
+        )
+        return {"draft": draft, "warnings": warnings}
 
     def create(self, values: dict[str, Any], role_ids: builtins.list[int], *, actor: str | None) -> dict[str, Any]:
         clean = self._validated(values, role_ids)

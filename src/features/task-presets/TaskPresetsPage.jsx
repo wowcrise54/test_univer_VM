@@ -14,6 +14,7 @@ import {
   formToPayload,
   presetFormProblems,
   presetToForm,
+  templateDraftToForm,
 } from "./presetForm.js";
 
 const GROUP_RENDER_LIMIT = 200;
@@ -50,6 +51,11 @@ export function TaskPresetsPage({ showAlert }) {
     queryFn: () => api("/api/task-presets/asset-groups"),
     enabled: Boolean(form),
     staleTime: 60000,
+  });
+  const templatesQuery = useQuery({
+    queryKey: ["task-preset-templates"],
+    queryFn: () => api("/api/task-presets/templates"),
+    staleTime: Infinity,
   });
 
   const roles = useMemo(() => rolesQuery.data?.rows || [], [rolesQuery.data]);
@@ -98,6 +104,24 @@ export function TaskPresetsPage({ showAlert }) {
       showAlert(`Пресет «${preset.name}» сохранён.`, "success");
       setForm(null);
       await refresh();
+    },
+    onError: (error) =>
+      showAlert(error.operatorMessage || error.message, "error"),
+  });
+  const templateMutation = useMutation({
+    mutationFn: (templateId) =>
+      api(`/api/task-presets/from-template/${encodeURIComponent(templateId)}`, {
+        method: "POST",
+      }),
+    onSuccess: (result) => {
+      const warned = Boolean(result.warnings?.length);
+      setForm(templateDraftToForm(result));
+      showAlert(
+        warned
+          ? "Черновик заполнен по шаблону. Проверьте предупреждения в форме."
+          : "Черновик заполнен по шаблону. Проверьте параметры и выберите разрешённые группы.",
+        warned ? "warning" : "info",
+      );
     },
     onError: (error) =>
       showAlert(error.operatorMessage || error.message, "error"),
@@ -220,8 +244,8 @@ export function TaskPresetsPage({ showAlert }) {
               {!presetsQuery.isLoading && !presets.length ? (
                 <tr>
                   <td colSpan={7} className="empty-cell">
-                    Пресетов пока нет. Создайте пресет или используйте «Сделать
-                    пресетом» в разделе задач.
+                    Пресетов пока нет. Создайте пресет по шаблону ниже или
+                    используйте «Сделать пресетом» в разделе задач.
                   </td>
                 </tr>
               ) : null}
@@ -240,11 +264,23 @@ export function TaskPresetsPage({ showAlert }) {
           groups={groupsQuery.data?.rows || []}
           groupsLoading={groupsQuery.isLoading}
           groupsError={groupsQuery.error}
+          templates={templatesQuery.data?.rows || []}
           saving={saveMutation.isPending}
           onSave={() => saveMutation.mutate(form)}
           onCancel={() => setForm(null)}
         />
-      ) : null}
+      ) : (
+        <PresetTemplates
+          catalogue={templatesQuery.data}
+          loading={templatesQuery.isLoading}
+          error={templatesQuery.error}
+          osFilter={osFilter}
+          pendingId={
+            templateMutation.isPending ? templateMutation.variables : null
+          }
+          onUse={(templateId) => templateMutation.mutate(templateId)}
+        />
+      )}
 
       <ConfirmDialog
         open={Boolean(archiveTarget)}
@@ -259,6 +295,101 @@ export function TaskPresetsPage({ showAlert }) {
   );
 }
 
+function PresetTemplates({
+  catalogue,
+  loading,
+  error,
+  osFilter,
+  pendingId,
+  onUse,
+}) {
+  const templates = (catalogue?.rows || []).filter(
+    (template) => !osFilter || template.os_family === osFilter,
+  );
+  return (
+    <Panel
+      title="Шаблоны по рекомендациям MP VM"
+      description="Типовые задачи инженеров Windows и Linux. Шаблон подставит стандартный профиль MP VM, precheck, лимиты и роль команды; останется выбрать учётную запись и разрешённые группы."
+    >
+      {error ? (
+        <p className="preset-error" role="alert">
+          Не удалось загрузить шаблоны: {error.operatorMessage || error.message}
+        </p>
+      ) : null}
+      {loading ? <p className="preset-muted">Загрузка…</p> : null}
+      <div className="team-preset-grid">
+        {templates.map((template) => (
+          <article
+            className="team-preset-card preset-template-card"
+            key={template.template_id}
+          >
+            <span
+              className={`team-os-badge team-os-badge--${template.os_family}`}
+            >
+              {OS_LABELS[template.os_family] || template.os_family}
+            </span>
+            <h3>{template.name}</h3>
+            <p>{template.purpose}</p>
+            <p className="preset-template-profile">
+              {template.module} · <strong>{template.profile_names[0]}</strong>
+            </p>
+            <dl>
+              <div>
+                <dt>Учётная запись</dt>
+                <dd>
+                  {template.credential === "required" ? "Нужна" : "Не нужна"}
+                </dd>
+              </div>
+              <div>
+                <dt>Precheck</dt>
+                <dd>{template.precheck_enabled ? "Включён" : "Выключен"}</dd>
+              </div>
+              <div>
+                <dt>Групп в задаче</dt>
+                <dd>до {template.max_groups_per_task}</dd>
+              </div>
+              <div>
+                <dt>Запусков сразу</dt>
+                <dd>
+                  {template.max_active_tasks
+                    ? `до ${template.max_active_tasks}`
+                    : "без лимита"}
+                </dd>
+              </div>
+            </dl>
+            <Button
+              variant="secondary"
+              busy={pendingId === template.template_id}
+              disabled={Boolean(pendingId)}
+              aria-label={`Создать пресет по шаблону «${template.name}»`}
+              onClick={() => onUse(template.template_id)}
+            >
+              Создать пресет
+            </Button>
+          </article>
+        ))}
+      </div>
+      {catalogue?.avoid?.length ? (
+        <div className="preset-template-avoid">
+          <strong>Не стоит давать инженерам</strong>
+          <ul>
+            {catalogue.avoid.map((item) => (
+              <li key={item.profile}>
+                <b>{item.profile}</b> — {item.reason}
+              </li>
+            ))}
+          </ul>
+          {catalogue.docs_url ? (
+            <a href={catalogue.docs_url} target="_blank" rel="noreferrer">
+              Рекомендации PT по использованию профилей
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
 function PresetEditor({
   form,
   setForm,
@@ -268,6 +399,7 @@ function PresetEditor({
   groups,
   groupsLoading,
   groupsError,
+  templates,
   saving,
   onSave,
   onCancel,
@@ -276,6 +408,9 @@ function PresetEditor({
   const update = (patch) => setForm((current) => ({ ...current, ...patch }));
   const problems = presetFormProblems(form);
   const profiles = lookups.scanner_profiles || [];
+  const template = templates.find(
+    (item) => form.template_id && item.template_id === form.template_id,
+  );
   const selectedIds = new Set(form.allowed_asset_groups.map((item) => item.id));
   const groupById = new Map(groups.map((group) => [group.id, group]));
   const query = groupSearch.trim().toLocaleLowerCase("ru-RU");
@@ -313,11 +448,37 @@ function PresetEditor({
           {lookupsError.operatorMessage || lookupsError.message}
         </p>
       ) : null}
+      {template ? (
+        <div
+          className="preset-template-hint"
+          role="note"
+          aria-label="Рекомендации шаблона"
+        >
+          <p>
+            <strong>Шаблон «{template.name}».</strong> Профиль MP VM:{" "}
+            {template.profile_names.join(" или ")} (модуль {template.module}).
+          </p>
+          <p>Учётная запись: {template.credential_hint}</p>
+          {form.template_warnings?.length ? (
+            <ul className="preset-template-warnings">
+              {form.template_warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
+          <ul>
+            {template.notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <div className="form-grid form-grid--two">
         <Field label="Название">
           <input
             value={form.name}
             maxLength={120}
+            autoFocus={Boolean(form.template_id)}
             onChange={(event) => update({ name: event.target.value })}
           />
         </Field>

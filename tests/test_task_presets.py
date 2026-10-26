@@ -13,6 +13,7 @@ from app import auth
 from app.api import task_presets as task_presets_api
 from app.domain.errors import DomainError
 from app.mpvm_client import MpVmApiError
+from app.services import preset_templates
 from app.services.task_presets import TaskPresetService, flatten_asset_groups, user_role_ids
 
 PRESET_ID = str(uuid4())
@@ -135,6 +136,58 @@ def test_draft_from_ssh_task():
     assert draft["allowed_asset_groups"] == [{"id": "g-1"}] and draft["agent_ids"] == ["agent-1"]
 
 
+def test_template_catalogue_follows_the_mpvm_recommendations():
+    catalogue = TaskPresetService.templates()
+    rows = catalogue["rows"]
+    assert len({row["template_id"] for row in rows}) == len(rows)
+    assert {row["os_family"] for row in rows} == {"windows", "linux"}
+    avoided = {item["profile"] for item in catalogue["avoid"]}
+    for row in rows:
+        # MP VM checks connections only for Audit tasks, so black-box presets never run the precheck.
+        assert row["precheck_enabled"] is (row["module"] == "Audit")
+        assert (row["credential"] == "required") is (row["module"] == "Audit")
+        assert row["profile_names"] and not avoided & set(row["profile_names"])
+        assert row["role_label"] == preset_templates.TEAM_ROLES[row["os_family"]][1]
+    assert catalogue["docs_url"].startswith("https://help.ptsecurity.com/")
+
+
+@pytest.mark.parametrize("template", preset_templates.PRESET_TEMPLATES, ids=lambda item: item["template_id"])
+def test_every_template_draft_is_a_valid_preset_request(template):
+    lookups = {"scopes": [{"id": "scope-1"}], "scanner_profiles": [
+        {"id": f"profile-{index}", "name": f" {name.upper()} "} for index, name in enumerate(template["profile_names"])]}
+    draft, warnings = preset_templates.build_template_draft(template, lookups, [11])
+    assert warnings == []
+    assert draft["profile_id"] == "profile-0" and draft["scope_id"] == "scope-1" and draft["role_ids"] == [11]
+    body = {key: value for key, value in draft.items() if key != "template_id"}
+    request = task_presets_api.TaskPresetRequest.model_validate({**body, "allowed_asset_groups": [{"id": "g-1"}]})
+    assert request.start_options.precheck_enabled is template["precheck_enabled"]
+
+
+def test_template_draft_reports_what_the_admin_must_pick():
+    template = preset_templates.find_template("windows-domain-controller")
+    draft, warnings = preset_templates.build_template_draft(
+        template, {"scopes": [{"id": "s-1"}, {"id": "s-2"}], "scanner_profiles": [
+            {"id": "ad", "name": "Microsoft Active Directory Audit"}, {"name": "Windows DC Audit"}]}, [])
+    assert draft["profile_id"] == "ad" and draft["scope_id"] == ""
+    assert warnings == ["Профиль «Windows DC Audit» не найден в MP VM, подставлен «Microsoft Active Directory Audit».",
+                        "Роль «Инженер Windows» не найдена. Отметьте роли вручную."]
+    draft, warnings = preset_templates.build_template_draft(template, {}, [10])
+    assert draft["profile_id"] == "" and warnings[0] == (
+        "В MP VM не найден стандартный профиль «Windows DC Audit» или «Microsoft Active Directory Audit». "
+        "Выберите профиль модуля Audit вручную.")
+
+
+def test_draft_from_template_uses_lookups_and_the_team_role(service, repository):
+    repository.role_ids_by_keys.return_value = [12]
+    result = service.draft_from_template("linux-safe-pentest")
+    repository.role_ids_by_keys.assert_called_once_with(["engineer_linux"])
+    assert result["draft"]["role_ids"] == [12] and result["draft"]["scope_id"] == "scope-1"
+    assert result["draft"]["start_options"] == {"precheck_enabled": False, "precheck_profile_id": None}
+    assert "Safe PenTest" in result["warnings"][0]
+    with pytest.raises(LookupError):
+        service.draft_from_template("missing")
+
+
 def test_user_role_ids_ignores_roles_without_id():
     assert user_role_ids({"roles": [{"id": 3}, {"key": "legacy"}, {"id": 1}]}) == [1, 3]
     assert user_role_ids(None) == []
@@ -232,8 +285,10 @@ def test_static_routes_win_over_preset_id(http):
     client, svc, _, _, _ = http
     svc.asset_groups.return_value = {"rows": []}
     svc.lookups.return_value = {"scopes": []}
+    svc.templates.return_value = {"rows": [{"template_id": "linux-audit"}]}
     assert client.get("/api/task-presets/asset-groups").json() == {"rows": []}
     assert client.get("/api/task-presets/lookups").json() == {"scopes": []}
+    assert client.get("/api/task-presets/templates").json() == {"rows": [{"template_id": "linux-audit"}]}
     svc.get_for_user.assert_not_called()
     assert client.get("/api/task-presets/not-a-uuid").status_code == 422
 
@@ -245,6 +300,24 @@ def test_draft_from_task(http):
     app.state.container.services.tasks.get.return_value = {"mp_task_id": "task-1"}
     svc.draft_from_task.return_value = {"name": "draft"}
     assert client.post("/api/task-presets/from-task/task-1").json() == {"draft": {"name": "draft"}}
+
+
+def test_draft_from_template(http):
+    client, svc, audit, _, _ = http
+    svc.draft_from_template.return_value = {"draft": {"name": "Linux. Полный аудит"}, "warnings": []}
+    assert client.post("/api/task-presets/from-template/linux-audit").json()["draft"]["name"] == "Linux. Полный аудит"
+    svc.draft_from_template.assert_called_once_with("linux-audit")
+    svc.draft_from_template.side_effect = LookupError("Task preset template not found.")
+    assert client.post("/api/task-presets/from-template/missing").json()["detail"]["code"] == "TASK_PRESET_NOT_FOUND"
+    svc.draft_from_template.side_effect = HTTPException(409, detail={"code": "MPVM_NOT_CONNECTED"})
+    assert client.post("/api/task-presets/from-template/linux-audit").status_code == 409
+    audit.assert_not_called()
+
+
+def test_template_routes_require_manage_permission():
+    assert auth.required_permission("GET", "/api/task-presets/templates") == "task_presets.manage"
+    assert auth.required_permission("POST", "/api/task-presets/from-template/linux-audit") == "task_presets.manage"
+    assert "task_presets.manage" not in auth.BUILTIN_ROLE_PERMISSIONS["engineer_linux"]
 
 
 def test_get_and_archive_errors_and_infrastructure_mapping(http):

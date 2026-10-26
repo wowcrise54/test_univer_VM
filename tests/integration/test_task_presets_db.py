@@ -49,6 +49,28 @@ def test_engineer_roles_are_seeded_with_team_permissions(test_db):
         assert "tasks.team" in row["perms"] and "tasks.execute" not in row["perms"]
 
 
+def test_template_draft_resolves_the_team_role_by_key(test_db):
+    repository = TaskPresetRepository()
+    assert repository.role_ids_by_keys(["engineer_linux", "missing"]) == [_role_id("engineer_linux")]
+    assert repository.role_ids_by_keys([]) == []
+
+    service = TaskPresetService(repository)
+    service.configure(
+        lookups_provider=lambda: {"scopes": [{"id": "scope-1"}], "scanner_profiles": [
+            {"id": "profile-unix", "name": "Unix SSH Audit"}]},
+        groups_provider=lambda: [{"id": "linux-group", "name": "Linux"}],
+    )
+    result = service.draft_from_template("linux-audit")
+    assert result["warnings"] == []
+    draft = result["draft"]
+    assert draft["role_ids"] == [_role_id("engineer_linux")] and draft["profile_id"] == "profile-unix"
+    # The draft becomes a valid preset once the admin adds a credential and groups.
+    preset = service.create({**draft, "credential_id": None, "credential_transport": "ssh", "time_zone": "+05:00",
+                             "allowed_asset_groups": [{"id": "linux-group"}]}, draft["role_ids"], actor="admin")
+    assert preset["start_options"] == {"precheck_enabled": True, "precheck_profile_id": None}
+    assert preset["name_prefix"] == "[Audit][LNX]" and preset["max_active_tasks"] == 2
+
+
 def test_preset_crud_versioning_and_role_scoping(test_db):
     repository = TaskPresetRepository()
     service = TaskPresetService(repository)

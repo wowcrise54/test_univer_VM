@@ -80,6 +80,13 @@ class TaskPresetRepository:
             rows = conn.execute("SELECT id FROM app_roles WHERE id = ANY(%s)", (role_ids,)).fetchall()
         return {int(row["id"]) for row in rows}
 
+    def role_ids_by_keys(self, role_keys: builtins.list[str]) -> builtins.list[int]:
+        if not role_keys:
+            return []
+        with db.connect() as conn:
+            rows = conn.execute("SELECT id FROM app_roles WHERE role_key = ANY(%s) ORDER BY id", (role_keys,)).fetchall()
+        return [int(row["id"]) for row in rows]
+
     def create(self, values: dict[str, Any], role_ids: builtins.list[int], *, actor: str | None) -> dict[str, Any]:
         preset_id = str(uuid.uuid4())
         columns = ["preset_id", *PRESET_SCALAR_FIELDS, *PRESET_JSON_FIELDS, "created_by", "updated_by"]

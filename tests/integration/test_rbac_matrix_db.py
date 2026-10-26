@@ -61,6 +61,7 @@ ROUTES: list[tuple[str, str, str, dict | None]] = [
     ("GET", "/api/auth/roles", "/api/auth/roles", None),
     ("GET", "/api/auth/users", "/api/auth/users", None),
     ("GET", "/api/auth/audit", "/api/auth/audit", None),
+    ("GET", "/api/task-presets/templates", "/api/task-presets/templates", None),
     ("POST", "/api/diagnostics/frontend", "/api/diagnostics/frontend",
      {"events": [{"event": "matrix-probe", "level": "info"}]}),
     # A safe, local-DB mutation that differentiates operator from viewer:
