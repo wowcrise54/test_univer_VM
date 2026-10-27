@@ -3,6 +3,7 @@ import {
   recordFrontendEvent,
   rememberTraceId,
 } from "../diagnostics.js";
+import { notifyAccessChangedIfNeeded } from "./accessEvents.js";
 
 export async function api(path, options = {}) {
   const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -73,6 +74,7 @@ export async function api(path, options = {}) {
     error.traceId = normalizedDetail.trace_id || traceId;
     error.requestId = normalizedDetail.request_id || requestId;
     error.status = response.status;
+    notifyAccessChangedIfNeeded({ path, status: error.status, code: error.code });
     throw error;
   }
   return body;
@@ -131,6 +133,7 @@ export async function downloadApiFile(path, options = {}) {
     error.traceId = normalizedDetail.trace_id || traceId;
     error.requestId = normalizedDetail.request_id || requestId;
     error.status = response.status;
+    notifyAccessChangedIfNeeded({ path, status: error.status, code: error.code });
     throw error;
   }
 
