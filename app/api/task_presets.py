@@ -43,7 +43,8 @@ class TaskPresetRequest(BaseModel):
     trigger_parameters: TaskTriggerParameters | None = None
     denied_scan_settings: DeniedScanSettings | None = None
     start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
-    allowed_asset_groups: list[AssetGroupRef] = Field(min_length=1, max_length=500)
+    allowed_asset_groups: list[AssetGroupRef] = Field(default_factory=list, max_length=500)
+    allowed_targets: list[str] = Field(default_factory=list, max_length=1000)
     max_groups_per_task: int = Field(default=5, ge=1, le=100)
     max_active_tasks: int | None = Field(default=None, ge=1, le=100)
     name_prefix: str = Field(default="", max_length=60)
@@ -119,6 +120,7 @@ def _summary(preset: dict) -> dict:
         "role_ids": preset.get("role_ids"), "profile_id": preset.get("profile_id"),
         "credential_id": preset.get("credential_id"),
         "asset_group_ids": [group.get("id") for group in preset.get("allowed_asset_groups") or []],
+        "targets": preset.get("allowed_targets") or [],
     }
 
 

@@ -22,7 +22,8 @@ class TeamTaskCreateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     preset_id: UUID
-    asset_group_ids: list[str] = Field(min_length=1, max_length=100)
+    asset_group_ids: list[str] = Field(default_factory=list, max_length=100)
+    targets: list[str] = Field(default_factory=list, max_length=1000)
     name: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
     start_now: bool = False
@@ -31,7 +32,8 @@ class TeamTaskCreateRequest(BaseModel):
 class TeamTaskUpdateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    asset_group_ids: list[str] = Field(min_length=1, max_length=100)
+    asset_group_ids: list[str] = Field(default_factory=list, max_length=100)
+    targets: list[str] = Field(default_factory=list, max_length=1000)
     name: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
 
@@ -103,12 +105,13 @@ def create_team_task(
         created = service.create(
             _user(request), preset_id=str(payload.preset_id), asset_group_ids=payload.asset_group_ids,
             name=payload.name, description=payload.description, unrestricted=_unrestricted(request),
-            idempotency_key=idempotency_key,
+            idempotency_key=idempotency_key, targets=payload.targets,
         )
         task = created["task"]
         if not created["idempotent_replay"]:
             _audit(request, "team_task_created", task["mp_task_id"],
-                   {"preset_id": task.get("preset_id"), "asset_group_ids": _groups(task)})
+                   {"preset_id": task.get("preset_id"), "asset_group_ids": _groups(task),
+                    "targets": task.get("preset_targets") or []})
         if payload.start_now:
             created["start"] = service.start(
                 task["mp_task_id"], _user(request), unrestricted=True,
@@ -125,9 +128,11 @@ def update_team_task(request: Request, task_id: str, payload: TeamTaskUpdateRequ
     try:
         task = _service(request).update(
             task_id, _user(request), asset_group_ids=payload.asset_group_ids, name=payload.name,
-            description=payload.description, unrestricted=_unrestricted(request),
+            description=payload.description, unrestricted=_unrestricted(request), targets=payload.targets,
         )
-        _audit(request, "team_task_updated", task_id, {"preset_id": task.get("preset_id"), "asset_group_ids": _groups(task)})
+        _audit(request, "team_task_updated", task_id, {"preset_id": task.get("preset_id"),
+                                                       "asset_group_ids": _groups(task),
+                                                       "targets": task.get("preset_targets") or []})
         return task
     except Exception as exc:
         _raise_domain_error(exc)

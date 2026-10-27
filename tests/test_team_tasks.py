@@ -32,6 +32,7 @@ def _preset(**overrides):
         "allowed_asset_groups": [{"id": "g-1", "name": "Servers", "path": "Root / Servers"},
                                  {"id": "g-2", "name": "DC", "path": "Root / DC"},
                                  {"id": "g-3", "name": "Branch", "path": "Root / Branch"}],
+        "allowed_targets": ["10.0.0.15", "10.0.1.0/24", "srv01.corp.local"],
         "name_prefix": "[WIN]", "is_active": True, "version": 3, "role_ids": [WINDOWS_ROLE],
     }
     preset.update(overrides)
@@ -103,6 +104,38 @@ def test_create_rejects_groups_outside_preset_policy(service, groups, message):
     with pytest.raises(ValueError, match=message):
         service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=groups, name=None, description=None,
                        unrestricted=False)
+    service.create_remote.assert_not_called()
+
+
+def test_create_scans_selected_ip_and_fqdn_targets(service, repository):
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["SRV01.corp.local.", "10.0.0.15"],
+                   name=None, description=None, unrestricted=False)
+
+    payload = service.create_remote.call_args.args[0]
+    assert payload["include"] == {"assets": [], "targets": ["srv01.corp.local", "10.0.0.15"], "assetsGroups": []}
+    assert payload["name"].startswith("[WIN] srv01.corp.local, 10.0.0.15 ")
+    assert repository.attach_task.call_args.kwargs["targets"] == ["srv01.corp.local", "10.0.0.15"]
+    assert repository.attach_task.call_args.kwargs["asset_groups"] == []
+    request = repository.register_operation.call_args_list[0].kwargs["request"]
+    assert request["targets"] == ["srv01.corp.local", "10.0.0.15"]
+
+
+def test_create_combines_groups_and_targets(service):
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], targets=["10.0.1.0/24"],
+                   name="Mixed", description=None, unrestricted=False)
+    payload = service.create_remote.call_args.args[0]
+    assert payload["include"] == {"assets": [], "targets": ["10.0.1.0/24"], "assetsGroups": ["g-1"]}
+
+
+@pytest.mark.parametrize(("targets", "message"), [
+    (["10.0.0.16"], "не разрешены пресетом: 10.0.0.16"),
+    (["evil.example.com"], "не разрешены"),
+    (["not a host"], "FQDN"),
+])
+def test_create_rejects_targets_outside_preset_policy(service, targets, message):
+    with pytest.raises(ValueError, match=message):
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=targets, name=None,
+                       description=None, unrestricted=False)
     service.create_remote.assert_not_called()
 
 
@@ -179,6 +212,14 @@ def test_start_respects_concurrency_limit_including_inflight(service, repository
     assert service._inflight == {}
 
 
+def test_start_keeps_saved_targets(service, repository):
+    repository.get_team_task.return_value = _task(preset_asset_groups=[], preset_targets=["srv01.corp.local"])
+    service.start("task-1", ENGINEER, idempotency_key=None, unrestricted=False)
+    payload = repository.record_task.call_args.args[1]
+    assert payload["include"]["targets"] == ["srv01.corp.local"] and payload["include"]["assetsGroups"] == []
+    assert repository.attach_task.call_args.kwargs["targets"] == ["srv01.corp.local"]
+
+
 def test_task_without_saved_groups_cannot_start(service, repository):
     repository.get_team_task.return_value = _task(preset_asset_groups=None)
     with pytest.raises(DomainError, match="группы"):
@@ -204,6 +245,11 @@ def test_update_keeps_name_and_rebuilds_groups(service, repository):
     task_id, payload = service.update_remote.call_args.args
     assert task_id == "task-1" and payload["name"] == "[WIN] Servers"
     assert payload["include"]["assetsGroups"] == ["g-3"] and payload["description"] == "nightly"
+
+    service.update("task-1", ENGINEER, asset_group_ids=[], targets=["10.0.0.15"], name=None, description=None,
+                   unrestricted=False)
+    payload = service.update_remote.call_args.args[1]
+    assert payload["include"]["targets"] == ["10.0.0.15"] and payload["include"]["assetsGroups"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -240,6 +286,19 @@ def test_create_and_start_uses_derived_idempotency_key(http, service):
     assert response.json()["start"] == {"status": "started"}
     assert service.start_task.call_args.args[2] == "abc:start"
     assert [call.kwargs["event_type"] for call in audit.call_args_list] == ["team_task_created", "team_task_started"]
+
+
+def test_create_accepts_targets_without_groups(http, service, repository):
+    client, audit = http
+    repository.get_team_task.return_value = _task(preset_asset_groups=[], preset_targets=["10.0.0.15"])
+    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID, "targets": ["10.0.0.15"]})
+    assert response.status_code == 201, response.text
+    assert service.create_remote.call_args.args[0]["include"]["targets"] == ["10.0.0.15"]
+    assert audit.call_args.kwargs["details"]["targets"] == ["10.0.0.15"]
+
+    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_TEAM_TASK"
 
 
 @pytest.mark.parametrize(("error", "status", "code"), [

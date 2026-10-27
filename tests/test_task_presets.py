@@ -88,11 +88,22 @@ def test_create_normalizes_and_uses_server_group_names(service, repository):
     ({"credential_id": "missing"}, [11], "Учётная запись missing"),
     ({"start_options": {"precheck_profile_id": "missing"}}, [11], "precheck"),
     ({"allowed_asset_groups": [{"id": "g-404"}]}, [11], "g-404"),
+    ({"allowed_asset_groups": [], "allowed_targets": []}, [11], "IP-адрес или FQDN"),
+    ({"allowed_targets": ["10.0.0.300"]}, [11], "10.0.0.300"),
+    ({"allowed_targets": ["bad host"]}, [11], "FQDN"),
 ])
 def test_create_rejects_invalid_presets(service, repository, overrides, roles, message):
     with pytest.raises(ValueError, match=message):
         service.create(_values(**overrides), roles, actor="admin")
     repository.create.assert_not_called()
+
+
+def test_preset_may_allow_only_ip_and_fqdn_targets(service, repository):
+    service.create(_values(allowed_asset_groups=[], allowed_targets=[
+        " 10.0.0.15 ", "10.0.1.7/24", "10.0.2.1-10.0.2.50", "SRV01.Corp.Local", "srv01.corp.local"]), [11], actor="admin")
+    values = repository.create.call_args.args[0]
+    assert values["allowed_asset_groups"] == []
+    assert values["allowed_targets"] == ["10.0.0.15", "10.0.1.0/24", "10.0.2.1-10.0.2.50", "srv01.corp.local"]
 
 
 def test_preset_without_credential_may_use_any_transport(service, repository):
@@ -134,6 +145,7 @@ def test_draft_from_ssh_task():
     assert draft["os_family"] == "linux" and draft["credential_transport"] == "ssh"
     assert draft["trigger_parameters"] is None and draft["time_zone"] == "+03:00"
     assert draft["allowed_asset_groups"] == [{"id": "g-1"}] and draft["agent_ids"] == ["agent-1"]
+    assert draft["allowed_targets"] == ["10.0.0.1"]
 
 
 def test_template_catalogue_follows_the_mpvm_recommendations():
@@ -239,7 +251,7 @@ def test_create_update_archive_are_audited(http):
 
 @pytest.mark.parametrize("body", [
     _request_body(role_ids=[]),
-    _request_body(allowed_asset_groups=[]),
+    _request_body(allowed_targets="10.0.0.1"),
     _request_body(time_zone="Europe/Moscow"),
     _request_body(password="secret"),
     _request_body(start_options={"precheck_timeout_minutes": 0}),
@@ -248,6 +260,14 @@ def test_invalid_payloads_are_rejected_before_the_service(http, body):
     client, svc, _, _, _ = http
     assert client.post("/api/task-presets", json=body).status_code == 422
     svc.create.assert_not_called()
+
+
+def test_targets_only_preset_reaches_the_service(http):
+    client, svc, _, _, _ = http
+    svc.create.return_value = {"preset_id": PRESET_ID, "name": "Linux audit", "allowed_targets": ["srv.corp"]}
+    body = _request_body(allowed_asset_groups=[], allowed_targets=["srv.corp"])
+    assert client.post("/api/task-presets", json=body).status_code == 201
+    assert svc.create.call_args.args[0]["allowed_targets"] == ["srv.corp"]
 
 
 def test_update_requires_expected_version(http):
