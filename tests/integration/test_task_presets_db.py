@@ -151,6 +151,31 @@ def test_team_tasks_are_scoped_by_preset_roles(test_db):
     assert "legacy" not in {row["mp_task_id"] for row in service.list(win_user, unrestricted=True)["rows"]}
 
 
+def test_ip_and_fqdn_targets_round_trip(test_db):
+    repository = TaskPresetRepository()
+    preset = TaskPresetService(repository).create(
+        _values("Targets audit", allowed_asset_groups=[], allowed_targets=["SRV01.corp.local", "10.0.1.7/24"]),
+        [_role_id("engineer_windows")], actor="admin",
+    )
+    assert preset["allowed_asset_groups"] == []
+    assert preset["allowed_targets"] == ["srv01.corp.local", "10.0.1.0/24"]
+
+    service = TeamTasksService(repository)
+    service.configure(
+        create_remote=lambda payload: "task-targets", update_remote=lambda task_id, payload: {},
+        start_task=lambda *args: {"status": "started"}, stop_task=lambda task_id: {},
+        delete_task=lambda task_id, key: {},
+    )
+    user = _engineer("engineer_windows")
+    task = service.create(user, preset_id=preset["preset_id"], asset_group_ids=[], targets=["10.0.1.0/24"],
+                          name=None, description=None, unrestricted=False)["task"]
+    assert task["preset_targets"] == ["10.0.1.0/24"] and task["preset_asset_groups"] == []
+    assert task["payload"]["include"]["targets"] == ["10.0.1.0/24"]
+    listed = service.list(user, unrestricted=False)["rows"]
+    assert listed[0]["allowed_targets"] == ["srv01.corp.local", "10.0.1.0/24"]
+    assert service.start("task-targets", user, idempotency_key=None, unrestricted=False) == {"status": "started"}
+
+
 def test_active_task_count_uses_running_postprocess(test_db):
     repository = TaskPresetRepository()
     preset = TaskPresetService(repository).create(_values("Windows audit"), [_role_id("engineer_windows")], actor="a")

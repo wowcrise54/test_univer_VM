@@ -326,6 +326,7 @@ def build_template_draft(
         "denied_scan_settings": None,
         "start_options": {"precheck_enabled": template["precheck_enabled"], "precheck_profile_id": None},
         "allowed_asset_groups": [],
+        "allowed_targets": [],
         "max_groups_per_task": template["max_groups_per_task"],
         "max_active_tasks": template["max_active_tasks"],
         "name_prefix": template["name_prefix"],

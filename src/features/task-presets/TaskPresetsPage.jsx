@@ -12,6 +12,7 @@ import {
   OS_LABELS,
   emptyPresetForm,
   formToPayload,
+  parseTargets,
   presetFormProblems,
   presetToForm,
   templateDraftToForm,
@@ -184,7 +185,7 @@ export function TaskPresetsPage({ showAlert }) {
               <tr>
                 <th scope="col">Название</th>
                 <th scope="col">ОС</th>
-                <th scope="col">Группы</th>
+                <th scope="col">Группы / цели</th>
                 <th scope="col">Роли</th>
                 <th scope="col">Лимиты</th>
                 <th scope="col">Состояние</th>
@@ -205,7 +206,10 @@ export function TaskPresetsPage({ showAlert }) {
                     ) : null}
                   </td>
                   <td>{OS_LABELS[preset.os_family] || preset.os_family}</td>
-                  <td>{(preset.allowed_asset_groups || []).length}</td>
+                  <td>
+                    {(preset.allowed_asset_groups || []).length} /{" "}
+                    {(preset.allowed_targets || []).length}
+                  </td>
                   <td>
                     {(preset.role_ids || [])
                       .map((id) => nameById(roles, id))
@@ -440,7 +444,7 @@ function PresetEditor({
   return (
     <Panel
       title={form.preset_id ? `Пресет «${form.name}»` : "Новый пресет"}
-      description="Инженер выберет только группы активов. Остальные параметры задаются здесь и не меняются при создании задачи."
+      description="Инженер выберет только группы активов и цели (IP, FQDN) из разрешённых. Остальные параметры задаются здесь и не меняются при создании задачи."
     >
       {lookupsError ? (
         <p className="preset-error" role="alert">
@@ -724,6 +728,28 @@ function PresetEditor({
             </label>
           ))}
         </div>
+      </fieldset>
+
+      <fieldset className="preset-fieldset">
+        <legend>
+          Разрешённые IP-адреса и FQDN · указано{" "}
+          {parseTargets(form.allowed_targets_text).length}
+        </legend>
+        <textarea
+          rows={4}
+          value={form.allowed_targets_text}
+          aria-label="Разрешённые IP-адреса и FQDN"
+          placeholder={
+            "10.0.0.15\n10.0.1.0/24\n10.0.2.1-10.0.2.50\nsrv01.corp.local"
+          }
+          onChange={(event) =>
+            update({ allowed_targets_text: event.target.value })
+          }
+        />
+        <small className="preset-muted">
+          IP-адрес, подсеть (CIDR), диапазон или FQDN — по одному в строке или
+          через запятую.
+        </small>
       </fieldset>
 
       {problems.length ? (

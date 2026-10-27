@@ -1,6 +1,19 @@
 export const OS_LABELS = { windows: "Windows", linux: "Linux" };
 export const OS_TRANSPORT = { windows: "windows", linux: "ssh" };
 
+// Targets are separated by commas, semicolons, spaces or new lines; the
+// backend validates IP addresses, networks, ranges and FQDNs.
+export function parseTargets(text) {
+  return [
+    ...new Set(
+      String(text || "")
+        .split(/[\s,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 export function emptyPresetForm() {
   return {
     preset_id: null,
@@ -19,6 +32,7 @@ export function emptyPresetForm() {
     precheck_enabled: true,
     precheck_profile_id: "",
     allowed_asset_groups: [],
+    allowed_targets_text: "",
     max_groups_per_task: 5,
     max_active_tasks: 3,
     name_prefix: "",
@@ -51,6 +65,7 @@ export function presetToForm(preset) {
       startOptions.precheck_enabled ?? (preset.preset_id ? false : true),
     precheck_profile_id: startOptions.precheck_profile_id || "",
     allowed_asset_groups: preset.allowed_asset_groups || [],
+    allowed_targets_text: (preset.allowed_targets || []).join("\n"),
     max_groups_per_task: preset.max_groups_per_task || base.max_groups_per_task,
     max_active_tasks:
       preset.max_active_tasks === undefined
@@ -98,6 +113,7 @@ export function formToPayload(form) {
     allowed_asset_groups: form.allowed_asset_groups.map((group) => ({
       id: group.id,
     })),
+    allowed_targets: parseTargets(form.allowed_targets_text),
     max_groups_per_task: Number(form.max_groups_per_task) || 1,
     max_active_tasks:
       form.max_active_tasks === "" || form.max_active_tasks === null
@@ -116,8 +132,13 @@ export function presetFormProblems(form) {
   if (!form.scope_id) problems.push("Выберите область (scope).");
   if (!form.profile_id) problems.push("Выберите профиль сканирования.");
   if (!form.role_ids.length) problems.push("Выберите хотя бы одну роль.");
-  if (!form.allowed_asset_groups.length)
-    problems.push("Добавьте хотя бы одну разрешённую группу активов.");
+  if (
+    !form.allowed_asset_groups.length &&
+    !parseTargets(form.allowed_targets_text).length
+  )
+    problems.push(
+      "Добавьте хотя бы одну разрешённую группу активов, IP-адрес или FQDN.",
+    );
   if (!/^[+-]\d{2}:\d{2}$/.test(form.time_zone.trim()))
     problems.push("Часовой пояс задаётся в формате +05:00.");
   return problems;

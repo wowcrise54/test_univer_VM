@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..domain.errors import DomainError
+from ..domain.scan_targets import normalize_scan_targets
 from ..mpvm_client import build_scanner_task_payload
 from ..repositories.task_presets import TaskPresetRepository
 from .task_presets import user_role_ids
@@ -68,6 +69,7 @@ class TeamTasksService:
     def create(
         self, user: dict[str, Any], *, preset_id: str, asset_group_ids: builtins.list[str],
         name: str | None, description: str | None, unrestricted: bool, idempotency_key: str | None = None,
+        targets: builtins.list[str] | None = None,
     ) -> dict[str, Any]:
         """Create the MP VM task; returns ``{"task", "operation_id", "idempotent_replay"}``."""
         if idempotency_key:
@@ -75,15 +77,16 @@ class TeamTasksService:
             if replay:
                 return self._create_replay(replay, user, unrestricted=unrestricted)
         preset = self._active_preset(preset_id, user, unrestricted=unrestricted)
-        groups = self._selected_groups(preset, asset_group_ids)
-        task_name = self._task_name(preset, name, groups)
-        payload = self._payload(preset, name=task_name, description=description or "", groups=groups)
+        groups, selected_targets = self._selection(preset, asset_group_ids, targets or [])
+        task_name = self._task_name(preset, name, groups, selected_targets)
+        payload = self._payload(preset, name=task_name, description=description or "", groups=groups,
+                                targets=selected_targets)
         operation_id = str(uuid.uuid4())
         operation = {
             "kind": "team_task_create", "source_id": operation_id, "subject_type": "scan_task_preset",
             "subject_id": preset["preset_id"], "subject_label": task_name, "idempotency_key": idempotency_key,
             "request": {"preset_id": preset["preset_id"], "asset_group_ids": [group["id"] for group in groups],
-                        "requested_by": user.get("username")},
+                        "targets": selected_targets, "requested_by": user.get("username")},
         }
         self._presets.register_operation(
             operation_id, **operation, status="running", stage="creating_remote_task", progress_percent=10,
@@ -100,7 +103,7 @@ class TeamTasksService:
             self._presets.record_task(mp_task_id, payload, status="created", remote_response={"id": mp_task_id})
             self._presets.attach_task(
                 mp_task_id, preset_id=preset["preset_id"], preset_version=int(preset["version"]),
-                asset_groups=groups, actor=user.get("username"),
+                asset_groups=groups, targets=selected_targets, actor=user.get("username"),
             )
         except Exception as exc:
             # Never delete the remote task here: it stays for manual reconciliation.
@@ -135,20 +138,22 @@ class TeamTasksService:
 
     def update(
         self, task_id: str, user: dict[str, Any], *, asset_group_ids: builtins.list[str],
-        name: str | None, description: str | None, unrestricted: bool,
+        name: str | None, description: str | None, unrestricted: bool, targets: builtins.list[str] | None = None,
     ) -> dict[str, Any]:
         task = self.get(task_id, user, unrestricted=unrestricted)
         preset = self._active_preset(str(task["preset_id"]), user, unrestricted=True)
-        groups = self._selected_groups(preset, asset_group_ids)
-        task_name = self._task_name(preset, name, groups) if name is not None else str(task.get("name") or task_id)
+        groups, selected_targets = self._selection(preset, asset_group_ids, targets or [])
+        task_name = (self._task_name(preset, name, groups, selected_targets) if name is not None
+                     else str(task.get("name") or task_id))
         payload_description = description if description is not None else str((task.get("payload") or {}).get("description") or "")
-        payload = self._payload(preset, name=task_name, description=payload_description, groups=groups)
+        payload = self._payload(preset, name=task_name, description=payload_description, groups=groups,
+                                targets=selected_targets)
         assert self.update_remote is not None
         response = self.update_remote(task_id, payload)
         self._presets.record_task(task_id, payload, status="updated", remote_response=response)
         self._presets.attach_task(
             task_id, preset_id=preset["preset_id"], preset_version=int(preset["version"]),
-            asset_groups=groups, actor=user.get("username"),
+            asset_groups=groups, targets=selected_targets, actor=user.get("username"),
         )
         return self.get(task_id, user, unrestricted=True)
 
@@ -157,16 +162,17 @@ class TeamTasksService:
     ) -> dict[str, Any]:
         task = self.get(task_id, user, unrestricted=unrestricted)
         preset = self._active_preset(str(task["preset_id"]), user, unrestricted=True)
-        groups = self._task_groups(task)
+        groups, task_targets = self._task_selection(task)
         # The current preset is authoritative: rotated credentials or profiles reach old tasks too.
         payload = self._payload(
             preset, name=str(task.get("name") or task_id),
             description=str((task.get("payload") or {}).get("description") or ""), groups=groups,
+            targets=task_targets,
         )
         self._presets.record_task(task_id, payload, status="preset_synced", remote_response=task.get("last_remote_response"))
         self._presets.attach_task(
             task_id, preset_id=preset["preset_id"], preset_version=int(preset["version"]),
-            asset_groups=groups, actor=user.get("username"),
+            asset_groups=groups, targets=task_targets, actor=user.get("username"),
         )
         assert self.start_task is not None
         with self._reserve_slot(preset, task_id):
@@ -193,11 +199,21 @@ class TeamTasksService:
                               status_code=409, context={"preset_id": preset_id})
         return preset
 
+    @classmethod
+    def _selection(
+        cls, preset: dict[str, Any], asset_group_ids: builtins.list[str], targets: builtins.list[str],
+    ) -> tuple[builtins.list[dict[str, Any]], builtins.list[str]]:
+        groups = cls._selected_groups(preset, asset_group_ids)
+        selected_targets = cls._selected_targets(preset, targets)
+        if not groups and not selected_targets:
+            raise ValueError("Выберите хотя бы одну группу активов, IP-адрес или FQDN.")
+        return groups, selected_targets
+
     @staticmethod
     def _selected_groups(preset: dict[str, Any], asset_group_ids: builtins.list[str]) -> builtins.list[dict[str, Any]]:
         requested = list(dict.fromkeys(str(value).strip() for value in asset_group_ids if str(value).strip()))
         if not requested:
-            raise ValueError("Выберите хотя бы одну группу активов.")
+            return []
         limit = int(preset.get("max_groups_per_task") or 1)
         if len(requested) > limit:
             raise ValueError(f"Пресет разрешает не больше {limit} групп в одной задаче.")
@@ -208,19 +224,34 @@ class TeamTasksService:
         return [allowed[value] for value in requested]
 
     @staticmethod
-    def _task_groups(task: dict[str, Any]) -> builtins.list[dict[str, Any]]:
-        groups = task.get("preset_asset_groups") or []
-        if not groups:
-            raise DomainError("TEAM_TASK_GROUPS_MISSING", "У задачи не сохранены группы активов. Измените задачу.",
-                              status_code=409, context={"task_id": task.get("mp_task_id")})
-        return [dict(group) for group in groups]
+    def _selected_targets(preset: dict[str, Any], targets: builtins.list[str]) -> builtins.list[str]:
+        requested = normalize_scan_targets(value for value in targets if str(value).strip())
+        allowed = set(preset.get("allowed_targets") or [])
+        forbidden = [value for value in requested if value not in allowed]
+        if forbidden:
+            raise ValueError(f"Цели не разрешены пресетом: {', '.join(forbidden)}.")
+        return requested
 
     @staticmethod
-    def _task_name(preset: dict[str, Any], name: str | None, groups: builtins.list[dict[str, Any]]) -> str:
+    def _task_selection(task: dict[str, Any]) -> tuple[builtins.list[dict[str, Any]], builtins.list[str]]:
+        groups = task.get("preset_asset_groups") or []
+        targets = task.get("preset_targets") or []
+        if not groups and not targets:
+            raise DomainError("TEAM_TASK_GROUPS_MISSING",
+                              "У задачи не сохранены группы активов и цели. Измените задачу.",
+                              status_code=409, context={"task_id": task.get("mp_task_id")})
+        return [dict(group) for group in groups], [str(value) for value in targets]
+
+    @staticmethod
+    def _task_name(
+        preset: dict[str, Any], name: str | None, groups: builtins.list[dict[str, Any]],
+        targets: builtins.list[str],
+    ) -> str:
         base = (name or "").strip()
         if not base:
             stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-            base = f"{', '.join(str(group.get('name') or group['id']) for group in groups)} {stamp}"
+            labels = [str(group.get("name") or group["id"]) for group in groups] + targets
+            base = f"{', '.join(labels)} {stamp}"
         prefix = str(preset.get("name_prefix") or "").strip()
         full = base if not prefix or base.startswith(prefix) else f"{prefix} {base}"
         return full[:MAX_TASK_NAME]
@@ -228,13 +259,14 @@ class TeamTasksService:
     @staticmethod
     def _payload(
         preset: dict[str, Any], *, name: str, description: str, groups: builtins.list[dict[str, Any]],
+        targets: builtins.list[str],
     ) -> dict[str, Any]:
         return build_scanner_task_payload(
             name=name,
             description=description,
             scope_id=preset["scope_id"],
             profile_id=preset["profile_id"],
-            include_targets=[],
+            include_targets=list(targets),
             agent_ids=list(preset.get("agent_ids") or []),
             credential_id=preset.get("credential_id"),
             credential_transport=preset.get("credential_transport") or "windows",

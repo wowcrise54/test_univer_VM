@@ -16,13 +16,14 @@ PRESET_SCALAR_FIELDS = (
 )
 PRESET_JSON_FIELDS = (
     "agent_ids", "trigger_parameters", "denied_scan_settings", "start_options", "allowed_asset_groups",
+    "allowed_targets",
 )
 
 _PRESET_SELECT = """
     SELECT p.preset_id::text AS preset_id, p.name, p.description, p.os_family, p.scope_id, p.profile_id,
            p.credential_id, p.credential_transport, p.agent_ids, p.host_discovery_enabled,
            p.host_discovery_profile_id, p.is_fqdn_priority, p.time_zone, p.trigger_parameters,
-           p.denied_scan_settings, p.start_options, p.allowed_asset_groups, p.max_groups_per_task,
+           p.denied_scan_settings, p.start_options, p.allowed_asset_groups, p.allowed_targets, p.max_groups_per_task,
            p.max_active_tasks, p.name_prefix, p.is_active, p.version, p.created_by, p.updated_by,
            p.created_at, p.updated_at,
            COALESCE(array_agg(r.role_id ORDER BY r.role_id) FILTER (WHERE r.role_id IS NOT NULL),
@@ -177,7 +178,7 @@ class TaskPresetRepository:
         with db.connect() as conn:
             rows = conn.execute(
                 f"""SELECT t.*, t.preset_id::text AS preset_id, p.name AS preset_name, p.os_family,
-                           p.is_active AS preset_is_active, p.allowed_asset_groups
+                           p.is_active AS preset_is_active, p.allowed_asset_groups, p.allowed_targets
                     FROM scan_tasks t
                     JOIN scan_task_presets p ON p.preset_id = t.preset_id
                     WHERE t.deleted_at IS NULL{access}
@@ -233,14 +234,14 @@ class TaskPresetRepository:
 
     def attach_task(
         self, task_id: str, *, preset_id: str, preset_version: int,
-        asset_groups: builtins.list[dict[str, Any]], actor: str | None,
+        asset_groups: builtins.list[dict[str, Any]], actor: str | None, targets: builtins.list[str] | None = None,
     ) -> None:
         with db.connect() as conn:
             conn.execute(
                 """UPDATE scan_tasks SET preset_id=%s, preset_version=%s, preset_asset_groups=%s::jsonb,
-                          created_by=COALESCE(created_by, %s)
+                          preset_targets=%s::jsonb, created_by=COALESCE(created_by, %s)
                    WHERE mp_task_id=%s""",
-                (preset_id, preset_version, _json_param(asset_groups), actor, task_id),
+                (preset_id, preset_version, _json_param(asset_groups), _json_param(targets or []), actor, task_id),
             )
 
     def count_active_tasks(self, preset_id: str, *, exclude_task_id: str | None = None) -> int:
