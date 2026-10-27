@@ -1409,6 +1409,7 @@ for (const width of [1440, 768, 390]) {
     expect(created.request).toEqual({
       preset_id: "preset-win",
       asset_group_ids: ["g-servers"],
+      targets: [],
       name: null,
       description: null,
       start_now: true,
