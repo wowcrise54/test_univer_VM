@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import psycopg
 
 from app import db, main
+
+# Repository root (holds alembic.ini); resolved from this file so the tests run
+# both in the Docker test stack and on a plain CI checkout.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_HEAD = "20261024_0028"
 HEAD_PARENT = "20260910_0022"
@@ -84,9 +90,9 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
     """Run an ``alembic`` subcommand against ``database_url``; assert it succeeds."""
     env = dict(os.environ, MPVM_DATABASE_URL=database_url)
     completed = subprocess.run(
-        ["alembic", *args],
+        [sys.executable, "-m", "alembic", *args],
         env=env,
-        cwd="/workspace",
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         timeout=300,
