@@ -308,6 +308,9 @@ describe("preset form helpers", () => {
     expect(
       presetFormProblems({ ...emptyPresetForm(), time_zone: "MSK" }),
     ).toContain("Часовой пояс задаётся в формате +05:00.");
+    expect(
+      presetFormProblems({ ...emptyPresetForm(), host_discovery_enabled: true }),
+    ).toContain("Выберите профиль HostDiscovery.");
   });
 
   it("turns a template draft into a new preset form", () => {

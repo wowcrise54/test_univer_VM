@@ -88,6 +88,7 @@ def test_create_normalizes_and_uses_server_group_names(service, repository):
     ({"credential_id": "missing"}, [11], "Учётная запись missing"),
     ({"start_options": {"precheck_profile_id": "missing"}}, [11], "precheck"),
     ({"allowed_asset_groups": [{"id": "g-404"}]}, [11], "g-404"),
+    ({"host_discovery_enabled": True, "host_discovery_profile_id": ""}, [11], "профиль"),
 ])
 def test_create_rejects_invalid_presets(service, repository, overrides, roles, message):
     with pytest.raises(ValueError, match=message):
