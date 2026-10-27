@@ -1,7 +1,12 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ACCESS_CHANGED_EVENT } from "../api/accessEvents.js";
 import { api } from "../api/client.js";
-import { AuthGate } from "../features/auth/AuthGate.jsx";
+import {
+  AuthGate,
+  USER_REFRESH_INTERVAL_MS,
+  USER_REFRESH_MIN_GAP_MS,
+} from "../features/auth/AuthGate.jsx";
 
 vi.mock("../api/client.js", () => ({ api: vi.fn() }));
 
@@ -217,5 +222,147 @@ describe("AuthGate", () => {
     logoutFn();
     await screen.findByRole("heading", { name: "Вход в приложение" });
     expect(api).toHaveBeenCalledWith("/api/auth/logout", expect.objectContaining({ method: "POST" }));
+  });
+});
+
+describe("AuthGate keeps the current user's access fresh", () => {
+  const ENGINEER = {
+    ...USER,
+    username: "engineer",
+    roles: [{ id: 67, name: "Инженер Windows" }],
+    permissions: ["operations.read", "tasks.team"],
+  };
+  const WIDENED = {
+    ...ENGINEER,
+    roles: [...ENGINEER.roles, { id: 90, name: "VM-linux" }],
+    permissions: ["assets.read", "operations.read", "tasks.team"],
+  };
+  let responses;
+  let renders;
+
+  const meCalls = () => api.mock.calls.filter(([path]) => path === "/api/auth/me").length;
+  const advance = (ms) => act(() => vi.advanceTimersByTime(ms));
+  const setVisibility = (value) =>
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+
+  function renderWorkspace() {
+    return render(
+      <AuthGate>
+        {(auth) => {
+          renders.push(auth.user);
+          return <div>Права: {auth.user.permissions.join(", ")}</div>;
+        }}
+      </AuthGate>,
+    );
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    setVisibility("visible");
+    renders = [];
+    responses = [{ user: ENGINEER }];
+    api.mockReset().mockImplementation((path) => {
+      if (path !== "/api/auth/me") return Promise.reject(new Error(path));
+      const next = responses.length > 1 ? responses.shift() : responses[0];
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    });
+    renderWorkspace();
+    await screen.findByText("Права: operations.read, tasks.team");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete document.visibilityState;
+  });
+
+  it("re-reads the user after a permission denial and shows the widened access", async () => {
+    responses = [{ user: WIDENED }];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+
+    expect(await screen.findByText("Права: assets.read, operations.read, tasks.team")).toBeInTheDocument();
+    expect(meCalls()).toBe(2);
+  });
+
+  it("re-reads the user when the browser tab becomes visible or focused again", async () => {
+    responses = [{ user: WIDENED }];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    setVisibility("hidden");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(meCalls()).toBe(1);
+
+    setVisibility("visible");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(await screen.findByText(/assets\.read/)).toBeInTheDocument();
+    expect(meCalls()).toBe(2);
+
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(meCalls()).toBe(3));
+  });
+
+  it("polls periodically only while the tab is visible", async () => {
+    setVisibility("hidden");
+    await advance(USER_REFRESH_INTERVAL_MS);
+    expect(meCalls()).toBe(1);
+
+    setVisibility("visible");
+    responses = [{ user: WIDENED }];
+    await advance(USER_REFRESH_INTERVAL_MS);
+    expect(await screen.findByText(/assets\.read/)).toBeInTheDocument();
+    expect(meCalls()).toBe(2);
+  });
+
+  it("collapses bursts of triggers into one request per minimum gap", async () => {
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+    expect(meCalls()).toBe(1);
+
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
+      window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(meCalls()).toBe(2));
+  });
+
+  it("keeps the same user object when access is unchanged", async () => {
+    const before = renders.at(-1);
+    responses = [{ user: { ...ENGINEER, permissions: [...ENGINEER.permissions].reverse() } }];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+    await waitFor(() => expect(meCalls()).toBe(2));
+
+    expect(renders.at(-1)).toBe(before);
+  });
+
+  it("returns to the login form with an explanation when the session was revoked", async () => {
+    responses = [Object.assign(new Error("unauthorized"), { status: 401 })];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+
+    expect(await screen.findByRole("heading", { name: "Вход в приложение" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Сеанс завершён");
+  });
+
+  it("keeps the workspace when the refresh fails for a non-session reason", async () => {
+    responses = [Object.assign(new Error("down"), { status: 503 })];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+    await waitFor(() => expect(meCalls()).toBe(2));
+
+    expect(screen.getByText("Права: operations.read, tasks.team")).toBeInTheDocument();
+  });
+
+  it("stops refreshing once the session has ended", async () => {
+    responses = [Object.assign(new Error("unauthorized"), { status: 401 })];
+    await advance(USER_REFRESH_MIN_GAP_MS);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+    await screen.findByRole("heading", { name: "Вход в приложение" });
+    const calls = meCalls();
+
+    await advance(USER_REFRESH_INTERVAL_MS * 2);
+    act(() => window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT)));
+    expect(meCalls()).toBe(calls);
   });
 });

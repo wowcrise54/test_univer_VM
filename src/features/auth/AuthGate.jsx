@@ -1,8 +1,73 @@
 import { useEffect, useState } from "react";
+import { ACCESS_CHANGED_EVENT } from "../../api/accessEvents.js";
 import { api } from "../../api/client.js";
+
+// Role and permission changes apply on the server immediately, so the user
+// record is re-read to keep navigation in sync without a re-login.
+export const USER_REFRESH_INTERVAL_MS = 60_000;
+export const USER_REFRESH_MIN_GAP_MS = 5_000;
+const SESSION_ENDED = { operatorMessage: "Сеанс завершён: доступ изменился или истёк. Войдите снова." };
+
+function accessSignature(user) {
+  return JSON.stringify([
+    user?.id,
+    user?.username,
+    user?.display_name,
+    user?.is_active,
+    user?.role,
+    (user?.roles || []).map((role) => [role.id, role.name]),
+    [...(user?.permissions || [])].sort(),
+  ]);
+}
 
 export function AuthGate({ children }) {
   const [state, setState] = useState({ loading: true, user: null, error: null, configured: true });
+  const userId = state.user?.id;
+
+  useEffect(() => {
+    if (userId == null) return undefined;
+    let active = true;
+    let inFlight = false;
+    // The user record was just loaded by login or the initial /api/auth/me.
+    let lastStarted = Date.now();
+    const refresh = async () => {
+      const now = Date.now();
+      if (inFlight || now - lastStarted < USER_REFRESH_MIN_GAP_MS) return;
+      inFlight = true;
+      lastStarted = now;
+      try {
+        const result = await api("/api/auth/me");
+        if (!active) return;
+        setState((previous) =>
+          previous.user && accessSignature(previous.user) === accessSignature(result.user)
+            ? previous
+            : { ...previous, user: result.user },
+        );
+      } catch (error) {
+        // Only a rejected session ends the workspace; network and server
+        // failures keep the current view and the next trigger retries.
+        if (active && error.status === 401) {
+          setState({ loading: false, user: null, error: SESSION_ENDED, configured: true });
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "hidden") refresh();
+    };
+    const timer = window.setInterval(refreshWhenVisible, USER_REFRESH_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener(ACCESS_CHANGED_EVENT, refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener(ACCESS_CHANGED_EVENT, refresh);
+    };
+  }, [userId]);
 
   useEffect(() => {
     let active = true;

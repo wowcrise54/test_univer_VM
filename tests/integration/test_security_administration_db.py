@@ -4,10 +4,11 @@ from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from app import auth, db
+from app import auth, db, main
 
 pytestmark = pytest.mark.integration
 PASSWORD = "fixture-password-only"
@@ -188,6 +189,37 @@ def test_custom_role_cloning_and_permission_replacement_change_effective_permiss
     emptied = auth.update_role(role["id"], auth.RoleUpdateRequest(permission_keys=[]))
     assert emptied["permission_keys"] == []
     assert auth.get_session_user(token)["permissions"] == []
+
+
+def test_disjoint_roles_grant_the_union_of_their_permissions_through_the_api(catalog):
+    def custom_role(name, permission_keys):
+        role = auth.clone_role(auth.RoleCloneRequest(source_role_id=catalog["viewer"]["id"], name=name))
+        return auth.update_role(role["id"], auth.RoleUpdateRequest(permission_keys=permission_keys))
+
+    system_role = custom_role("System reader", ["system.read"])
+    operations_role = custom_role("Operations reader", ["operations.read"])
+    user = auth.create_user(
+        auth.UserCreateRequest(
+            username="union.user", display_name="Union", password=PASSWORD, role_ids=[system_role["id"]]
+        )
+    )
+    client = TestClient(main.app)
+    assert client.post("/api/auth/login", json={"username": "union.user", "password": PASSWORD}).status_code == 200
+    assert client.get("/api/system/status").status_code == 200
+    denied = client.get("/api/operations")
+    assert denied.status_code == 403 and denied.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+    auth.update_user(
+        user["id"],
+        auth.UserUpdateRequest(role_ids=[system_role["id"], operations_role["id"]]),
+        actor_id=0,
+    )
+    # A role change revokes sessions, so the union is observed on a fresh login.
+    assert client.post("/api/auth/login", json={"username": "union.user", "password": PASSWORD}).status_code == 200
+    assert client.get("/api/auth/me").json()["user"]["permissions"] == ["operations.read", "system.read"]
+    assert client.get("/api/system/status").status_code == 200
+    assert client.get("/api/operations").status_code == 200
+    assert client.get("/api/auth/users").status_code == 403
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])
