@@ -6,6 +6,11 @@ import {
   ConfirmDialog,
   Disclosure,
 } from "../../shared/ui.jsx";
+import {
+  RoleAssignmentDialog,
+  RoleChips,
+  RolePicker,
+} from "./RoleAssignment.jsx";
 
 const EMPTY_USER = {
   username: "",
@@ -68,8 +73,10 @@ export function UsersPage({ currentUser, showAlert }) {
       await request();
       await load();
       if (success) showAlert(success, "success");
+      return true;
     } catch (error) {
       showAlert(error.operatorMessage || error.message, "error");
+      return false;
     }
   };
 
@@ -150,8 +157,38 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
     );
     setForm(EMPTY_USER);
   };
-  const selectedIds = (event) =>
-    [...event.target.selectedOptions].map((item) => Number(item.value));
+  const [query, setQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const editing = users.find((user) => user.id === editingId);
+  const needle = query.trim().toLowerCase();
+  const visibleUsers = users.filter(
+    (user) =>
+      (!needle ||
+        `${user.display_name} ${user.username}`
+          .toLowerCase()
+          .includes(needle)) &&
+      (!roleFilter ||
+        (user.roles || []).some((role) => String(role.id) === roleFilter)),
+  );
+  const filterRoles = roles.length
+    ? roles
+    : [
+        ...new Map(
+          users
+            .flatMap((user) => user.roles || [])
+            .map((role) => [role.id, role]),
+        ).values(),
+      ];
+  const saveRoles = (user, roleIds) =>
+    mutate(
+      () =>
+        api(`/api/auth/users/${user.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ role_ids: roleIds }),
+        }),
+      `Роли пользователя ${user.username} обновлены.`,
+    );
   return (
     <div className="access-tab-panel">
       {canManage ? (
@@ -194,28 +231,43 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
                 autoComplete="new-password"
               />
             </label>
-            <label>
-              <span>Роли</span>
-              <select
-                multiple
-                value={form.role_ids.map(String)}
-                onChange={(event) =>
-                  setForm({ ...form, role_ids: selectedIds(event) })
-                }
-              >
-                {roles.map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button type="submit" disabled={!form.role_ids.length}>
-              Создать
-            </Button>
+            <RolePicker
+              roles={roles}
+              value={form.role_ids}
+              onChange={(roleIds) => setForm({ ...form, role_ids: roleIds })}
+            />
+            <div className="user-create-form__actions">
+              <Button type="submit" disabled={!form.role_ids.length}>
+                Создать
+              </Button>
+            </div>
           </form>
         </Disclosure>
       ) : null}
+      <div className="users-toolbar">
+        <input
+          type="search"
+          aria-label="Поиск пользователя"
+          placeholder="Имя или логин"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <select
+          aria-label="Фильтр по роли"
+          value={roleFilter}
+          onChange={(event) => setRoleFilter(event.target.value)}
+        >
+          <option value="">Все роли</option>
+          {filterRoles.map((role) => (
+            <option key={role.id} value={role.id}>
+              {role.name}
+            </option>
+          ))}
+        </select>
+        <span className="users-toolbar__count">
+          {visibleUsers.length} из {users.length}
+        </span>
+      </div>
       <div className="table-shell">
         <table>
           <thead>
@@ -228,66 +280,83 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => (
-              <tr key={user.id}>
-                <td>
-                  <strong>{user.display_name}</strong>
-                  <small>{user.username}</small>
-                </td>
-                <td>
-                  <select
-                    multiple
-                    disabled={!canManage || user.id === currentUser.id}
-                    value={(user.roles || []).map((role) => String(role.id))}
-                    onChange={(event) =>
-                      mutate(() =>
-                        api(`/api/auth/users/${user.id}`, {
-                          method: "PATCH",
-                          body: JSON.stringify({
-                            role_ids: selectedIds(event),
-                          }),
-                        }),
-                      )
-                    }
-                  >
-                    {roles.map((role) => (
-                      <option key={role.id} value={role.id}>
-                        {role.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>{user.is_active ? "Активен" : "Отключён"}</td>
-                <td>
-                  {user.last_login_at
-                    ? new Date(user.last_login_at).toLocaleString("ru-RU")
-                    : "—"}
-                </td>
-                <td>
-                  {canManage ? (
-                    <button
-                      type="button"
-                      disabled={user.id === currentUser.id}
-                      onClick={() =>
-                        mutate(() =>
-                          api(`/api/auth/users/${user.id}`, {
-                            method: "PATCH",
-                            body: JSON.stringify({
-                              is_active: !user.is_active,
-                            }),
-                          }),
-                        )
-                      }
-                    >
-                      {user.is_active ? "Отключить" : "Включить"}
-                    </button>
-                  ) : null}
+            {visibleUsers.map((user) => {
+              const isSelf = user.id === currentUser.id;
+              return (
+                <tr key={user.id}>
+                  <td>
+                    <strong>{user.display_name}</strong>
+                    <small>
+                      {user.username}
+                      {isSelf ? " · это вы" : ""}
+                    </small>
+                  </td>
+                  <td>
+                    <RoleChips roles={user.roles} />
+                  </td>
+                  <td>{user.is_active ? "Активен" : "Отключён"}</td>
+                  <td>
+                    {user.last_login_at
+                      ? new Date(user.last_login_at).toLocaleString("ru-RU")
+                      : "—"}
+                  </td>
+                  <td>
+                    {canManage ? (
+                      <div className="user-row-actions">
+                        <Button
+                          variant="secondary"
+                          disabled={isSelf || !roles.length}
+                          title={
+                            isSelf
+                              ? "Свои роли может изменить другой администратор"
+                              : undefined
+                          }
+                          aria-label={`Изменить роли: ${user.display_name}`}
+                          onClick={() => setEditingId(user.id)}
+                        >
+                          Роли
+                        </Button>
+                        <button
+                          type="button"
+                          disabled={isSelf}
+                          onClick={() =>
+                            mutate(() =>
+                              api(`/api/auth/users/${user.id}`, {
+                                method: "PATCH",
+                                body: JSON.stringify({
+                                  is_active: !user.is_active,
+                                }),
+                              }),
+                            )
+                          }
+                        >
+                          {user.is_active ? "Отключить" : "Включить"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+            {!visibleUsers.length ? (
+              <tr>
+                <td colSpan={5} className="users-empty">
+                  Нет пользователей по выбранным условиям.
                 </td>
               </tr>
-            ))}
+            ) : null}
           </tbody>
         </table>
       </div>
+      {editing ? (
+        <RoleAssignmentDialog
+          key={editing.id}
+          user={editing}
+          roles={roles}
+          onClose={() => setEditingId(null)}
+          onSave={(roleIds) => saveRoles(editing, roleIds)}
+        />
+      ) : null}
     </div>
   );
 }

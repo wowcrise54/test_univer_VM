@@ -1,3 +1,7 @@
+# Separate project name keeps test containers apart from the working stack
+# (docker-compose.yml), so --remove-orphans never touches mpvm-client/postgres.
+name: mpvmtest-tests
+
 services:
   tests:
     build:

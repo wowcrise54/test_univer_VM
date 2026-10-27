@@ -38,6 +38,12 @@ output/coverage-*.json
 output/playwright/
 output/preset_sql_regression.py
 
+# Docker test containers (compose.test.yml) state and reports
+.docker-temp/
+output/test-results/
+output/playwright-report/
+output/junit*.xml
+
 # Local tool artifacts
 /.tools/
 .superdesign/tmp/
