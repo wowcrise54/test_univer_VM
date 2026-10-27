@@ -153,6 +153,9 @@ describe("user access management", () => {
       screen.queryByRole("button", { name: /Изменить роли/ }),
     ).not.toBeInTheDocument();
     expect(
+      screen.queryByRole("button", { name: /Удалить пользователя/ }),
+    ).not.toBeInTheDocument();
+    expect(
       within(rowFor("Current administrator")).getByText("System admin"),
     ).toBeInTheDocument();
     expect(
@@ -222,7 +225,7 @@ describe("user access management", () => {
     await actions.click(dialog.getByRole("checkbox", { name: /System admin/ }));
     expect(dialog.getByText("Снять")).toBeVisible();
     expect(
-      dialog.getByText(/сессии пользователя будут завершены/),
+      dialog.getByText(/Права применятся сразу, без повторного входа/),
     ).toBeVisible();
     await actions.click(
       dialog.getByRole("checkbox", { name: /Custom reader/ }),
@@ -267,6 +270,79 @@ describe("user access management", () => {
     expect(
       dialog.getByRole("checkbox", { name: /Custom reader/ }),
     ).toBeChecked();
+  });
+
+  it("deletes another user only after typing their login", async () => {
+    page();
+    await screen.findByText("Other operator");
+    expect(
+      within(rowFor("Current administrator")).queryByRole("button", {
+        name: /Удалить пользователя/,
+      }),
+    ).not.toBeInTheDocument();
+
+    await actions.click(
+      screen.getByRole("button", {
+        name: "Удалить пользователя: Other operator",
+      }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText(/Other operator.*operator/)).toBeInTheDocument();
+    expect(dialog.getByText(/чтобы подтвердить удаление/)).toBeInTheDocument();
+    const confirm = dialog.getByRole("button", {
+      name: "Удалить пользователя",
+    });
+    expect(confirm).toBeDisabled();
+    await actions.type(dialog.getByRole("textbox"), "operator");
+    await actions.click(confirm);
+
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith(
+        "Пользователь operator удалён.",
+        "success",
+      ),
+    );
+    expect(mutation("/api/auth/users/2", "DELETE")).toEqual({
+      method: "DELETE",
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the delete dialog open when the server refuses", async () => {
+    const original = api.getMockImplementation();
+    api.mockImplementation((path, options) =>
+      options?.method === "DELETE"
+        ? Promise.reject(
+            Object.assign(new Error("Conflict"), {
+              operatorMessage: "Должен остаться активный администратор.",
+            }),
+          )
+        : original(path, options),
+    );
+    page();
+    await screen.findByText("Other operator");
+    await actions.click(
+      screen.getByRole("button", {
+        name: "Удалить пользователя: Other operator",
+      }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await actions.type(dialog.getByRole("textbox"), "operator");
+    await actions.click(
+      dialog.getByRole("button", { name: "Удалить пользователя" }),
+    );
+
+    await waitFor(() =>
+      expect(showAlert).toHaveBeenCalledWith(
+        "Должен остаться активный администратор.",
+        "error",
+      ),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await actions.click(dialog.getByRole("button", { name: "Отмена" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("filters users by text and by assigned role", async () => {

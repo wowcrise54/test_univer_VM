@@ -65,7 +65,7 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "diagnostics.write": ("Диагностика", "Отправка клиентской диагностики"),
     "diagnostics.read": ("Диагностика", "Скачивание диагностических архивов"),
     "security.users.read": ("Безопасность", "Просмотр пользователей"),
-    "security.users.manage": ("Безопасность", "Создание и изменение пользователей"),
+    "security.users.manage": ("Безопасность", "Создание, изменение и удаление пользователей"),
     "security.roles.read": ("Безопасность", "Просмотр ролей и разрешений"),
     "security.roles.manage": ("Безопасность", "Создание и изменение ролей"),
     "security.audit.read": ("Безопасность", "Просмотр аудита доступа"),
@@ -413,10 +413,28 @@ def update_user(user_id: int, payload: UserUpdateRequest, *, actor_id: int) -> d
             assignments=", ".join(f"{key}=%s" for key in changes); row=conn.execute(f"UPDATE app_users SET {assignments},updated_at=%s WHERE id=%s RETURNING *",[*changes.values(),db.now_utc(),user_id]).fetchone()
         else: row=existing
         if requested is not None: _replace_user_roles(conn,user_id,requested)
-        if changes.get("is_active") is False or "password_hash" in changes or requested is not None:
+        # Role changes keep sessions: permissions are re-read from the database on
+        # every request, so a removed role stops granting access immediately.
+        if changes.get("is_active") is False or "password_hash" in changes:
             conn.execute("UPDATE app_auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",(db.now_utc(),user_id))
         assert row is not None
         return public_user(dict(row),roles=_roles_for_user(conn,user_id),permissions=_permissions_for_user(conn,user_id))
+
+
+def delete_user(user_id: int, *, actor_id: int) -> dict[str, Any]:
+    """Delete a user; roles and sessions cascade, audit rows keep the actor name."""
+    if user_id==actor_id: raise HTTPException(409,detail={"code":"SELF_DELETE","message":"Нельзя удалить свою учётную запись."})
+    with db.connect() as conn:
+        # Lock every active administrator first (in id order) so two concurrent
+        # deletions cannot both pass the last-admin check or deadlock.
+        admins=[int(row["id"]) for row in conn.execute("""SELECT u.id FROM app_users u JOIN app_user_roles ur ON ur.user_id=u.id
+            JOIN app_roles r ON r.id=ur.role_id WHERE r.role_key='admin' AND u.is_active=TRUE ORDER BY u.id FOR UPDATE OF u""").fetchall()]
+        existing=conn.execute("SELECT * FROM app_users WHERE id=%s FOR UPDATE",(user_id,)).fetchone()
+        if not existing: raise HTTPException(404,detail={"code":"USER_NOT_FOUND","message":"Пользователь не найден."})
+        if user_id in admins and len(admins)<=1:
+            raise HTTPException(409,detail={"code":"LAST_ADMIN","message":"Должен остаться активный администратор."})
+        conn.execute("DELETE FROM app_users WHERE id=%s",(user_id,))
+        return {"id":int(existing["id"]),"username":existing["username"],"display_name":existing["display_name"]}
 
 
 def list_permissions() -> list[dict[str,str]]:

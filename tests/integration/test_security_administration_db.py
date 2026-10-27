@@ -87,16 +87,12 @@ def test_bootstrap_admin_runs_only_for_an_empty_database_and_nonempty_password(c
     assert len(auth.list_users()) == 1
 
 
-@pytest.mark.parametrize(
-    "change", [{"password": "replacement-fixture-password"}, {"role_ids": "operator"}, {"is_active": False}]
-)
+@pytest.mark.parametrize("change", [{"password": "replacement-fixture-password"}, {"is_active": False}])
 def test_security_changes_revoke_all_existing_sessions(catalog, change):
     user = create(catalog)
     first, second = auth.create_session(user["id"], hours=1), auth.create_session(user["id"], hours=2)
     assert auth.get_session_user(first)["id"] == user["id"]
     values = {**change}
-    if values.get("role_ids") == "operator":
-        values["role_ids"] = [catalog["operator"]["id"]]
     updated = auth.update_user(user["id"], auth.UserUpdateRequest(**values), actor_id=999)
     assert updated["id"] == user["id"]
     assert auth.get_session_user(first) is None and auth.get_session_user(second) is None
@@ -106,6 +102,89 @@ def test_security_changes_revoke_all_existing_sessions(catalog, change):
     if values.get("is_active") is False:
         assert auth.authenticate(user["username"], PASSWORD) is None
         assert auth._local_user_record(user["username"]) is None
+
+
+def test_role_changes_keep_sessions_and_apply_permissions_on_the_next_request(catalog):
+    user = create(catalog, roles=("operator",))
+    first, second = auth.create_session(user["id"], hours=1), auth.create_session(user["id"], hours=2)
+    assert "tasks.execute" in auth.get_session_user(first)["permissions"]
+
+    auth.update_user(user["id"], auth.UserUpdateRequest(role_ids=[catalog["viewer"]["id"]]), actor_id=999)
+    demoted = auth.get_session_user(first)
+    assert demoted is not None and auth.get_session_user(second) is not None
+    assert [role["key"] for role in demoted["roles"]] == ["viewer"]
+    assert set(demoted["permissions"]) == auth.VIEWER_PERMISSIONS
+    assert "tasks.execute" not in demoted["permissions"]
+
+    auth.update_user(user["id"], auth.UserUpdateRequest(role_ids=[catalog["operator"]["id"]]), actor_id=999)
+    assert set(auth.get_session_user(first)["permissions"]) == auth.OPERATOR_PERMISSIONS
+
+
+def test_delete_user_cascades_roles_and_sessions_and_keeps_audit_history(catalog):
+    user = create(catalog, "doomed.user", roles=("viewer", "operator"))
+    token = auth.create_session(user["id"], hours=1)
+    auth.audit_event(request=None, user=user, event_type="login", decision="allow")
+
+    deleted = auth.delete_user(user["id"], actor_id=999)
+
+    assert deleted == {"id": user["id"], "username": "doomed.user", "display_name": "Fixture User"}
+    assert auth.get_session_user(token) is None
+    assert auth.authenticate("doomed.user", PASSWORD) is None
+    assert [row["username"] for row in auth.list_users()] == []
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM app_user_roles").fetchone()["n"] == 0
+        assert conn.execute("SELECT COUNT(*) AS n FROM app_auth_sessions").fetchone()["n"] == 0
+    audit = auth.list_audit_events()["rows"]
+    assert [(row["actor_user_id"], row["actor_username"]) for row in audit] == [(None, "doomed.user")]
+    error_code(lambda: auth.delete_user(user["id"], actor_id=999), "USER_NOT_FOUND", 404)
+
+
+def test_delete_user_refuses_self_and_the_last_active_admin(catalog):
+    admin = create(catalog, "only.admin", roles=("admin",))
+    error_code(lambda: auth.delete_user(admin["id"], actor_id=admin["id"]), "SELF_DELETE", 409)
+    error_code(lambda: auth.delete_user(admin["id"], actor_id=999), "LAST_ADMIN", 409)
+
+    # A disabled administrator does not count as the remaining active admin.
+    disabled = create(catalog, "disabled.admin", roles=("admin",))
+    auth.update_user(disabled["id"], auth.UserUpdateRequest(is_active=False), actor_id=admin["id"])
+    error_code(lambda: auth.delete_user(admin["id"], actor_id=999), "LAST_ADMIN", 409)
+    assert auth.delete_user(disabled["id"], actor_id=admin["id"])["username"] == "disabled.admin"
+
+    second = create(catalog, "second.admin", roles=("admin",))
+    assert auth.delete_user(admin["id"], actor_id=second["id"])["username"] == "only.admin"
+    assert [row["username"] for row in auth.list_users()] == ["second.admin"]
+
+
+def test_delete_user_over_http_requires_manage_permission_and_is_audited(catalog):
+    admin = create(catalog, "http.deleter", roles=("admin",))
+    reader_role = auth.clone_role(auth.RoleCloneRequest(source_role_id=catalog["viewer"]["id"], name="Users reader"))
+    auth.update_role(reader_role["id"], auth.RoleUpdateRequest(permission_keys=["security.users.read"]))
+    reader = auth.create_user(
+        auth.UserCreateRequest(username="users.reader", display_name="Reader", password=PASSWORD, role_ids=[reader_role["id"]])
+    )
+    victim = create(catalog, "victim.user")
+
+    reader_client = TestClient(main.app)
+    reader_client.cookies.set(auth.COOKIE_NAME, auth.create_session(reader["id"], hours=1))
+    denied = reader_client.delete(f"/api/auth/users/{victim['id']}")
+    assert denied.status_code == 403 and denied.json()["detail"]["code"] == "PERMISSION_DENIED"
+
+    client = TestClient(main.app)
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session(admin["id"], hours=1))
+    self_delete = client.delete(f"/api/auth/users/{admin['id']}")
+    assert self_delete.status_code == 409 and self_delete.json()["detail"]["code"] == "SELF_DELETE"
+    assert client.delete(f"/api/auth/users/{victim['id']}").status_code == 204
+    assert client.delete(f"/api/auth/users/{victim['id']}").status_code == 404
+    assert "victim.user" not in [row["username"] for row in client.get("/api/auth/users").json()["rows"]]
+
+    events = client.get("/api/auth/audit?limit=200").json()["rows"]
+    deleted_event = next(row for row in events if row["event_type"] == "user_deleted")
+    assert deleted_event["actor_username"] == "http.deleter"
+    assert deleted_event["target_id"] == str(victim["id"])
+    assert deleted_event["details"] == {"username": "victim.user", "display_name": "Fixture User"}
+    assert any(
+        row["decision"] == "deny" and row["permission_key"] == "security.users.manage" for row in events
+    )
 
 
 def test_cosmetic_updates_and_noop_keep_sessions_and_permissions(catalog):
@@ -214,8 +293,7 @@ def test_disjoint_roles_grant_the_union_of_their_permissions_through_the_api(cat
         auth.UserUpdateRequest(role_ids=[system_role["id"], operations_role["id"]]),
         actor_id=0,
     )
-    # A role change revokes sessions, so the union is observed on a fresh login.
-    assert client.post("/api/auth/login", json={"username": "union.user", "password": PASSWORD}).status_code == 200
+    # The same session sees the union right away; no re-login is needed.
     assert client.get("/api/auth/me").json()["user"]["permissions"] == ["operations.read", "system.read"]
     assert client.get("/api/system/status").status_code == 200
     assert client.get("/api/operations").status_code == 200
@@ -387,7 +465,11 @@ def test_security_http_lifecycle_enforces_permission_changes_on_real_sessions(ca
     assert denied.status_code == 403 and denied.json()["detail"]["code"] == "PERMISSION_DENIED"
     updated = client.patch(f"/api/auth/users/{user_id}", json={"role_ids": [catalog["viewer"]["id"]]})
     assert updated.status_code == 200
-    assert user_client.get("/api/auth/users").status_code == 401
+    # The session survives the role change, but the removed permission is
+    # enforced on the very next request.
+    after_demotion = user_client.get("/api/auth/users")
+    assert after_demotion.status_code == 403 and after_demotion.json()["detail"]["code"] == "PERMISSION_DENIED"
+    assert user_client.get("/api/auth/me").json()["user"]["permissions"] == sorted(auth.VIEWER_PERMISSIONS)
     assert client.delete(f"/api/auth/roles/{role_id}").status_code == 204
     audit = client.get("/api/auth/audit?limit=200")
     assert audit.status_code == 200

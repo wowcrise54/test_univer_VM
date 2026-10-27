@@ -174,7 +174,7 @@ export function RoleAssignmentDialog({ user, roles, onClose, onSave }) {
               </p>
             ) : null}
             <small>
-              После сохранения активные сессии пользователя будут завершены.
+              Права применятся сразу, без повторного входа пользователя.
             </small>
           </div>
         ) : null}

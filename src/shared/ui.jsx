@@ -276,6 +276,7 @@ export function ConfirmDialog({
   impact = [],
   confirmLabel = "Подтвердить",
   requireText = "",
+  requireHint = "чтобы подтвердить изменение MP VM",
   busy,
   onConfirm,
   onClose,
@@ -320,8 +321,7 @@ export function ConfirmDialog({
         {requireText ? (
           <label className="field">
             <span>
-              Введите <code>{requireText}</code>, чтобы подтвердить изменение MP
-              VM
+              Введите <code>{requireText}</code>, {requireHint}
             </span>
             <input
               value={typed}
