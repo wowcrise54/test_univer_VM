@@ -1,0 +1,212 @@
+/* Minimal redesign layer: flat surfaces, hairlines, one accent. Loaded last. */
+
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f7f7f5;
+  --panel: #ffffff;
+  --panel-muted: #f7f7f5;
+  --text: #14151a;
+  --muted: #6b6e76;
+  --line: #ececea;
+  --line-strong: #dcdcd8;
+  --blue: #2f55e0;
+  --blue-soft: #f1f3fd;
+  --teal: #2f55e0;
+  --green: #1f7a4d;
+  --orange: #96600f;
+  --red: #b4343f;
+  --shadow: none;
+  --shadow-surface: none;
+  --shadow-control: none;
+  --shadow-popover: 0 4px 16px rgba(20, 21, 26, 0.08);
+  --radius-xl: 8px;
+  --radius-lg: 8px;
+  --radius-md: 6px;
+}
+
+html[data-theme="dark"] {
+  --shadow-popover: 0 4px 16px rgb(0 0 0 / 40%);
+}
+
+body,
+html[data-theme="dark"] body {
+  background-color: var(--bg);
+  background-image: none;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell {
+  animation: none;
+}
+
+@media (min-width: 1221px) {
+  .app-shell {
+    grid-template-columns: 232px minmax(0, 1fr);
+  }
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+  backdrop-filter: none;
+}
+
+.brand__mark {
+  display: block;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
+  border: 1.5px solid var(--text);
+  border-radius: 5px;
+  color: transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0;
+}
+
+.brand strong {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.nav a {
+  border-radius: 6px;
+  color: var(--muted);
+  font-weight: 500;
+  transition: none;
+}
+
+.nav a:hover {
+  color: var(--text);
+  background: var(--bg-soft);
+  transform: none;
+}
+
+.nav a.is-active {
+  color: var(--text);
+  background: var(--bg-soft);
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.nav-badge {
+  color: var(--blue);
+  background: transparent;
+  font-weight: 600;
+}
+
+.topbar h1 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.topbar__eyebrow {
+  display: none;
+}
+
+.topbar__next,
+.topbar__next:hover {
+  border-radius: 6px;
+  color: var(--bg);
+  background: var(--text);
+  font-weight: 500;
+  transform: none;
+}
+
+.topbar__next:hover {
+  opacity: 0.88;
+}
+
+html[data-theme="dark"] .topbar__next,
+html[data-theme="dark"] .topbar__next:hover {
+  color: var(--text-on-accent);
+  background: var(--accent);
+}
+
+.status-chip--ok {
+  color: var(--green);
+}
+
+.workflow-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 28px;
+  border-block: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0;
+}
+
+.workflow-step,
+.workflow-step--active {
+  justify-content: flex-start;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 0;
+  background: transparent;
+}
+
+.workflow-step--active {
+  border-bottom-color: var(--text);
+  color: var(--text);
+}
+
+.workflow-step--active .workflow-step__number,
+.workflow-step--complete .workflow-step__number,
+.workflow-step__number {
+  width: auto;
+  flex-basis: auto;
+  color: inherit;
+  background: transparent;
+}
+
+.workflow-step__copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.card,
+.panel,
+.surface,
+.table-wrap,
+.metric-card {
+  box-shadow: none;
+}
+
+input,
+select,
+textarea {
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+button,
+.button,
+a[role="button"] {
+  transition: none;
+}
+
+button:hover,
+.button:hover,
+a[role="button"]:hover {
+  filter: none;
+  transform: none;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+html[data-theme="dark"] button:focus-visible,
+html[data-theme="dark"] a:focus-visible,
+html[data-theme="dark"] input:focus-visible,
+html[data-theme="dark"] select:focus-visible,
+html[data-theme="dark"] textarea:focus-visible {
+  outline-color: var(--accent);
+}
