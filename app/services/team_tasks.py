@@ -204,7 +204,7 @@ class TeamTasksService:
         cls, preset: dict[str, Any], asset_group_ids: builtins.list[str], targets: builtins.list[str],
     ) -> tuple[builtins.list[dict[str, Any]], builtins.list[str]]:
         groups = cls._selected_groups(preset, asset_group_ids)
-        selected_targets = cls._selected_targets(preset, targets)
+        selected_targets = cls._typed_targets(targets)
         if not groups and not selected_targets:
             raise ValueError("Выберите хотя бы одну группу активов, IP-адрес или FQDN.")
         return groups, selected_targets
@@ -224,13 +224,9 @@ class TeamTasksService:
         return [allowed[value] for value in requested]
 
     @staticmethod
-    def _selected_targets(preset: dict[str, Any], targets: builtins.list[str]) -> builtins.list[str]:
-        requested = normalize_scan_targets(value for value in targets if str(value).strip())
-        allowed = set(preset.get("allowed_targets") or [])
-        forbidden = [value for value in requested if value not in allowed]
-        if forbidden:
-            raise ValueError(f"Цели не разрешены пресетом: {', '.join(forbidden)}.")
-        return requested
+    def _typed_targets(targets: builtins.list[str]) -> builtins.list[str]:
+        """Engineers type any IP, network, range or FQDN; only the format is checked."""
+        return normalize_scan_targets(value for value in targets if str(value).strip())
 
     @staticmethod
     def _task_selection(task: dict[str, Any]) -> tuple[builtins.list[dict[str, Any]], builtins.list[str]]:

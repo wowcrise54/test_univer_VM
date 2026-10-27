@@ -32,7 +32,6 @@ def _preset(**overrides):
         "allowed_asset_groups": [{"id": "g-1", "name": "Servers", "path": "Root / Servers"},
                                  {"id": "g-2", "name": "DC", "path": "Root / DC"},
                                  {"id": "g-3", "name": "Branch", "path": "Root / Branch"}],
-        "allowed_targets": ["10.0.0.15", "10.0.1.0/24", "srv01.corp.local"],
         "name_prefix": "[WIN]", "is_active": True, "version": 3, "role_ids": [WINDOWS_ROLE],
     }
     preset.update(overrides)
@@ -107,7 +106,7 @@ def test_create_rejects_groups_outside_preset_policy(service, groups, message):
     service.create_remote.assert_not_called()
 
 
-def test_create_scans_selected_ip_and_fqdn_targets(service, repository):
+def test_create_scans_ip_and_fqdn_targets_typed_by_engineer(service, repository):
     service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["SRV01.corp.local.", "10.0.0.15"],
                    name=None, description=None, unrestricted=False)
 
@@ -127,12 +126,20 @@ def test_create_combines_groups_and_targets(service):
     assert payload["include"] == {"assets": [], "targets": ["10.0.1.0/24"], "assetsGroups": ["g-1"]}
 
 
+def test_create_accepts_any_well_formed_target(service):
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[],
+                   targets=["192.168.5.0/24", "10.9.9.1-10.9.9.20", "other.example.com", "  "],
+                   name=None, description=None, unrestricted=False)
+    payload = service.create_remote.call_args.args[0]
+    assert payload["include"]["targets"] == ["192.168.5.0/24", "10.9.9.1-10.9.9.20", "other.example.com"]
+
+
 @pytest.mark.parametrize(("targets", "message"), [
-    (["10.0.0.16"], "не разрешены пресетом: 10.0.0.16"),
-    (["evil.example.com"], "не разрешены"),
+    (["10.0.0.300"], "IP-адрес"),
     (["not a host"], "FQDN"),
+    (["   "], "хотя бы одну группу"),
 ])
-def test_create_rejects_targets_outside_preset_policy(service, targets, message):
+def test_create_rejects_malformed_targets(service, targets, message):
     with pytest.raises(ValueError, match=message):
         service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=targets, name=None,
                        description=None, unrestricted=False)

@@ -57,6 +57,19 @@ export function teamTaskStatus(task) {
   return STATUS_LABELS[status] || status || "—";
 }
 
+// Targets are separated by commas, semicolons, spaces or new lines; the
+// backend validates IP addresses, networks, ranges and FQDNs.
+export function parseTargets(text) {
+  return [
+    ...new Set(
+      String(text || "")
+        .split(/[\s,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 function errorText(error) {
   return error?.operatorMessage || error?.message || String(error || "");
 }
@@ -179,10 +192,6 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                 <div>
                   <dt>Группы</dt>
                   <dd>{(preset.allowed_asset_groups || []).length}</dd>
-                </div>
-                <div>
-                  <dt>IP / FQDN</dt>
-                  <dd>{(preset.allowed_targets || []).length}</dd>
                 </div>
                 <div>
                   <dt>В задаче</dt>
@@ -428,7 +437,7 @@ function TeamTaskHistory({ taskId }) {
 function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
   const titleId = useId();
   const [selected, setSelected] = useState([]);
-  const [selectedTargets, setSelectedTargets] = useState([]);
+  const [targetsText, setTargetsText] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [search, setSearch] = useState("");
@@ -447,7 +456,7 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         body: JSON.stringify({
           preset_id: preset.preset_id,
           asset_group_ids: selected,
-          targets: selectedTargets,
+          targets,
           name: name.trim() || null,
           description: description.trim() || null,
           start_now: startNow,
@@ -492,21 +501,15 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         .toLocaleLowerCase("ru-RU")
         .includes(query),
   );
-  const allowedGroups = preset.allowed_asset_groups || [];
-  const allowedTargets = preset.allowed_targets || [];
-  const targets = allowedTargets.filter(
-    (target) => !query || target.toLocaleLowerCase("ru-RU").includes(query),
-  );
-  const toggleIn = (setter) => (id) =>
-    setter((current) =>
+  const toggle = (id) =>
+    setSelected((current) =>
       current.includes(id)
         ? current.filter((value) => value !== id)
         : [...current, id],
     );
-  const toggle = toggleIn(setSelected);
-  const toggleTarget = toggleIn(setSelectedTargets);
+  const targets = parseTargets(targetsText);
   const overLimit = selected.length > limit;
-  const blocked = (!selected.length && !selectedTargets.length) || overLimit;
+  const blocked = (!selected.length && !targets.length) || overLimit;
 
   const dialog = (
     <div
@@ -530,43 +533,17 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         </span>
         <h2 id={titleId}>{preset.name}</h2>
         {preset.description ? <p>{preset.description}</p> : null}
-        <input
-          type="search"
-          value={search}
-          placeholder={
-            allowedTargets.length ? "Поиск группы, IP или FQDN" : "Поиск группы"
-          }
-          aria-label={
-            allowedTargets.length
-              ? "Поиск группы активов, IP-адреса или FQDN"
-              : "Поиск группы активов"
-          }
-          onChange={(event) => setSearch(event.target.value)}
-        />
-        {allowedTargets.length ? (
-          <fieldset className="preset-fieldset">
-            <legend>IP-адреса и FQDN · выбрано {selectedTargets.length}</legend>
-            <div className="preset-group-list">
-              {targets.map((target) => (
-                <label className="toggle" key={target}>
-                  <input
-                    type="checkbox"
-                    checked={selectedTargets.includes(target)}
-                    onChange={() => toggleTarget(target)}
-                  />
-                  <span>{target}</span>
-                </label>
-              ))}
-              {!targets.length ? (
-                <p className="preset-muted">Адреса не найдены.</p>
-              ) : null}
-            </div>
-          </fieldset>
-        ) : null}
-        <fieldset className="preset-fieldset" hidden={!allowedGroups.length}>
+        <fieldset className="preset-fieldset">
           <legend>
             Группы активов · выбрано {selected.length} из {limit} возможных
           </legend>
+          <input
+            type="search"
+            value={search}
+            placeholder="Поиск группы"
+            aria-label="Поиск группы активов"
+            onChange={(event) => setSearch(event.target.value)}
+          />
           <div className="preset-group-list">
             {groups.map((group) => (
               <label className="toggle" key={group.id}>
@@ -587,6 +564,21 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
               Пресет разрешает не больше {limit} групп в одной задаче.
             </p>
           ) : null}
+        </fieldset>
+        <fieldset className="preset-fieldset">
+          <legend>IP-адреса, подсети и FQDN · указано {targets.length}</legend>
+          <textarea
+            rows={3}
+            value={targetsText}
+            aria-label="IP-адреса, подсети и FQDN для сканирования"
+            placeholder={"10.0.0.15\n10.0.1.0/24\nsrv01.corp.local"}
+            onChange={(event) => setTargetsText(event.target.value)}
+          />
+          <small className="preset-muted">
+            IP-адрес, подсеть (CIDR), диапазон (10.0.2.1-10.0.2.50) или FQDN —
+            по одному в строке или через запятую. Можно вместе с группами или
+            без них.
+          </small>
         </fieldset>
         <Field label="Название (необязательно)">
           <input

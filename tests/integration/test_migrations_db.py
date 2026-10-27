@@ -68,7 +68,6 @@ ALTERED_COLUMNS = {
     ("vulnerability_passports", "exploitation_evidence_source"),  # 0025 (generated)
     ("scan_tasks", "preset_id"),             # 0028
     ("scan_tasks", "preset_asset_groups"),   # 0028
-    ("scan_task_presets", "allowed_targets"),  # 0029
     ("scan_tasks", "preset_targets"),        # 0029
 }
 

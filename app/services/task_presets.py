@@ -4,7 +4,6 @@ import builtins
 from collections.abc import Callable
 from typing import Any
 
-from ..domain.scan_targets import normalize_scan_targets
 from ..repositories.task_presets import TaskPresetRepository
 from . import preset_templates
 
@@ -137,7 +136,6 @@ class TaskPresetService:
             "trigger_parameters": trigger if trigger and trigger.get("isEnabled") else None,
             "denied_scan_settings": denied if denied and denied.get("isEnabled") else None,
             "allowed_asset_groups": [{"id": str(value)} for value in include.get("assetsGroups") or []],
-            "allowed_targets": [str(value).strip() for value in include.get("targets") or [] if str(value).strip()],
             "source_task_id": task.get("mp_task_id"),
         }
 
@@ -157,10 +155,10 @@ class TaskPresetService:
         if missing_roles:
             raise ValueError(f"Роли не найдены: {', '.join(str(value) for value in sorted(missing_roles))}.")
         groups = clean.get("allowed_asset_groups") or []
-        clean["allowed_asset_groups"] = list({str(group["id"]): group for group in groups}.values())
-        clean["allowed_targets"] = normalize_scan_targets(clean.get("allowed_targets") or [])
-        if not clean["allowed_asset_groups"] and not clean["allowed_targets"]:
-            raise ValueError("Укажите хотя бы одну разрешённую группу активов, IP-адрес или FQDN.")
+        unique_groups = list({str(group["id"]): group for group in groups}.values())
+        if not unique_groups:
+            raise ValueError("Укажите хотя бы одну разрешённую группу активов.")
+        clean["allowed_asset_groups"] = unique_groups
         self._check_mpvm_references(clean)
         return clean
 

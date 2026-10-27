@@ -13,13 +13,13 @@ import { Sidebar } from "../app/layout.jsx";
 import {
   TeamTasksPage,
   isTeamTaskRunning,
+  parseTargets,
   teamTaskStatus,
 } from "../features/team-tasks/TeamTasksPage.jsx";
 import { TaskPresetsPage } from "../features/task-presets/TaskPresetsPage.jsx";
 import {
   emptyPresetForm,
   formToPayload,
-  parseTargets,
   presetFormProblems,
   presetToForm,
   templateDraftToForm,
@@ -143,23 +143,7 @@ describe("engineer scans page", () => {
     expect(request.headers["X-Idempotency-Key"]).toBe("key-1:run");
   });
 
-  it("creates a task for IP and FQDN targets without groups", async () => {
-    api.mockImplementation(async (path, options = {}) => {
-      if (path === "/api/task-presets")
-        return {
-          rows: [
-            {
-              ...PRESET,
-              allowed_asset_groups: [],
-              allowed_targets: ["10.0.0.15", "srv01.corp.local"],
-            },
-          ],
-        };
-      if (path === "/api/team-tasks" && !options.method) return { rows: [] };
-      if (path === "/api/team-tasks" && options.method === "POST")
-        return { task: { ...TASK, name: "[WIN] srv01" } };
-      throw new Error(`unexpected ${path}`);
-    });
+  it("creates a task for IP addresses, subnets and FQDNs typed by the engineer", async () => {
     const showAlert = vi.fn();
     renderWithClient(
       <TeamTasksPage
@@ -175,27 +159,31 @@ describe("engineer scans page", () => {
     const create = within(dialog).getByRole("button", { name: "Создать" });
     expect(create).toBeDisabled();
     fireEvent.change(
-      within(dialog).getByLabelText("Поиск группы активов, IP-адреса или FQDN"),
-      { target: { value: "srv" } },
+      within(dialog).getByLabelText(
+        "IP-адреса, подсети и FQDN для сканирования",
+      ),
+      { target: { value: "192.168.5.0/24, srv01.corp.local\n10.0.0.15" } },
     );
-    expect(within(dialog).queryByLabelText("10.0.0.15")).toBeNull();
-    fireEvent.click(within(dialog).getByLabelText("srv01.corp.local"));
+    expect(within(dialog).getByText(/указано 3/)).toBeInTheDocument();
+    expect(create).toBeEnabled();
     fireEvent.click(create);
 
-    await waitFor(() =>
-      expect(showAlert).toHaveBeenCalledWith(
-        "Задача «[WIN] srv01» создана.",
-        "success",
-      ),
-    );
+    await waitFor(() => expect(showAlert).toHaveBeenCalled());
     const [, request] = api.mock.calls.find(
       ([path, options]) => path === "/api/team-tasks" && options?.method,
     );
     expect(JSON.parse(request.body)).toMatchObject({
       asset_group_ids: [],
-      targets: ["srv01.corp.local"],
+      targets: ["192.168.5.0/24", "srv01.corp.local", "10.0.0.15"],
       start_now: false,
     });
+  });
+
+  it("splits typed targets and drops duplicates", () => {
+    expect(
+      parseTargets(" 10.0.0.1, srv.corp.local;10.0.1.0/24\n\n10.0.0.1 "),
+    ).toEqual(["10.0.0.1", "srv.corp.local", "10.0.1.0/24"]);
+    expect(parseTargets("")).toEqual([]);
   });
 
   it("shows team tasks with status, stop and history", async () => {
@@ -312,25 +300,6 @@ describe("preset form helpers", () => {
     });
     expect(formToPayload(emptyPresetForm())).not.toHaveProperty(
       "expected_version",
-    );
-  });
-
-  it("parses and round-trips IP and FQDN targets", () => {
-    expect(
-      parseTargets(" 10.0.0.1, srv.corp.local;10.0.1.0/24\n\n10.0.0.1 "),
-    ).toEqual(["10.0.0.1", "srv.corp.local", "10.0.1.0/24"]);
-    const form = presetToForm({
-      ...PRESET,
-      allowed_asset_groups: [],
-      allowed_targets: ["10.0.0.1", "srv.corp.local"],
-    });
-    expect(form.allowed_targets_text).toBe("10.0.0.1\nsrv.corp.local");
-    expect(formToPayload(form).allowed_targets).toEqual([
-      "10.0.0.1",
-      "srv.corp.local",
-    ]);
-    expect(presetFormProblems(form)).not.toContain(
-      "Добавьте хотя бы одну разрешённую группу активов, IP-адрес или FQDN.",
     );
   });
 
@@ -510,50 +479,7 @@ describe("preset administration", () => {
       profile_id: "profile-1",
       role_ids: [10],
       allowed_asset_groups: [{ id: "g-2" }],
-      allowed_targets: [],
       credential_transport: "windows",
-    });
-  });
-
-  it("creates a preset limited to IP and FQDN targets", async () => {
-    renderWithClient(<TaskPresetsPage showAlert={vi.fn()} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "+ Новый пресет" }),
-    );
-    const save = screen.getByRole("button", { name: "Сохранить пресет" });
-    fireEvent.change(screen.getByLabelText("Название"), {
-      target: { value: "New" },
-    });
-    await screen.findByRole("option", { name: "Main" });
-    fireEvent.change(screen.getByLabelText("Область (scope)"), {
-      target: { value: "scope-1" },
-    });
-    fireEvent.change(screen.getByLabelText("Профиль сканирования"), {
-      target: { value: "profile-1" },
-    });
-    fireEvent.click(
-      await screen.findByRole("checkbox", { name: "Инженер Windows" }),
-    );
-    expect(save).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Разрешённые IP-адреса и FQDN"), {
-      target: { value: "10.0.0.15\nsrv01.corp.local" },
-    });
-    expect(save).toBeEnabled();
-    fireEvent.click(save);
-
-    await waitFor(() =>
-      expect(
-        api.mock.calls.some(
-          ([path, options]) => path === "/api/task-presets" && options?.method,
-        ),
-      ).toBe(true),
-    );
-    const [, request] = api.mock.calls.find(
-      ([path, options]) => path === "/api/task-presets" && options?.method,
-    );
-    expect(JSON.parse(request.body)).toMatchObject({
-      allowed_asset_groups: [],
-      allowed_targets: ["10.0.0.15", "srv01.corp.local"],
     });
   });
 
