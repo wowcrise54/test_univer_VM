@@ -8,6 +8,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("DELETE", "/api/asset-cards/{asset_id}"): "asset_cards.manage",
     ("DELETE", "/api/asset-groups/{group_id}/overrides/{asset_id}"): "asset_groups.manage",
     ("DELETE", "/api/auth/roles/{role_id}"): "security.roles.manage",
+    ("DELETE", "/api/auth/users/{user_id}"): "security.users.manage",
     ("DELETE", "/api/automations/runbooks/{runbook_id}"): "automations.manage",
     ("DELETE", "/api/automations/schedules/{schedule_id}"): "automations.manage",
     ("DELETE", "/api/saved-views/{view_id}"): "saved_views.manage",

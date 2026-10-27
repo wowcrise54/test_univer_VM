@@ -1047,6 +1047,18 @@ def auth_update_user(user_id: int, payload: app_auth.UserUpdateRequest, request:
     return app_auth.update_user(user_id, payload, actor_id=request.state.user["id"])
 
 
+@auth_router.delete("/users/{user_id}", status_code=204)
+def auth_delete_user(user_id: int, request: Request) -> Response:
+    deleted = app_auth.delete_user(user_id, actor_id=request.state.user["id"])
+    # The row is gone, so keep who was deleted in the audit trail itself.
+    app_auth.audit_event(
+        request=request, user=request.state.user, event_type="user_deleted", decision="allow",
+        permission_key="security.users.manage", target_type="user", target_id=str(user_id),
+        details={"username": deleted["username"], "display_name": deleted["display_name"]},
+    )
+    return Response(status_code=204)
+
+
 @auth_router.get("/permissions")
 def auth_permissions() -> dict[str, Any]:
     return {"rows": app_auth.list_permissions()}

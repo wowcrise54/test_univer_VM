@@ -161,6 +161,22 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
   const [roleFilter, setRoleFilter] = useState("");
   const [editingId, setEditingId] = useState(null);
   const editing = users.find((user) => user.id === editingId);
+  const [deletingId, setDeletingId] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const deleting = users.find((user) => user.id === deletingId);
+  const deleteUser = async () => {
+    setDeleteBusy(true);
+    const target = deleting;
+    try {
+      const deleted = await mutate(
+        () => api(`/api/auth/users/${target.id}`, { method: "DELETE" }),
+        `Пользователь ${target.username} удалён.`,
+      );
+      if (deleted) setDeletingId(null);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
   const needle = query.trim().toLowerCase();
   const visibleUsers = users.filter(
     (user) =>
@@ -332,6 +348,15 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
                         >
                           {user.is_active ? "Отключить" : "Включить"}
                         </button>
+                        {!isSelf ? (
+                          <Button
+                            variant="tiny-danger"
+                            aria-label={`Удалить пользователя: ${user.display_name}`}
+                            onClick={() => setDeletingId(user.id)}
+                          >
+                            Удалить
+                          </Button>
+                        ) : null}
                       </div>
                     ) : null}
                   </td>
@@ -357,6 +382,26 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
           onSave={(roleIds) => saveRoles(editing, roleIds)}
         />
       ) : null}
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        title="Удалить пользователя?"
+        description={
+          deleting
+            ? `Учётная запись «${deleting.display_name}» (${deleting.username}) будет удалена без возможности восстановления.`
+            : ""
+        }
+        impact={[
+          "Роли и активные сессии пользователя будут удалены",
+          "Записи аудита сохранятся с именем пользователя",
+          "Пользователь LDAP при следующем входе получит новую учётную запись с ролью по умолчанию; чтобы закрыть доступ, отключите его",
+        ]}
+        requireText={deleting?.username || ""}
+        requireHint="чтобы подтвердить удаление"
+        confirmLabel="Удалить пользователя"
+        busy={deleteBusy}
+        onClose={() => setDeletingId(null)}
+        onConfirm={deleteUser}
+      />
     </div>
   );
 }
