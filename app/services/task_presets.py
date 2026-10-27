@@ -147,6 +147,9 @@ class TaskPresetService:
         clean["name_prefix"] = str(clean.get("name_prefix") or "").strip()
         clean["credential_id"] = clean.get("credential_id") or None
         clean["host_discovery_profile_id"] = clean.get("host_discovery_profile_id") or None
+        if clean.get("host_discovery_enabled") and not clean["host_discovery_profile_id"]:
+            # MP VM rejects an enabled HostDiscovery without a profile ("Value cannot be null").
+            raise ValueError("Для HostDiscovery выберите профиль.")
         if clean.get("credential_id") and clean.get("credential_transport") != OS_TRANSPORTS[clean["os_family"]]:
             raise ValueError("Транспорт учётной записи не соответствует ОС пресета (Windows — windows, Linux — ssh).")
         if not role_ids:

@@ -257,6 +257,13 @@ class TeamTasksService:
         preset: dict[str, Any], *, name: str, description: str, groups: builtins.list[dict[str, Any]],
         targets: builtins.list[str],
     ) -> dict[str, Any]:
+        if preset.get("host_discovery_enabled") and not preset.get("host_discovery_profile_id"):
+            # Presets saved before the profile became required; MP VM would answer "Value cannot be null".
+            raise DomainError(
+                "PRESET_HOST_DISCOVERY_PROFILE_MISSING",
+                "В пресете включён HostDiscovery без профиля. Администратору нужно выбрать профиль в пресете.",
+                status_code=409, context={"preset_id": preset.get("preset_id")},
+            )
         return build_scanner_task_payload(
             name=name,
             description=description,

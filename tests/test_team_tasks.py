@@ -146,6 +146,20 @@ def test_create_rejects_malformed_targets(service, targets, message):
     service.create_remote.assert_not_called()
 
 
+def test_host_discovery_without_profile_fails_before_mpvm(service, repository):
+    repository.get.return_value = _preset(host_discovery_enabled=True, host_discovery_profile_id=None)
+    with pytest.raises(DomainError) as error:
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.252.205.23"],
+                       name=None, description=None, unrestricted=False)
+    assert error.value.code == "PRESET_HOST_DISCOVERY_PROFILE_MISSING" and error.value.status_code == 409
+    service.create_remote.assert_not_called()
+
+    repository.get.return_value = _preset(host_discovery_enabled=True, host_discovery_profile_id="hd-1")
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+                   unrestricted=False)
+    assert service.create_remote.call_args.args[0]["hostDiscovery"] == {"enabled": True, "profile": "hd-1"}
+
+
 def test_preset_of_another_team_is_invisible(service, repository):
     repository.get.return_value = _preset(role_ids=[LINUX_ROLE])
     with pytest.raises(LookupError):

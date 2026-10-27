@@ -611,7 +611,7 @@ function PresetEditor({
                 update({ host_discovery_profile_id: event.target.value })
               }
             >
-              <option value="">Профиль по умолчанию</option>
+              <option value="">Выберите профиль</option>
               {profiles.map((item) => (
                 <option value={item.id} key={item.id}>
                   {item.name}
