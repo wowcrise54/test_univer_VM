@@ -174,9 +174,6 @@ describe("remediation workflows", () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("/api/remediation/cases?q=CVE+%26+host"),
     );
-    fireEvent.click(
-      screen.getByText("Фильтры и массовые действия", { exact: true }),
-    );
     fireEvent.change(screen.getByLabelText("Статус"), {
       target: { value: "in_progress" },
     });
@@ -194,16 +191,15 @@ describe("remediation workflows", () => {
   it("bulk updates only checked cases and clears the selection after success", async () => {
     mount();
     await ready();
-    fireEvent.click(
-      screen.getByText("Фильтры и массовые действия", { exact: true }),
-    );
+    // Bulk actions appear only for a selection.
     expect(
-      screen.getByRole("button", { name: "Взять в работу (0)" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Взять в работу" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Выбрать RCE"));
     fireEvent.click(screen.getByLabelText("Выбрать Exposure"));
     fireEvent.click(screen.getByLabelText("Выбрать Exposure"));
-    fireEvent.click(screen.getByRole("button", { name: "Взять в работу (1)" }));
+    expect(screen.getByText("Выбрано: 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Взять в работу" }));
     await waitFor(() =>
       expect(alert).toHaveBeenCalledWith("Обновлено кейсов: 2.", "success"),
     );
@@ -214,8 +210,8 @@ describe("remediation workflows", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Взять в работу (0)" }),
-      ).toBeDisabled(),
+        screen.queryByRole("button", { name: "Взять в работу" }),
+      ).not.toBeInTheDocument(),
     );
   });
 
@@ -230,12 +226,9 @@ describe("remediation workflows", () => {
     await waitFor(() =>
       expect(screen.queryByLabelText("Выбрать RCE")).not.toBeInTheDocument(),
     );
-    fireEvent.click(
-      screen.getByText("Фильтры и массовые действия", { exact: true }),
-    );
     expect(
-      screen.getByRole("button", { name: "Взять в работу (0)" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Взять в работу" }),
+    ).not.toBeInTheDocument();
   });
 
   it("saves optimistic version, nullable fields and an exception reason", async () => {
@@ -340,12 +333,12 @@ describe("remediation workflows", () => {
     async (apply) => {
       mount();
       await ready();
-      fireEvent.click(screen.getByText("Настройка SLA", { exact: true }));
+      fireEvent.click(screen.getByText("Сроки устранения", { exact: true }));
       for (const [label, value] of [
-        ["critical", "3"],
-        ["high", "14"],
-        ["medium", "60"],
-        ["low", "120"],
+        ["Критическая", "3"],
+        ["Высокая", "14"],
+        ["Средняя", "60"],
+        ["Низкая", "120"],
         ["Скоро срок", "0"],
       ])
         fireEvent.change(screen.getByLabelText(new RegExp(`^${label}`)), {
@@ -358,6 +351,17 @@ describe("remediation workflows", () => {
             : "Сохранить для новых",
         }),
       );
+      // Rewriting open due dates asks for confirmation first.
+      if (apply) {
+        expect(calls("/api/remediation/policy", "PUT")).toHaveLength(0);
+        fireEvent.click(
+          within(
+            screen.getByRole("dialog", {
+              name: "Пересчитать сроки открытых кейсов?",
+            }),
+          ).getByRole("button", { name: "Пересчитать" }),
+        );
+      }
       await waitFor(() =>
         expect(alert).toHaveBeenCalledWith(
           "SLA-политика сохранена.",
@@ -410,13 +414,10 @@ describe("remediation workflows", () => {
       await ready();
       if (operation === "save") await openCase();
       if (operation === "bulk") {
-        fireEvent.click(
-          screen.getByText("Фильтры и массовые действия", { exact: true }),
-        );
         fireEvent.click(screen.getByLabelText("Выбрать RCE"));
       }
       if (operation === "policy")
-        fireEvent.click(screen.getByText("Настройка SLA", { exact: true }));
+        fireEvent.click(screen.getByText("Сроки устранения", { exact: true }));
       failures.set(`${method} ${route}`, new Error("Conflict"));
       const action = () =>
         fireEvent.click(
@@ -424,7 +425,7 @@ describe("remediation workflows", () => {
             name: {
               detail: CASE.cve,
               save: "Сохранить",
-              bulk: "Взять в работу (1)",
+              bulk: "Взять в работу",
               policy: "Сохранить для новых",
             }[operation],
             exact: true,
@@ -654,7 +655,7 @@ describe("risk workspace workflows", () => {
       const risk = riskRegion();
       await waitFor(() =>
         expect(risk.getByRole("alert")).toHaveTextContent(
-          database ? "Примените миграции" : "Нет доступа к риску",
+          database ? "обратитесь к администратору" : "Нет доступа к риску",
         ),
       );
       failures.clear();

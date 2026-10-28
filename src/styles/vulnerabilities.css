@@ -48,6 +48,19 @@
   align-items: center;
 }
 
+/* Rarely used filters sit under one disclosure across the full row. */
+.vulnerability-filters__more {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.vulnerability-filters__more-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
 .vulnerability-context {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

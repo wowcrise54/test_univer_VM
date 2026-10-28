@@ -310,9 +310,7 @@ describe("vulnerability dashboard", () => {
     expect(affectedHosts.closest("article")).toHaveTextContent("143");
     expect(screen.getByText("Карточки активов")).toBeInTheDocument();
     expect(screen.getByText("184 из 201 · 92%")).toBeInTheDocument();
-    expect(
-      screen.getByText("Как читать показатели: уязвимости, findings и хосты"),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Как читать показатели/)).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "Ошибка проверки границ памяти позволяет выполнить произвольный код.",
@@ -367,12 +365,14 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard(undefined, "dashboards");
-    fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
+    fireEvent.click(
+      screen.getByText("Трендовые уязвимости").closest("summary"),
+    );
 
-    const heading = await screen.findByRole("heading", {
+    // The disclosure names the section; no heading repeats it inside.
+    const section = await screen.findByRole("region", {
       name: "Трендовые уязвимости",
     });
-    const section = heading.closest("section");
     expect(
       await within(section).findByText("CVE-2026-58644"),
     ).toBeInTheDocument();
@@ -437,7 +437,7 @@ describe("vulnerability dashboard", () => {
       return url.pathname === "/api/vulnerabilities/trending";
     }).length;
     const refreshButton = await screen.findByRole("button", {
-      name: "Перечитать срез",
+      name: "Обновить",
     });
     await waitFor(() => expect(refreshButton).toBeEnabled());
     fireEvent.click(refreshButton);
@@ -482,7 +482,9 @@ describe("vulnerability dashboard", () => {
       return Promise.resolve(responseFor(path));
     });
     renderDashboard(undefined, "dashboards");
-    fireEvent.click(screen.getByText("Новые сигналы").closest("summary"));
+    fireEvent.click(
+      screen.getByText("Трендовые уязвимости").closest("summary"),
+    );
 
     expect(
       await screen.findByText("Трендовые паспорта временно недоступны"),
@@ -546,7 +548,7 @@ describe("vulnerability dashboard", () => {
       }),
     ).toBeInTheDocument();
     fireEvent.click(
-      within(finding).getByRole("button", { name: "Взять в работу" }),
+      within(finding).getByRole("button", { name: "Взять в устранение" }),
     );
 
     await waitFor(() => {
@@ -655,7 +657,7 @@ describe("vulnerability dashboard", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Открыта")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Взять в работу/ }),
+      screen.queryByRole("button", { name: /Взять в устранение/ }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: /Открыть задачу/ }),
@@ -784,9 +786,7 @@ describe("vulnerability dashboard", () => {
       name: "Динамика риска",
     });
     const section = heading.closest("section");
-    expect(
-      await within(section).findByText("+5 к прошлой точке"),
-    ).toBeInTheDocument();
+    expect(await within(section).findByText("+5")).toBeInTheDocument();
     expect(
       within(section).getByText("Критичность последнего снимка"),
     ).toBeInTheDocument();
@@ -928,6 +928,7 @@ describe("vulnerability dashboard", () => {
         ),
       ).toBe(true),
     );
+    fireEvent.click(screen.getByText("Ещё фильтры", { exact: true }));
     await waitFor(() =>
       expect(screen.queryByRole("combobox", { name: "Актив" })).toBeVisible(),
     );
@@ -1054,8 +1055,8 @@ describe("vulnerability dashboard", () => {
     renderDashboard();
 
     expect(await screen.findByRole("note")).toHaveTextContent(
-      "Неполные данные",
+      "Данные неполные",
     );
-    expect(screen.getByRole("note")).toHaveTextContent("нижнюю оценку");
+    expect(screen.getByRole("note")).toHaveTextContent("значения занижены");
   });
 });

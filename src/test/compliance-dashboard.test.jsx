@@ -98,7 +98,7 @@ describe("compliance dashboard and report downloads", () => {
     expect(screen.getByText("other-category")).toBeInTheDocument();
     expect(screen.getByText("Old server")).toBeInTheDocument();
     expect(screen.getByText("90")).toBeInTheDocument();
-    expect(screen.getByText("stale")).toBeInTheDocument();
+    expect(screen.getByText("Скан устарел")).toBeInTheDocument();
     expect(screen.getAllByRole("table")).toHaveLength(2);
     expect(
       within(screen.getAllByRole("table")[0]).getAllByRole("row"),
@@ -108,7 +108,7 @@ describe("compliance dashboard and report downloads", () => {
   it("does not fetch a disabled dashboard", () => {
     page(false);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Загружаю контрольный срез",
+      "Загрузка…",
     );
     expect(api).not.toHaveBeenCalled();
   });
@@ -148,9 +148,9 @@ describe("compliance dashboard and report downloads", () => {
         api.mock.calls.some(([path]) => path.includes("/organization/summary")),
       ).toBe(true),
     );
-    expect(
-      screen.getByText("Пользовательские устройства и серверы по типу актива"),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Организация" })).toHaveClass(
+      "is-active",
+    );
     fireEvent.change(screen.getByLabelText("Дата оценки"), {
       target: { value: "2026-09-15" },
     });

@@ -1221,11 +1221,10 @@ tr.is-selected td {
 
 .remediation-toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr);
-}
-
-.remediation-toolbar--secondary {
-  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+  grid-template-columns:
+    minmax(240px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr)
+    auto;
+  align-items: center;
 }
 
 .remediation-detail {
@@ -1461,7 +1460,7 @@ tr.is-selected td {
   .asset-query-view__save,
   .asset-query-presets__picker,
   .asset-query-preset-search,
-  .remediation-toolbar--secondary {
+  .remediation-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1526,8 +1525,7 @@ tr.is-selected td {
   .operation-filter-grid,
   .saved-view-row,
   .asset-card-build-primary,
-  .remediation-toolbar,
-  .remediation-toolbar--secondary {
+  .remediation-toolbar {
     grid-template-columns: minmax(0, 1fr);
   }
 

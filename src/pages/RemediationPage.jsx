@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { REMEDIATION_STATUS_LABELS } from "../shared/labels.js";
+import {
+  REMEDIATION_STATUS_LABELS,
+  severityLabel,
+} from "../shared/labels.js";
 import { formatDate } from "../shared/format.js";
 import { api } from "../api/client.js";
-import { ActionMenu, Button, Disclosure } from "../shared/ui.jsx";
+import {
+  ActionMenu,
+  Button,
+  ConfirmDialog,
+  Disclosure,
+} from "../shared/ui.jsx";
 
 export function RemediationPage({ showAlert }) {
   const [rows, setRows] = useState([]);
@@ -106,12 +114,11 @@ export function RemediationPage({ showAlert }) {
   };
 
   return (
-    <section className="panel remediation-page">
-      <div className="panel__header">
-        <div>
-          <h2>Устранение уязвимостей</h2>
-          <p>Очередь, ответственные и сроки.</p>
-        </div>
+    <section
+      className="panel remediation-page"
+      aria-labelledby="workspace-title"
+    >
+      <div className="panel__header panel__header--actions">
         <Button variant="secondary" onClick={load}>
           Обновить
         </Button>
@@ -134,54 +141,52 @@ export function RemediationPage({ showAlert }) {
           value={filters.q}
           onChange={(e) => setFilters({ ...filters, q: e.target.value })}
         />
-      </div>
-      <Disclosure
-        title="Фильтры и массовые действия"
-        meta={checked.length ? `Выбрано: ${checked.length}` : "Без выбора"}
-      >
-        <div className="remediation-toolbar remediation-toolbar--secondary">
-          <select
-            aria-label="Статус"
-            value={filters.status}
-            onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-          >
-            <option value="">Все статусы</option>
-            {Object.entries(REMEDIATION_STATUS_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Критичность"
-            value={filters.severity}
+        <select
+          aria-label="Статус"
+          value={filters.status}
+          onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+        >
+          <option value="">Все статусы</option>
+          {Object.entries(REMEDIATION_STATUS_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Критичность"
+          value={filters.severity}
+          onChange={(e) => setFilters({ ...filters, severity: e.target.value })}
+        >
+          <option value="">Любая критичность</option>
+          {["critical", "high", "medium", "low", "unknown"].map((value) => (
+            <option key={value} value={value}>
+              {severityLabel(value)}
+            </option>
+          ))}
+        </select>
+        <label>
+          <input
+            type="checkbox"
+            checked={filters.overdue}
             onChange={(e) =>
-              setFilters({ ...filters, severity: e.target.value })
+              setFilters({ ...filters, overdue: e.target.checked })
             }
-          >
-            <option value="">Любая критичность</option>
-            {["critical", "high", "medium", "low", "unknown"].map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-          <label>
-            <input
-              type="checkbox"
-              checked={filters.overdue}
-              onChange={(e) =>
-                setFilters({ ...filters, overdue: e.target.checked })
-              }
-            />{" "}
-            Только просроченные
-          </label>
-          <Button
-            disabled={!checked.length}
-            onClick={() => bulkUpdate("in_progress")}
-          >
-            Взять в работу ({checked.length})
+          />{" "}
+          Только просроченные
+        </label>
+      </div>
+      {checked.length ? (
+        <div className="selection-bar" role="region" aria-label="Выбранные кейсы">
+          <span className="selection-count">Выбрано: {checked.length}</span>
+          <Button onClick={() => bulkUpdate("in_progress")}>
+            Взять в работу
+          </Button>
+          <Button variant="ghost" onClick={() => setChecked([])}>
+            Снять выбор
           </Button>
         </div>
-      </Disclosure>
+      ) : null}
       {error ? <div className="inline-error">{error}</div> : null}
       <div className="table-shell">
         <table>
@@ -238,7 +243,7 @@ export function RemediationPage({ showAlert }) {
                   </td>
                   <td>
                     <span className={`severity severity--${item.severity}`}>
-                      {item.severity}
+                      {severityLabel(item.severity)}
                     </span>
                   </td>
                   <td>{REMEDIATION_STATUS_LABELS[item.status]}</td>
@@ -268,10 +273,7 @@ export function RemediationPage({ showAlert }) {
           onSave={updateCase}
         />
       ) : null}
-      <Disclosure
-        title="Приоритизация и кампании"
-        meta="Дополнительно"
-      >
+      <Disclosure title="Приоритизация и кампании">
         <RiskWorkspace showAlert={showAlert} onRefresh={load} />
       </Disclosure>
       {policy ? (
@@ -326,7 +328,7 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     } catch (error) {
       setError(
         error.code === "DATABASE_UNAVAILABLE"
-          ? "Модуль приоритизации ещё не подготовлен в PostgreSQL. Примените миграции и повторите загрузку."
+          ? "Приоритизация недоступна — обратитесь к администратору."
           : error.operatorMessage || error.message,
       );
     } finally {
@@ -407,11 +409,9 @@ function RiskWorkspace({ showAlert, onRefresh }) {
     <section className="risk-workspace" aria-label="Приоритет риска">
       <div className="risk-workspace__header">
         <div>
-          <h3>Приоритетная очередь</h3>
-          <p>
-            Локальная модель {summary.risk_model_version || "local-risk-v2"}:
-            критичность актива, доступность, CVSS, возраст и SLA.
-          </p>
+          <h3 title={summary.risk_model_version || undefined}>
+            Приоритетная очередь
+          </h3>
         </div>
         <select
           aria-label="Уровень риска"
@@ -456,9 +456,9 @@ function RiskWorkspace({ showAlert, onRefresh }) {
             setContext({ ...context, environment: event.target.value })
           }
         >
-          <option value="production">Production</option>
-          <option value="test">Test</option>
-          <option value="development">Development</option>
+          <option value="production">Продуктив</option>
+          <option value="test">Тест</option>
+          <option value="development">Разработка</option>
         </select>
         <select
           aria-label="Доступность"
@@ -550,12 +550,13 @@ function RiskWorkspace({ showAlert, onRefresh }) {
                     >
                       {row.risk_score}
                     </strong>
-                    <small>{row.risk_level}</small>
+                    <small>{RISK_LEVEL_LABELS[row.risk_level] || row.risk_level}</small>
                   </td>
                   <td>
                     {row.cve || row.title}
                     <small>
-                      {row.severity} · CVSS {row.cvss_score ?? "—"}
+                      {severityLabel(row.severity)} · CVSS{" "}
+                      {row.cvss_score ?? "—"}
                     </small>
                   </td>
                   <td>
@@ -563,13 +564,15 @@ function RiskWorkspace({ showAlert, onRefresh }) {
                     <small>{row.ip_address || row.fqdn}</small>
                   </td>
                   <td>
-                    {row.criticality} · {row.environment}
+                    {contextLabel(row.criticality)} ·{" "}
+                    {contextLabel(row.environment)}
                     <small>
-                      {row.exposure} · {row.owner || "владелец не указан"}
+                      {contextLabel(row.exposure)} ·{" "}
+                      {row.owner || "владелец не указан"}
                     </small>
                   </td>
                   <td>
-                    <small>{row.risk_explanation}</small>
+                    <small>{explainRisk(row.risk_factors, row.risk_explanation)}</small>
                   </td>
                 </tr>
               ))
@@ -743,7 +746,8 @@ function CaseEditor({ item, onClose, onSave }) {
         <ul className="audit-list">
           {(item.events || []).map((event) => (
             <li key={event.event_id}>
-              <strong>{event.event_type}</strong> ·{" "}
+              <strong>{EVENT_LABELS[event.event_type] || event.event_type}</strong>{" "}
+              ·{" "}
               {formatDate(event.created_at)}
               {event.comment ? <p>{event.comment}</p> : null}
             </li>
@@ -755,6 +759,7 @@ function CaseEditor({ item, onClose, onSave }) {
 }
 
 function PolicyEditor({ policy, setPolicy, onSaved, showAlert }) {
+  const [confirmApply, setConfirmApply] = useState(false);
   const save = async (apply) => {
     try {
       await api("/api/remediation/policy", {
@@ -769,11 +774,11 @@ function PolicyEditor({ policy, setPolicy, onSaved, showAlert }) {
   };
   return (
     <details className="settings-card">
-      <summary>Настройка SLA</summary>
+      <summary>Сроки устранения</summary>
       <div className="policy-grid">
         {["critical", "high", "medium", "low"].map((severity) => (
           <label key={severity}>
-            {severity}
+            {severityLabel(severity)}
             <input
               type="number"
               min="1"
@@ -801,17 +806,81 @@ function PolicyEditor({ policy, setPolicy, onSaved, showAlert }) {
           дней
         </label>
       </div>
-      <p className="muted-text">Пересчёт изменит сроки всех открытых кейсов.</p>
       <div className="action-row">
         <Button variant="secondary" onClick={() => save(false)}>
           Сохранить для новых
         </Button>
-        <Button variant="danger" onClick={() => save(true)}>
+        <Button variant="danger" onClick={() => setConfirmApply(true)}>
           Сохранить и пересчитать открытые
         </Button>
       </div>
+      <ConfirmDialog
+        open={confirmApply}
+        title="Пересчитать сроки открытых кейсов?"
+        description="Сроки всех открытых кейсов изменятся по новой политике."
+        confirmLabel="Пересчитать"
+        onClose={() => setConfirmApply(false)}
+        onConfirm={async () => {
+          setConfirmApply(false);
+          await save(true);
+        }}
+      />
     </details>
   );
+}
+
+const RISK_LEVEL_LABELS = {
+  urgent: "Срочно",
+  high: "Высокий",
+  medium: "Средний",
+  low: "Низкий",
+};
+
+const CONTEXT_LABELS = {
+  critical: "критичный",
+  high: "высокая критичность",
+  medium: "средняя критичность",
+  low: "низкая критичность",
+  production: "продуктив",
+  test: "тест",
+  development: "разработка",
+  external: "внешний",
+  internal: "внутренний",
+  isolated: "изолированный",
+};
+
+const EVENT_LABELS = {
+  finding_created: "Находка обнаружена",
+  finding_absent: "Не обнаружена при сканировании",
+  finding_reappeared: "Обнаружена повторно",
+  operator_update: "Изменено оператором",
+  exception_expired: "Исключение истекло",
+};
+
+function contextLabel(value) {
+  return CONTEXT_LABELS[value] || value || "—";
+}
+
+/** Turns risk factors such as `exposure:internal` into a short Russian line. */
+function explainRisk(factors, fallback) {
+  const items = Array.isArray(factors)
+    ? factors
+    : String(fallback || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+  return items
+    .map((item) => {
+      const [key, value] = item.split(":");
+      if (key === "criticality") return `критичность: ${contextLabel(value)}`;
+      if (key === "exposure") return `доступ: ${contextLabel(value)}`;
+      if (key === "severity") return `уязвимость: ${severityLabel(value)}`;
+      if (key === "exploitation") return "есть эксплойт";
+      if (key === "affected_hosts") return `хостов: ${value}`;
+      if (key === "sla") return "есть срок";
+      return item;
+    })
+    .join(", ");
 }
 
 function toInputDate(value) {

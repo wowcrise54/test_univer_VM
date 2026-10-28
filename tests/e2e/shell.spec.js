@@ -1310,6 +1310,7 @@ test("vulnerability results wait for applied asset selection", async ({
   ).toBeVisible();
   await expect(page.getByText("История риска", { exact: true })).toHaveCount(0);
   expect(selections).toEqual([]);
+  await page.getByText("Ещё фильтры", { exact: true }).click();
   await page.getByLabel("Актив", { exact: true }).fill("host-e2e-1");
   await page.getByRole("button", { name: "Применить фильтры" }).click();
   await expect.poll(() => selections).toEqual(["host-e2e-1"]);
