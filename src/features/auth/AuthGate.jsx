@@ -119,19 +119,17 @@ function LoginForm({ onLogin, error, configured }) {
     <main className="auth-screen">
       <form className="auth-card" onSubmit={submit}>
         <div className="auth-brand">MP</div>
-        <span>MP VM Client</span>
         <h1>Вход в приложение</h1>
-        <p>{authType === "ldap" ? "Используйте доменную учётную запись LDAP." : "Используйте локальную учётную запись."}</p>
         <div className="auth-mode" role="group" aria-label="Способ авторизации">
-          <button type="button" className={authType === "local" ? "is-active" : ""} onClick={() => setAuthType("local")}>
+          <button type="button" className={authType === "local" ? "is-active" : ""} aria-pressed={authType === "local"} onClick={() => setAuthType("local")}>
             Локально
           </button>
-          <button type="button" className={authType === "ldap" ? "is-active" : ""} onClick={() => setAuthType("ldap")}>
+          <button type="button" className={authType === "ldap" ? "is-active" : ""} aria-pressed={authType === "ldap"} onClick={() => setAuthType("ldap")}>
             LDAP
           </button>
         </div>
         {!configured ? <div className="auth-warning">Первый администратор ещё не создан. Задайте MPVM_BOOTSTRAP_ADMIN_PASSWORD и перезапустите приложение.</div> : null}
-        <label><span>{authType === "ldap" ? "LDAP-логин" : "Имя пользователя"}</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
+        <label><span>Логин</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
         <label><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         {message ? <div className="auth-error" role="alert">{message}</div> : null}
         <button type="submit" disabled={pending || !configured}>{pending ? "Входим…" : authType === "ldap" ? "Войти через LDAP" : "Войти"}</button>

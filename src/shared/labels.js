@@ -73,6 +73,20 @@ export function operationKindLabel(kind) {
   );
 }
 
+export function searchTypeLabel(type) {
+  return (
+    {
+      asset: "Актив",
+      vulnerability: "Уязвимость",
+      task: "Задача",
+      case: "Кейс",
+      operation: "Операция",
+      automation: "Расписание",
+      coverage: "Покрытие",
+    }[type] || type
+  );
+}
+
 export function campaignStatusLabel(status) {
   return (
     {

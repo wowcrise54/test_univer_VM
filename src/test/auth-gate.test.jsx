@@ -124,7 +124,7 @@ describe("AuthGate", () => {
     renderGate();
 
     await screen.findByRole("heading", { name: "Вход в приложение" });
-    fireEvent.change(screen.getByLabelText("Имя пользователя"), {
+    fireEvent.change(screen.getByLabelText("Логин"), {
       target: { value: "operator" },
     });
     fireEvent.change(screen.getByLabelText("Пароль"), {
@@ -159,10 +159,11 @@ describe("AuthGate", () => {
 
     await screen.findByRole("heading", { name: "Вход в приложение" });
     fireEvent.click(screen.getByRole("button", { name: "LDAP" }));
-    expect(screen.getByText("Используйте доменную учётную запись LDAP.")).toBeInTheDocument();
-    expect(screen.getByLabelText("LDAP-логин")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "LDAP" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Локально" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText(/Используйте/)).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("LDAP-логин"), { target: { value: "CORP\\operator" } });
+    fireEvent.change(screen.getByLabelText("Логин"), { target: { value: "CORP\\operator" } });
     fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Войти через LDAP" }));
 
@@ -183,7 +184,7 @@ describe("AuthGate", () => {
 
     const heading = await screen.findByRole("heading", { name: "Вход в приложение" });
     expect(heading).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Имя пользователя"), {
+    fireEvent.change(screen.getByLabelText("Логин"), {
       target: { value: "wrong" },
     });
     fireEvent.change(screen.getByLabelText("Пароль"), {
