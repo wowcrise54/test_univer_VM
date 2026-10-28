@@ -25,7 +25,11 @@ export function useAlerts() {
       if (duplicate) return duplicate.id;
       const id = ++nextId.current;
       const alert = { id, message: text, tone, type: tone };
-      const timer = window.setTimeout(() => dismissAlert(id), ALERT_DURATION);
+      // Errors stay until the user closes them; other messages fade out.
+      const timer =
+        tone === "error"
+          ? undefined
+          : window.setTimeout(() => dismissAlert(id), ALERT_DURATION);
       if (entries.current.size >= 4)
         dismissAlert(entries.current.keys().next().value);
       entries.current.set(id, { ...alert, timer });

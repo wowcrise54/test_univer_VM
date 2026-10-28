@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { api, createIdempotencyKey, downloadApiFile } from "./api/client.js";
 import { recordFrontendEvent } from "./diagnostics.js";
 import { useTaskForm } from "./features/tasks/useTaskForm.js";
+import { severityLabel } from "./shared/labels.js";
 import {
   filterOptions,
   formatCount,
@@ -137,7 +138,6 @@ function ConnectionPanel({
     <Panel
       id="connection"
       title="Подключение к MP VM"
-      description="Укажите адрес и способ авторизации. Секреты хранятся только в памяти."
       action={
         session.connected ? (
           <Button
@@ -184,7 +184,6 @@ function ConnectionPanel({
       </div>
       <Disclosure
         title="Дополнительная авторизация"
-        description="Bearer token, OAuth client и параметры TLS"
         meta={form.access_token ? "Bearer token" : "OAuth / TLS"}
       >
         <div className="form-grid form-grid--two">
@@ -322,7 +321,7 @@ function ProfileSelect({
         <option value="">{emptyLabel}</option>
         {visibleProfiles.map((item) => (
           <option value={item.id || ""} key={item.id || item.name}>
-            {optionLabel(item)}
+            {optionLabel(item, visibleProfiles)}
           </option>
         ))}
         {normalizedQuery && !filteredProfiles.length ? (
@@ -582,7 +581,6 @@ function TaskBuilderPanel({
     <Panel
       id="task-builder"
       title={editorMode ? (copyTask ? "Копирование задачи" : selectedTaskId ? "Изменение задачи" : "Новая задача") : "Конструктор задачи сканирования"}
-      description={editorMode ? "Настройте сбор, расписание и ограничения сканирования." : "Основные параметры задачи и запуск сканирования."}
       className={editorMode ? "task-builder task-builder--editor" : "task-builder"}
       action={editorMode ? null : (
         <Button variant="secondary" onClick={startNewTask}>
@@ -606,7 +604,7 @@ function TaskBuilderPanel({
             <option value="">Выберите scope</option>
             {lookups.scopes.map((item) => (
               <option value={item.id || ""} key={item.id || item.name}>
-                {optionLabel(item)}
+                {optionLabel(item, lookups.scopes)}
               </option>
             ))}
           </select>
@@ -645,7 +643,6 @@ function TaskBuilderPanel({
 
       <Disclosure
         title="Описание и охват"
-        description="Исключения, часовой пояс и коллекторы"
         meta={
           splitTokens(form.exclude_targets).length
             ? "Есть исключения"
@@ -693,7 +690,7 @@ function TaskBuilderPanel({
                           update("agent_ids", next.join("\n"));
                         }}
                       />
-                      <span>{optionLabel(agent)}</span>
+                      <span>{optionLabel(agent, scannerAgents)}</span>
                       <small>{id}</small>
                     </label>
                   );
@@ -799,7 +796,6 @@ function TaskBuilderPanel({
 
       <Disclosure
         title="Подключение и обнаружение"
-        description="Учётная запись, transport и HostDiscovery"
         meta={
           form.host_discovery_enabled ? "HostDiscovery включён" : "Стандартно"
         }
@@ -824,7 +820,7 @@ function TaskBuilderPanel({
               <option value="">Без credential override</option>
               {lookups.credentials.map((item) => (
                 <option value={item.id || ""} key={item.id || item.name}>
-                  {optionLabel(item)}
+                  {optionLabel(item, lookups.credentials)}
                 </option>
               ))}
             </select>
@@ -853,7 +849,6 @@ function TaskBuilderPanel({
 
       <Disclosure
         title="Precheck и таймеры"
-        description="Проверка доступности и лимиты фонового запуска"
         meta={form.precheck_enabled ? "Precheck включён" : "Выключено"}
       >
         <div className="form-grid form-grid--two">
@@ -934,7 +929,6 @@ function TaskBuilderPanel({
 
       <Disclosure
         title="Готовность к запуску"
-        description="Черновик сохраняется автоматически"
         meta={preflightReady ? "Готово" : "Есть замечания"}
         defaultOpen={!preflightReady}
       >
@@ -1334,7 +1328,6 @@ function TaskListPanel({
       <Panel
         id="tasks"
         title="Задачи сканирования"
-        description="Выберите задачу для редактирования. Результаты открываются отдельной кнопкой."
         action={
           <TaskToolbar refreshTasks={refreshTasks} busy={busy.refreshTasks} />
         }
@@ -1924,11 +1917,6 @@ function ExportPanel({
     <Panel
       id="export"
       title={canManageExports ? "PDQL экспорт" : "Отчётность по уязвимостям"}
-      description={
-        canManageExports
-          ? "Выгрузите данные и при необходимости сохраните их в PostgreSQL."
-          : "Сформируйте CSV-отчёты по сохранённым данным."
-      }
     >
       {canManageExports ? (
         <>
@@ -1945,7 +1933,6 @@ function ExportPanel({
               form.delete_assets_after_export ? "disclosure--danger" : ""
             }
             title="Параметры экспорта"
-            description="Группы, активы и обработка результата"
             meta={
               form.delete_assets_after_export
                 ? "Удаление в MP VM включено"
@@ -2023,7 +2010,6 @@ function ExportPanel({
       ) : null}
       <Disclosure
         title="Отчётность по уязвимостям"
-        description="CSV и Excel по сохранённым данным"
         meta="Дополнительно"
       >
         <Field label="Актив для XLSX-отчёта" wide>
@@ -2795,7 +2781,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
     <Panel
       id="asset-cards"
       title="Карточки активов"
-      description="Найдите актив, соберите карточку и откройте сохранённые данные."
       action={
         <div className="row-actions">
           <Button
@@ -2829,7 +2814,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
         <>
           <Disclosure
             title="Обновление карточек из MP VM"
-            description="Шаблон сканирования и параллельность"
             meta={selectedRefreshTemplateId ? "Шаблон выбран" : "Не настроено"}
           >
             <Field label="Задача MP VM для обновления карточек">
@@ -2880,7 +2864,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
           </Field>
           <Disclosure
             title="Параметры поиска"
-            description="Группы, фильтры и лимиты PDQL"
             meta={
               form.group_ids || form.asset_ids
                 ? "Есть ограничения"
@@ -2965,7 +2948,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
             </div>
             <Disclosure
               title="Параметры сборки"
-              description="Docker PDQL, timeline и лимиты обхода"
               meta={form.save_to_db ? "Сохранить в БД" : "Без сохранения"}
             >
               <Field label="PDQL уязвимостей Docker-контейнеров">
@@ -3033,7 +3015,6 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
 
           <Disclosure
             title="Пакетная сборка"
-            description="До двух карточек одновременно"
             meta={
               batchAssetIds.length
                 ? `Выбрано: ${batchAssetIds.length}`
@@ -3984,7 +3965,6 @@ function VulnerabilityPassportsPanel({
     <Panel
       id="passports"
       title="Паспорта уязвимостей"
-      description="Найдите паспорт и откройте его подробные данные."
     >
       {canManagePassports ? (
         <>
@@ -3998,7 +3978,6 @@ function VulnerabilityPassportsPanel({
           </Field>
           <Disclosure
             title="Параметры PDQL"
-            description="Группы, активы, лимиты и загрузка деталей"
             meta={form.load_details ? "С деталями" : "Только список"}
           >
             <div className="form-grid form-grid--four">
@@ -7489,9 +7468,7 @@ function AssetsPanel({
   return (
     <Panel
       id="assets"
-      eyebrow="06"
       title="Актуальный снимок активов и уязвимостей"
-      description="Таблица строится из локальной PostgreSQL после CSV/PDQL импорта. Устранённые уязвимости пропадают при следующей перезаписи данных по активу."
       action={
         <Button variant="secondary" busy={busy.assets} onClick={applyFilters}>
           Обновить
@@ -7902,7 +7879,7 @@ function Severity({ value }) {
   const normalized = (value || "empty").toLowerCase();
   return (
     <span className={`severity severity--${normalized}`}>
-      {value || "empty"}
+      {severityLabel(value)}
     </span>
   );
 }

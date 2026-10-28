@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { formatDate } from "../shared/format.js";
 import { useRef, useState } from "react";
 import { api } from "../api/client.js";
 import { Button, Disclosure, Field, Panel, Toggle } from "../shared/ui.jsx";
@@ -192,13 +193,8 @@ export function AutomationsPage({ showAlert }) {
           role="tabpanel"
           aria-labelledby="automation-tab-schedules"
           title="Автоматизация сканирования"
-          description="Запускайте выбранную задачу MP VM по cron. После завершения приложение автоматически выполнит штатную обработку результатов."
         >
-          <Disclosure
-            title="Новое расписание"
-            description="Задача MP VM, cron и часовой пояс"
-            defaultOpen
-          >
+          <Disclosure title="Новое расписание" defaultOpen>
             {scannerTasksQuery.isError ? (
               <AutomationQueryError
                 label="задачи сканирования"
@@ -629,13 +625,6 @@ function NotificationsPanel({
     readIds.has(item.notification_id) ? { ...item, is_read: true } : item,
   );
   const rows = unreadOnly ? allRows.filter((item) => !item.is_read) : allRows;
-  const unread = Math.max(
-    0,
-    (notifications.unread || 0) -
-      notifications.rows.filter(
-        (item) => !item.is_read && readIds.has(item.notification_id),
-      ).length,
-  );
   const markRead = async (item) => {
     await api("/api/notifications/" + item.notification_id + "/read", {
       method: "POST",
@@ -652,7 +641,6 @@ function NotificationsPanel({
       role="tabpanel"
       aria-labelledby="automation-tab-notifications"
       title="Центр уведомлений"
-      description={"Непрочитанных: " + unread}
     >
       <div className="operation-detail-actions" aria-label="Режим уведомлений">
         <Button
@@ -744,12 +732,6 @@ function ErrorRow({ columns, label, query }) {
       </td>
     </tr>
   );
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
 function AutomationQueryError({ label, query }) {

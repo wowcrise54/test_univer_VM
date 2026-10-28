@@ -145,7 +145,6 @@ export function TaskPresetsPage({ showAlert }) {
     <div className="task-presets-page">
       <Panel
         title="Пресеты задач"
-        description="Готовые наборы параметров сканирования для инженеров: профиль, учётная запись, область и разрешённые группы активов."
         action={
           <div className="action-row">
             <Button
@@ -309,7 +308,6 @@ function PresetTemplates({
   return (
     <Panel
       title="Шаблоны по рекомендациям MP VM"
-      description="Типовые задачи инженеров Windows и Linux. Шаблон подставит стандартный профиль MP VM, precheck, лимиты и роль команды; останется выбрать учётную запись и разрешённые группы."
     >
       {error ? (
         <p className="preset-error" role="alert">
@@ -440,7 +438,6 @@ function PresetEditor({
   return (
     <Panel
       title={form.preset_id ? `Пресет «${form.name}»` : "Новый пресет"}
-      description="Инженер выберет группы активов из разрешённых и/или впишет IP-адреса, подсети или FQDN. Остальные параметры задаются здесь и не меняются при создании задачи."
     >
       {lookupsError ? (
         <p className="preset-error" role="alert">

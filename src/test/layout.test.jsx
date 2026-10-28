@@ -168,7 +168,7 @@ describe("dismissible notifications", () => {
     }
     render(<Notifications />);
     fireEvent.click(
-      screen.getAllByRole("button", { name: "Закрыть уведомление" })[0],
+      screen.getAllByRole("button", { name: "Закрыть" })[0],
     );
     expect(screen.queryByText("Сканирование запущено")).not.toBeInTheDocument();
     expect(screen.getByText("Архив готов")).toBeInTheDocument();

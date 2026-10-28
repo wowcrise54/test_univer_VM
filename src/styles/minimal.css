@@ -306,17 +306,6 @@
   letter-spacing: -0.015em;
 }
 
-.panel__header p {
-  max-width: 72ch;
-  margin-top: 4px;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.section-number {
-  display: none;
-}
-
 .button,
 .upload-button {
   border-radius: 8px;
@@ -661,7 +650,6 @@ tr.is-selected td {
   font-weight: 700;
 }
 
-.disclosure__label small,
 .disclosure__meta {
   color: var(--muted);
   font-size: 11px;
@@ -1562,10 +1550,6 @@ tr.is-selected td {
 
   .vulnerability-row-details > div {
     min-width: 300px;
-  }
-
-  .disclosure__meta {
-    display: none;
   }
 
   .query-scope-disclosure {

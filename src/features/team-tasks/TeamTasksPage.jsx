@@ -159,7 +159,6 @@ export function TeamTasksPage({ currentUser, showAlert }) {
     <div className="team-tasks-page">
       <Panel
         title="Сканирование по пресетам"
-        description="Выберите пресет и группы активов. Профиль, учётная запись и остальные параметры уже настроены администратором."
         action={
           <Field label="ОС">
             <select
@@ -221,7 +220,6 @@ export function TeamTasksPage({ currentUser, showAlert }) {
 
       <Panel
         title="Задачи команды"
-        description="Задачи, созданные по пресетам вашей команды."
         action={
           <Button
             variant="secondary"

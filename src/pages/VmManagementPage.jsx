@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { campaignStatusLabel } from "../shared/labels.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, createIdempotencyKey } from "../api/client.js";
 import { Button, Panel } from "../shared/ui.jsx";
@@ -134,7 +135,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 
   const data = overview.data || {};
   return <div className="vm-page">
-    <Panel id="vm-overview" eyebrow="VM" title="Единый контур VM Management"
+    <Panel id="vm-overview" title="Единый контур VM Management"
       action={<Button variant="secondary" busy={overview.isFetching} onClick={refresh}>Обновить</Button>}>
       {!session.connected ? <div className="vm-callout vm-callout--warning"><div><strong>MP VM не подключён</strong><span>Для запуска сканирования установите рабочую сессию.</span></div><Button onClick={() => onNavigate("/connection")}>Настроить</Button></div> : null}
       {overview.error ? <div className="inline-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
@@ -182,7 +183,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     <section className="panel" id="vm-campaigns">
       <div className="panel__header"><div><h2>Кампании устранения</h2></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button></div>
       <div className="vm-campaign-grid">{(campaigns.data?.rows || []).map((item) => <button type="button" onClick={() => openCampaign(item.campaign_id)} key={item.campaign_id}>
-        <span className={`campaign-state campaign-state--${item.status}`}>{campaignLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
+        <span className={`campaign-state campaign-state--${item.status}`}>{campaignStatusLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
       </button>)}</div>
     </section>
 
@@ -282,7 +283,7 @@ function CampaignDrawer({ item, loading, permissions, showAlert, onWorkflow, onR
   const reread = async () => { setBusy(true); try { const result = await onReread(); if (result.error) throw result.error; setDraft(campaignDraft(result.data)); setConflict(false); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   const verify = async () => { setBusy(true); try { const result = await api(`/api/remediation/campaigns/${item.campaign_id}/verify`, { method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("campaign-verify") } }); showAlert("Проверочное сканирование запущено.", "success"); onWorkflow(result.workflow_id); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer vm-campaign-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-campaign-title"><header><div><span>Кампания устранения</span><h2 id="vm-campaign-title">{item?.name || "Загрузка…"}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
-    {loading || !item || !draft ? <p>Загрузка кампании…</p> : <><div className="form-grid"><label>Название<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Ответственный<input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} /></label><label>Срок<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Статус<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>{["draft", "active", "completed", "cancelled"].map((value) => <option key={value} value={value}>{campaignLabel(value)}</option>)}</select></label><label className="span-2">Комментарий<textarea value={draft.comment} onChange={(event) => setDraft({ ...draft, comment: event.target.value })} /></label></div>
+    {loading || !item || !draft ? <p>Загрузка кампании…</p> : <><div className="form-grid"><label>Название<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Ответственный<input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} /></label><label>Срок<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Статус<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>{["draft", "active", "completed", "cancelled"].map((value) => <option key={value} value={value}>{campaignStatusLabel(value)}</option>)}</select></label><label className="span-2">Комментарий<textarea value={draft.comment} onChange={(event) => setDraft({ ...draft, comment: event.target.value })} /></label></div>
       {conflict ? <div role="alert" className="inline-error">Кампания изменена другим оператором. Перечитайте её перед повторным сохранением.<Button busy={busy} variant="secondary" onClick={reread}>Перечитать кампанию</Button></div> : null}
       <div className="action-row"><Button busy={busy} disabled={conflict || !permissions.has("risk.manage")} onClick={save}>Сохранить</Button><Button busy={busy} disabled={!permissions.has("tasks.execute") || !permissions.has("risk.manage") || !permissions.has("remediation.manage")} onClick={verify}>Запустить проверку</Button></div>
       {item.asset_group_id ? <p className="vm-workflow-time">Группа активов: <a href={`/asset-groups?group=${encodeURIComponent(item.asset_group_id)}`}>{item.asset_group_name || item.asset_group_id}</a></p> : null}
@@ -315,7 +316,6 @@ function normalizeAttentionHref(item) {
 function setQuery(values) { if (typeof window === "undefined") return; const params = new URLSearchParams(Object.entries(values).filter(([, value]) => value)); window.history.replaceState({}, "", `/vm${params.size ? `?${params}` : ""}`); }
 function date(value) { if (!value) return "без срока"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU"); }
 function inputDate(value) { if (!value) return ""; const parsed = new Date(value); return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
-function campaignLabel(value) { return { draft: "Черновик", active: "Активна", completed: "Завершена", cancelled: "Отменена" }[value] || value; }
 function workflowTitle(item) {
   const request = item?.request || {};
   if (request.asset_group_id) return request.options?.mode === "group_scan" ? "Сканирование группы" : "Проверка группы";

@@ -33,6 +33,14 @@ function renderPanel({ busy = {}, downloadError = null, currentUser } = {}) {
   return { runBusy, showAlert };
 }
 
+function openReports() {
+  const summary = screen
+    .getAllByText("Отчётность по уязвимостям")
+    .map((element) => element.closest("summary"))
+    .find(Boolean);
+  fireEvent.click(summary);
+}
+
 describe("ExportPanel vulnerability reports", () => {
   beforeEach(() => {
     api.mockReset();
@@ -58,9 +66,7 @@ describe("ExportPanel vulnerability reports", () => {
 
   it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
+    openReports();
     fireEvent.change(
       screen.getByRole("textbox", { name: "Asset ID для отчёта" }),
       {
@@ -113,9 +119,7 @@ describe("ExportPanel vulnerability reports", () => {
     const { showAlert } = renderPanel({
       downloadError: new Error("Не удалось сформировать отчёт"),
     });
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
+    openReports();
     fireEvent.click(
       screen.getByRole("button", { name: "Скачать уязвимости ОС" }),
     );
@@ -129,11 +133,12 @@ describe("ExportPanel vulnerability reports", () => {
 
   it("keeps OS, software, and Docker download states independent", () => {
     renderPanel({ busy: { "report-os": true } });
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
-    const busyButton = screen.getByRole("button", { name: /Выполняю/ });
+    openReports();
+    const busyButton = screen.getByRole("button", {
+      name: "Скачать уязвимости ОС",
+    });
     expect(busyButton).toBeDisabled();
+    expect(busyButton).toHaveAttribute("aria-busy", "true");
     expect(
       screen.getByRole("button", { name: "Скачать уязвимости ПО" }),
     ).toBeEnabled();

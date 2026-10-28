@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { REMEDIATION_STATUS_LABELS } from "../shared/labels.js";
+import { formatDate } from "../shared/format.js";
 import { api } from "../api/client.js";
 import { ActionMenu, Button, Disclosure } from "../shared/ui.jsx";
-
-const statusLabels = {
-  open: "Открыта",
-  in_progress: "В работе",
-  risk_accepted: "Риск принят",
-  false_positive: "Ложное срабатывание",
-  resolved: "Устранена",
-};
 
 export function RemediationPage({ showAlert }) {
   const [rows, setRows] = useState([]);
@@ -143,7 +137,6 @@ export function RemediationPage({ showAlert }) {
       </div>
       <Disclosure
         title="Фильтры и массовые действия"
-        description="Статус, критичность и выбранные кейсы"
         meta={checked.length ? `Выбрано: ${checked.length}` : "Без выбора"}
       >
         <div className="remediation-toolbar remediation-toolbar--secondary">
@@ -153,7 +146,7 @@ export function RemediationPage({ showAlert }) {
             onChange={(e) => setFilters({ ...filters, status: e.target.value })}
           >
             <option value="">Все статусы</option>
-            {Object.entries(statusLabels).map(([value, label]) => (
+            {Object.entries(REMEDIATION_STATUS_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
               </option>
@@ -248,7 +241,7 @@ export function RemediationPage({ showAlert }) {
                       {item.severity}
                     </span>
                   </td>
-                  <td>{statusLabels[item.status]}</td>
+                  <td>{REMEDIATION_STATUS_LABELS[item.status]}</td>
                   <td>{item.assignee || "—"}</td>
                   <td>
                     {formatDate(item.due_at)}
@@ -277,7 +270,6 @@ export function RemediationPage({ showAlert }) {
       ) : null}
       <Disclosure
         title="Приоритизация и кампании"
-        description="Risk score, бизнес-контекст и групповые сценарии"
         meta="Дополнительно"
       >
         <RiskWorkspace showAlert={showAlert} onRefresh={load} />
@@ -651,7 +643,7 @@ function CaseEditor({ item, onClose, onSave }) {
             value={draft.status}
             onChange={(e) => setDraft({ ...draft, status: e.target.value })}
           >
-            {Object.entries(statusLabels)
+            {Object.entries(REMEDIATION_STATUS_LABELS)
               .filter(([value]) => value !== "resolved")
               .map(([value, label]) => (
                 <option key={value} value={value}>
@@ -822,14 +814,6 @@ function PolicyEditor({ policy, setPolicy, onSaved, showAlert }) {
   );
 }
 
-function formatDate(value) {
-  return value
-    ? new Intl.DateTimeFormat("ru-RU", {
-        dateStyle: "short",
-        timeStyle: "short",
-      }).format(new Date(value))
-    : "—";
-}
 function toInputDate(value) {
   if (!value) return "";
   const date = new Date(value);

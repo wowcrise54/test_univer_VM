@@ -559,7 +559,7 @@ export function AlertStack({ alerts, onDismiss }) {
             <button
               type="button"
               className="alert-dismiss"
-              aria-label="Закрыть уведомление"
+              aria-label="Закрыть"
               onClick={() => onDismiss(alert.id)}
             >
               ×

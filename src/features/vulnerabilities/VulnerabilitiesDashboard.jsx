@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  remediationStatusLabel,
+  severityClass,
+  severityLabel,
+} from "../../shared/labels.js";
 import { api } from "../../api/client.js";
 import { PassportCard, PassportModal } from "../../panels.jsx";
-import { formatCount } from "../../shared/format.js";
+import { formatCount, formatDate } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
 import { Button, Disclosure, Field, Panel } from "../../shared/ui.jsx";
 import {
@@ -35,17 +40,6 @@ const TREND_METRICS = [
   { key: "high_risk_hosts", label: "Хосты высокого риска" },
 ];
 const TREND_SEVERITIES = ["critical", "high", "medium", "low", "unknown"];
-
-const SEVERITY_LABELS = {
-  critical: "Критическая",
-  high: "Высокая",
-  medium: "Средняя",
-  low: "Низкая",
-  none: "Не указана",
-  empty: "Не указана",
-  unknown: "Не указана",
-  unrated: "Не указана",
-};
 
 const SOURCE_LABELS = {
   all: "Все источники",
@@ -346,11 +340,6 @@ export function VulnerabilitiesDashboard({
     <Panel
       id={isDashboards ? "dashboards" : "vulnerabilities"}
       title={isDashboards ? "Дашборды" : "Уязвимости"}
-      description={
-        isDashboards
-          ? "Общая аналитика риска, история и контроль."
-          : "Задайте условия и примените выборку для анализа уязвимостей."
-      }
       className="vulnerability-dashboard"
       action={
         isDashboards || applied ? (
@@ -436,7 +425,6 @@ export function VulnerabilitiesDashboard({
                   </div>
                   <Disclosure
                     title="Охват и приоритеты"
-                    description="Свежесть данных и лидеры по риску"
                     meta={
                       summary.coverage?.complete === false
                         ? "Неполный охват"
@@ -515,11 +503,7 @@ export function VulnerabilitiesDashboard({
               ) : null}
               {isDashboards ? (
                 <>
-                  <Disclosure
-                    title="Новые сигналы"
-                    description="Трендовые уязвимости и паспорта"
-                    meta="Дополнительно"
-                  >
+                  <Disclosure title="Новые сигналы" meta="Дополнительно">
                     <TrendingVulnerabilities
                       query={trendingPassportsQuery}
                       context={trendingContext}
@@ -527,11 +511,7 @@ export function VulnerabilitiesDashboard({
                       onOpenPassport={openPassport}
                     />
                   </Disclosure>
-                  <Disclosure
-                    title="История риска"
-                    description="Динамика, дельты и полнота срезов"
-                    meta={`${trendDays} дней`}
-                  >
+                  <Disclosure title="История риска" meta={`${trendDays} дней`}>
                     <RiskTrendSection
                       query={trendsQuery}
                       periodDays={trendDays}
@@ -1497,7 +1477,6 @@ function KpiGrid({ totals }) {
       <Disclosure
         className="vulnerability-kpi-more"
         title="Дополнительные показатели"
-        description="Уникальные записи и данные без оценки"
       >
         <section className="vulnerability-kpi-grid">
           {secondaryCards.map((card) => (
@@ -2583,18 +2562,6 @@ function resultTotal(data, rows) {
   return Number(data?.total ?? rows.length) || 0;
 }
 
-function severityClass(value) {
-  return ["critical", "high", "medium", "low"].includes(value) ? value : "none";
-}
-
-function severityLabel(value) {
-  return (
-    SEVERITY_LABELS[String(value || "none").toLowerCase()] ||
-    value ||
-    "Не указана"
-  );
-}
-
 function filterSeverity(value) {
   const normalized = String(value || "").toLowerCase();
   return ["empty", "unknown", "unrated"].includes(normalized)
@@ -2643,19 +2610,6 @@ function cardLabel(card) {
   const primary = card?.display_name || card?.hostname || card?.asset_id || "";
   const secondary = [card?.ip_address, card?.fqdn].filter(Boolean).join(" · ");
   return secondary ? `${primary} · ${secondary}` : primary;
-}
-
-function remediationStatusLabel(status) {
-  return (
-    {
-      open: "Открыта",
-      in_progress: "В работе",
-      risk_accepted: "Риск принят",
-      false_positive: "Ложное срабатывание",
-      resolved: "Устранена",
-      missing: "Не создана",
-    }[status || "missing"] || status
-  );
 }
 
 function remediationStartLabel(status) {
@@ -2825,14 +2779,6 @@ function formatCalendarDate(value) {
   return Number.isNaN(date.getTime())
     ? String(value)
     : date.toLocaleDateString("ru-RU");
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? String(value)
-    : date.toLocaleString("ru-RU");
 }
 
 function barWidth(value, maximum) {

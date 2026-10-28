@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { operationKindLabel, operationStatusLabel } from "../shared/labels.js";
+import { formatDate } from "../shared/format.js";
 import { createPortal } from "react-dom";
 import { api, createIdempotencyKey, downloadApiFile } from "../api/client.js";
 import {
@@ -252,7 +254,6 @@ export function OperationsPage({
       <Panel
         id="operations"
         title="Центр операций"
-        description="Активные задания, ошибки и восстановление в одном списке."
         action={
           <div className="operation-panel-actions">
             {currentUser?.permissions?.includes("operations.clear") ? (
@@ -312,7 +313,6 @@ export function OperationsPage({
 
         <Disclosure
           title="Фильтры и представления"
-          description="Статус, тип и сохранённые наборы"
           meta={
             activeFilterCount ? `Активно: ${activeFilterCount}` : "Без фильтров"
           }
@@ -337,7 +337,7 @@ export function OperationsPage({
                 "needs_attention",
               ].map((status) => (
                 <option value={status} key={status}>
-                  {statusLabel(status)}
+                  {operationStatusLabel(status)}
                 </option>
               ))}
             </select>
@@ -359,7 +359,7 @@ export function OperationsPage({
                 "automation_run",
               ].map((kind) => (
                 <option value={kind} key={kind}>
-                  {kindLabel(kind)}
+                  {operationKindLabel(kind)}
                 </option>
               ))}
             </select>
@@ -462,11 +462,11 @@ export function OperationsPage({
                       <span
                         className={`operation-status operation-status--${operation.status}`}
                       >
-                        {statusLabel(operation.status)}
+                        {operationStatusLabel(operation.status)}
                       </span>
                     </td>
                     <td>
-                      <strong>{kindLabel(operation.kind)}</strong>
+                      <strong>{operationKindLabel(operation.kind)}</strong>
                       <small>{operation.message || operation.stage}</small>
                       <code title={operation.operation_id}>
                         {shortId(operation.operation_id)}
@@ -483,7 +483,7 @@ export function OperationsPage({
                       <div
                         className="operation-progress"
                         role="progressbar"
-                        aria-label={`Прогресс ${kindLabel(operation.kind)}`}
+                        aria-label={`Прогресс ${operationKindLabel(operation.kind)}`}
                         aria-valuemin="0"
                         aria-valuemax="100"
                         aria-valuenow={operation.progress_percent || 0}
@@ -638,7 +638,7 @@ function OperationDetail({
       >
         <header>
           <div>
-            <span>{kindLabel(operation.kind)}</span>
+            <span>{operationKindLabel(operation.kind)}</span>
             <h2 id="operation-detail-title">
               {operation.subject?.label || operation.operation_id}
             </h2>
@@ -650,7 +650,7 @@ function OperationDetail({
         <div className="operation-detail-grid" aria-live="polite">
           <div>
             <span>Статус</span>
-            <strong>{statusLabel(operation.status)}</strong>
+            <strong>{operationStatusLabel(operation.status)}</strong>
           </div>
           <div>
             <span>Этап</span>
@@ -730,7 +730,6 @@ function OperationDetail({
         ) : null}
         <Disclosure
           title="Хронология"
-          description="Этапы и изменения состояния"
           meta={`${(operation.events || []).length} событий`}
           defaultOpen={ACTIVE_STATUSES.has(operation.status)}
         >
@@ -740,7 +739,7 @@ function OperationDetail({
                 <span />
                 <p>
                   <strong>
-                    {statusLabel(event.status)} · {event.stage}
+                    {operationStatusLabel(event.status)} · {event.stage}
                   </strong>
                   <small>
                     {event.message || "Изменение состояния"} ·{" "}
@@ -753,7 +752,6 @@ function OperationDetail({
         </Disclosure>
         <Disclosure
           title="Технические данные"
-          description="Trace ID, параметры и результат"
         >
           {operation.trace_id ? (
             <div className="trace-box">
@@ -779,45 +777,6 @@ function OperationDetail({
   return typeof document === "undefined"
     ? drawer
     : createPortal(drawer, document.body);
-}
-
-function kindLabel(kind) {
-  return (
-    {
-      automation_run: "Runbook автоматизации",
-      scan_postprocess: "Постобработка сканирования",
-      asset_card_build: "Карточка актива",
-      asset_card_bulk_refresh: "Массовое обновление карточек",
-      asset_search_reindex: "Индексация карточек",
-      passport_detail_sync: "Детали паспортов",
-      pdql_export: "PDQL экспорт",
-      asset_removal: "Удаление активов",
-      task_delete: "Удаление задачи MP VM",
-    }[kind] || kind
-  );
-}
-
-function statusLabel(status) {
-  return (
-    {
-      queued: "В очереди",
-      running: "Выполняется",
-      cancelling: "Останавливается",
-      recovering: "Восстанавливается",
-      completed: "Завершено",
-      completed_with_errors: "С ошибками",
-      failed: "Ошибка",
-      cancelled: "Отменено",
-      interrupted: "Прервано",
-      needs_attention: "Требует внимания",
-    }[status] || status
-  );
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
 function shortId(value) {

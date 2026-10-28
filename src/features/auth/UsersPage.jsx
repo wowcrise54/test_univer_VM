@@ -210,7 +210,6 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
       {canManage ? (
         <Disclosure
           title="Новый пользователь"
-          description="Учётная запись и роли"
         >
           <form className="user-create-form" onSubmit={create}>
             <label>
@@ -539,7 +538,6 @@ function RolesTab({ roles, permissions, canManage, mutate }) {
         {canManage ? (
           <Disclosure
             title="Клонировать роль"
-            description="Создать отдельный набор прав"
           >
             <form
               className="role-clone"

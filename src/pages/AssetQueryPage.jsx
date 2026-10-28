@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatDate } from "../shared/format.js";
 import { api } from "../api/client.js";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
 import { ActionMenu, Button, Disclosure, Panel } from "../shared/ui.jsx";
@@ -380,7 +381,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
     <Panel
       id="asset-query"
       title="Выборки по карточкам активов"
-      description="Найдите активы по данным локальных карточек."
       action={
         <Button
           busy={busy.assetQuery}
@@ -579,7 +579,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         </div>
         <Disclosure
           title="Сохранение выборки"
-          description="Название и управление текущим набором условий"
           meta={
             activeView
               ? activeViewChanged
@@ -657,7 +656,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
 
       <Disclosure
         title="Настройки результата"
-        description="Колонки и экспорт"
         meta={`${columns.length} колонок`}
       >
         <div className="asset-query-result-options">
@@ -1499,10 +1497,6 @@ function valuePlaceholder(field, operator) {
 function friendlyFieldName(path) {
   const value = String(path || "");
   return value.split(".").filter(Boolean).at(-1) || "Параметр";
-}
-
-function formatDate(value) {
-  return value ? new Date(value).toLocaleString("ru-RU") : "—";
 }
 
 function contentDispositionFilename(value) {
