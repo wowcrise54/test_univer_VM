@@ -589,9 +589,7 @@ test("running passport progress and asset vulnerability rows use dark surfaces",
     fullPage: true,
   });
   await page.goto("/asset-cards");
-  await page
-    .getByRole("button", { name: "Сохранённые карточки", exact: true })
-    .click();
+  // Saved cards load as soon as the page opens.
   await page.getByRole("button", { name: "Открыть", exact: true }).click();
   await page.getByRole("tab", { name: "Уязвимости", exact: true }).click();
   await expect(page.locator(".asset-vulnerability-group")).toHaveCount(2);

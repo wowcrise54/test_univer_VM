@@ -33,12 +33,11 @@ function renderPanel({ busy = {}, downloadError = null, currentUser } = {}) {
   return { runBusy, showAlert };
 }
 
+// Reports are the first, always open section of the page.
 function openReports() {
-  const summary = screen
-    .getAllByText("Отчётность по уязвимостям")
-    .map((element) => element.closest("summary"))
-    .find(Boolean);
-  fireEvent.click(summary);
+  expect(
+    screen.getByRole("heading", { name: "Отчёты по уязвимостям" }),
+  ).toBeInTheDocument();
 }
 
 describe("ExportPanel vulnerability reports", () => {
@@ -56,12 +55,38 @@ describe("ExportPanel vulnerability reports", () => {
     });
 
     expect(screen.queryByText("PDQL запрос")).not.toBeInTheDocument();
-    expect(screen.queryByText("Параметры экспорта")).not.toBeInTheDocument();
+    expect(screen.queryByText("PDQL-выгрузка")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Выполнить экспорт" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Импорт")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Отчётность по уязвимостям").length).toBe(2);
+    openReports();
+  });
+
+  it("keeps MP VM deletion off by default and names the destructive run", async () => {
+    api.mockResolvedValue({ imported: 1 });
+    renderPanel({
+      currentUser: {
+        permissions: ["imports_exports.read", "imports_exports.manage"],
+      },
+    });
+    const toggle = screen.getByLabelText(
+      "Удалить активы в MP VM после сохранения",
+    );
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Выполнить экспорт" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/exports/pdql",
+        expect.objectContaining({
+          body: expect.stringContaining('"delete_assets_after_export":false'),
+        }),
+      ),
+    );
+    fireEvent.click(toggle);
+    expect(
+      screen.getByRole("button", { name: "Экспортировать и удалить из MP VM" }),
+    ).toBeInTheDocument();
   });
 
   it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
@@ -246,7 +271,7 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
     );
 
     expect(screen.queryByText("PDQL запрос")).not.toBeInTheDocument();
-    expect(screen.queryByText("Параметры PDQL")).not.toBeInTheDocument();
+    expect(screen.queryByText("Загрузить из MP VM")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Выполнить PDQL" }),
     ).not.toBeInTheDocument();

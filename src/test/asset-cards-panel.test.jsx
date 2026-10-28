@@ -64,7 +64,7 @@ describe("AssetCardsPanel batch builds", () => {
     fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
     fireEvent.change(
-      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      await screen.findByLabelText("ID активов для пакетной сборки"),
       {
         target: { value: "asset-1\nasset-2, asset-1" },
       },
@@ -107,13 +107,13 @@ describe("AssetCardsPanel batch builds", () => {
     fireEvent.click(screen.getByText("Параметры сборки").closest("summary"));
 
     fireEvent.change(
-      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      await screen.findByLabelText("ID активов для пакетной сборки"),
       {
         target: { value: "asset-1" },
       },
     );
     fireEvent.change(
-      screen.getByLabelText("Timeline datetime, Unix timestamp"),
+      screen.getByLabelText("Момент времени (Unix)"),
       {
         target: { value: "1712345678" },
       },
@@ -173,7 +173,7 @@ describe("AssetCardsPanel batch builds", () => {
     fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
     fireEvent.change(
-      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      await screen.findByLabelText("ID активов для пакетной сборки"),
       {
         target: { value: "asset-1\nasset-2" },
       },
@@ -215,7 +215,7 @@ describe("AssetCardsPanel batch builds", () => {
     fireEvent.click(screen.getByText("Пакетная сборка").closest("summary"));
 
     fireEvent.change(
-      await screen.findByLabelText("Asset ID для пакетной сборки"),
+      await screen.findByLabelText("ID активов для пакетной сборки"),
       {
         target: { value: "asset-1\nasset-2" },
       },
@@ -252,13 +252,13 @@ describe("AssetCardsPanel batch builds", () => {
     );
 
     expect(
-      screen.queryByText("PDQL для получения asset_id"),
+      screen.queryByText("PDQL-запрос активов"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Параметры поиска")).not.toBeInTheDocument();
     expect(screen.queryByText("Параметры сборки")).not.toBeInTheDocument();
     expect(screen.queryByText("Пакетная сборка")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Получить asset_id" }),
+      screen.queryByRole("button", { name: "Найти активы" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Собрать карточку" }),

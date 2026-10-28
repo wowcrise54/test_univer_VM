@@ -1809,9 +1809,10 @@ function ExportPanel({
     report_asset_ids: "",
     include_nested_groups: true,
     import_results: true,
-    delete_assets_after_export: true,
+    delete_assets_after_export: false,
   });
   const [result, setResult] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
   const [reportAssetSearch, setReportAssetSearch] = useState("");
   const [reportAssetOptions, setReportAssetOptions] = useState([]);
   const [selectedReportAssetId, setSelectedReportAssetId] = useState("");
@@ -1871,31 +1872,31 @@ function ExportPanel({
         body: JSON.stringify(payload),
       });
       setResult(JSON.stringify(response, null, 2));
-      showAlert("PDQL экспорт завершён.", "success");
-      await refreshAssets();
-    });
-
-  const importSample = () =>
-    runBusy("sample", async () => {
-      const response = await api("/api/import/sample", { method: "POST" });
-      setResult(JSON.stringify(response, null, 2));
-      showAlert("Пример CSV импортирован в PostgreSQL.", "success");
+      showAlert("Экспорт завершён.", "success");
       await refreshAssets();
     });
 
   const importCsvFile = async (event) => {
-    const file = event.target.files?.[0];
+    const input = event.target;
+    const file = input.files?.[0];
     if (!file) return;
     const body = new FormData();
     body.append("file", file);
-    const response = await api("/api/import/csv-file", {
-      method: "POST",
-      body,
-    });
-    setResult(JSON.stringify(response, null, 2));
-    showAlert(`CSV импортирован: ${file.name}`, "success");
-    await refreshAssets();
-    event.target.value = "";
+    setImportBusy(true);
+    try {
+      const response = await api("/api/import/csv-file", {
+        method: "POST",
+        body,
+      });
+      setResult(JSON.stringify(response, null, 2));
+      showAlert(`CSV загружен: ${file.name}`, "success");
+      await refreshAssets();
+    } catch (error) {
+      showAlert(error.operatorMessage || error.message, "error");
+    } finally {
+      setImportBusy(false);
+      input.value = "";
+    }
   };
 
   const downloadVulnerabilityReport = (reportType) =>
@@ -1922,194 +1923,197 @@ function ExportPanel({
     });
 
   return (
-    <Panel
-      id="export"
-      title={canManageExports ? "PDQL экспорт" : "Отчётность по уязвимостям"}
-    >
-      {canManageExports ? (
-        <>
-          <Field label="PDQL запрос">
+    <>
+      <Panel id="export-reports" title="Отчёты по уязвимостям">
+        <div className="form-grid form-grid--two">
+          <Field label="Актив для XLSX">
+            <input
+              aria-label="Поиск актива для XLSX-отчёта"
+              value={reportAssetSearch}
+              onChange={(event) => {
+                setReportAssetSearch(event.target.value);
+                setSelectedReportAssetId("");
+              }}
+              placeholder="IP, имя хоста или ID"
+            />
+            {reportAssetLookupBusy ? (
+              <small className="muted-text">Поиск…</small>
+            ) : null}
+            {reportAssetOptions.length ? (
+              <div
+                className="report-asset-options"
+                role="listbox"
+                aria-label="Найденные активы"
+              >
+                {reportAssetOptions.map((asset) => {
+                  const label =
+                    asset.display_name || asset.hostname || asset.asset_id;
+                  const details = [asset.ip_address, asset.hostname]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selectedReportAssetId === asset.asset_id}
+                      className={`report-asset-option${selectedReportAssetId === asset.asset_id ? " is-selected" : ""}`}
+                      key={asset.asset_id}
+                      title={asset.asset_id}
+                      onClick={() => {
+                        setSelectedReportAssetId(asset.asset_id);
+                        setReportAssetSearch(label);
+                        setReportAssetOptions([]);
+                      }}
+                    >
+                      <strong>{label}</strong>
+                      <span>{details}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </Field>
+          <Field label="ID активов для CSV">
             <textarea
-              className="code-input"
-              rows={8}
-              value={form.pdql}
-              onChange={(event) => update("pdql", event.target.value)}
+              aria-label="Asset ID для отчёта"
+              rows={2}
+              value={form.report_asset_ids}
+              onChange={(event) => update("report_asset_ids", event.target.value)}
+              placeholder="ID через запятую"
             />
           </Field>
-          <Disclosure
-            className={
-              form.delete_assets_after_export ? "disclosure--danger" : ""
-            }
-            title="Параметры экспорта"
-            meta={
-              form.delete_assets_after_export
-                ? "Удаление в MP VM включено"
-                : "Без удаления"
-            }
-          >
-            <div className="form-grid form-grid--four">
-              <Field label="UTC offset">
-                <input
-                  value={form.utc_offset}
-                  onChange={(event) => update("utc_offset", event.target.value)}
-                />
-              </Field>
-              <Field label="Group IDs">
-                <input
-                  value={form.group_ids}
-                  onChange={(event) => update("group_ids", event.target.value)}
-                  placeholder="uuid, uuid"
-                />
-              </Field>
-              <Field label="Asset IDs">
-                <input
-                  value={form.asset_ids}
-                  onChange={(event) => update("asset_ids", event.target.value)}
-                  placeholder="uuid, uuid"
-                />
-              </Field>
-              <Toggle
-                label="Include nested groups"
-                checked={form.include_nested_groups}
-                onChange={(value) => update("include_nested_groups", value)}
-              />
-              <Toggle
-                label="Сохранить в БД"
-                checked={form.import_results}
-                onChange={(value) => update("import_results", value)}
-              />
-              <Toggle
-                label="Удалить активы в MP VM после импорта"
-                checked={form.delete_assets_after_export}
-                onChange={(value) =>
-                  update("delete_assets_after_export", value)
-                }
-              />
-            </div>
-            {form.delete_assets_after_export ? (
-              <p className="danger-note">
-                После успешного импорта выбранные активы будут удалены из MP VM.
-              </p>
-            ) : null}
-          </Disclosure>
-          <div className="action-row">
-            <Button busy={busy.export} onClick={runExport}>
-              Выполнить экспорт
-            </Button>
-            <ActionMenu label="Импорт">
-              <label className="upload-button">
-                Импорт CSV файла
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={importCsvFile}
-                />
-              </label>
-              <Button
-                variant="secondary"
-                busy={busy.sample}
-                onClick={importSample}
-              >
-                Импортировать пример CSV
-              </Button>
-            </ActionMenu>
-          </div>
-        </>
-      ) : null}
-      <Disclosure
-        title="Отчётность по уязвимостям"
-        meta="Дополнительно"
-      >
-        <Field label="Актив для XLSX-отчёта" wide>
-          <input
-            aria-label="Поиск актива для XLSX-отчёта"
-            value={reportAssetSearch}
-            onChange={(event) => {
-              setReportAssetSearch(event.target.value);
-              setSelectedReportAssetId("");
-            }}
-            placeholder="Поиск по IP, имени хоста или Asset ID"
-          />
-          {reportAssetLookupBusy ? (
-            <small className="muted-text">Ищу сохранённые активы…</small>
-          ) : null}
-          {reportAssetOptions.length ? (
-            <div className="report-asset-options" role="listbox" aria-label="Найденные активы">
-              {reportAssetOptions.map((asset) => {
-                const label = asset.display_name || asset.hostname || asset.asset_id;
-                const details = [asset.ip_address, asset.hostname, asset.asset_id].filter(Boolean).join(" · ");
-                return (
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={selectedReportAssetId === asset.asset_id}
-                    className={`report-asset-option${selectedReportAssetId === asset.asset_id ? " is-selected" : ""}`}
-                    key={asset.asset_id}
-                    onClick={() => {
-                      setSelectedReportAssetId(asset.asset_id);
-                      setReportAssetSearch(`${label} · ${asset.asset_id}`);
-                      setReportAssetOptions([]);
-                    }}
-                  >
-                    <strong>{label}</strong>
-                    <span>{details}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-          {selectedReportAssetId ? (
-            <small className="muted-text">Выбран Asset ID: {selectedReportAssetId}</small>
-          ) : null}
-        </Field>
-        <div className="action-row">
+        </div>
+        <div className="action-row report-downloads">
+          <span className="selection-count">Скачать:</span>
           <Button
             variant="secondary"
             busy={busy["report-xlsx"]}
             disabled={!selectedReportAssetId}
             onClick={downloadVulnerabilityXlsx}
           >
-            Скачать отчёт XLSX
+            XLSX
           </Button>
-        </div>
-        <Field label="Asset ID для отчёта" wide>
-          <textarea
-            rows={3}
-            value={form.report_asset_ids}
-            onChange={(event) => update("report_asset_ids", event.target.value)}
-            placeholder="Один или несколько Asset ID через запятую или с новой строки"
-          />
-        </Field>
-        <div className="action-row">
           <Button
             variant="secondary"
+            aria-label="Скачать уязвимости ОС"
             busy={busy["report-os"]}
             onClick={() => downloadVulnerabilityReport("os")}
           >
-            Скачать уязвимости ОС
+            ОС
           </Button>
           <Button
             variant="secondary"
+            aria-label="Скачать уязвимости ПО"
             busy={busy["report-software"]}
             onClick={() => downloadVulnerabilityReport("software")}
           >
-            Скачать уязвимости ПО
+            ПО
           </Button>
           <Button
             variant="secondary"
+            aria-label="Скачать уязвимости Docker"
             busy={busy["report-docker"]}
             onClick={() => downloadVulnerabilityReport("docker")}
           >
-            Скачать уязвимости Docker
+            Docker
           </Button>
         </div>
-      </Disclosure>
-      {canManageExports && result ? (
-        <Disclosure title="Результат операции" meta="JSON">
-          <pre className="result-box">{result}</pre>
-        </Disclosure>
+      </Panel>
+      {canManageExports ? (
+        <Panel id="export">
+          <Disclosure
+            className={
+              form.delete_assets_after_export ? "disclosure--danger" : ""
+            }
+            title="PDQL-выгрузка"
+            meta={
+              form.delete_assets_after_export ? "Удаление в MP VM" : null
+            }
+          >
+            <Field label="PDQL запрос">
+              <textarea
+                className="code-input"
+                rows={8}
+                value={form.pdql}
+                onChange={(event) => update("pdql", event.target.value)}
+              />
+            </Field>
+            <div className="form-grid form-grid--four">
+              <Field label="Часовой пояс">
+                <input
+                  value={form.utc_offset}
+                  onChange={(event) => update("utc_offset", event.target.value)}
+                />
+              </Field>
+              <Field label="Группы">
+                <input
+                  value={form.group_ids}
+                  onChange={(event) => update("group_ids", event.target.value)}
+                  placeholder="ID через запятую"
+                />
+              </Field>
+              <Field label="Активы">
+                <input
+                  value={form.asset_ids}
+                  onChange={(event) => update("asset_ids", event.target.value)}
+                  placeholder="ID через запятую"
+                />
+              </Field>
+              <Toggle
+                label="Включая вложенные группы"
+                checked={form.include_nested_groups}
+                onChange={(value) => update("include_nested_groups", value)}
+              />
+              <Toggle
+                label="Сохранить локально"
+                checked={form.import_results}
+                onChange={(value) => update("import_results", value)}
+              />
+            </div>
+            <div className="action-row export-run">
+              <label
+                className={`toggle${form.delete_assets_after_export ? " toggle--danger" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={form.delete_assets_after_export}
+                  onChange={(event) =>
+                    update("delete_assets_after_export", event.target.checked)
+                  }
+                />
+                <span>Удалить активы в MP VM после сохранения</span>
+              </label>
+              <Button
+                variant={form.delete_assets_after_export ? "danger" : "primary"}
+                busy={busy.export}
+                onClick={runExport}
+              >
+                {form.delete_assets_after_export
+                  ? "Экспортировать и удалить из MP VM"
+                  : "Выполнить экспорт"}
+              </Button>
+              <ActionMenu label="Импорт">
+                <label className="upload-button">
+                  {importBusy ? "Загрузка…" : "Загрузить CSV"}
+                  <input
+                    className="visually-hidden"
+                    type="file"
+                    accept=".csv,text/csv"
+                    disabled={importBusy}
+                    onChange={importCsvFile}
+                  />
+                </label>
+              </ActionMenu>
+            </div>
+            {result ? (
+              <Disclosure title="Результат">
+                <pre className="result-box">{result}</pre>
+              </Disclosure>
+            ) : null}
+          </Disclosure>
+        </Panel>
       ) : null}
-    </Panel>
+    </>
   );
 }
 
@@ -2605,12 +2609,16 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
 
   const loadLocalCards = () =>
     runBusy("assetCardsLocal", async () => {
-      const result = await refreshLocalCards();
-      showAlert(
-        `Загружено карточек из БД: ${formatCount(result.rows?.length || 0)} из ${formatCount(result.total)}.`,
-        "success",
-      );
+      await refreshLocalCards();
     });
+
+  useEffect(() => {
+    refreshLocalCards().catch(() => {
+      // The list keeps its empty state; the refresh button shows errors.
+    });
+    // Only the first render loads automatically.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openLocalCard = (row) => {
     setSelectedCard({ ...row, loaded_sections: ["summary"] });
@@ -2788,16 +2796,8 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
   return (
     <Panel
       id="asset-cards"
-      title="Карточки активов"
       action={
         <div className="row-actions">
-          <Button
-            variant="secondary"
-            busy={busy.assetCardsLocal}
-            onClick={loadLocalCards}
-          >
-            Сохранённые карточки
-          </Button>
           {canBuildAssetCards ? (
             <ActionMenu label="Ещё">
               <Button
@@ -2818,8 +2818,148 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
         </div>
       }
     >
+      <div className="asset-local-header">
+        <input
+          value={cardSearch}
+          onChange={(event) => setCardSearch(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && loadLocalCards()}
+          placeholder="IP, FQDN, имя хоста или ОС"
+        />
+        <Button
+          variant="secondary"
+          busy={busy.assetCardsLocal}
+          onClick={loadLocalCards}
+        >
+          Показать сохранённые
+        </Button>
+      </div>
+      <div className="table-shell">
+        <table className="asset-card-list-table">
+          <thead>
+            <tr>
+              <SortableHeader
+                column="display_name"
+                sort={cardSort}
+                onSort={changeCardSort}
+              >
+                Актив
+              </SortableHeader>
+              <SortableHeader
+                column="ip_address"
+                sort={cardSort}
+                onSort={changeCardSort}
+              >
+                IP / FQDN
+              </SortableHeader>
+              <SortableHeader
+                column="os_name"
+                sort={cardSort}
+                onSort={changeCardSort}
+              >
+                Платформа
+              </SortableHeader>
+              <SortableHeader
+                column="last_seen"
+                sort={cardSort}
+                onSort={changeCardSort}
+                initialDirection="desc"
+              >
+                Обновлено
+              </SortableHeader>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cards.length ? (
+              cards.map((row) => {
+                const stats = assetCardStats(row);
+                return (
+                  <tr key={row.asset_id}>
+                    <td className="wide-cell">
+                      <strong>
+                        {row.display_name || row.hostname || row.asset_id}
+                      </strong>
+                      <span>
+                        <code>{row.asset_id}</code>
+                      </span>
+                    </td>
+                    <td>
+                      {[row.ip_address, row.fqdn].filter(Boolean).join(" / ") ||
+                        "—"}
+                    </td>
+                    <td>
+                      {[row.os_name, row.os_version]
+                        .filter(Boolean)
+                        .join(" ") || "—"}
+                      <small className="table-cell-meta">
+                        {row.asset_type || "Тип не указан"} ·{" "}
+                        {formatCount(stats.table_rows)} строк ·{" "}
+                        {formatCount(stats.collections)} коллекций
+                      </small>
+                    </td>
+                    <td>
+                      <FreshnessBadge
+                        value={row.last_seen}
+                        freshForHours={14 * 24}
+                        staleAfterHours={14 * 24}
+                      />
+                    </td>
+                    <td>
+                      <div className="row-actions">
+                        <Button
+                          variant="tiny"
+                          busy={
+                            busy.assetCardOpen &&
+                            selectedCard?.asset_id === row.asset_id
+                          }
+                          onClick={() => openLocalCard(row)}
+                        >
+                          Открыть
+                        </Button>
+                        {canBuildAssetCards || canManageAssetCards ? (
+                          <ActionMenu label="Ещё">
+                            {canBuildAssetCards ? (
+                              <Button
+                                variant="tiny"
+                                disabled={
+                                  assetCardJobActive || assetRefreshActive
+                                }
+                                busy={busy[`assetCardUpdate:${row.asset_id}`]}
+                                onClick={() => updateLocalCard(row)}
+                              >
+                                Обновить
+                              </Button>
+                            ) : null}
+                            {canManageAssetCards ? (
+                              <Button
+                                variant="tiny-danger"
+                                busy={busy[`assetCardDelete:${row.asset_id}`]}
+                                onClick={() => setPendingCardDelete(row)}
+                              >
+                                Удалить
+                              </Button>
+                            ) : null}
+                          </ActionMenu>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <tr>
+                <td colSpan={5} className="empty-cell">
+                  {canBuildAssetCards
+                    ? "Соберите карточку или загрузите сохранённые из БД."
+                    : "Загрузите сохранённые карточки из БД."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
       {canBuildAssetCards ? (
-        <>
+        <Disclosure className="asset-card-build" title="Сбор из MP VM">
           <Disclosure
             title="Обновление карточек из MP VM"
             meta={selectedRefreshTemplateId ? "Шаблон выбран" : "Не настроено"}
@@ -2862,7 +3002,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
               </small>
             ) : null}
           </Disclosure>
-          <Field label="PDQL для получения asset_id">
+          <Field label="PDQL-запрос активов">
             <textarea
               className="code-input"
               rows={4}
@@ -2879,24 +3019,24 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
             }
           >
             <div className="form-grid form-grid--four">
-              <Field label="UTC offset">
+              <Field label="Часовой пояс">
                 <input
                   value={form.utc_offset}
                   onChange={(event) => update("utc_offset", event.target.value)}
                 />
               </Field>
-              <Field label="Group IDs">
+              <Field label="Группы">
                 <input
                   value={form.group_ids}
                   onChange={(event) => update("group_ids", event.target.value)}
-                  placeholder="uuid, uuid"
+                  placeholder="ID через запятую"
                 />
               </Field>
-              <Field label="Asset filter IDs">
+              <Field label="Активы">
                 <input
                   value={form.asset_ids}
                   onChange={(event) => update("asset_ids", event.target.value)}
-                  placeholder="uuid, uuid"
+                  placeholder="ID через запятую"
                 />
               </Field>
               <Field label="Сколько загрузить">
@@ -2920,7 +3060,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                 />
               </Field>
               <Toggle
-                label="Include nested groups"
+                label="Включая вложенные группы"
                 checked={form.include_nested_groups}
                 onChange={(value) => update("include_nested_groups", value)}
               />
@@ -2928,7 +3068,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
           </Disclosure>
           <div className="action-row">
             <Button busy={busy.assetCandidateQuery} onClick={queryAssets}>
-              Получить asset_id
+              Найти активы
             </Button>
             <div className="inline-metric">
               Найдено: <span>{formatCount(filteredCandidates.length)}</span>
@@ -2937,13 +3077,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
 
           <div className="asset-card-builder">
             <div className="asset-card-build-primary">
-              <Field label="Выбранный asset_id">
+              <Field label="ID актива">
                 <input
                   value={form.selected_asset_id}
                   onChange={(event) =>
                     update("selected_asset_id", event.target.value)
                   }
-                  placeholder="1e41d857-9d80-0001-0000-000000000009"
+                  placeholder="ID из списка или вручную"
                 />
               </Field>
               <Button
@@ -2969,14 +3109,14 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                 />
               </Field>
               <div className="form-grid form-grid--two form-grid--spaced">
-                <Field label="Timeline datetime, Unix timestamp">
+                <Field label="Момент времени (Unix)">
                   <input
                     value={form.timeline_timestamp}
                     onChange={(event) =>
                       update("timeline_timestamp", event.target.value)
                     }
                     type="number"
-                    placeholder="пусто = сейчас"
+                    placeholder="Сейчас"
                   />
                 </Field>
                 <Field label="Лимит запроса коллекции">
@@ -3013,7 +3153,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                   />
                 </Field>
                 <Toggle
-                  label="Сохранить карточку в БД"
+                  label="Сохранить карточку локально"
                   checked={form.save_to_db}
                   onChange={(value) => update("save_to_db", value)}
                 />
@@ -3029,14 +3169,14 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                 : "Не выбрано"
             }
           >
-            <Field label="Asset ID для пакетной сборки" wide>
+            <Field label="ID активов для пакетной сборки" wide>
               <textarea
                 rows={4}
                 value={form.batch_asset_ids}
                 onChange={(event) =>
                   update("batch_asset_ids", event.target.value)
                 }
-                placeholder="До двух Asset ID, каждый с новой строки"
+                placeholder="До двух ID, по одному в строке"
                 aria-describedby="asset-card-batch-help"
               />
             </Field>
@@ -3061,7 +3201,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
               </Button>
             </div>
           </Disclosure>
-        </>
+        </Disclosure>
       ) : null}
 
       {canBuildAssetCards && assetCardBatchJobs.length ? (
@@ -3288,7 +3428,7 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
                     sort={candidateSort}
                     onSort={toggleCandidateSort}
                   >
-                    asset_id
+                    ID актива
                   </SortableHeader>
                   <th></th>
                 </tr>
@@ -3341,154 +3481,13 @@ function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUser }) {
         </details>
       ) : null}
 
-      <div className="asset-local-header">
-        <input
-          value={cardSearch}
-          onChange={(event) => setCardSearch(event.target.value)}
-          onKeyDown={(event) => event.key === "Enter" && loadLocalCards()}
-          placeholder="Поиск сохранённых карточек по IP, FQDN, hostname, ОС, asset_id"
-        />
-        <Button
-          variant="secondary"
-          busy={busy.assetCardsLocal}
-          onClick={loadLocalCards}
-        >
-          Показать сохранённые
-        </Button>
-      </div>
-      <div className="table-shell">
-        <table className="asset-card-list-table">
-          <thead>
-            <tr>
-              <SortableHeader
-                column="display_name"
-                sort={cardSort}
-                onSort={changeCardSort}
-              >
-                Актив
-              </SortableHeader>
-              <SortableHeader
-                column="ip_address"
-                sort={cardSort}
-                onSort={changeCardSort}
-              >
-                IP / FQDN
-              </SortableHeader>
-              <SortableHeader
-                column="os_name"
-                sort={cardSort}
-                onSort={changeCardSort}
-              >
-                Платформа
-              </SortableHeader>
-              <SortableHeader
-                column="last_seen"
-                sort={cardSort}
-                onSort={changeCardSort}
-                initialDirection="desc"
-              >
-                Обновлено
-              </SortableHeader>
-              <th>Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cards.length ? (
-              cards.map((row) => {
-                const stats = assetCardStats(row);
-                return (
-                  <tr key={row.asset_id}>
-                    <td className="wide-cell">
-                      <strong>
-                        {row.display_name || row.hostname || row.asset_id}
-                      </strong>
-                      <span>
-                        <code>{row.asset_id}</code>
-                      </span>
-                    </td>
-                    <td>
-                      {[row.ip_address, row.fqdn].filter(Boolean).join(" / ") ||
-                        "—"}
-                    </td>
-                    <td>
-                      {[row.os_name, row.os_version]
-                        .filter(Boolean)
-                        .join(" ") || "—"}
-                      <small className="table-cell-meta">
-                        {row.asset_type || "Тип не указан"} ·{" "}
-                        {formatCount(stats.table_rows)} строк ·{" "}
-                        {formatCount(stats.collections)} коллекций
-                      </small>
-                    </td>
-                    <td>
-                      <FreshnessBadge
-                        value={row.last_seen}
-                        source="PostgreSQL"
-                        freshForHours={14 * 24}
-                        staleAfterHours={14 * 24}
-                      />
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <Button
-                          variant="tiny"
-                          busy={
-                            busy.assetCardOpen &&
-                            selectedCard?.asset_id === row.asset_id
-                          }
-                          onClick={() => openLocalCard(row)}
-                        >
-                          Открыть
-                        </Button>
-                        {canBuildAssetCards || canManageAssetCards ? (
-                          <ActionMenu label="Ещё">
-                            {canBuildAssetCards ? (
-                              <Button
-                                variant="tiny"
-                                disabled={
-                                  assetCardJobActive || assetRefreshActive
-                                }
-                                busy={busy[`assetCardUpdate:${row.asset_id}`]}
-                                onClick={() => updateLocalCard(row)}
-                              >
-                                Обновить
-                              </Button>
-                            ) : null}
-                            {canManageAssetCards ? (
-                              <Button
-                                variant="tiny-danger"
-                                busy={busy[`assetCardDelete:${row.asset_id}`]}
-                                onClick={() => setPendingCardDelete(row)}
-                              >
-                                Удалить
-                              </Button>
-                            ) : null}
-                          </ActionMenu>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            ) : (
-              <tr>
-                <td colSpan={5} className="empty-cell">
-                  {canBuildAssetCards
-                    ? "Соберите карточку или загрузите сохранённые из БД."
-                    : "Загрузите сохранённые карточки из БД."}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
 
       {assetWindowOpen ? (
         <PassportModal
           title="Карточка актива"
           className="asset-modal"
           overlayClassName="asset-modal-overlay"
-          closeLabel="Назад"
+          closeLabel="Закрыть"
           onClose={() => setAssetWindowOpen(false)}
         >
           <AssetCard
@@ -3970,46 +3969,43 @@ function VulnerabilityPassportsPanel({
   const passportRefreshPercent = Math.max(0, Math.min(100, Number(passportRefreshJob?.progress_percent || 0)));
 
   return (
-    <Panel
-      id="passports"
-      title="Паспорта уязвимостей"
-    >
+    <Panel id="passports">
       {canManagePassports ? (
         <>
-          <Field label="PDQL запрос">
-            <textarea
-              className="code-input"
-              rows={6}
-              value={form.pdql}
-              onChange={(event) => update("pdql", event.target.value)}
-            />
-          </Field>
           <Disclosure
-            title="Параметры PDQL"
-            meta={form.load_details ? "С деталями" : "Только список"}
+            title="Загрузить из MP VM"
+            meta={form.load_details ? "С деталями" : null}
           >
+            <Field label="PDQL запрос">
+              <textarea
+                className="code-input"
+                rows={6}
+                value={form.pdql}
+                onChange={(event) => update("pdql", event.target.value)}
+              />
+            </Field>
             <div className="form-grid form-grid--four">
-              <Field label="UTC offset">
+              <Field label="Часовой пояс">
                 <input
                   value={form.utc_offset}
                   onChange={(event) => update("utc_offset", event.target.value)}
                 />
               </Field>
-              <Field label="Group IDs">
+              <Field label="Группы">
                 <input
                   value={form.group_ids}
                   onChange={(event) => update("group_ids", event.target.value)}
-                  placeholder="uuid, uuid"
+                  placeholder="ID через запятую"
                 />
               </Field>
-              <Field label="Asset IDs">
+              <Field label="Активы">
                 <input
                   value={form.asset_ids}
                   onChange={(event) => update("asset_ids", event.target.value)}
-                  placeholder="uuid, uuid"
+                  placeholder="ID через запятую"
                 />
               </Field>
-              <Field label="Сколько загрузить (пусто = все)">
+              <Field label="Сколько загрузить">
                 <input
                   value={form.passport_limit}
                   onChange={(event) =>
@@ -4030,12 +4026,12 @@ function VulnerabilityPassportsPanel({
                 />
               </Field>
               <Toggle
-                label="Include nested groups"
+                label="Включая вложенные группы"
                 checked={form.include_nested_groups}
                 onChange={(value) => update("include_nested_groups", value)}
               />
               <Toggle
-                label="Сразу загрузить детали в БД"
+                label="Сразу загрузить детали"
                 checked={form.load_details}
                 onChange={(value) => update("load_details", value)}
               />
@@ -4136,7 +4132,7 @@ function VulnerabilityPassportsPanel({
           onKeyDown={(event) =>
             event.key === "Enter" && loadLocalPassports(1, false)
           }
-          placeholder="Поиск по CVE, названию, internalId, package"
+          placeholder="CVE, название или пакет"
         />
         <Button
           variant="secondary"
@@ -4169,7 +4165,7 @@ function VulnerabilityPassportsPanel({
                 onSort={changePassportSort}
                 initialDirection="desc"
               >
-                Score
+                Оценка
               </SortableHeader>
               <SortableHeader
                 column="name"
@@ -4183,14 +4179,14 @@ function VulnerabilityPassportsPanel({
                 sort={passportSort}
                 onSort={changePassportSort}
               >
-                Severity
+                Критичность
               </SortableHeader>
               <SortableHeader
                 column="package"
                 sort={passportSort}
                 onSort={changePassportSort}
               >
-                Package
+                Пакет
               </SortableHeader>
               <SortableHeader
                 column="detail_updated_at"
@@ -4198,14 +4194,7 @@ function VulnerabilityPassportsPanel({
                 onSort={changePassportSort}
                 initialDirection="desc"
               >
-                Детали / свежесть
-              </SortableHeader>
-              <SortableHeader
-                column="internal_id"
-                sort={passportSort}
-                onSort={changePassportSort}
-              >
-                internalId
+                Детали
               </SortableHeader>
               <th>Действия</th>
             </tr>
@@ -4226,7 +4215,7 @@ function VulnerabilityPassportsPanel({
                   }
                 >
                   <td>
-                    <span className="score-badge">{row.score || "n/a"}</span>
+                    <span className="score-badge">{row.score || "—"}</span>
                   </td>
                   <td className="wide-cell">
                     <strong>
@@ -4252,20 +4241,16 @@ function VulnerabilityPassportsPanel({
                   <td>
                     {[row.package_id, row.package_version]
                       .filter(Boolean)
-                      .join(" / ") || "n/a"}
+                      .join(" / ") || "—"}
                   </td>
                   <td>
                     {row.has_detail || row.raw_detail ? (
                       <FreshnessBadge
                         value={row.detail_updated_at || row.last_seen}
-                        source="PostgreSQL"
                       />
                     ) : (
                       "нет"
                     )}
-                  </td>
-                  <td>
-                    <code>{row.internal_id || "n/a"}</code>
                   </td>
                   <td>
                     <div className="row-actions">
@@ -4303,12 +4288,10 @@ function VulnerabilityPassportsPanel({
               ))
             ) : (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={6} className="empty-cell">
                   {passportTotal
                     ? "На этой странице нет записей."
-                    : canManagePassports
-                      ? "Выполните PDQL или загрузите паспорта из БД."
-                      : "Загрузите паспорта из БД."}
+                    : "Нажмите «Сохранённые», чтобы показать паспорта."}
                 </td>
               </tr>
             )}
@@ -4351,7 +4334,7 @@ function VulnerabilityPassportsPanel({
           title="Карточка паспорта уязвимости"
           className="asset-modal"
           overlayClassName="asset-modal-overlay"
-          closeLabel="Назад"
+          closeLabel="Закрыть"
           onClose={() => setPassportWindowOpen(false)}
         >
           <PassportCard
@@ -4610,30 +4593,13 @@ function AssetSummaryTab({
     <div className="asset-summary-grid">
       <div className="asset-summary-main">
         <PassportSection title="Основная информация">
-          <KeyValue label="asset_id" value={assetId} />
-          <KeyValue label="Type" value={assetType} />
-          <KeyValue label="Hostname" value={hostname} />
+          <KeyValue label="Тип" value={assetType} />
+          <KeyValue label="Имя хоста" value={hostname} />
           <KeyValue label="FQDN" value={fqdn} />
           <KeyValue label="IP" value={ipAddress} />
           <KeyValue label="ОС" value={osLine} />
-        </PassportSection>
-        <PassportSection title="Сборка">
-          <KeyValue
-            label="Состояние"
-            value={loading ? "собирается" : "готово"}
-          />
-          <KeyValue
-            label="Metadata"
-            value={formatCount(stats.metadata_requests)}
-          />
-          <KeyValue
-            label="Node requests"
-            value={formatCount(stats.node_requests)}
-          />
-          <KeyValue
-            label="Collection requests"
-            value={formatCount(stats.collection_requests)}
-          />
+          <KeyValue label="ID актива" value={assetId} />
+          {loading ? <KeyValue label="Состояние" value="собирается" /> : null}
         </PassportSection>
         <PassportSection title="Предупреждения">
           {warnings.length ? (
@@ -4647,20 +4613,12 @@ function AssetSummaryTab({
       </div>
       <div className="asset-summary-side">
         <div className="asset-summary-card">
-          <span>Коллекции</span>
-          <strong>{formatCount(stats.collections)}</strong>
-        </div>
-        <div className="asset-summary-card">
-          <span>Узлы</span>
-          <strong>{formatCount(stats.nodes)}</strong>
-        </div>
-        <div className="asset-summary-card">
-          <span>Строки data</span>
-          <strong>{formatCount(stats.table_rows)}</strong>
-        </div>
-        <div className="asset-summary-card">
-          <span>Уровень уязвимости</span>
-          <strong>{firstFilled(root?.vulnerabilityLevel, "n/a")}</strong>
+          <span>Критичность</span>
+          <strong>
+            {root?.vulnerabilityLevel
+              ? severityLabel(root.vulnerabilityLevel)
+              : "—"}
+          </strong>
         </div>
       </div>
     </div>
@@ -6359,10 +6317,10 @@ function PassportSummaryTab({ model, row, loading }) {
     <div className="asset-summary-grid">
       <div className="asset-summary-main">
         <PassportSection title="Основная информация">
-          <KeyValue label="internalId" value={row?.internal_id} />
+          <KeyValue label="Критичность" value={severityLabel(model.severity)} />
+          <KeyValue label="Оценка" value={model.score} />
           <KeyValue label="Внешний ID" value={row?.external_id} />
-          <KeyValue label="Опасность" value={model.severity} />
-          <KeyValue label="Score" value={model.score} />
+          <KeyValue label="ID паспорта" value={row?.internal_id} />
           <KeyValue label="Пакет" value={model.packageLine} />
           <KeyValue
             label="Дата публикации"
@@ -6372,25 +6330,17 @@ function PassportSummaryTab({ model, row, loading }) {
         <PassportSection title="Описание">
           <p>
             {model.description ||
-              "В сохранённой детали паспорта нет отдельного поля описания."}
+              "Описания нет."}
           </p>
         </PassportSection>
         <PassportSection title="Как исправить">
           <p>
             {model.remediation ||
-              "Рекомендация не найдена в нормализованных полях паспорта."}
+              "Рекомендации нет."}
           </p>
         </PassportSection>
       </div>
       <div className="asset-summary-side">
-        <div className="asset-summary-card">
-          <span>Score</span>
-          <strong>{model.score || "n/a"}</strong>
-        </div>
-        <div className="asset-summary-card">
-          <span>Severity</span>
-          <strong>{model.severity || "n/a"}</strong>
-        </div>
         <div className="asset-summary-card">
           <span>CVE</span>
           <strong>{formatCount(model.cves.length)}</strong>
@@ -7703,7 +7653,6 @@ function AssetsPanel({
                   <td>
                     <FreshnessBadge
                       value={row.created_at}
-                      source="PostgreSQL"
                     />
                   </td>
                 </tr>
@@ -7894,7 +7843,6 @@ function Severity({ value }) {
 
 function FreshnessBadge({
   value,
-  source,
   freshForHours = 24,
   staleAfterHours = 7 * 24,
 }) {
@@ -7924,7 +7872,7 @@ function FreshnessBadge({
       title={value ? formatDateTime(value) : "Время обновления отсутствует"}
     >
       <strong>{label}</strong>
-      <small>{source}</small>
+      {value ? <small>{formatDateTime(value)}</small> : null}
     </span>
   );
 }

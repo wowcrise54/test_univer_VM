@@ -351,3 +351,33 @@ html[data-theme="dark"] textarea:focus-visible {
   align-items: center;
   margin: 8px 0 12px;
 }
+
+/* The file input stays reachable from the keyboard while the label looks like a button. */
+.upload-button input.visually-hidden {
+  position: absolute;
+  display: block;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.upload-button {
+  position: relative;
+}
+
+.upload-button:focus-within {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.toggle--danger span {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.report-downloads,
+.export-run {
+  align-items: center;
+}
