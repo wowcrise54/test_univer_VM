@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
 
@@ -63,13 +63,15 @@ describe("local asset groups management", () => {
 
     const showAlert = vi.fn();
     renderPage(undefined, showAlert);
-    expect(screen.getByText("Успешные цели")).toBeInTheDocument();
+    expect(screen.getByText("Доступны")).toBeInTheDocument();
     expect(await screen.findByText("9")).toBeInTheDocument();
-    expect(screen.getByText("False")).toBeInTheDocument();
-    expect(screen.getByText("Без детализации")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Пересчитать выбранные" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Архивировать выбранные" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать группу Production" }));
+    expect(screen.getByText("Недоступны: 3")).toBeInTheDocument();
+    expect(screen.getByText("Без данных")).toBeInTheDocument();
+    // Bulk actions appear only once something is selected.
+    expect(screen.queryByRole("button", { name: "Пересчитать выбранные" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Архивировать выбранные" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Выбрать группу Production" }));
+    expect(screen.getByText("Выбрано: 1")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Пересчитать выбранные" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -92,15 +94,15 @@ describe("local asset groups management", () => {
     const showAlert = vi.fn();
 
     renderPage(["asset_groups.read", "tasks.execute"], showAlert);
-    fireEvent.click(await screen.findByText("False targets · 1"));
+    fireEvent.click(await screen.findByText("Недоступные хосты · 1"));
     expect(screen.getByText("10.0.0.2")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Повторить false" }));
+    fireEvent.click(screen.getByRole("button", { name: "Повторить недоступные" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/scanner-tasks/precheck-1/retry-false"),
       expect.objectContaining({ method: "POST" }),
     ));
-    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Повторено: 1; false: 0.", "success"));
+    await waitFor(() => expect(showAlert).toHaveBeenCalledWith("Повторено: 1; недоступны: 0.", "success"));
   });
 
   it("starts group scan and remediation verification for executable users", async () => {
@@ -184,4 +186,45 @@ describe("local asset groups management", () => {
       ).toBe(false);
     },
   );
+});
+
+describe("asset group safeguards", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks before archiving several groups at once", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, options) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) return response({ runs: 0, success: 0, false: 0, unknown: 0 });
+      if (url.includes("/precheck-runs") || url.includes("/fields")) return response({ rows: [] });
+      if (url.endsWith("/bulk-action") && options?.method === "POST") return response({ processed: 1, failed: 0 });
+      return response({ rows: [{ group_id: "group-1", name: "Production", status: "ready", member_count: 4, children: [] }] });
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Выбрать группу Production" }));
+    fireEvent.click(screen.getByRole("button", { name: "Архивировать выбранные" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Архивировать выбранные группы (1)?" });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/bulk-action"), expect.anything());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Архивировать" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/asset-groups/bulk-action"),
+      expect.objectContaining({ body: JSON.stringify({ group_ids: ["group-1"], action: "archive" }) }),
+    ));
+  });
+
+  it("describes the group rule in words and opens the create form on demand", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/precheck-stats")) return response({ runs: 0, success: 0, false: 0, unknown: 0 });
+      if (url.includes("/precheck-runs") || url.includes("/members")) return response({ rows: [], total: 0 });
+      if (url.includes("/fields")) return response({ rows: [{ field_path: "asset.ipAddress", field_name: "IP-адрес" }] });
+      return response({ rows: [{ group_id: "group-1", name: "Production", status: "ready", member_count: 0, children: [], query: { combinator: "and", rules: [{ field_path: "asset.ipAddress", operator: "in_cidr", value: "10.0.0.0/8" }] } }] });
+    });
+    renderPage();
+    expect(screen.queryByRole("heading", { name: "Новая динамическая группа" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Production/ }));
+    expect(await screen.findByText("IP-адрес входит в подсеть 10.0.0.0/8")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "+ Новая группа" }));
+    expect(screen.getByRole("heading", { name: "Новая динамическая группа" })).toBeInTheDocument();
+  });
 });

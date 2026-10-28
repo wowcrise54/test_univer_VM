@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, createIdempotencyKey } from "../../api/client.js";
 import {
+  ActionMenu,
   Button,
   ConfirmDialog,
   Field,
@@ -29,8 +30,25 @@ const STATUS_LABELS = {
   stop_requested: "Остановка",
   validation_failed: "Ошибка проверки",
   precheck_failed: "Хосты недоступны",
-  precheck_updated_targets: "Precheck пройден",
+  precheck_updated_targets: "Хосты доступны",
 };
+
+function runStatusLabel(value) {
+  if (!value) return "—";
+  return (
+    {
+      finished: "Завершён",
+      completed: "Завершён",
+      running: "Выполняется",
+      started: "Выполняется",
+      queued: "В очереди",
+      stopped: "Остановлен",
+      cancelled: "Остановлен",
+      failed: "Ошибка",
+      error: "Ошибка",
+    }[String(value).toLowerCase()] || value
+  );
+}
 
 const POSTPROCESS_LABELS = {
   monitoring: "Сканирование идёт",
@@ -158,7 +176,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   return (
     <div className="team-tasks-page">
       <Panel
-        title="Сканирование по пресетам"
+        title="Пресеты"
         action={
           <Field label="ОС">
             <select
@@ -211,8 +229,8 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           {!presetsQuery.isLoading && !presets.length ? (
             <p className="empty-cell">
               {canManagePresets
-                ? "Пресетов пока нет. Создайте их в разделе «Пресеты задач»."
-                : "Для вашей роли пока нет пресетов. Обратитесь к администратору."}
+                ? "Пресетов нет. Создайте их в разделе «Пресеты задач»."
+                : "Для вашей роли пресетов нет — обратитесь к администратору."}
             </p>
           ) : null}
         </div>
@@ -278,7 +296,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
               {!tasksQuery.isLoading && !tasks.length ? (
                 <tr>
                   <td colSpan={6} className="empty-cell">
-                    Задач команды пока нет.
+                    Задач пока нет.
                   </td>
                 </tr>
               ) : null}
@@ -380,13 +398,15 @@ function TeamTaskRow({
             >
               История
             </Button>
-            <Button
-              variant="tiny"
-              disabled={busy || running}
-              onClick={onDelete}
-            >
-              Удалить
-            </Button>
+            <ActionMenu className="row-actions__more">
+              <Button
+                variant="tiny"
+                disabled={busy || running}
+                onClick={onDelete}
+              >
+                Удалить
+              </Button>
+            </ActionMenu>
           </div>
         </td>
       </tr>
@@ -421,7 +441,7 @@ function TeamTaskHistory({ taskId }) {
     <ol className="team-runs" aria-label="Последние запуски">
       {runs.map((run, index) => (
         <li key={run.id || index}>
-          <strong>{run.status || run.state || "—"}</strong>
+          <strong>{runStatusLabel(run.status || run.state)}</strong>
           <span>
             {formatDate(run.startedAt || run.started_at)} —{" "}
             {formatDate(run.finishedAt || run.finished_at)}
@@ -526,14 +546,11 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <span className="confirm-dialog__eyebrow">
-          {OS_LABELS[preset.os_family] || preset.os_family} · пресет
-        </span>
         <h2 id={titleId}>{preset.name}</h2>
         {preset.description ? <p>{preset.description}</p> : null}
         <fieldset className="preset-fieldset">
           <legend>
-            Группы активов · выбрано {selected.length} из {limit} возможных
+            Группы · {selected.length}/{limit}
           </legend>
           <input
             type="search"
@@ -573,12 +590,10 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
             onChange={(event) => setTargetsText(event.target.value)}
           />
           <small className="preset-muted">
-            IP-адрес, подсеть (CIDR), диапазон (10.0.2.1-10.0.2.50) или FQDN —
-            по одному в строке или через запятую. Можно вместе с группами или
-            без них.
+            По одному в строке; можно без групп.
           </small>
         </fieldset>
-        <Field label="Название (необязательно)">
+        <Field label="Название">
           <input
             value={name}
             maxLength={160}
@@ -586,7 +601,7 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        <Field label="Комментарий (необязательно)">
+        <Field label="Комментарий">
           <input
             value={description}
             maxLength={2000}

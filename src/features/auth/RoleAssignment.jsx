@@ -150,7 +150,6 @@ export function RoleAssignmentDialog({ user, roles, onClose, onSave }) {
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <span className="confirm-dialog__eyebrow">Роли пользователя</span>
         <h2 id={titleId}>{user.display_name}</h2>
         <p className="role-assign-dialog__login">{user.username}</p>
         <RolePicker

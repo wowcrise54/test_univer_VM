@@ -322,3 +322,23 @@ html[data-theme="dark"] textarea:focus-visible {
     white-space: nowrap;
   }
 }
+
+/* One-line notes next to the control they explain. */
+.vm-launch-note,
+.field-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selection-count {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.asset-group-predicate {
+  margin: 0 0 12px;
+  font-size: 13px;
+}

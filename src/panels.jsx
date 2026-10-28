@@ -74,7 +74,6 @@ function ConnectionPanel({
   setConnectionDraft: setForm,
   session,
   setSession,
-  lookups,
   lookupsError,
   lookupsUpdatedAt,
   refreshLookups,
@@ -128,16 +127,12 @@ function ConnectionPanel({
   const loadLookups = () =>
     runBusy("lookups", async () => {
       await refreshLookups();
-      showAlert(
-        "Справочники загружены: credentials, scopes, scanner profiles и коллекторы.",
-        "success",
-      );
+      showAlert("Справочники обновлены.", "success");
     });
 
   return (
     <Panel
       id="connection"
-      title="Подключение к MP VM"
       action={
         session.connected ? (
           <Button
@@ -154,71 +149,72 @@ function ConnectionPanel({
       {!session.connected && session.env_connect_error ? (
         <div className="query-state query-state--error" role="alert">
           <span>
-            Автоподключение из .env не выполнено: {session.env_connect_error}
+            Автоподключение не выполнено: {session.env_connect_error}
           </span>
         </div>
       ) : null}
       <div className="form-grid form-grid--two connection-primary-fields">
-        <Field label="Корневой URL API">
+        <Field label="Адрес MP VM">
           <input
             value={form.api_url}
             onChange={(event) => update("api_url", event.target.value)}
             placeholder="https://srv-siem.local"
           />
         </Field>
-        <Field label="Username">
+        <Field label="Логин">
           <input
             value={form.username}
             onChange={(event) => update("username", event.target.value)}
             autoComplete="username"
           />
         </Field>
-        <Field label="Password">
+        <Field label="Пароль">
           <input
             value={form.password}
             onChange={(event) => update("password", event.target.value)}
             type="password"
             autoComplete="current-password"
           />
+          <small className="field-note">Хранится только в памяти.</small>
         </Field>
       </div>
       <Disclosure
         title="Дополнительная авторизация"
-        meta={form.access_token ? "Bearer token" : "OAuth / TLS"}
+        meta={form.access_token ? "Токен задан" : null}
       >
         <div className="form-grid form-grid--two">
-          <Field label="Token URL">
+          <Field label="Адрес выдачи токена">
             <input
               value={form.token_url}
               onChange={(event) => update("token_url", event.target.value)}
               placeholder="https://srv-siem.local:3334/connect/token"
             />
           </Field>
-          <Field label="Client ID">
+          <Field label="ID клиента">
             <input
               value={form.client_id}
               onChange={(event) => update("client_id", event.target.value)}
             />
           </Field>
-          <Field label="Client Secret">
+          <Field label="Секрет клиента">
             <input
               value={form.client_secret}
               onChange={(event) => update("client_secret", event.target.value)}
               type="password"
             />
           </Field>
-          <Field label="Scope" wide>
+          <Field label="Область доступа" wide>
             <input
               value={form.scope}
               onChange={(event) => update("scope", event.target.value)}
             />
           </Field>
-          <Field label="Bearer token" wide>
+          <Field label="Токен доступа" wide>
             <input
               value={form.access_token}
               onChange={(event) => update("access_token", event.target.value)}
               type="password"
-              placeholder="Можно вместо username/password/client_secret"
+              placeholder="Вместо логина и пароля"
             />
           </Field>
           <Toggle
@@ -237,20 +233,13 @@ function ConnectionPanel({
             Отключиться
           </Button>
         ) : null}
-        {session.connected ? (
+        {session.connected && lookupsUpdatedAt ? (
           <div className="inline-metric">
-            Справочники: <span>{lookups.credentials.length}</span> учётных
-            записей · <span>{lookups.scopes.length}</span> scopes ·{" "}
-            <span>{lookups.scanner_profiles.length}</span> профилей ·{" "}
-            <span>{lookups.agents?.length || 0}</span> коллекторов
-            {lookupsUpdatedAt ? (
-              <>
-                {" "}
-                · обновлены{" "}
-                {new Date(lookupsUpdatedAt).toLocaleTimeString("ru-RU")},
-                автообновление каждые 5 мин
-              </>
-            ) : null}
+            Справочники обновлены{" "}
+            {new Date(lookupsUpdatedAt).toLocaleTimeString("ru-RU", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
           </div>
         ) : null}
         {session.connected && lookupsError ? (
@@ -261,13 +250,9 @@ function ConnectionPanel({
             </span>
           </div>
         ) : null}
-        <div
-          className={
-            session.connected ? "mini-state mini-state--ok" : "mini-state"
-          }
-        >
-          {session.connected ? session.api_url : "Ожидает подключения"}
-        </div>
+        {session.connected ? (
+          <div className="mini-state mini-state--ok">{session.api_url}</div>
+        ) : null}
       </div>
     </Panel>
   );
@@ -474,9 +459,9 @@ function TaskBuilderPanel({
 
   const preflight = [
     {
-      label: "PostgreSQL",
+      label: "База данных",
       ok: systemStatus?.components?.database?.state === "ok",
-      detail: "Нужен для истории операции и результатов",
+      detail: "Нужна для истории запусков",
     },
     {
       label: "Сессия MP VM",
@@ -486,15 +471,20 @@ function TaskBuilderPanel({
     {
       label: "Справочники",
       ok: Boolean(lookups.scopes.length && lookups.scanner_profiles.length),
-      detail: "Загрузите scopes и scanner profiles",
+      detail: "Обновите справочники в разделе «Подключение»",
     },
+    // The editor saves the task itself, so it never waits for a selected one.
+    ...(editorMode
+      ? []
+      : [
+          {
+            label: "Выбрана задача",
+            ok: Boolean(selectedTaskId),
+            detail: "Создайте или выберите задачу",
+          },
+        ]),
     {
-      label: "Выбрана задача",
-      ok: Boolean(selectedTaskId),
-      detail: "Создайте или выберите задачу",
-    },
-    {
-      label: "Scope и профиль",
+      label: "Инфраструктура и профиль",
       ok: Boolean(form.scope_id && form.profile_id),
       detail: "Заполните обязательные параметры",
     },
@@ -593,15 +583,15 @@ function TaskBuilderPanel({
           <input
             value={form.name}
             onChange={(event) => update("name", event.target.value)}
-            placeholder="Windows audit 10.104.103.0/24"
+            placeholder="Аудит Windows 10.0.0.0/24"
           />
         </Field>
-        <Field label="Инфраструктура / scope">
+        <Field label="Инфраструктура">
           <select
             value={form.scope_id}
             onChange={(event) => update("scope_id", event.target.value)}
           >
-            <option value="">Выберите scope</option>
+            <option value="">Выберите инфраструктуру</option>
             {lookups.scopes.map((item) => (
               <option value={item.id || ""} key={item.id || item.name}>
                 {optionLabel(item, lookups.scopes)}
@@ -663,7 +653,6 @@ function TaskBuilderPanel({
               onChange={(event) =>
                 update("exclude_targets", event.target.value)
               }
-              placeholder="Опционально"
             />
           </Field>
           <Field label="Часовой пояс">
@@ -700,11 +689,11 @@ function TaskBuilderPanel({
               <div className="task-agent-picker__empty">
                 <span>Список коллекторов пока пуст. Можно указать UUID вручную.</span>
                 <textarea
-                  aria-label="Коллекторы / agents"
+                  aria-label="Коллекторы"
                   rows={2}
                   value={form.agent_ids}
                   onChange={(event) => update("agent_ids", event.target.value)}
-                  placeholder="UUID через запятую или с новой строки"
+                  placeholder="ID коллекторов через запятую"
                 />
               </div>
             )}
@@ -736,7 +725,7 @@ function TaskBuilderPanel({
             <Field label="Начать с">
               <input aria-label="Начать расписание с" type="datetime-local" value={form.schedule_from_date} onChange={(event) => update("schedule_from_date", event.target.value)} />
             </Field>
-            <Field label="Завершить после (опционально)">
+            <Field label="Завершить после">
               <input aria-label="Завершить расписание после" type="datetime-local" value={form.schedule_to_date} onChange={(event) => update("schedule_to_date", event.target.value)} />
             </Field>
             {["Daily", "Weekly", "Fortnightly", "Monthly"].includes(form.schedule_type) ? (
@@ -760,7 +749,7 @@ function TaskBuilderPanel({
               <Field label="День месяца"><input type="number" min="1" max="31" value={form.schedule_day_of_month} onChange={(event) => update("schedule_day_of_month", event.target.value)} /></Field>
             ) : null}
             {form.schedule_type === "CronScheduler" ? (
-              <Field label="Cron выражение"><input value={form.schedule_cron_expression} onChange={(event) => update("schedule_cron_expression", event.target.value)} /></Field>
+              <Field label="Cron"><input value={form.schedule_cron_expression} onChange={(event) => update("schedule_cron_expression", event.target.value)} /></Field>
             ) : null}
           </div>
         ) : null}
@@ -797,7 +786,7 @@ function TaskBuilderPanel({
       <Disclosure
         title="Подключение и обнаружение"
         meta={
-          form.host_discovery_enabled ? "HostDiscovery включён" : "Стандартно"
+          form.host_discovery_enabled ? "Обнаружение хостов" : "Стандартно"
         }
       >
         <div className="form-grid form-grid--two">
@@ -817,7 +806,7 @@ function TaskBuilderPanel({
               value={form.credential_id}
               onChange={(event) => update("credential_id", event.target.value)}
             >
-              <option value="">Без credential override</option>
+              <option value="">Из профиля</option>
               {lookups.credentials.map((item) => (
                 <option value={item.id || ""} key={item.id || item.name}>
                   {optionLabel(item, lookups.credentials)}
@@ -825,20 +814,20 @@ function TaskBuilderPanel({
               ))}
             </select>
           </Field>
-          <Field label="HostDiscovery profile">
+          <Toggle
+            label="Обнаружение хостов"
+            checked={form.host_discovery_enabled}
+            onChange={(value) => update("host_discovery_enabled", value)}
+          />
+          <Field label="Профиль обнаружения хостов">
             <ProfileSelect
               value={form.host_discovery_profile_id}
               onChange={(value) => update("host_discovery_profile_id", value)}
               profiles={lookups.scanner_profiles}
-              emptyLabel="Без HostDiscovery profile"
-              searchLabel="Поиск HostDiscovery-профиля"
+              emptyLabel="Без профиля"
+              searchLabel="Поиск профиля обнаружения"
             />
           </Field>
-          <Toggle
-            label="Включить hostDiscovery"
-            checked={form.host_discovery_enabled}
-            onChange={(value) => update("host_discovery_enabled", value)}
-          />
           <Toggle
             label="Приоритет FQDN"
             checked={form.is_fqdn_priority}
@@ -848,19 +837,19 @@ function TaskBuilderPanel({
       </Disclosure>
 
       <Disclosure
-        title="Precheck и таймеры"
-        meta={form.precheck_enabled ? "Precheck включён" : "Выключено"}
+        title="Проверка доступности и таймеры"
+        meta={form.precheck_enabled ? "Проверка включена" : "Выключено"}
       >
         <div className="form-grid form-grid--two">
           <Toggle
-            label="Выполнить precheck перед запуском"
+            label="Проверить доступность хостов перед запуском"
             checked={form.precheck_enabled}
             onChange={(value) => update("precheck_enabled", value)}
           />
           <div className="mini-state mini-state--ok">
             Мониторинг, карточки и удаление выполняются в фоне
           </div>
-          <Field label="Precheck profile">
+          <Field label="Профиль проверки">
             <ProfileSelect
               value={form.precheck_profile_id}
               onChange={(value) => update("precheck_profile_id", value)}
@@ -879,7 +868,7 @@ function TaskBuilderPanel({
               }
             />
           </Field>
-          <Field label="Precheck timeout, минут">
+          <Field label="Таймаут проверки, минут">
             <input
               type="number"
               min="1"
@@ -889,7 +878,7 @@ function TaskBuilderPanel({
               }
             />
           </Field>
-          <Field label="Остановить precheck через, минут">
+          <Field label="Остановить проверку через, минут">
             <input
               type="number"
               min="0"
@@ -899,7 +888,7 @@ function TaskBuilderPanel({
               }
             />
           </Field>
-          <Field label="Poll precheck, секунд">
+          <Field label="Опрос проверки, секунд">
             <input
               type="number"
               min="1"
@@ -909,7 +898,7 @@ function TaskBuilderPanel({
               }
             />
           </Field>
-          <Field label="Poll задачи, секунд">
+          <Field label="Опрос задачи, секунд">
             <input
               type="number"
               min="1"
@@ -920,7 +909,7 @@ function TaskBuilderPanel({
             />
           </Field>
           <Toggle
-            label="Считать warning/job_errors ошибкой запуска"
+            label="Строгий режим: не запускать при активных процессах и считать ошибки заданий сбоем"
             checked={form.require_clean_jobs}
             onChange={(value) => update("require_clean_jobs", value)}
           />
@@ -990,7 +979,7 @@ function TaskBuilderPanel({
                 actionTask("validate", "validateTask", (result) =>
                   result.valid
                     ? "Validation пройдена."
-                    : `Validation failed: ${result.error}`,
+                    : `Задача не прошла проверку: ${result.error}`,
                 )
               }
             >
@@ -1019,18 +1008,18 @@ function TaskBuilderPanel({
 function startSuccessText(result) {
   const precheck = result.precheck?.successful_target_count;
   const precheckText =
-    typeof precheck === "number" ? ` Precheck targets: ${precheck}.` : "";
+    typeof precheck === "number" ? ` Доступно хостов: ${precheck}.` : "";
   if (result.status === "finished")
     return `Задача завершена успешно.${precheckText}`;
   if (result.status === "timeout_stop_requested")
     return `Таймер истёк, отправлена остановка задачи.${precheckText}`;
   if (result.status === "precheck_failed")
-    return `Precheck не нашёл успешных targets.`;
+    return "Проверка доступности не нашла ни одного доступного хоста.";
   if (result.status === "validation_failed")
-    return `Validation failed: ${result.error || "unknown error"}`;
+    return `Задача не прошла проверку: ${result.error || "причина не указана"}`;
   if (result.postprocess_run_id)
     return `Сканирование запущено. Фоновая обработка: ${result.postprocess_run_id}.${precheckText}`;
-  return `Старт запрошен для ${result.id}.${precheckText}`;
+  return `Запуск запрошен.${precheckText}`;
 }
 
 function timeWithSeconds(value) {
@@ -1549,21 +1538,21 @@ function TaskPostprocessPanel({ run }) {
         <div>
           <span className="eyebrow">Фоновая обработка</span>
           <h3>{postprocessStageLabel(run.stage)}</h3>
-          <p>{run.message || run.error || `Run ${run.run_id}`}</p>
+          {run.message || run.error ? <p>{run.message || run.error}</p> : null}
           {run.error ? (
             <p className="error-text">Исходная причина: {run.error}</p>
           ) : null}
         </div>
         <div className="task-postprocess__metrics">
           <span>
-            Jobs{" "}
+            Задания{" "}
             <strong>
               {formatCount(run.successful_job_count)} /{" "}
               {formatCount(run.total_job_count)}
             </strong>
           </span>
           <span>
-            Assets{" "}
+            Активы{" "}
             <strong>
               {formatCount(run.completed_count)} /{" "}
               {formatCount(run.asset_count)}
@@ -1584,21 +1573,21 @@ function TaskPostprocessPanel({ run }) {
                   sort={tableSort}
                   onSort={toggleTableSort}
                 >
-                  Target
+                  Цель
                 </SortableHeader>
                 <SortableHeader
                   column="asset_id"
                   sort={tableSort}
                   onSort={toggleTableSort}
                 >
-                  Asset ID
+                  ID актива
                 </SortableHeader>
                 <SortableHeader
                   column="mp_job_id"
                   sort={tableSort}
                   onSort={toggleTableSort}
                 >
-                  Scan job
+                  Задание
                 </SortableHeader>
                 <SortableHeader
                   column="build_job_id"
@@ -1656,11 +1645,30 @@ function TaskPostprocessPanel({ run }) {
   );
 }
 
+function taskStatusLabel(status) {
+  return (
+    {
+      pending: "Ожидает",
+      building: "Сборка карточки",
+      card_saved: "Карточка сохранена",
+      asset_refresh_created: "Обновление карточки запущено",
+      deleted: "Удалён из MP VM",
+      removal_failed: "Ошибка удаления",
+      queued: "В очереди",
+      running: "Выполняется",
+      started: "Запущена",
+      finished: "Завершена",
+      failed: "Ошибка",
+      timeout: "Истекло время",
+    }[String(status).toLowerCase()] || postprocessStageLabel(status)
+  );
+}
+
 function postprocessStageLabel(stage) {
   const labels = {
     waiting_for_run: "Ожидание запуска MP VM",
     scanning: "Сканирование выполняется",
-    watching_jobs: "Ожидание успешных scan jobs",
+    watching_jobs: "Ожидание заданий сканирования",
     scan_finished: "Сканирование завершено",
     scanner_start_failed: "Не удалось подтвердить запуск сканирования",
     resolving_assets: "Поиск просканированных активов",
@@ -1741,7 +1749,7 @@ function TaskStatus({ status }) {
   return (
     <span className={`task-status task-status--${kind}`}>
       <span>{icon}</span>
-      {status || "unknown"}
+      {status ? taskStatusLabel(status) : "Неизвестно"}
     </span>
   );
 }

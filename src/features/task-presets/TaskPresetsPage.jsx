@@ -144,7 +144,6 @@ export function TaskPresetsPage({ showAlert }) {
   return (
     <div className="task-presets-page">
       <Panel
-        title="Пресеты задач"
         action={
           <div className="action-row">
             <Button
@@ -217,8 +216,7 @@ export function TaskPresetsPage({ showAlert }) {
                       : "без лимита запусков"}
                   </td>
                   <td>
-                    {preset.is_active ? "Активен" : "В архиве"} · v
-                    {preset.version}
+                    {preset.is_active ? "Активен" : "В архиве"}
                   </td>
                   <td>
                     {preset.is_active ? (
@@ -243,8 +241,7 @@ export function TaskPresetsPage({ showAlert }) {
               {!presetsQuery.isLoading && !presets.length ? (
                 <tr>
                   <td colSpan={7} className="empty-cell">
-                    Пресетов пока нет. Создайте пресет по шаблону ниже или
-                    используйте «Сделать пресетом» в разделе задач.
+                    Пресетов нет. Создайте по шаблону ниже.
                   </td>
                 </tr>
               ) : null}
@@ -306,9 +303,7 @@ function PresetTemplates({
     (template) => !osFilter || template.os_family === osFilter,
   );
   return (
-    <Panel
-      title="Шаблоны по рекомендациям MP VM"
-    >
+    <Panel title="Шаблоны">
       {error ? (
         <p className="preset-error" role="alert">
           Не удалось загрузить шаблоны: {error.operatorMessage || error.message}
@@ -329,7 +324,7 @@ function PresetTemplates({
             <h3>{template.name}</h3>
             <p>{template.purpose}</p>
             <p className="preset-template-profile">
-              {template.module} · <strong>{template.profile_names[0]}</strong>
+              <strong>{template.profile_names[0]}</strong>
             </p>
             <dl>
               <div>
@@ -339,20 +334,8 @@ function PresetTemplates({
                 </dd>
               </div>
               <div>
-                <dt>Precheck</dt>
-                <dd>{template.precheck_enabled ? "Включён" : "Выключен"}</dd>
-              </div>
-              <div>
-                <dt>Групп в задаче</dt>
-                <dd>до {template.max_groups_per_task}</dd>
-              </div>
-              <div>
-                <dt>Запусков сразу</dt>
-                <dd>
-                  {template.max_active_tasks
-                    ? `до ${template.max_active_tasks}`
-                    : "без лимита"}
-                </dd>
+                <dt>Проверка доступности</dt>
+                <dd>{template.precheck_enabled ? "Да" : "Нет"}</dd>
               </div>
             </dl>
             <Button
@@ -368,8 +351,8 @@ function PresetTemplates({
         ))}
       </div>
       {catalogue?.avoid?.length ? (
-        <div className="preset-template-avoid">
-          <strong>Не стоит давать инженерам</strong>
+        <details className="preset-template-avoid">
+          <summary>Профили, которые не стоит давать инженерам</summary>
           <ul>
             {catalogue.avoid.map((item) => (
               <li key={item.profile}>
@@ -382,7 +365,7 @@ function PresetTemplates({
               Рекомендации PT по использованию профилей
             </a>
           ) : null}
-        </div>
+        </details>
       ) : null}
     </Panel>
   );
@@ -495,7 +478,7 @@ function PresetEditor({
             onChange={(event) => update({ description: event.target.value })}
           />
         </Field>
-        <Field label="Область (scope)">
+        <Field label="Инфраструктура">
           <select
             value={form.scope_id}
             onChange={(event) => update({ scope_id: event.target.value })}
@@ -553,12 +536,13 @@ function PresetEditor({
             }
           />
         </Field>
-        <Field label="Одновременных запусков (пусто — без лимита)">
+        <Field label="Одновременных запусков">
           <input
             type="number"
             min={1}
             max={100}
             value={form.max_active_tasks ?? ""}
+            placeholder="Без лимита"
             onChange={(event) =>
               update({ max_active_tasks: event.target.value })
             }
@@ -574,12 +558,12 @@ function PresetEditor({
 
       <div className="preset-options">
         <Toggle
-          label="Проверять доступность хостов (precheck) перед сканированием"
+          label="Проверять доступность хостов перед сканированием"
           checked={form.precheck_enabled}
           onChange={(value) => update({ precheck_enabled: value })}
         />
         {form.precheck_enabled ? (
-          <Field label="Профиль precheck">
+          <Field label="Профиль проверки">
             <select
               value={form.precheck_profile_id}
               onChange={(event) =>
@@ -596,12 +580,12 @@ function PresetEditor({
           </Field>
         ) : null}
         <Toggle
-          label="HostDiscovery"
+          label="Обнаружение хостов"
           checked={form.host_discovery_enabled}
           onChange={(value) => update({ host_discovery_enabled: value })}
         />
         {form.host_discovery_enabled ? (
-          <Field label="Профиль HostDiscovery">
+          <Field label="Профиль обнаружения хостов">
             <select
               value={form.host_discovery_profile_id}
               onChange={(event) =>
@@ -653,7 +637,7 @@ function PresetEditor({
 
       {(lookups.agents || []).length ? (
         <fieldset className="preset-fieldset">
-          <legend>Агенты (коллекторы)</legend>
+          <legend>Коллекторы</legend>
           <div className="preset-checks">
             {lookups.agents.map((agent) => (
               <label className="toggle" key={agent.id}>

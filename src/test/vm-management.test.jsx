@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("VM Management", () => {
   it("shows the cross-domain overview and starts a durable workflow", async () => {
     renderPage();
-    expect(await screen.findByText("Единый контур VM Management")).toBeInTheDocument();
+    expect(await screen.findByText("Активные процессы")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Просрочено").previousSibling).toHaveTextContent("2"));
     await screen.findByRole("option", { name: "Production" });
     fireEvent.change(screen.getByRole("combobox", { name: "Задача MP VM" }), {
@@ -40,7 +40,7 @@ describe("VM Management", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Проверить перед запуском" }));
     expect(await screen.findByText("Проверка пройдена")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Запустить конвейер" }));
+    fireEvent.click(screen.getByRole("button", { name: "Запустить сканирование" }));
     await waitFor(() => expect(api).toHaveBeenCalledWith("/api/vm/workflows/scan", expect.objectContaining({ method: "POST" })));
     expect(await screen.findByRole("dialog", { name: "Полное сканирование" })).toBeInTheDocument();
   });

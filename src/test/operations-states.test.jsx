@@ -101,10 +101,10 @@ describe("OperationsPage critical states", () => {
   it("shows the empty state when no operations match", () => {
     renderOperations({ operations: [], total: 0 });
 
+    expect(screen.getByText("Операций пока нет.")).toBeInTheDocument();
     expect(
-      screen.getByText("Операции с такими фильтрами не найдены."),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Нет операций")).toBeInTheDocument();
+      screen.queryByRole("navigation", { name: "Страницы операций" }),
+    ).not.toBeInTheDocument();
   });
 
   it("marks the summary stale when data may be outdated", () => {
@@ -245,7 +245,6 @@ describe("OperationsPage critical states", () => {
     const showAlert = vi.fn();
     renderOperations({ showAlert });
 
-    fireEvent.click(screen.getByText("Фильтры и представления"));
     fireEvent.change(screen.getByLabelText("Статус операции"), {
       target: { value: "failed" },
     });

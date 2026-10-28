@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, createIdempotencyKey } from "../../api/client.js";
 import { TaskBuilderPanel } from "../../panels.jsx";
+import { ActionMenu } from "../../shared/ui.jsx";
 
 const ALL_TASKS = "__all__";
 const UNGROUPED_TASKS = "__ungrouped__";
@@ -218,7 +219,7 @@ export function TaskWorkspace(props) {
   const deleteFolder = async (folder) => {
     if (
       !window.confirm(
-        `Удалить папку «${folder.name}»? Задачи останутся без группы.`,
+        `Удалить папку «${folder.name}»? Задачи останутся без папки.`,
       )
     )
       return;
@@ -331,9 +332,6 @@ export function TaskWorkspace(props) {
           >
             ← К задачам
           </button>
-          <span>
-            {copyTask ? "НОВАЯ КОПИЯ" : editorTaskId ? "ИЗМЕНЕНИЕ" : "СОЗДАНИЕ"}
-          </span>
         </div>
         <TaskBuilderPanel
           defaults={defaults}
@@ -426,10 +424,13 @@ export function TaskWorkspace(props) {
                     type="button"
                     key={run.id || index}
                     className={`task-run-item ${jobsState?.runId === run.id ? "is-active" : ""}`}
+                    title={displayText(run.id)}
                     onClick={() => void loadJobs(run.id)}
                   >
                     <span className="task-run-item__status">
-                      {displayText(run.status) || "Запуск"}
+                      {run.status
+                        ? taskStatusLabel(displayText(run.status))
+                        : "Запуск"}
                     </span>
                     <strong>
                       {formatDate(run.startedAt || run.createdAt)}
@@ -439,9 +440,6 @@ export function TaskWorkspace(props) {
                         displayText(run.startedBy) ||
                         "Запуск MP VM"}
                     </small>
-                    <span className="task-run-item__id">
-                      {displayText(run.id)}
-                    </span>
                   </button>
                 ))}
                 {runsState.hasMore ? (
@@ -478,7 +476,7 @@ export function TaskWorkspace(props) {
               </div>
             ) : !jobsState?.items?.length ? (
               <p className="task-empty">
-                Выберите запуск, чтобы посмотреть задания по целям.
+                {jobsState?.runId ? "Нет заданий." : "Выберите запуск."}
               </p>
             ) : (
               <div className="task-jobs-table-wrap">
@@ -553,10 +551,6 @@ export function TaskWorkspace(props) {
   return (
     <main className="task-workspace">
       <header className="task-workspace-toolbar">
-        <div>
-          <p className="task-workspace-eyebrow">MP VM / СКАНИРОВАНИЕ</p>
-          <h2>Задачи</h2>
-        </div>
         <div className="task-workspace-toolbar__actions">
           <button type="button" onClick={() => refreshTasks()}>
             Обновить
@@ -573,7 +567,7 @@ export function TaskWorkspace(props) {
         </div>
       </header>
       <section className="task-list-workspace">
-        <aside className="task-folder-rail" aria-label="Группы задач">
+        <aside className="task-folder-rail" aria-label="Папки задач">
           <header>
             <h2>Папки</h2>
             {canManage ? (
@@ -703,7 +697,7 @@ export function TaskWorkspace(props) {
                 ) : null}
                 <col className="task-workspace-table__status-column" />
                 <col className="task-workspace-table__name-column" />
-                <col span={8} />
+                <col span={4} />
               </colgroup>
               <thead>
                 <tr>
@@ -712,10 +706,6 @@ export function TaskWorkspace(props) {
                   <th>Название</th>
                   <th>Цели</th>
                   <th>Профиль</th>
-                  <th>Параметры сбора</th>
-                  <th>Коллекторы</th>
-                  <th>Учётная запись</th>
-                  <th>Создана</th>
                   <th>Последний запуск</th>
                   <th>Следующий запуск</th>
                 </tr>
@@ -724,7 +714,7 @@ export function TaskWorkspace(props) {
                 {loading ? (
                   <tr className="task-table-message-row">
                     <td
-                      colSpan={canManage ? 11 : 10}
+                      colSpan={canManage ? 7 : 6}
                       className="task-table-empty"
                       role="status"
                     >
@@ -734,7 +724,7 @@ export function TaskWorkspace(props) {
                 ) : error ? (
                   <tr className="task-table-message-row">
                     <td
-                      colSpan={canManage ? 11 : 10}
+                      colSpan={canManage ? 7 : 6}
                       className="task-table-empty"
                       role="alert"
                     >
@@ -744,12 +734,12 @@ export function TaskWorkspace(props) {
                 ) : !visibleTasks.length ? (
                   <tr className="task-table-message-row">
                     <td
-                      colSpan={canManage ? 11 : 10}
+                      colSpan={canManage ? 7 : 6}
                       className="task-table-empty"
                     >
                       {query
                         ? "Задачи по запросу не найдены."
-                        : "В этой группе пока нет задач."}
+                        : "В этой папке нет задач."}
                     </td>
                   </tr>
                 ) : (
@@ -785,8 +775,9 @@ export function TaskWorkspace(props) {
                         <StatusBadge status={task.status} />
                       </td>
                       <td data-label="Название">
-                        <strong>{task.name || task.mp_task_id}</strong>
-                        <small>{task.mp_task_id}</small>
+                        <strong title={task.mp_task_id}>
+                          {task.name || task.mp_task_id}
+                        </strong>
                       </td>
                       <td data-label="Цели">
                         {taskTargets(task).slice(0, 2).join(", ") || "—"}
@@ -796,18 +787,6 @@ export function TaskWorkspace(props) {
                           task.profile_id ||
                           task.payload?.profile ||
                           "—"}
-                      </td>
-                      <td data-label="Параметры сбора">
-                        {taskCollectionSummary(task)}
-                      </td>
-                      <td data-label="Коллекторы">
-                        {taskAgents(task).slice(0, 2).join(", ") || "—"}
-                      </td>
-                      <td data-label="Учётная запись">
-                        {taskAccount(task) || "—"}
-                      </td>
-                      <td data-label="Создана">
-                        {formatDate(task.created_at)}
                       </td>
                       <td data-label="Последний запуск">
                         {formatDate(task.last_run_at || task.lastRunAt)}
@@ -838,98 +817,110 @@ export function TaskWorkspace(props) {
                     (folder) =>
                       folder.folder_id ===
                       memberships.get(selectedTask.mp_task_id),
-                  )?.name || "Без группы"
+                  )?.name || "Без папки"
                 }
               />
               <div className="task-inspector-actions">
-                <button type="button" onClick={() => openDetails(selectedTask)}>
-                  Открыть подробности
-                </button>
-                {canManage ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => openEditor(selectedTask)}
-                    >
-                      Изменить
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openEditor(selectedTask, true)}
-                    >
-                      Копировать
-                    </button>
-                    <select
-                      aria-label="Переместить задачу"
-                      value=""
-                      onChange={(event) =>
-                        assignTasks(
-                          [selectedTask.mp_task_id],
-                          event.target.value === "__none__"
-                            ? null
-                            : event.target.value,
-                        )
-                      }
-                    >
-                      <option value="" disabled>
-                        Переместить в…
-                      </option>
-                      <option value="__none__">Без группы</option>
-                      {folders.map((folder) => (
-                        <option value={folder.folder_id} key={folder.folder_id}>
-                          {folder.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="task-danger-action"
-                      onClick={() =>
-                        setConfirmDeleteId(selectedTask.mp_task_id)
-                      }
-                    >
-                      Удалить
-                    </button>
-                  </>
-                ) : null}
-                {canManagePresets && onNavigate ? (
+                {canExecute ? (
                   <button
                     type="button"
-                    onClick={() =>
-                      onNavigate(
-                        `/task-presets?from_task=${encodeURIComponent(selectedTask.mp_task_id)}`,
-                      )
-                    }
+                    className="task-primary-action"
+                    onClick={() => taskAction(selectedTask, "start")}
                   >
-                    Сделать пресетом
+                    Запустить
                   </button>
                 ) : null}
-                {canExecute ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => taskAction(selectedTask, "validate")}
-                    >
-                      Проверить
-                    </button>
-                    <button
-                      type="button"
-                      className="task-primary-action"
-                      onClick={() => taskAction(selectedTask, "start")}
-                    >
-                      Запустить
-                    </button>
-                    {["running", "in_progress", "started"].includes(
-                      String(selectedTask.status).toLowerCase(),
-                    ) ? (
+                {canExecute &&
+                ["running", "in_progress", "started"].includes(
+                  String(selectedTask.status).toLowerCase(),
+                ) ? (
+                  <button
+                    type="button"
+                    onClick={() => taskAction(selectedTask, "stop")}
+                  >
+                    Остановить
+                  </button>
+                ) : null}
+                {canManage ? (
+                  <button
+                    type="button"
+                    onClick={() => openEditor(selectedTask)}
+                  >
+                    Изменить
+                  </button>
+                ) : null}
+                <button type="button" onClick={() => openDetails(selectedTask)}>
+                  Подробности
+                </button>
+                {canManage || canExecute || (canManagePresets && onNavigate) ? (
+                  <ActionMenu className="task-inspector-more">
+                    {canManage ? (
                       <button
                         type="button"
-                        onClick={() => taskAction(selectedTask, "stop")}
+                        onClick={() => openEditor(selectedTask, true)}
                       >
-                        Остановить
+                        Копировать
                       </button>
                     ) : null}
-                  </>
+                    {canManagePresets && onNavigate ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onNavigate(
+                            `/task-presets?from_task=${encodeURIComponent(selectedTask.mp_task_id)}`,
+                          )
+                        }
+                      >
+                        Сделать пресетом
+                      </button>
+                    ) : null}
+                    {canExecute ? (
+                      <button
+                        type="button"
+                        onClick={() => taskAction(selectedTask, "validate")}
+                      >
+                        Проверить
+                      </button>
+                    ) : null}
+                    {canManage ? (
+                      <>
+                        <select
+                          aria-label="Переместить задачу"
+                          value=""
+                          onChange={(event) =>
+                            assignTasks(
+                              [selectedTask.mp_task_id],
+                              event.target.value === "__none__"
+                                ? null
+                                : event.target.value,
+                            )
+                          }
+                        >
+                          <option value="" disabled>
+                            Переместить в…
+                          </option>
+                          <option value="__none__">Без папки</option>
+                          {folders.map((folder) => (
+                            <option
+                              value={folder.folder_id}
+                              key={folder.folder_id}
+                            >
+                              {folder.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="task-danger-action"
+                          onClick={() =>
+                            setConfirmDeleteId(selectedTask.mp_task_id)
+                          }
+                        >
+                          Удалить
+                        </button>
+                      </>
+                    ) : null}
+                  </ActionMenu>
                 ) : null}
               </div>
               {confirmDeleteId === selectedTask.mp_task_id ? (
@@ -940,7 +931,7 @@ export function TaskWorkspace(props) {
                 >
                   <p>
                     Удалить задачу «
-                    {selectedTask.name || selectedTask.mp_task_id}»?
+                    {selectedTask.name || selectedTask.mp_task_id}» из MP VM?
                   </p>
                   <button
                     type="button"
@@ -961,10 +952,6 @@ export function TaskWorkspace(props) {
             <div className="task-inspector-empty">
               <span aria-hidden="true">↖</span>
               <h2>Выберите задачу</h2>
-              <p>
-                Щёлкните строку, чтобы посмотреть её параметры и доступные
-                действия.
-              </p>
             </div>
           )}
         </aside>
@@ -1017,9 +1004,7 @@ function TaskSummary({ task, folderName }) {
   const enabled = payload.triggerParameters?.isEnabled;
   return (
     <div className="task-summary">
-      <p className="task-summary-eyebrow">ВЫБРАННАЯ ЗАДАЧА</p>
-      <h2>{task.name || task.mp_task_id}</h2>
-      <code>{task.mp_task_id}</code>
+      <h2 title={task.mp_task_id}>{task.name || task.mp_task_id}</h2>
       <dl>
         <div>
           <dt>Статус</dt>
@@ -1160,15 +1145,25 @@ function taskAccount(task) {
   );
 }
 
-function taskCollectionSummary(task) {
-  const included =
-    (task.payload?.include?.assets || []).length +
-    (task.payload?.include?.assetsGroups || []).length;
-  const targetCount = taskTargets(task).length;
-  const pieces = [];
-  if (targetCount) pieces.push(`${targetCount} целей`);
-  if (included) pieces.push(`${included} групп/активов`);
-  return pieces.join(" · ") || "—";
+function taskStatusLabel(value) {
+  return (
+    {
+      unknown: "Неизвестно",
+      running: "Выполняется",
+      in_progress: "Выполняется",
+      started: "Выполняется",
+      queued: "В очереди",
+      stopped: "Остановлена",
+      stopping: "Останавливается",
+      cancelled: "Остановлена",
+      failed: "Ошибка",
+      error: "Ошибка",
+      invalid: "Ошибка проверки",
+      created: "Не запускалась",
+      new: "Не запускалась",
+      idle: "Не запускалась",
+    }[value.toLowerCase()] || value
+  );
 }
 
 function StatusBadge({ status, result }) {
@@ -1186,7 +1181,7 @@ function StatusBadge({ status, result }) {
       className={`task-status ${success ? "is-success" : running ? "is-running" : ""}`}
     >
       <i aria-hidden="true" />
-      {success ? "Завершена" : value === "unknown" ? "Неизвестно" : value}
+      {success ? "Завершена" : taskStatusLabel(value)}
     </span>
   );
 }

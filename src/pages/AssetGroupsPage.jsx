@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, createIdempotencyKey } from "../api/client.js";
-import { Button, ConfirmDialog, Field, Panel } from "../shared/ui.jsx";
+import { Button, ConfirmDialog, Disclosure, Field, Panel } from "../shared/ui.jsx";
 
 const EMPTY_RULE = () => ({ field_path: "asset.ipAddress", operator: "in_cidr", value: "" });
 const EMPTY_QUERY = () => ({ combinator: "and", match_scope: "host", rules: [EMPTY_RULE()] });
@@ -18,6 +18,8 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
   const [preview, setPreview] = useState(null);
   const [manualAssetId, setManualAssetId] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkArchiveOpen, setBulkArchiveOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const groupsQuery = useQuery({ queryKey: ["asset-groups"], queryFn: () => api("/api/asset-groups/tree") });
   const precheckStatsQuery = useQuery({ queryKey: ["precheck-stats"], queryFn: () => api("/api/asset-groups/precheck-stats") });
@@ -98,13 +100,14 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
     onSuccess: async (result) => {
       showAlert(`Обработано: ${result.processed}; ошибок: ${result.failed}.`, result.failed ? "warning" : "success");
       setSelectedIds([]);
+      setBulkArchiveOpen(false);
       await refresh();
     },
   });
   const retryFalseMutation = useMutation({
     mutationFn: perform((taskId) => api(`/api/scanner-tasks/${encodeURIComponent(taskId)}/retry-false`, { method: "POST" })),
     onSuccess: async (result) => {
-      showAlert(`Повторено: ${result.requested_target_count}; false: ${result.false_target_count}.`, result.false_target_count ? "warning" : "success");
+      showAlert(`Повторено: ${result.requested_target_count}; недоступны: ${result.false_target_count}.`, result.false_target_count ? "warning" : "success");
       await queryClient.invalidateQueries({ queryKey: ["precheck-stats"] });
       await queryClient.invalidateQueries({ queryKey: ["precheck-runs"] });
     },
@@ -127,18 +130,8 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
 
   return (
     <div className="asset-groups-page">
-      <Panel title="Статистика precheck">
-        <div className="metric-grid precheck-metrics" aria-label="Статистика precheck">
-          <Metric label="Запуски" value={stats.runs} />
-          <Metric label="Успешные цели" value={stats.success} />
-          <Metric label="False" value={stats.false} />
-          <Metric label="Без детализации" value={stats.unknown} />
-        </div>
-        {(precheckRunsQuery.data?.rows || []).length ? <details className="precheck-false-runs"><summary>False targets · {stats.false || 0}</summary><div>{precheckRunsQuery.data.rows.map((run) => <article key={run.mp_task_id || run.group_id}><div><strong>{run.name || run.mp_task_id}</strong><small>{formatDate(run.updated_at)} · {run.false_target_count || 0} целей</small><code>{(run.false_targets || []).join(", ")}</code></div>{canRetryPrecheck ? <Button variant="tiny" busy={retryFalseMutation.isPending} disabled={!run.retryable} onClick={() => retryFalseMutation.mutate(run.mp_task_id)}>Повторить false</Button> : null}</article>)}</div></details> : null}
-      </Panel>
       <Panel
-        title="Группы активов"
-        action={<div className="action-row">{canManage ? <><Button busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("evaluate")}>Пересчитать выбранные</Button><Button variant="danger" busy={bulkMutation.isPending} disabled={!selectedIds.length} onClick={() => bulkMutation.mutate("archive")}>Архивировать выбранные</Button></> : null}<Button variant="secondary" busy={groupsQuery.isFetching} onClick={() => groupsQuery.refetch()}>Обновить</Button></div>}
+        action={<div className="action-row">{canManage && selectedIds.length ? <><span className="selection-count">Выбрано: {selectedIds.length}</span><Button busy={bulkMutation.isPending} onClick={() => bulkMutation.mutate("evaluate")}>Пересчитать выбранные</Button><Button variant="danger" busy={bulkMutation.isPending} onClick={() => setBulkArchiveOpen(true)}>Архивировать выбранные</Button></> : null}{canManage ? <Button variant="secondary" onClick={() => setCreateOpen(true)}>+ Новая группа</Button> : null}<Button variant="secondary" busy={groupsQuery.isFetching} onClick={() => groupsQuery.refetch()}>Обновить</Button></div>}
       >
         <div className="asset-groups-layout">
           <section className="asset-groups-tree" aria-label="Иерархия групп активов">
@@ -152,6 +145,7 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
             {selected ? (
               <GroupDetails
                 group={selected}
+                fields={fields}
                 members={membersQuery.data}
                 loading={membersQuery.isLoading}
                 canManage={canManage}
@@ -168,13 +162,27 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
                 onInclude={() => overrideMutation.mutate({ groupId: selected.group_id, assetId: manualAssetId.trim(), action: "include" })}
                 onArchive={() => setArchiveTarget(selected)}
               />
-            ) : <p className="empty-cell">Выберите группу, чтобы увидеть состав и правило.</p>}
+            ) : <p className="empty-cell">Выберите группу.</p>}
           </section>
         </div>
       </Panel>
 
-      {canManage ? (
-        <Panel title="Новая динамическая группа">
+      <Disclosure
+        className="precheck-summary"
+        title="Проверка доступности"
+        meta={stats.false ? `Недоступны: ${stats.false}` : null}
+      >
+        <div className="metric-grid precheck-metrics" aria-label="Статистика проверки доступности">
+          <Metric label="Запуски" value={stats.runs} />
+          <Metric label="Доступны" value={stats.success} />
+          <Metric label="Недоступны" value={stats.false} />
+          <Metric label="Без данных" value={stats.unknown} />
+        </div>
+        {(precheckRunsQuery.data?.rows || []).length ? <details className="precheck-false-runs"><summary>Недоступные хосты · {stats.false || 0}</summary><div>{precheckRunsQuery.data.rows.map((run) => <article key={run.mp_task_id || run.group_id}><div><strong>{run.name || run.mp_task_id}</strong><small>{formatDate(run.updated_at)} · {run.false_target_count || 0} целей</small><code>{(run.false_targets || []).join(", ")}</code></div>{canRetryPrecheck ? <Button variant="tiny" busy={retryFalseMutation.isPending} disabled={!run.retryable} onClick={() => retryFalseMutation.mutate(run.mp_task_id)}>Повторить недоступные</Button> : null}</article>)}</div></details> : null}
+      </Disclosure>
+
+      {canManage && createOpen ? (
+        <Panel title="Новая динамическая группа" action={<Button variant="ghost" onClick={() => setCreateOpen(false)}>Отмена</Button>}>
           <div className="form-grid form-grid--two">
             <Field label="Название"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
             <Field label="Родительская группа">
@@ -204,6 +212,15 @@ export function AssetGroupsPage({ currentUser, showAlert }) {
         onClose={() => setArchiveTarget(null)}
         onConfirm={() => archiveMutation.mutate(archiveTarget.group_id)}
       />
+      <ConfirmDialog
+        open={bulkArchiveOpen}
+        title={`Архивировать выбранные группы (${selectedIds.length})?`}
+        description="Группы исчезнут из рабочего дерева, их определения и история останутся."
+        confirmLabel="Архивировать"
+        busy={bulkMutation.isPending}
+        onClose={() => setBulkArchiveOpen(false)}
+        onConfirm={() => bulkMutation.mutate("archive")}
+      />
     </div>
   );
 }
@@ -222,35 +239,34 @@ function RuleBuilder({ query, fields, onChange }) {
       </label>
       {rules.map((rule, index) => (
         <div className="asset-group-rule" key={index}>
-          <label><span>Поле</span><input list="asset-group-fields" value={rule.field_path} onChange={(event) => updateRule(index, { ...rule, field_path: event.target.value, operator: defaultOperator(event.target.value) })} /></label>
+          <label><span>Поле</span><select value={rule.field_path} onChange={(event) => updateRule(index, { ...rule, field_path: event.target.value, operator: defaultOperator(event.target.value) })}>{fieldOptions(fields, rule.field_path).map((field) => <option key={field.field_path} value={field.field_path}>{field.field_name || field.field_path}</option>)}</select></label>
           <label><span>Оператор</span><select value={rule.operator} onChange={(event) => updateRule(index, { ...rule, operator: event.target.value })}>{operatorOptions(rule.field_path).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           <label><span>Значение</span><input value={rule.value} onChange={(event) => updateRule(index, { ...rule, value: event.target.value })} placeholder={rule.operator === "in_cidr" ? "10.20.0.0/16" : "prod-"} /></label>
           <Button variant="tiny-danger" disabled={rules.length === 1} onClick={() => onChange({ ...query, rules: rules.filter((_, position) => position !== index) })}>Удалить</Button>
         </div>
       ))}
-      <datalist id="asset-group-fields">{fields.map((field) => <option key={`${field.field_path}-${field.value_type}`} value={field.field_path}>{field.field_name}</option>)}</datalist>
       <Button variant="tiny" disabled={rules.length >= 20} onClick={() => onChange({ ...query, rules: [...rules, EMPTY_RULE()] })}>Добавить условие</Button>
     </fieldset>
   );
 }
 
-function GroupDetails({ group, members, loading, canManage, canExecuteTasks, manualAssetId, setManualAssetId, evaluating, overriding, workflowBusy, onEvaluate, onScan, onVerify, onExclude, onInclude, onArchive }) {
+function GroupDetails({ group, fields = [], members, loading, canManage, canExecuteTasks, manualAssetId, setManualAssetId, evaluating, overriding, workflowBusy, onEvaluate, onScan, onVerify, onExclude, onInclude, onArchive }) {
   const coverage = `${group.indexed_cards || 0} из ${group.total_cards || 0}`;
   const canRunGroupWorkflow = group.status === "ready" && Boolean(group.member_count);
   return <>
     <div className="asset-group-details__header"><div><span className={`asset-group-status is-${group.status}`}>{statusLabel(group.status)}</span><h3>{group.name}</h3></div>{canManage ? <Button variant="tiny-danger" onClick={onArchive}>Архивировать</Button> : null}</div>
     <dl className="asset-group-facts">
       <div><dt>Участники</dt><dd>{group.member_count || 0}</dd></div>
-      <div><dt>Покрытие индекса</dt><dd>{coverage}</dd></div>
+      <div><dt>Проиндексировано</dt><dd>{coverage}</dd></div>
       <div><dt>Пересчитана</dt><dd>{formatDate(group.last_evaluated_at)}</dd></div>
       <div><dt>Описание</dt><dd>{group.description || "Не задано"}</dd></div>
     </dl>
-    <pre className="asset-group-predicate">{JSON.stringify(group.query, null, 2)}</pre>
+    <p className="asset-group-predicate">{describeQuery(group.query, fields)}</p>
     {group.last_error ? <p className="inline-error">{group.last_error}</p> : null}
     <div className="action-row">
       {canManage ? <Button busy={evaluating} onClick={onEvaluate}>Пересчитать</Button> : null}
       {canExecuteTasks ? <><Button variant="secondary" busy={workflowBusy} disabled={!canRunGroupWorkflow} onClick={onScan}>Сканировать группу</Button><Button variant="secondary" busy={workflowBusy} disabled={!canRunGroupWorkflow} onClick={onVerify}>Проверить устранение</Button></> : null}
-      {canManage ? <><input value={manualAssetId} onChange={(event) => setManualAssetId(event.target.value)} placeholder="Asset ID для включения" /><Button variant="secondary" busy={overriding} disabled={!manualAssetId.trim()} onClick={onInclude}>Включить вручную</Button></> : null}
+      {canManage ? <><input value={manualAssetId} onChange={(event) => setManualAssetId(event.target.value)} placeholder="ID актива" aria-label="ID актива для включения" /><Button variant="secondary" busy={overriding} disabled={!manualAssetId.trim()} onClick={onInclude}>Включить вручную</Button></> : null}
     </div>
     <h4 className="asset-group-members-title">Состав · {members?.total || 0}</h4>
     {loading ? <p className="empty-cell">Загрузка состава...</p> : null}
@@ -259,7 +275,7 @@ function GroupDetails({ group, members, loading, canManage, canExecuteTasks, man
 }
 
 function Preview({ result }) {
-  return <section className="asset-group-preview"><strong>Совпало: {result.total}</strong><span>Индекс: {result.indexed_cards} из {result.total_cards}</span><div>{(result.rows || []).map((row) => <article key={row.asset_id}><b>{row.display_name || row.asset_id}</b><small>{row.ip_address || row.fqdn || "Без адреса"}</small></article>)}</div></section>;
+  return <section className="asset-group-preview"><strong>Совпало: {result.total}</strong><span>Проиндексировано: {result.indexed_cards} из {result.total_cards}</span><div>{(result.rows || []).map((row) => <article key={row.asset_id}><b>{row.display_name || row.asset_id}</b><small>{row.ip_address || row.fqdn || "Без адреса"}</small></article>)}</div></section>;
 }
 
 function GroupNode({ group, selectedId, onSelect, selectedIds, onToggle, canManage, level = 0 }) {
@@ -268,6 +284,22 @@ function GroupNode({ group, selectedId, onSelect, selectedIds, onToggle, canMana
 
 function Metric({ label, value }) { return <article className="metric-card"><span>{label}</span><strong>{value ?? 0}</strong></article>; }
 
+function fieldOptions(fields, current) {
+  const unique = [...new Map(fields.map((field) => [field.field_path, field])).values()];
+  const known = unique.some((field) => field.field_path === current);
+  return known || !current ? unique : [{ field_path: current, field_name: current }, ...unique];
+}
+function describeQuery(query, fields) {
+  const rules = query?.rules || [];
+  if (!rules.length) return "Правило не задано";
+  const names = new Map(fields.map((field) => [field.field_path, field.field_name]));
+  const joiner = query.combinator === "or" ? " или " : " и ";
+  return rules.map((rule) => {
+    const operator = operatorOptions(rule.field_path).find(([value]) => value === rule.operator)?.[1] || rule.operator;
+    const value = Array.isArray(rule.value) ? rule.value.join(", ") : rule.value;
+    return `${names.get(rule.field_path) || rule.field_path} ${operator} ${value}`;
+  }).join(joiner);
+}
 function operatorOptions(fieldPath) { return fieldPath === "asset.ipAddress" ? [["in_cidr", "входит в подсеть"], ["equals", "равно"], ["in", "в списке"]] : [["contains", "содержит"], ["starts_with", "начинается с"], ["equals", "равно"], ["not_equals", "не равно"], ["in", "в списке"]]; }
 function defaultOperator(fieldPath) { return fieldPath === "asset.ipAddress" ? "in_cidr" : "contains"; }
 function validQuery(query) { return Boolean(query.rules?.length) && query.rules.every((rule) => rule.field_path && rule.operator && String(rule.value).trim()); }

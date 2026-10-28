@@ -176,7 +176,7 @@ export function OperationsPage({
   const clearHistory = () => {
     if (
       !window.confirm(
-        "Скрыть завершённую историю операций? Записи и хронология останутся сохранены для аудита. Активные операции не будут затронуты.",
+        "Скрыть завершённые операции? Активные не затронутся.",
       )
     ) {
       return;
@@ -253,7 +253,6 @@ export function OperationsPage({
     <>
       <Panel
         id="operations"
-        title="Центр операций"
         action={
           <div className="operation-panel-actions">
             {currentUser?.permissions?.includes("operations.clear") ? (
@@ -262,7 +261,7 @@ export function OperationsPage({
                 busy={busy.clearOperationHistory}
                 onClick={clearHistory}
               >
-                Очистить историю
+                Скрыть завершённые
               </Button>
             ) : null}
             <Button
@@ -302,8 +301,53 @@ export function OperationsPage({
             aria-label="Поиск операций"
             value={filters.q}
             onChange={(event) => changeFilter("q", event.target.value)}
-            placeholder="Поиск по объекту, operation ID или сообщению"
+            placeholder="Поиск"
           />
+          <select
+            aria-label="Статус операции"
+            value={filters.status}
+            onChange={(event) => changeFilter("status", event.target.value)}
+          >
+            <option value="">Все статусы</option>
+            {[
+              "queued",
+              "running",
+              "cancelling",
+              "recovering",
+              "completed",
+              "completed_with_errors",
+              "failed",
+              "cancelled",
+              "interrupted",
+              "needs_attention",
+            ].map((status) => (
+              <option value={status} key={status}>
+                {operationStatusLabel(status)}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Тип операции"
+            value={filters.kind}
+            onChange={(event) => changeFilter("kind", event.target.value)}
+          >
+            <option value="">Все типы</option>
+            {[
+              "scan_postprocess",
+              "asset_card_build",
+              "asset_card_bulk_refresh",
+              "asset_search_reindex",
+              "passport_detail_sync",
+              "pdql_export",
+              "asset_removal",
+              "task_delete",
+              "automation_run",
+            ].map((kind) => (
+              <option value={kind} key={kind}>
+                {operationKindLabel(kind)}
+              </option>
+            ))}
+          </select>
           {filters.q || activeFilterCount ? (
             <Button variant="ghost" onClick={clearFilters}>
               Сбросить
@@ -311,59 +355,7 @@ export function OperationsPage({
           ) : null}
         </div>
 
-        <Disclosure
-          title="Фильтры и представления"
-          meta={
-            activeFilterCount ? `Активно: ${activeFilterCount}` : "Без фильтров"
-          }
-        >
-          <div className="operation-filter-grid">
-            <select
-              aria-label="Статус операции"
-              value={filters.status}
-              onChange={(event) => changeFilter("status", event.target.value)}
-            >
-              <option value="">Все статусы</option>
-              {[
-                "queued",
-                "running",
-                "cancelling",
-                "recovering",
-                "completed",
-                "completed_with_errors",
-                "failed",
-                "cancelled",
-                "interrupted",
-                "needs_attention",
-              ].map((status) => (
-                <option value={status} key={status}>
-                  {operationStatusLabel(status)}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Тип операции"
-              value={filters.kind}
-              onChange={(event) => changeFilter("kind", event.target.value)}
-            >
-              <option value="">Все типы</option>
-              {[
-                "scan_postprocess",
-                "asset_card_build",
-                "asset_card_bulk_refresh",
-                "asset_search_reindex",
-                "passport_detail_sync",
-                "pdql_export",
-                "asset_removal",
-                "task_delete",
-                "automation_run",
-              ].map((kind) => (
-                <option value={kind} key={kind}>
-                  {operationKindLabel(kind)}
-                </option>
-              ))}
-            </select>
-          </div>
+        <Disclosure title="Сохранённые представления">
           <div className="saved-view-row">
             <select
               aria-label="Сохранённое представление"
@@ -545,7 +537,9 @@ export function OperationsPage({
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-cell">
-                    Операции с такими фильтрами не найдены.
+                    {filters.q || activeFilterCount
+                      ? "Операции с такими фильтрами не найдены."
+                      : "Операций пока нет."}
                   </td>
                 </tr>
               )}
@@ -553,6 +547,7 @@ export function OperationsPage({
           </table>
         </div>
 
+        {total > PAGE_SIZE || offset > 0 ? (
         <nav className="operation-pagination" aria-label="Страницы операций">
           <Button
             variant="secondary"
@@ -572,6 +567,7 @@ export function OperationsPage({
             Далее
           </Button>
         </nav>
+        ) : null}
       </Panel>
       {selected ? (
         <OperationDetail
@@ -750,9 +746,8 @@ function OperationDetail({
             ))}
           </section>
         </Disclosure>
-        <Disclosure
-          title="Технические данные"
-        >
+        {currentUser?.permissions?.includes("diagnostics.read") ? (
+        <Disclosure title="Технические данные">
           {operation.trace_id ? (
             <div className="trace-box">
               <span>Trace ID</span>
@@ -771,6 +766,7 @@ function OperationDetail({
             )}
           </pre>
         </Disclosure>
+        ) : null}
       </aside>
     </div>
   );

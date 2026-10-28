@@ -111,7 +111,7 @@ describe("task builder drafts", () => {
 
     expect(screen.getByLabelText("Название задачи")).toHaveValue("");
     expect(screen.getByLabelText("Цели сканирования")).toHaveValue("");
-    expect(screen.getByLabelText("Инфраструктура / scope")).toHaveValue(
+    expect(screen.getByLabelText("Инфраструктура")).toHaveValue(
       "scope-1",
     );
     expect(
@@ -119,10 +119,10 @@ describe("task builder drafts", () => {
     ).toHaveValue("");
     expect(screen.getByLabelText("Учётная запись")).toHaveValue("");
     expect(screen.getByLabelText("Исключить цели")).toHaveValue("");
-    expect(screen.getByLabelText("Коллекторы / agents")).toHaveValue("");
+    expect(screen.getByLabelText("Коллекторы")).toHaveValue("");
     expect(screen.getByLabelText("Часовой пояс")).toHaveValue("+05:00");
     expect(screen.getByLabelText("Таймаут задачи, минут")).toHaveValue(120);
-    expect(screen.getByLabelText("Включить hostDiscovery")).not.toBeChecked();
+    expect(screen.getByLabelText("Обнаружение хостов")).not.toBeChecked();
     expect(
       screen.getByRole("button", { name: "Создать задачу" }),
     ).toBeInTheDocument();
@@ -253,7 +253,7 @@ describe("task builder drafts", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Independent new task",
-          description: "Windows audit vulnerability collection",
+          description: "",
           scope_id: "scope-1",
           profile_id: "",
           credential_id: null,

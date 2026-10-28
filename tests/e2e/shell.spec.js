@@ -902,7 +902,7 @@ test("VM Management launches and tracks a controlled scan workflow", async ({
   await page.getByLabel("Задача MP VM").selectOption("task-e2e-1");
   await page.getByRole("button", { name: "Проверить перед запуском" }).click();
   await expect(page.getByText("Проверка пройдена")).toBeVisible();
-  await page.getByRole("button", { name: "Запустить конвейер" }).click();
+  await page.getByRole("button", { name: "Запустить сканирование" }).click();
   const dialog = page.getByRole("dialog", { name: "Полное сканирование" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Загрузка карточек")).toBeVisible();
@@ -1202,7 +1202,7 @@ test("task selection, results, and a new task are separate actions", async ({
   ).toBeVisible();
   await expect(page.getByLabel("Название задачи")).toHaveCount(0);
   expect(historyRequests).toEqual([]);
-  await page.getByText("task-select-1", { exact: true }).first().dblclick();
+  await page.getByRole("row", { name: /Audit alpha/ }).dblclick();
   await expect(
     page.getByRole("heading", { name: "Запуски", exact: true }),
   ).toBeVisible();
