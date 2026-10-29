@@ -146,7 +146,6 @@ html[data-theme="dark"] .operation-summary .is-stale {
 }
 
 html[data-theme="dark"] .task-preflight--ready,
-html[data-theme="dark"] .connection-check--success,
 html[data-theme="dark"] .passport-job--completed,
 html[data-theme="dark"] .passport-job--completed_with_errors,
 html[data-theme="dark"] .alert--success,
@@ -269,14 +268,9 @@ html[data-theme="dark"] .asset-tree-pane,
 html[data-theme="dark"] .asset-detail-pane,
 html[data-theme="dark"] .asset-vulnerability-pane,
 html[data-theme="dark"] .asset-group-details,
-html[data-theme="dark"] .asset-detail-heading,
 html[data-theme="dark"] .asset-query-preset-card,
 html[data-theme="dark"] .query-group,
 html[data-theme="dark"] .query-rule,
-html[data-theme="dark"] .automation-step,
-html[data-theme="dark"] .automation-toggle-stack,
-html[data-theme="dark"] .automation-token-field__control,
-html[data-theme="dark"] .automation-query-rule,
 html[data-theme="dark"] .automation-notification,
 html[data-theme="dark"] .vm-kpi,
 html[data-theme="dark"] .vm-campaign-grid > button,
@@ -330,14 +324,9 @@ html[data-theme="dark"] .asset-vulnerability-passport-options,
 html[data-theme="dark"] .asset-summary-side .passport-section,
 html[data-theme="dark"] .passport-placeholder,
 html[data-theme="dark"] .asset-passport-options,
-html[data-theme="dark"] .asset-filter-card,
-html[data-theme="dark"] .asset-view-bar,
 html[data-theme="dark"] .options-card,
 html[data-theme="dark"] .asset-card-builder,
 html[data-theme="dark"] .settings-card,
-html[data-theme="dark"] .automation-config-advanced,
-html[data-theme="dark"] .automation-step__behavior,
-html[data-theme="dark"] .automation-condition,
 html[data-theme="dark"] .risk-workspace,
 html[data-theme="dark"] .trending-vulnerabilities__contexts,
 html[data-theme="dark"] .asset-group-predicate,
@@ -350,9 +339,6 @@ html[data-theme="dark"] .asset-tree {
 }
 
 html[data-theme="dark"] .query-group--nested,
-html[data-theme="dark"] .automation-condition.is-enabled,
-html[data-theme="dark"] .automation-danger-option,
-html[data-theme="dark"] .automation-danger-option.is-enabled,
 html[data-theme="dark"] .asset-tree-row:hover,
 html[data-theme="dark"] .asset-group-node:hover {
   border-color: var(--line-strong);
@@ -372,9 +358,6 @@ html[data-theme="dark"] .asset-query-preset-card.is-active {
 
 html[data-theme="dark"] .query-group label > span,
 html[data-theme="dark"] .query-rule label > span,
-html[data-theme="dark"] .automation-config-advanced summary,
-html[data-theme="dark"] .automation-step__behavior summary,
-html[data-theme="dark"] .automation-token-field > span,
 html[data-theme="dark"] .asset-group-rule label span,
 html[data-theme="dark"] .asset-group-member-list article > span {
   color: var(--muted);
@@ -386,8 +369,6 @@ html[data-theme="dark"] .task-inspector-empty > span,
 html[data-theme="dark"] .task-postprocess__header h3,
 html[data-theme="dark"] .task-postprocess__metrics span,
 html[data-theme="dark"] .asset-console__summary strong,
-html[data-theme="dark"] .asset-detail-heading strong,
-html[data-theme="dark"] .asset-detail-heading code,
 html[data-theme="dark"] .asset-tree-pane__title,
 html[data-theme="dark"] .asset-tree-label,
 html[data-theme="dark"] .asset-vulnerability-toolbar span,
@@ -403,7 +384,6 @@ html[data-theme="dark"] .asset-console__summary,
 html[data-theme="dark"] .asset-tabs,
 html[data-theme="dark"] .asset-tree-pane,
 html[data-theme="dark"] .asset-detail-pane,
-html[data-theme="dark"] .asset-detail-heading,
 html[data-theme="dark"] .asset-vulnerability-pane,
 html[data-theme="dark"] .asset-vulnerability-toolbar,
 html[data-theme="dark"] .asset-vulnerability-subtabs,
@@ -464,7 +444,6 @@ html[data-theme="dark"]
 
 html[data-theme="dark"] .automation-tabs button,
 html[data-theme="dark"] .automation-templates button,
-html[data-theme="dark"] .automation-step__actions button,
 html[data-theme="dark"] .button.secondary,
 html[data-theme="dark"] .upload-button,
 html[data-theme="dark"] .button.tiny,
@@ -519,7 +498,6 @@ html[data-theme="dark"] .button.tiny-danger {
 
 html[data-theme="dark"] .button.primary,
 html[data-theme="dark"] .button.success,
-html[data-theme="dark"] .automation-step__number,
 html[data-theme="dark"] .sortable-header.is-active .sortable-header__icon {
   color: var(--text-on-accent);
 }
@@ -550,9 +528,7 @@ html[data-theme="dark"] .mpvm-table-shell table {
   background: var(--panel);
 }
 
-html[data-theme="dark"] th,
-html[data-theme="dark"] .mpvm-task-table th,
-html[data-theme="dark"] .task-results-table th {
+html[data-theme="dark"] th {
   color: var(--text-secondary);
   background: var(--bg-elevated);
 }
@@ -650,7 +626,6 @@ html[data-theme="dark"] .risk-trend__warning {
 }
 
 html[data-theme="dark"] .vm-preflight--ready,
-html[data-theme="dark"] .connection-check--success,
 html[data-theme="dark"] .task-preflight--ready,
 html[data-theme="dark"] .audit-decision--allow,
 html[data-theme="dark"] .asset-group-status.is-ready,
@@ -723,17 +698,9 @@ html[data-theme="dark"] .risk-score--urgent {
 html[data-theme="dark"] .vm-kpi--blue,
 html[data-theme="dark"] .vm-status--running,
 html[data-theme="dark"] .vm-status--queued,
-html[data-theme="dark"] .vulnerability-source-badge,
-html[data-theme="dark"] .automation-token-field__control button {
+html[data-theme="dark"] .vulnerability-source-badge {
   color: var(--accent);
   background: var(--accent-soft);
-}
-
-html[data-theme="dark"] .automation-step__actions button.is-danger,
-html[data-theme="dark"] .automation-danger-option.is-enabled {
-  border-color: var(--danger-border);
-  color: var(--danger);
-  background: var(--danger-soft);
 }
 
 html[data-theme="dark"] .vm-progress,
@@ -848,7 +815,6 @@ html[data-theme="dark"] .vulnerability-loading {
 }
 
 html[data-theme="dark"] .state-tag,
-html[data-theme="dark"] .job-result-status--pending,
 html[data-theme="dark"] .vm-status--failed,
 html[data-theme="dark"] .vm-status--completed_with_errors,
 html[data-theme="dark"] .passport-job--failed,
@@ -858,11 +824,6 @@ html[data-theme="dark"] .passport-job--interrupted {
   background: var(--danger-soft);
 }
 
-html[data-theme="dark"] .job-result-status--success {
-  color: var(--success);
-}
-
-html[data-theme="dark"] .job-result-status--fail,
 html[data-theme="dark"] .vm-preflight__issue--blocking b,
 html[data-theme="dark"] .danger-text {
   color: var(--danger);
@@ -1682,11 +1643,6 @@ html[data-theme="dark"]
 
 html[data-theme="dark"] :is(.vm-attention-list a, .vm-case-list a) {
   border-color: var(--line);
-}
-
-html[data-theme="dark"] .automation-token-field__control:focus-within {
-  border-color: var(--accent);
-  box-shadow: none;
 }
 
 html[data-theme="dark"]

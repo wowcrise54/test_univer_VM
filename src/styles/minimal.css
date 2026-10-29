@@ -897,40 +897,11 @@ tr.is-selected td {
   margin-top: 18px;
 }
 
-.task-list-panel {
-  overflow: visible;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.task-list-panel .panel__header {
-  margin-bottom: 14px;
-  border: 0;
-  padding: 0;
-}
-
 .mpvm-table-shell {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: var(--shadow-surface);
-}
-
-.mpvm-task-table {
-  min-width: 820px;
-  table-layout: auto;
-  font-size: 11px;
-}
-
-.mpvm-task-table th,
-.mpvm-task-table td {
-  padding: 9px 10px;
-}
-
-.task-table-footer {
-  border-top: 0;
-  padding: 10px 2px 0;
 }
 
 .task-preflight {
@@ -1665,9 +1636,7 @@ td code,
   }
 
   th,
-  td,
-  .mpvm-task-table th,
-  .mpvm-task-table td {
+  td {
     padding: 8px;
   }
 

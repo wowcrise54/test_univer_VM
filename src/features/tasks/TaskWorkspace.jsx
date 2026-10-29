@@ -353,7 +353,6 @@ export function TaskWorkspace(props) {
           showAlert={showAlert}
           session={session}
           systemStatus={systemStatus}
-          editorMode
           copyTask={copyTask}
           onCancel={() => setView("list")}
           onSaved={(task) => {
