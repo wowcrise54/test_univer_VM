@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  campaignStatusLabel,
+  remediationStatusLabel,
+  severityLabel,
+} from "../shared/labels.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, createIdempotencyKey } from "../api/client.js";
 import { Button, Panel } from "../shared/ui.jsx";
@@ -27,6 +32,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
   const [warningsAccepted, setWarningsAccepted] = useState(false);
   const [starting, setStarting] = useState(false);
   const permissions = useMemo(() => new Set(currentUser?.permissions || []), [currentUser]);
+  const canExecute = permissions.has("tasks.execute");
 
   const overview = useQuery({
     queryKey: ["vm-overview"], queryFn: () => api("/api/vm/overview"),
@@ -82,7 +88,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
   };
   const refresh = async () => {
     await Promise.all([
-      overview.refetch(), campaigns.refetch(),
+      overview.refetch(), campaigns.refetch(), attention.refetch(),
       selectedWorkflowId ? workflow.refetch() : Promise.resolve(),
       selectedCampaignId ? campaign.refetch() : Promise.resolve(),
     ]);
@@ -115,7 +121,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
         method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("vm-scan") },
         body: JSON.stringify({ task_id: taskId, options }),
       });
-      showAlert("VM-конвейер запущен.", "success");
+      showAlert("Сканирование запущено.", "success");
       openWorkflow(result.workflow_id); setPreflight(null); await refresh();
     } catch (error) { showAlert(error.operatorMessage || error.message, "error"); }
     finally { setStarting(false); }
@@ -134,11 +140,10 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 
   const data = overview.data || {};
   return <div className="vm-page">
-    <Panel id="vm-overview" eyebrow="VM" title="Единый контур VM Management"
-      action={<Button variant="secondary" busy={overview.isFetching} onClick={refresh}>Обновить</Button>}>
-      {!session.connected ? <div className="vm-callout vm-callout--warning"><div><strong>MP VM не подключён</strong><span>Для запуска сканирования установите рабочую сессию.</span></div><Button onClick={() => onNavigate("/connection")}>Настроить</Button></div> : null}
+    <Panel id="vm-overview"
+      action={<Button variant="secondary" busy={overview.isFetching || attention.isFetching} onClick={refresh}>Обновить</Button>}>
       {overview.error ? <div className="inline-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
-      <div className="vm-kpis" aria-label="Сводка VM Management">
+      <div className="vm-kpis" aria-label="Сводка">
         <Kpi label="Активные процессы" value={data.active_workflows} tone="blue" />
         <Kpi label="Открытые кейсы" value={data.open_cases} />
         <Kpi label="Просрочено" value={data.overdue_cases} tone="danger" />
@@ -149,24 +154,20 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     <div className="vm-grid">
       <section className="panel vm-launcher">
         <div className="panel__header"><div><h2>Запуск сканирования</h2></div></div>
-        <ol className="vm-launch-steps" aria-label="Этапы запуска">
-          <li className={taskId ? "is-complete" : "is-active"}><span>1</span>Задача</li>
-          <li className={preflight ? "is-complete" : taskId ? "is-active" : ""}><span>2</span>Проверка</li>
-          <li className={preflight?.ready ? "is-active" : ""}><span>3</span>Запуск</li>
-        </ol>
-        <label><span>Задача MP VM</span><select value={taskId} onChange={(event) => updateTask(event.target.value)} disabled={!session.connected}>
+        {!session.connected ? <p className="vm-launch-note">Нет подключения к MP VM.{permissions.has("connection.manage") ? <> <a href="/connection" onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); onNavigate("/connection"); } }}>Подключить</a></> : null}</p> : null}
+        {session.connected && !canExecute ? <p className="vm-launch-note">Нет прав на запуск.</p> : null}
+        <label><span>Задача MP VM</span><select value={taskId} onChange={(event) => updateTask(event.target.value)} disabled={!session.connected || !canExecute}>
           <option value="">Выберите задачу</option>{(tasks.data || []).map((task) => <option value={task.mp_task_id} key={task.mp_task_id}>{task.payload?.name || task.name || task.mp_task_id}</option>)}
         </select></label>
         {taskId ? <TaskSummary task={(tasks.data || []).find((item) => item.mp_task_id === taskId)} preflight={preflight} /> : null}
         <details className="vm-launch-options">
           <summary>Дополнительные настройки</summary>
           <label><input type="checkbox" checked={options.precheck_enabled} onChange={(event) => updateOptions({ ...options, precheck_enabled: event.target.checked })} /> Проверить доступность целей</label>
-          <label><input type="checkbox" checked={options.require_clean_jobs} onChange={(event) => updateOptions({ ...options, require_clean_jobs: event.target.checked })} /> Запретить запуск при активных процессах</label>
+          <label><input type="checkbox" checked={options.require_clean_jobs} onChange={(event) => updateOptions({ ...options, require_clean_jobs: event.target.checked })} /> Строгий режим: не запускать при активных процессах и считать ошибки заданий сбоем</label>
           <label><span>Таймаут, минут</span><input type="number" min="1" max="1440" value={options.task_timeout_minutes} onChange={(event) => updateOptions({ ...options, task_timeout_minutes: Number(event.target.value) })} /></label>
         </details>
-        {!preflight ? <Button busy={checking} disabled={!taskId || !session.connected} onClick={runPreflight}>Проверить перед запуском</Button> : <PreflightResult result={preflight} accepted={warningsAccepted} onAccept={setWarningsAccepted} />}
-        {preflight ? <div className="vm-launch-actions"><Button variant="secondary" onClick={runPreflight} busy={checking}>Проверить снова</Button><Button busy={starting} disabled={!preflight.ready || Boolean(preflight.warnings?.length && !warningsAccepted)} onClick={startScan}>Запустить конвейер</Button></div> : null}
-        {!permissions.has("tasks.execute") ? <small>Для запуска требуется право tasks.execute.</small> : null}
+        {!preflight ? <Button busy={checking} disabled={!taskId || !session.connected || !canExecute} onClick={runPreflight}>Проверить перед запуском</Button> : <PreflightResult result={preflight} accepted={warningsAccepted} onAccept={setWarningsAccepted} />}
+        {preflight ? <div className="vm-launch-actions"><Button variant="secondary" onClick={runPreflight} busy={checking}>Проверить снова</Button><Button busy={starting} disabled={!preflight.ready || Boolean(preflight.warnings?.length && !warningsAccepted)} onClick={startScan}>Запустить сканирование</Button></div> : null}
       </section>
 
       <AttentionQueue query={attention} currentUser={currentUser} onNavigate={onNavigate} />
@@ -174,19 +175,21 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
 
     <section className="panel" id="vm-workflows">
       <div className="panel__header"><div><h2>Последние процессы</h2></div><Button variant="secondary" onClick={() => onNavigate("/operations")}>Все операции</Button></div>
+      {!overview.isLoading && !(data.recent_workflows || []).length ? <p className="empty-cell">Процессов пока нет.</p> : null}
       <div className="vm-workflow-list">{(data.recent_workflows || []).map((item) => <button type="button" onClick={() => openWorkflow(item.workflow_id)} key={item.workflow_id}>
         <Status value={item.status} /><div><strong>{workflowTitle(item)}</strong><small>{workflowSubject(item)} · {date(item.created_at)}</small></div><Progress value={item.progress_percent} /><b>{item.progress_percent}%</b>
       </button>)}</div>
     </section>
 
     <section className="panel" id="vm-campaigns">
-      <div className="panel__header"><div><h2>Кампании устранения</h2></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Очередь риска</Button></div>
+      <div className="panel__header"><div><h2>Кампании устранения</h2></div><Button variant="secondary" onClick={() => onNavigate("/remediation")}>Устранение</Button></div>
+      {!campaigns.isLoading && !(campaigns.data?.rows || []).length ? <p className="empty-cell">Кампаний нет.</p> : null}
       <div className="vm-campaign-grid">{(campaigns.data?.rows || []).map((item) => <button type="button" onClick={() => openCampaign(item.campaign_id)} key={item.campaign_id}>
-        <span className={`campaign-state campaign-state--${item.status}`}>{campaignLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
+        <span className={`campaign-state campaign-state--${item.status}`}>{campaignStatusLabel(item.status)}</span><strong>{item.name}</strong><small>{item.assignee || "Ответственный не назначен"} · {date(item.due_at)}</small><Progress value={item.total ? Math.round(item.resolved * 100 / item.total) : 0} /><span>{item.resolved}/{item.total} подтверждено · {item.overdue} просрочено</span>
       </button>)}</div>
     </section>
 
-    {selectedWorkflowId ? <WorkflowDrawer item={workflow.data} loading={workflow.isLoading} onClose={() => { setSelectedWorkflowId(null); setQuery({}); }} onCancel={() => workflowAction("cancel")} onRetry={() => workflowAction("retry")} /> : null}
+    {selectedWorkflowId ? <WorkflowDrawer onNavigate={onNavigate} item={workflow.data} loading={workflow.isLoading} onClose={() => { setSelectedWorkflowId(null); setQuery({}); }} onCancel={() => workflowAction("cancel")} onRetry={() => workflowAction("retry")} /> : null}
     {selectedCampaignId ? <CampaignDrawer key={selectedCampaignId} item={campaign.data} loading={campaign.isLoading} permissions={permissions} showAlert={showAlert} onWorkflow={openWorkflow} onRefresh={refresh} onReread={() => campaign.refetch()} onClose={() => { setSelectedCampaignId(null); setQuery({}); }} /> : null}
   </div>;
 }
@@ -210,8 +213,7 @@ function AttentionQueue({ query, currentUser, onNavigate }) {
   return (
     <section className="panel vm-attention" aria-labelledby="attention-title">
       <div className="panel__header">
-        <div><h2 id="attention-title">Требуют действия</h2><p>Очередь критичных кейсов, операций и проблем покрытия.</p></div>
-        <Button variant="secondary" busy={query.isFetching} onClick={() => query.refetch()}>Обновить</Button>
+        <div><h2 id="attention-title">Требуют действия</h2></div>
       </div>
       <div className="attention-summary" aria-label="Счётчики очереди">
         <span>Всего <b>{allItems.length}</b></span><span>Кейсы <b>{counts.case || 0}</b></span><span>Операции <b>{counts.operation || 0}</b></span><span>Покрытие <b>{counts.coverage || 0}</b></span>
@@ -223,13 +225,13 @@ function AttentionQueue({ query, currentUser, onNavigate }) {
       </div>
       {query.isLoading ? <p className="empty-cell">Загрузка очереди…</p> : null}
       {query.error ? <div className="inline-error" role="alert">{query.error.operatorMessage || query.error.message}<Button variant="secondary" onClick={() => query.refetch()}>Повторить</Button></div> : null}
-      {!query.isLoading && !query.error && !items.length ? <p className="empty-cell">По выбранным фильтрам действий нет.</p> : null}
+      {!query.isLoading && !query.error && !items.length ? <p className="empty-cell">{type || priority || mine ? "Нет задач по выбранным фильтрам." : "Нет задач, требующих действия."}</p> : null}
       <div className="vm-attention-list" aria-live="polite">
         {items.map((item) => {
           const href = normalizeAttentionHref(item);
           const canRetry = item.type === "operation" && (item.action === "retry" || item.action === "retry_operation" || item.can_retry) && permissions.has("operations.retry");
           return <div className="attention-item" key={`${item.type}:${item.id}`}>
-            <span className={`severity severity--${item.priority || item.severity || "medium"}`}>{item.priority || item.severity || "medium"}</span>
+            <span className={`severity severity--${item.priority || item.severity || "medium"}`}>{severityLabel(item.priority || item.severity || "medium")}</span>
             <div><a href={href} onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigateHref(href, onNavigate); } }}><strong>{item.title || item.cve || item.id}</strong></a><small>{item.reason || item.subtitle || item.type} · {date(item.due_at || item.updated_at)}</small></div>
             {canRetry ? <Button variant="tiny" onClick={async () => { try { await api(`/api/operations/${encodeURIComponent(item.operation_id || item.id)}/retry`, { method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("attention-retry") } }); await query.refetch(); } catch { /* queue remains visible */ } }}>Повторить</Button> : <a className="attention-open" href={href} aria-label={`Открыть ${item.title || item.id}`} onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigateHref(href, onNavigate); } }}>→</a>}
           </div>;
@@ -245,31 +247,29 @@ function TaskSummary({ task, preflight }) {
   const targets = task?.include_targets || payload.include?.targets || [];
   const last = preflight?.task?.last_execution || task?.postprocess;
   return <div className="vm-task-summary">
-    <div><span>Задача</span><strong>{preflight?.task?.name || payload.name || task?.name || "—"}</strong></div>
-    <div><span>Явные цели</span><strong>{preflight?.target_count ?? targets.length}</strong></div>
+    <div><span>Цели</span><strong>{preflight?.target_count ?? targets.length}</strong></div>
     <div><span>Последний запуск</span><strong>{last?.created_at ? date(last.created_at) : "Нет данных"}</strong></div>
-    <div><span>Конфликты</span><strong>{preflight?.conflicting_operations?.length ?? "Проверим"}</strong></div>
+    {preflight ? <div><span>Конфликты</span><strong>{preflight.conflicting_operations?.length ?? 0}</strong></div> : null}
   </div>;
 }
 function PreflightResult({ result, accepted, onAccept }) {
   return <section className={`vm-preflight ${result.ready ? "vm-preflight--ready" : "vm-preflight--blocked"}`} aria-live="polite">
-    <header><strong>{result.ready ? "Проверка пройдена" : "Запуск заблокирован"}</strong><span>{result.ready ? "Условия запуска проверены на сервере." : "Исправьте блокирующие проблемы и повторите проверку."}</span></header>
+    <header><strong>{result.ready ? "Проверка пройдена" : "Запуск заблокирован"}</strong>{result.ready ? null : <span>Исправьте и проверьте снова.</span>}</header>
     {(result.blocking_issues || []).map((issue) => <div className="vm-preflight__issue vm-preflight__issue--blocking" key={issue.code}><b>Блокирует</b><span>{issue.message}</span></div>)}
     {(result.warnings || []).map((issue) => <div className="vm-preflight__issue vm-preflight__issue--warning" key={issue.code}><b>Внимание</b><span>{issue.message}</span></div>)}
-    {result.ready && result.warnings?.length ? <label className="vm-warning-confirm"><input type="checkbox" checked={accepted} onChange={(event) => onAccept(event.target.checked)} /> Я понимаю предупреждения и подтверждаю запуск</label> : null}
+    {result.ready && result.warnings?.length ? <label className="vm-warning-confirm"><input type="checkbox" checked={accepted} onChange={(event) => onAccept(event.target.checked)} /> Запустить, несмотря на предупреждения</label> : null}
   </section>;
 }
 function Status({ value }) { return <span className={`vm-status vm-status--${value}`}>{workflowStatus[value] || value}</span>; }
 function Progress({ value = 0 }) { return <span className="vm-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={value}><i style={{ width: `${value}%` }} /></span>; }
 
-function WorkflowDrawer({ item, loading, onClose, onCancel, onRetry }) {
+function WorkflowDrawer({ item, loading, onClose, onCancel, onRetry, onNavigate }) {
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-workflow-title">
-    <header><div><span>VM workflow</span><h2 id="vm-workflow-title">{workflowTitle(item)}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <header><div><span>Процесс</span><h2 id="vm-workflow-title">{workflowTitle(item)}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     {loading || !item ? <p>Загрузка процесса…</p> : <><div className="vm-drawer-summary"><Status value={item.status} /><strong>{item.progress_percent}%</strong><span>{item.workflow_id}</span></div><Progress value={item.progress_percent} /><p className="vm-workflow-time">Запущен: {date(item.created_at)} · обновлён: {date(item.updated_at)}</p>
       <ol className="vm-step-list">{item.steps.map((step) => <li className={`is-${step.status}`} key={step.step_key}><span>{step.status === "completed" ? "✓" : step.position}</span><div><strong>{stepLabels[step.step_key] || step.step_key}</strong><small>{step.message || workflowStatus[step.status] || step.status}</small>{step.error?.message ? <em>{step.error.message}</em> : null}</div><b>{step.progress_percent}%</b></li>)}</ol>
       {item.error?.message ? <div className="inline-error" role="alert">{item.error.message}</div> : null}
-      <div className="vm-next-action"><strong>Следующее действие</strong><span>{item.can_retry ? "Устраните причину ошибки и повторите процесс." : item.can_cancel ? "Дождитесь завершения или остановите процесс." : "Откройте результаты и проверьте найденные уязвимости."}</span></div>
-      <div className="action-row">{item.can_cancel ? <Button variant="danger" onClick={onCancel}>Остановить</Button> : null}{item.can_retry ? <Button onClick={onRetry}>Повторить с места сбоя</Button> : null}{item.operation_id ? <a className="button secondary" href={`/operations?operation=${encodeURIComponent(item.operation_id)}`}>Открыть операцию</a> : null}</div>
+      <div className="action-row">{item.can_cancel ? <Button variant="danger" onClick={onCancel}>Остановить</Button> : null}{item.can_retry ? <Button onClick={onRetry}>Повторить с места сбоя</Button> : null}{item.operation_id ? <a className="button secondary" href={`/operations?operation=${encodeURIComponent(item.operation_id)}`} onClick={(event) => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigateHref(`/operations?operation=${encodeURIComponent(item.operation_id)}`, onNavigate); } }}>Открыть операцию</a> : null}{!item.can_retry && !item.can_cancel ? <Button variant="secondary" onClick={() => onNavigate?.("/vulnerabilities")}>Открыть уязвимости</Button> : null}</div>
     </>}</aside></div>;
 }
 
@@ -282,11 +282,11 @@ function CampaignDrawer({ item, loading, permissions, showAlert, onWorkflow, onR
   const reread = async () => { setBusy(true); try { const result = await onReread(); if (result.error) throw result.error; setDraft(campaignDraft(result.data)); setConflict(false); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   const verify = async () => { setBusy(true); try { const result = await api(`/api/remediation/campaigns/${item.campaign_id}/verify`, { method: "POST", headers: { "X-Idempotency-Key": createIdempotencyKey("campaign-verify") } }); showAlert("Проверочное сканирование запущено.", "success"); onWorkflow(result.workflow_id); } catch (error) { showAlert(error.operatorMessage || error.message, "error"); } finally { setBusy(false); } };
   return <div className="vm-drawer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="vm-drawer vm-campaign-drawer" role="dialog" aria-modal="true" aria-labelledby="vm-campaign-title"><header><div><span>Кампания устранения</span><h2 id="vm-campaign-title">{item?.name || "Загрузка…"}</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
-    {loading || !item || !draft ? <p>Загрузка кампании…</p> : <><div className="form-grid"><label>Название<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Ответственный<input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} /></label><label>Срок<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Статус<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>{["draft", "active", "completed", "cancelled"].map((value) => <option key={value} value={value}>{campaignLabel(value)}</option>)}</select></label><label className="span-2">Комментарий<textarea value={draft.comment} onChange={(event) => setDraft({ ...draft, comment: event.target.value })} /></label></div>
-      {conflict ? <div role="alert" className="inline-error">Кампания изменена другим оператором. Перечитайте её перед повторным сохранением.<Button busy={busy} variant="secondary" onClick={reread}>Перечитать кампанию</Button></div> : null}
+    {loading || !item || !draft ? <p>Загрузка кампании…</p> : <><div className="form-grid"><label>Название<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Ответственный<input value={draft.assignee} onChange={(event) => setDraft({ ...draft, assignee: event.target.value })} /></label><label>Срок<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Статус<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>{["draft", "active", "completed", "cancelled"].map((value) => <option key={value} value={value}>{campaignStatusLabel(value)}</option>)}</select></label><label className="span-2">Комментарий<textarea value={draft.comment} onChange={(event) => setDraft({ ...draft, comment: event.target.value })} /></label></div>
+      {conflict ? <div role="alert" className="inline-error">Кампанию изменил другой пользователь.<Button busy={busy} variant="secondary" onClick={reread}>Перечитать кампанию</Button></div> : null}
       <div className="action-row"><Button busy={busy} disabled={conflict || !permissions.has("risk.manage")} onClick={save}>Сохранить</Button><Button busy={busy} disabled={!permissions.has("tasks.execute") || !permissions.has("risk.manage") || !permissions.has("remediation.manage")} onClick={verify}>Запустить проверку</Button></div>
       {item.asset_group_id ? <p className="vm-workflow-time">Группа активов: <a href={`/asset-groups?group=${encodeURIComponent(item.asset_group_id)}`}>{item.asset_group_name || item.asset_group_id}</a></p> : null}
-      <h3>Кейсы · {item.cases?.length || 0}</h3><div className="vm-case-list">{(item.cases || []).map((entry) => <a href={`/remediation?case=${encodeURIComponent(entry.case_id)}`} key={entry.case_id}><span className={`severity severity--${entry.severity}`}>{entry.severity}</span><div><strong>{entry.cve || entry.title}</strong><small>{entry.asset_id} · {entry.verification_status || "none"}</small></div><b>{entry.status}</b></a>)}</div>
+      <h3>Кейсы · {item.cases?.length || 0}</h3><div className="vm-case-list">{(item.cases || []).map((entry) => <a href={`/remediation?case=${encodeURIComponent(entry.case_id)}`} key={entry.case_id}><span className={`severity severity--${entry.severity}`}>{severityLabel(entry.severity)}</span><div><strong>{entry.cve || entry.title}</strong><small>{entry.asset_id}</small></div><b>{remediationStatusLabel(entry.status)}</b></a>)}</div>
       <details><summary>История кампании ({item.events?.length || 0})</summary><ul className="audit-list">{(item.events || []).map((event) => <li key={event.event_id}><strong>{event.event_type}</strong> · {date(event.created_at)}</li>)}</ul></details>
     </>}</aside></div>;
 }
@@ -315,7 +315,6 @@ function normalizeAttentionHref(item) {
 function setQuery(values) { if (typeof window === "undefined") return; const params = new URLSearchParams(Object.entries(values).filter(([, value]) => value)); window.history.replaceState({}, "", `/vm${params.size ? `?${params}` : ""}`); }
 function date(value) { if (!value) return "без срока"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU"); }
 function inputDate(value) { if (!value) return ""; const parsed = new Date(value); return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
-function campaignLabel(value) { return { draft: "Черновик", active: "Активна", completed: "Завершена", cancelled: "Отменена" }[value] || value; }
 function workflowTitle(item) {
   const request = item?.request || {};
   if (request.asset_group_id) return request.options?.mode === "group_scan" ? "Сканирование группы" : "Проверка группы";

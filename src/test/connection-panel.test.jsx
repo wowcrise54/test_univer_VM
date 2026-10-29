@@ -53,7 +53,7 @@ describe("ConnectionPanel env auto-connect state", () => {
       env_connect_error: "Missing authentication fields: username",
     });
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Автоподключение из .env не выполнено: Missing authentication fields: username",
+      "Автоподключение не выполнено: Missing authentication fields: username",
     );
   });
 
@@ -73,7 +73,7 @@ describe("ConnectionPanel lookups", () => {
 
   it("shows when lookups were refreshed automatically", () => {
     renderPanel(connected, { lookupsUpdatedAt: "2026-10-26T10:15:00.000Z" });
-    expect(screen.getByText(/автообновление каждые 5 мин/)).toBeInTheDocument();
+    expect(screen.getByText(/Справочники обновлены/)).toBeInTheDocument();
   });
 
   it("reports a failed background refresh", () => {
@@ -90,7 +90,7 @@ describe("ConnectionPanel lookups", () => {
     );
     await waitFor(() => expect(props.refreshLookups).toHaveBeenCalledTimes(1));
     expect(props.showAlert).toHaveBeenCalledWith(
-      expect.stringContaining("Справочники загружены"),
+      expect.stringContaining("Справочники обновлены"),
       "success",
     );
     expect(api).not.toHaveBeenCalledWith("/api/mpvm/lookups");

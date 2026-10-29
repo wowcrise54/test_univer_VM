@@ -47,7 +47,8 @@ describe("alert lifecycle boundaries", () => {
       "error",
       "info",
     ]);
-    expect(vi.getTimerCount()).toBe(2);
+    // Only the info message expires; the error waits for the user.
+    expect(vi.getTimerCount()).toBe(1);
     act(() => {
       result.current.dismissAlert(first);
       result.current.dismissAlert(first);

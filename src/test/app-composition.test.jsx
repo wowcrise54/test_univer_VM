@@ -176,7 +176,7 @@ describe("complete application composition", () => {
     page("/users");
     await screen.findByRole("heading", {
       level: 1,
-      name: "Пользователи и роли",
+      name: "Пользователи",
     });
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("/api/auth/audit?limit=200"),
@@ -202,7 +202,7 @@ describe("complete application composition", () => {
     page("/users");
     await screen.findByRole("heading", {
       level: 1,
-      name: "Пользователи и роли",
+      name: "Пользователи",
     });
     fireEvent.click(screen.getByRole("button", { name: "Выйти" }));
     await screen.findByRole("heading", { name: "Вход в приложение" });

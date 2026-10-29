@@ -31,15 +31,15 @@ describe("reliability UI", () => {
     render(
       <FreshnessBadge
         value={twoDaysAgo}
-        source="PostgreSQL"
         freshForHours={14 * 24}
         staleAfterHours={14 * 24}
       />,
     );
 
-    expect(screen.getByText("PostgreSQL").closest(".freshness")).toHaveClass(
-      "freshness--fresh",
-    );
+    const badge = screen.getByText("свежие").closest(".freshness");
+    expect(badge).toHaveClass("freshness--fresh");
+    // The badge shows when the data was updated, not where it is stored.
+    expect(badge).not.toHaveTextContent("PostgreSQL");
   });
 
   it("normalizes a network failure into an operator-facing error", () => {

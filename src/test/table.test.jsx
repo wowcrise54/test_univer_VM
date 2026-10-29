@@ -33,7 +33,8 @@ describe("table sorting", () => {
     expect(button.props["aria-label"]).toBe(
       "Сортировать «Название» по убыванию",
     );
-    expect(button.props.title).toBe("Сортировать «Название» по убыванию");
+    // The visible header text is enough; no tooltip repeats the aria-label.
+    expect(button.props.title).toBeUndefined();
 
     button.props.onClick();
     expect(onSort).toHaveBeenCalledWith("name", "asc");

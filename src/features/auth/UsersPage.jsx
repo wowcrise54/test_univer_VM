@@ -87,16 +87,10 @@ export function UsersPage({ currentUser, showAlert }) {
       </section>
     );
   return (
-    <section className="panel users-page">
-      <div className="panel__header">
-        <div>
-          <h2>Доступ к приложению</h2>
-          <p>
-            Пользователи могут иметь несколько ролей; их разрешения
-            объединяются.
-          </p>
-        </div>
-      </div>
+    <section
+      className="panel users-page"
+      aria-labelledby="workspace-title"
+    >
       <nav className="access-tabs" aria-label="Управление доступом">
         {canReadUsers ? (
           <button
@@ -210,7 +204,6 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
       {canManage ? (
         <Disclosure
           title="Новый пользователь"
-          description="Учётная запись и роли"
         >
           <form className="user-create-form" onSubmit={create}>
             <label>
@@ -244,6 +237,7 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
                 }
                 required
                 minLength="12"
+                placeholder="Не короче 12 символов"
                 autoComplete="new-password"
               />
             </label>
@@ -366,7 +360,7 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
             {!visibleUsers.length ? (
               <tr>
                 <td colSpan={5} className="users-empty">
-                  Нет пользователей по выбранным условиям.
+                  Никого не найдено.
                 </td>
               </tr>
             ) : null}
@@ -392,11 +386,9 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
         }
         impact={[
           "Роли и активные сессии пользователя будут удалены",
-          "Записи аудита сохранятся с именем пользователя",
           "Пользователь LDAP при следующем входе получит новую учётную запись с ролью по умолчанию; чтобы закрыть доступ, отключите его",
         ]}
         requireText={deleting?.username || ""}
-        requireHint="чтобы подтвердить удаление"
         confirmLabel="Удалить пользователя"
         busy={deleteBusy}
         onClose={() => setDeletingId(null)}
@@ -497,17 +489,14 @@ function RolesTab({ roles, permissions, canManage, mutate }) {
             <fieldset key={domain}>
               <legend>{domain}</legend>
               {items.map((permission) => (
-                <label key={permission.key}>
+                <label key={permission.key} title={permission.key}>
                   <input
                     type="checkbox"
                     checked={draft.permission_keys.includes(permission.key)}
                     disabled={selected.is_system || !canManage}
                     onChange={() => toggle(permission.key)}
                   />
-                  <span>
-                    <strong>{permission.key}</strong>
-                    {permission.description}
-                  </span>
+                  <span>{permission.description || permission.key}</span>
                 </label>
               ))}
             </fieldset>
@@ -539,7 +528,6 @@ function RolesTab({ roles, permissions, canManage, mutate }) {
         {canManage ? (
           <Disclosure
             title="Клонировать роль"
-            description="Создать отдельный набор прав"
           >
             <form
               className="role-clone"
@@ -589,10 +577,6 @@ function RolesTab({ roles, permissions, canManage, mutate }) {
           open={deleteOpen}
           title="Удалить роль?"
           description={`Роль «${selected.name}» будет удалена. Пользователи потеряют права, полученные только через неё.`}
-          impact={[
-            "Системные роли удалить нельзя",
-            "Назначения пользователей будут изменены",
-          ]}
           requireText={selected.name}
           confirmLabel="Удалить роль"
           onClose={() => setDeleteOpen(false)}
@@ -622,6 +606,13 @@ function AuditTab({ rows }) {
           </tr>
         </thead>
         <tbody>
+          {!rows.length ? (
+            <tr>
+              <td colSpan={5} className="users-empty">
+                Событий нет.
+              </td>
+            </tr>
+          ) : null}
           {rows.map((row) => (
             <tr key={row.id}>
               <td>{new Date(row.created_at).toLocaleString("ru-RU")}</td>

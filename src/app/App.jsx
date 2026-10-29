@@ -9,13 +9,7 @@ import { TasksPage } from "../pages/TasksPage.jsx";
 import { DashboardsPage } from "../pages/DashboardsPage.jsx";
 import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
 import { RemediationPage } from "../pages/RemediationPage.jsx";
-import {
-  AlertStack,
-  Sidebar,
-  SystemBanner,
-  Topbar,
-  WorkflowRail,
-} from "./layout.jsx";
+import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
 import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
 import { useEffect, useState } from "react";
 import { useRouter } from "./router.js";
@@ -72,7 +66,6 @@ function AppShell({ navigate, path, search, route, auth }) {
     : {
         id: "forbidden",
         title: "Нет доступа",
-        description: "Выберите доступный раздел в меню.",
       };
   const activeRouteId = routeAllowed ? route?.id : "forbidden";
 
@@ -109,9 +102,6 @@ function AppShell({ navigate, path, search, route, auth }) {
           onNavigate={navigate}
           currentUser={auth.user}
         />
-        {activeRouteId === "vm" ? (
-          <WorkflowRail activeRouteId={activeRouteId} onNavigate={navigate} />
-        ) : null}
         <AlertStack alerts={appData.alerts} onDismiss={appData.dismissAlert} />
         <ActivePage
           key={`${activeRouteId}:${search}`}
@@ -148,7 +138,7 @@ function ActivePage({ routeId, ...props }) {
         <div className="panel__header">
           <div>
             <h2>Раздел недоступен</h2>
-            <p>Для этой роли раздел скрыт.</p>
+            <p>Выберите раздел в меню.</p>
           </div>
         </div>
       </section>
@@ -327,7 +317,7 @@ function ActivePage({ routeId, ...props }) {
       <div className="panel__header">
         <div>
           <h2>Раздел не найден</h2>
-          <p>Выберите нужный раздел в боковом меню.</p>
+          <p>Выберите раздел в меню.</p>
         </div>
       </div>
     </section>

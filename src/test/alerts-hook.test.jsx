@@ -24,6 +24,23 @@ describe("useAlerts", () => {
     expect(result.current.alerts).toHaveLength(0);
   });
 
+  it("keeps errors until they are closed while other messages expire", async () => {
+    vi.useFakeTimers();
+    const { useAlerts } =
+      await import("../features/notifications/useAlerts.js");
+    const { result } = renderHook(() => useAlerts());
+    act(() => {
+      result.current.showAlert("Сбой", "error");
+      result.current.showAlert("Готово", "success");
+    });
+    act(() => vi.advanceTimersByTime(60000));
+    expect(result.current.alerts.map((item) => item.message)).toEqual([
+      "Сбой",
+    ]);
+    act(() => result.current.dismissAlert(result.current.alerts[0].id));
+    expect(result.current.alerts).toHaveLength(0);
+  });
+
   it("cleans its timers when unmounted and retains stable callbacks", async () => {
     vi.useFakeTimers();
     const { useAlerts } =

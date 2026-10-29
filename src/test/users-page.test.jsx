@@ -288,7 +288,7 @@ describe("user access management", () => {
     );
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByText(/Other operator.*operator/)).toBeInTheDocument();
-    expect(dialog.getByText(/чтобы подтвердить удаление/)).toBeInTheDocument();
+    expect(dialog.getByText(/для подтверждения/)).toBeInTheDocument();
     const confirm = dialog.getByRole("button", {
       name: "Удалить пользователя",
     });
@@ -357,7 +357,7 @@ describe("user access management", () => {
     expect(screen.queryByText("Other operator")).not.toBeInTheDocument();
     await actions.selectOptions(screen.getByLabelText("Фильтр по роли"), "11");
     expect(
-      screen.getByText("Нет пользователей по выбранным условиям."),
+      screen.getByText("Никого не найдено."),
     ).toBeInTheDocument();
   });
 
@@ -520,9 +520,9 @@ describe("role editing and cloning", () => {
       await actions.clear(screen.getByLabelText("Описание"));
       await actions.type(screen.getByLabelText("Описание"), "Only task access");
       await actions.click(
-        screen.getByRole("checkbox", { name: /assets.read/ }),
+        screen.getByRole("checkbox", { name: "Read assets" }),
       );
-      await actions.click(screen.getByRole("checkbox", { name: /tasks.read/ }));
+      await actions.click(screen.getByRole("checkbox", { name: "Read tasks" }));
       await actions.click(screen.getByRole("button", { name: "Сохранить" }));
       await waitFor(() =>
         expect(showAlert).toHaveBeenCalledWith("Роль сохранена.", "success"),
@@ -649,7 +649,9 @@ describe("security audit view", () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("/api/auth/audit?limit=200"),
     );
-    expect(screen.getAllByRole("row")).toHaveLength(1);
+    // Header row plus the empty-state row.
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByText("Событий нет.")).toBeInTheDocument();
   });
 });
 

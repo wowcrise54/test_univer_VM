@@ -1,7 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { formatDate } from "../shared/format.js";
 import { useRef, useState } from "react";
 import { api } from "../api/client.js";
-import { Button, Disclosure, Field, Panel, Toggle } from "../shared/ui.jsx";
+import {
+  Button,
+  ConfirmDialog,
+  Disclosure,
+  Field,
+  Panel,
+  Toggle,
+} from "../shared/ui.jsx";
 
 const DEFAULT_SCHEDULE = {
   task_id: "",
@@ -10,6 +18,47 @@ const DEFAULT_SCHEDULE = {
   timezone: "Asia/Yekaterinburg",
   enabled: true,
 };
+
+// Common schedules are picked from a list; «Свой cron» keeps full control.
+const REPEAT_OPTIONS = [
+  ["daily", "Ежедневно"],
+  ["weekdays", "По будням"],
+  ["weekly", "Еженедельно (пн)"],
+  ["monthly", "Ежемесячно (1-го числа)"],
+  ["custom", "Свой cron"],
+];
+const REPEAT_DAYS = {
+  daily: "* * *",
+  weekdays: "* * 1-5",
+  weekly: "* * 1",
+  monthly: "1 * *",
+};
+
+function parseCron(expression) {
+  const match = /^(\d{1,2}) (\d{1,2}) (.+)$/.exec(String(expression).trim());
+  const repeat = match
+    ? Object.keys(REPEAT_DAYS).find((key) => REPEAT_DAYS[key] === match[3])
+    : null;
+  if (!repeat || Number(match[1]) > 59 || Number(match[2]) > 23) {
+    return { repeat: "custom", time: "02:00" };
+  }
+  return {
+    repeat,
+    time: `${match[2].padStart(2, "0")}:${match[1].padStart(2, "0")}`,
+  };
+}
+
+function buildCron(repeat, time) {
+  const [hours, minutes] = String(time || "02:00").split(":");
+  return `${Number(minutes) || 0} ${Number(hours) || 0} ${REPEAT_DAYS[repeat]}`;
+}
+
+function describeCron(expression) {
+  const { repeat, time } = parseCron(expression);
+  if (repeat === "custom") return expression;
+  const label = REPEAT_OPTIONS.find(([value]) => value === repeat)[1];
+  return `${label}, ${time}`;
+}
 
 export function AutomationsPage({ showAlert }) {
   const [tab, setTab] = useState("schedules");
@@ -94,10 +143,10 @@ export function AutomationsPage({ showAlert }) {
 
   const createSchedule = async () => {
     const required = [
-      [scheduleForm.task_id, "Выберите задачу сканирования MP VM."],
+      [scheduleForm.task_id, "Выберите задачу."],
       [scheduleForm.name.trim(), "Введите название расписания."],
-      [scheduleForm.cron_expression.trim(), "Введите cron-выражение."],
-      [scheduleForm.timezone.trim(), "Введите часовой пояс."],
+      [scheduleForm.cron_expression.trim(), "Укажите расписание."],
+      [scheduleForm.timezone.trim(), "Укажите часовой пояс."],
     ];
     const invalid = required.find(([value]) => !value);
     if (invalid) {
@@ -172,6 +221,9 @@ export function AutomationsPage({ showAlert }) {
     if (created) setScheduleForm(DEFAULT_SCHEDULE);
   };
 
+  const parsedCron = parseCron(scheduleForm.cron_expression);
+  const repeat = scheduleForm.custom_cron ? "custom" : parsedCron.repeat;
+  const repeatTime = parsedCron.time;
   const runbookById = new Map(
     runbooks.map((runbook) => [runbook.runbook_id, runbook]),
   );
@@ -191,13 +243,12 @@ export function AutomationsPage({ showAlert }) {
           id="automation-panel-schedules"
           role="tabpanel"
           aria-labelledby="automation-tab-schedules"
-          title="Автоматизация сканирования"
-          description="Запускайте выбранную задачу MP VM по cron. После завершения приложение автоматически выполнит штатную обработку результатов."
+          title="Расписания"
         >
           <Disclosure
+            key={schedulesQuery.isSuccess ? "loaded" : "loading"}
             title="Новое расписание"
-            description="Задача MP VM, cron и часовой пояс"
-            defaultOpen
+            defaultOpen={!schedulesQuery.isSuccess || !schedules.length}
           >
             {scannerTasksQuery.isError ? (
               <AutomationQueryError
@@ -206,7 +257,7 @@ export function AutomationsPage({ showAlert }) {
               />
             ) : null}
             <div className="form-grid form-grid--four automation-schedule-form">
-              <Field label="Задача сканирования MP VM">
+              <Field label="Задача">
                 <select
                   value={scheduleForm.task_id}
                   disabled={scannerTasksQuery.isPending}
@@ -232,7 +283,6 @@ export function AutomationsPage({ showAlert }) {
               <Field label="Название расписания">
                 <input
                   value={scheduleForm.name}
-                  placeholder="Например, ночное сканирование"
                   onChange={(event) =>
                     setScheduleForm({
                       ...scheduleForm,
@@ -241,22 +291,55 @@ export function AutomationsPage({ showAlert }) {
                   }
                 />
               </Field>
-              <Field label="Cron">
-                <input
-                  aria-label="Cron"
-                  value={scheduleForm.cron_expression}
-                  aria-describedby="automation-cron-help"
+              <Field label="Повтор">
+                <select
+                  value={repeat}
                   onChange={(event) =>
                     setScheduleForm({
                       ...scheduleForm,
-                      cron_expression: event.target.value,
+                      cron_expression:
+                        event.target.value === "custom"
+                          ? scheduleForm.cron_expression
+                          : buildCron(event.target.value, repeatTime),
+                      custom_cron: event.target.value === "custom",
                     })
                   }
-                />
-                <small id="automation-cron-help">
-                  Минута · час · день месяца · месяц · день недели
-                </small>
+                >
+                  {REPEAT_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
               </Field>
+              {repeat === "custom" ? (
+                <Field label="Cron">
+                  <input
+                    aria-label="Cron"
+                    value={scheduleForm.cron_expression}
+                    title="Минута · час · день месяца · месяц · день недели"
+                    onChange={(event) =>
+                      setScheduleForm({
+                        ...scheduleForm,
+                        cron_expression: event.target.value,
+                      })
+                    }
+                  />
+                </Field>
+              ) : (
+                <Field label="Время">
+                  <input
+                    type="time"
+                    value={repeatTime}
+                    onChange={(event) =>
+                      setScheduleForm({
+                        ...scheduleForm,
+                        cron_expression: buildCron(repeat, event.target.value),
+                      })
+                    }
+                  />
+                </Field>
+              )}
               <Field label="Часовой пояс">
                 <input
                   value={scheduleForm.timezone}
@@ -271,7 +354,7 @@ export function AutomationsPage({ showAlert }) {
             </div>
             <div className="action-row">
               <Toggle
-                label="Активно"
+                label="Включено"
                 checked={scheduleForm.enabled}
                 onChange={(enabled) =>
                   setScheduleForm({ ...scheduleForm, enabled })
@@ -371,14 +454,15 @@ function SchedulesTable({
   busy,
   perform,
 }) {
+  const [deleting, setDeleting] = useState(null);
   return (
     <div className="table-shell">
       <table>
         <thead>
           <tr>
             <th>Название</th>
-            <th>Задача MP VM</th>
-            <th>Cron</th>
+            <th>Задача</th>
+            <th>Расписание</th>
             <th>Следующий запуск</th>
             <th>Статус</th>
             <th>Действия</th>
@@ -401,18 +485,21 @@ function SchedulesTable({
                 <tr key={item.schedule_id}>
                   <td>{item.name}</td>
                   <td>
-                    <strong>
+                    <strong title={taskId || undefined}>
                       {task?.name || taskId || item.runbook_name || "—"}
                     </strong>
-                    {taskId ? <small>{taskId}</small> : null}
                   </td>
                   <td>
-                    <code>{item.cron_expression}</code>
+                    <span title={item.cron_expression}>
+                      {describeCron(item.cron_expression)}
+                    </span>
                     <small>{item.timezone}</small>
                   </td>
                   <td>{formatDate(item.next_run_at)}</td>
                   <td>
-                    {item.enabled ? item.last_status || "активно" : "пауза"}
+                    {item.enabled
+                      ? runStatusLabel(item.last_status) || "Включено"
+                      : "На паузе"}
                   </td>
                   <td>
                     <div className="row-actions">
@@ -442,17 +529,7 @@ function SchedulesTable({
                       <Button
                         variant="tiny-danger"
                         busy={busy[`schedule:delete:${item.schedule_id}`]}
-                        onClick={() =>
-                          perform(
-                            `schedule:delete:${item.schedule_id}`,
-                            () =>
-                              api(
-                                `/api/automations/schedules/${item.schedule_id}`,
-                                { method: "DELETE" },
-                              ),
-                            "Расписание удалено.",
-                          )
-                        }
+                        onClick={() => setDeleting(item)}
                       >
                         Удалить
                       </Button>
@@ -462,11 +539,46 @@ function SchedulesTable({
               );
             })
           ) : (
-            <EmptyRow columns="6" label="Расписания ещё не созданы." />
+            <EmptyRow columns="6" label="Расписаний нет." />
           )}
         </tbody>
       </table>
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        title={`Удалить расписание «${deleting?.name || ""}»?`}
+        confirmLabel="Удалить"
+        busy={busy[`schedule:delete:${deleting?.schedule_id}`]}
+        onClose={() => setDeleting(null)}
+        onConfirm={async () => {
+          const item = deleting;
+          await perform(
+            `schedule:delete:${item.schedule_id}`,
+            () =>
+              api(`/api/automations/schedules/${item.schedule_id}`, {
+                method: "DELETE",
+              }),
+            "Расписание удалено.",
+          );
+          setDeleting(null);
+        }}
+      />
     </div>
+  );
+}
+
+function runStatusLabel(status) {
+  if (!status) return "";
+  return (
+    {
+      queued: "В очереди",
+      running: "Выполняется",
+      cancelling: "Останавливается",
+      completed: "Завершён",
+      succeeded: "Завершён",
+      failed: "Ошибка",
+      cancelled: "Отменён",
+      skipped: "Пропущен",
+    }[status] || status
   );
 }
 
@@ -629,13 +741,6 @@ function NotificationsPanel({
     readIds.has(item.notification_id) ? { ...item, is_read: true } : item,
   );
   const rows = unreadOnly ? allRows.filter((item) => !item.is_read) : allRows;
-  const unread = Math.max(
-    0,
-    (notifications.unread || 0) -
-      notifications.rows.filter(
-        (item) => !item.is_read && readIds.has(item.notification_id),
-      ).length,
-  );
   const markRead = async (item) => {
     await api("/api/notifications/" + item.notification_id + "/read", {
       method: "POST",
@@ -652,7 +757,6 @@ function NotificationsPanel({
       role="tabpanel"
       aria-labelledby="automation-tab-notifications"
       title="Центр уведомлений"
-      description={"Непрочитанных: " + unread}
     >
       <div className="operation-detail-actions" aria-label="Режим уведомлений">
         <Button
@@ -744,12 +848,6 @@ function ErrorRow({ columns, label, query }) {
       </td>
     </tr>
   );
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
 function AutomationQueryError({ label, query }) {

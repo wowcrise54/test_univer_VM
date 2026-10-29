@@ -40,15 +40,20 @@ describe("AutomationsPage", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "Автоматизация сканирования",
+        name: "Расписания",
       }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("tab", { name: "Сценарии" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Задача сканирования MP VM"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Задача")).toBeInTheDocument();
+    // The default «0 2 * * *» reads as a daily run at 02:00.
+    expect(screen.getByLabelText("Повтор")).toHaveValue("daily");
+    expect(screen.getByLabelText("Время")).toHaveValue("02:00");
+    expect(screen.queryByLabelText("Cron")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Повтор"), {
+      target: { value: "custom" },
+    });
     expect(screen.getByLabelText("Cron")).toHaveValue("0 2 * * *");
   });
 
@@ -58,14 +63,14 @@ describe("AutomationsPage", () => {
     expect(
       await screen.findByRole("option", { name: "Периметр" }),
     ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Задача сканирования MP VM"), {
+    fireEvent.change(screen.getByLabelText("Задача"), {
       target: { value: "task-1" },
     });
     fireEvent.change(screen.getByLabelText("Название расписания"), {
       target: { value: "Ночное сканирование" },
     });
-    fireEvent.change(screen.getByLabelText("Cron"), {
-      target: { value: "30 1 * * *" },
+    fireEvent.change(screen.getByLabelText("Время"), {
+      target: { value: "01:30" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Создать расписание" }));
 

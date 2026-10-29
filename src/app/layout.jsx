@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client.js";
+import { searchTypeLabel } from "../shared/labels.js";
 import { ActionMenu } from "../shared/ui.jsx";
-import { routes, workflowSteps } from "./navigation.js";
+import { navigationGroups, routes } from "./navigation.js";
 
 function getAccountLabel(user) {
   const displayName = String(user?.display_name || "").trim();
@@ -89,17 +90,40 @@ export function Sidebar({
         {secondaryRoutes.length ? (
           <details className="nav-more" open={secondaryActive}>
             <summary>Ещё</summary>
-            <div className="nav-group__items">
-              {secondaryRoutes.map((route) => (
-                <NavLink
-                  route={route}
-                  activePath={activePath}
-                  activeOperations={activeOperations}
-                  onNavigate={onNavigate}
-                  key={route.id}
-                />
-              ))}
-            </div>
+            {navigationGroups
+              .filter((group) => group.id !== "primary")
+              .map((group) => {
+                const items = secondaryRoutes.filter(
+                  (route) => route.group === group.id,
+                );
+                if (!items.length) return null;
+                return (
+                  <div
+                    className="nav-group"
+                    role="group"
+                    aria-labelledby={`nav-group-${group.id}`}
+                    key={group.id}
+                  >
+                    <span
+                      className="nav-group__label"
+                      id={`nav-group-${group.id}`}
+                    >
+                      {group.label}
+                    </span>
+                    <div className="nav-group__items">
+                      {items.map((route) => (
+                        <NavLink
+                          route={route}
+                          activePath={activePath}
+                          activeOperations={activeOperations}
+                          onNavigate={onNavigate}
+                          key={route.id}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
           </details>
         ) : null}
         <span className="nav-scroll-hint" aria-hidden="true">
@@ -107,7 +131,7 @@ export function Sidebar({
         </span>
       </nav>
       {systemStatus?.components?.database?.state === "down" ? (
-        <div className="sidebar-warning">PostgreSQL недоступен</div>
+        <div className="sidebar-warning">База данных недоступна</div>
       ) : null}
     </aside>
   );
@@ -121,7 +145,6 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
   return (
     <a
       href={route.path}
-      title={route.label}
       aria-label={
         showOperationsBadge
           ? `Операции — активных: ${activeOperations}`
@@ -154,18 +177,20 @@ export function SystemBanner({
   onNavigate,
   currentUser,
 }) {
-  if (!status || (status.state === "ok" && !stale)) return null;
+  const components = Object.entries(status?.components || {}).filter(
+    ([key, value]) =>
+      value?.state !== "ok" && !(key === "mpvm" && value?.state === "degraded"),
+  );
+  if (!status || (!components.length && !stale)) return null;
   const permissions = new Set(currentUser?.permissions || []);
   const canOpenConnectionSettings = permissions.has("connection.manage");
-  const components = Object.entries(status.components || {}).filter(
-    ([, value]) => value?.state !== "ok",
-  );
   const primary = components[0]?.[1];
   const isDown =
     status.state === "down" ||
     components.some(([, value]) => value?.state === "down");
   const showContextActions =
     stale ||
+    Boolean(primary?.trace_id) ||
     (canOpenConnectionSettings && components.some(([key]) => key === "mpvm"));
   return (
     <section
@@ -183,7 +208,6 @@ export function SystemBanner({
         <span>
           {primary?.message || "Данные операций могут быть устаревшими."}
         </span>
-        {primary?.trace_id ? <code>trace: {primary.trace_id}</code> : null}
       </div>
       <div className="system-banner__actions">
         <button type="button" onClick={onRetry}>
@@ -202,30 +226,17 @@ export function SystemBanner({
                 Операции
               </button>
             ) : null}
+            {primary?.trace_id ? (
+              <code className="system-banner__trace">
+                trace: {primary.trace_id}
+              </code>
+            ) : null}
           </ActionMenu>
         ) : null}
       </div>
     </section>
   );
 }
-
-const routeNextActions = {
-  vm: { label: "Сканировать", path: "/tasks" },
-  connection: {
-    connectedLabel: "К обзору",
-    label: "Подключиться",
-    path: "/vm",
-  },
-  tasks: { label: "Операции", path: "/operations" },
-  operations: { label: "Результаты", path: "/vulnerabilities" },
-  vulnerabilities: { label: "Карточки", path: "/asset-cards" },
-  "asset-cards": { label: "Отчёт", path: "/export" },
-  assets: { label: "Отчёт", path: "/export" },
-  passports: { label: "Карточки", path: "/asset-cards" },
-  "asset-query": { label: "Карточки", path: "/asset-cards" },
-  export: { label: "Автоматизация", path: "/automations" },
-  automations: { label: "Операции", path: "/operations" },
-};
 
 export function Topbar({
   session,
@@ -242,7 +253,7 @@ export function Topbar({
     permissions.has("connection.read") || permissions.has("connection.manage");
   const canManageConnection = permissions.has("connection.manage");
   useEffect(() => {
-    const title = route?.title || "MP VM REST Client";
+    const title = route?.title || "MP VM Client";
     if (typeof document !== "undefined")
       document.title = `${title} · MP VM Client`;
     const timer = window.setTimeout(
@@ -251,30 +262,12 @@ export function Topbar({
     );
     return () => window.clearTimeout(timer);
   }, [route?.id, route?.title]);
-  const action = routeNextActions[route?.id];
-  const needsConnection =
-    canManageConnection && !session.connected && route?.id !== "connection";
-  const actionPath =
-    route?.id === "connection" && !session.connected
-      ? null
-      : needsConnection
-        ? "/connection"
-        : action?.path;
-  const actionLabel = needsConnection
-    ? "Настроить подключение"
-    : route?.id === "connection" && session.connected
-      ? action?.connectedLabel
-      : action?.label;
   return (
     <header className="topbar" aria-labelledby="workspace-title">
       <div className="topbar__copy">
-        <span className="topbar__eyebrow">MP VM Client</span>
         <h1 id="workspace-title" ref={headingRef} tabIndex={-1}>
-          {route?.title || "MP VM REST Client"}
+          {route?.title || "MP VM Client"}
         </h1>
-        {route?.description ? (
-          <p className="topbar__description">{route.description}</p>
-        ) : null}
       </div>
       <div className="topbar__actions">
         <GlobalSearch onNavigate={onNavigate} />
@@ -308,26 +301,11 @@ export function Topbar({
           </svg>
         </button>
         {canReadConnection ? (
-          <div
-            className={
-              session.connected ? "status-chip status-chip--ok" : "status-chip"
-            }
-            role="status"
-            aria-label={session.connected ? "Подключено" : "Нет подключения"}
-          >
-            <span aria-hidden="true" />
-            {session.connected ? "Подключено" : "Нет подключения"}
-          </div>
-        ) : null}
-        {actionPath && actionLabel ? (
-          <button
-            type="button"
-            className="topbar__next"
-            onClick={() => onNavigate(actionPath)}
-          >
-            <span>{actionLabel}</span>
-            <strong aria-hidden="true">→</strong>
-          </button>
+          <ConnectionChip
+            connected={session.connected}
+            canManage={canManageConnection && route?.id !== "connection"}
+            onNavigate={onNavigate}
+          />
         ) : null}
         <ActionMenu
           className="account-menu"
@@ -339,6 +317,33 @@ export function Topbar({
         </ActionMenu>
       </div>
     </header>
+  );
+}
+
+function ConnectionChip({ connected, canManage, onNavigate }) {
+  const label = connected ? "Подключено" : "Нет подключения";
+  const className = connected ? "status-chip status-chip--ok" : "status-chip";
+  if (canManage && !connected) {
+    return (
+      <a
+        href="/connection"
+        className={`${className} status-chip--link`}
+        onClick={(event) => {
+          if (!shouldHandleLinkClick(event)) return;
+          event.preventDefault();
+          onNavigate("/connection");
+        }}
+      >
+        <span aria-hidden="true" />
+        {label}
+      </a>
+    );
+  }
+  return (
+    <div className={className} role="status" aria-label={label}>
+      <span aria-hidden="true" />
+      {label}
+    </div>
   );
 }
 
@@ -460,7 +465,7 @@ function GlobalSearch({ onNavigate }) {
                     }}
                   >
                     <span className="global-search__item-type">
-                      {item.type}
+                      {searchTypeLabel(item.type)}
                     </span>
                     <span>
                       <strong>{item.title}</strong>
@@ -505,45 +510,6 @@ function navigateSearchResult(href, onNavigate) {
   } else onNavigate?.(href);
 }
 
-export function WorkflowRail({ activeRouteId, onNavigate }) {
-  const activeIndex = Math.max(
-    0,
-    workflowSteps.findIndex((step) => step.routes.includes(activeRouteId)),
-  );
-  return (
-    <nav className="workflow-rail" aria-label="Этапы рабочего процесса">
-      {workflowSteps.map((step, index) => {
-        const state =
-          index < activeIndex
-            ? "complete"
-            : index === activeIndex
-              ? "active"
-              : "upcoming";
-        return (
-          <button
-            type="button"
-            className={`workflow-step workflow-step--${state}`}
-            aria-label={`${step.label}: ${step.hint}`}
-            aria-current={state === "active" ? "step" : undefined}
-            data-step-id={step.id}
-            data-state={state}
-            title={step.hint}
-            onClick={() => onNavigate(step.path)}
-            key={step.id}
-          >
-            <span className="workflow-step__number">
-              {index < activeIndex ? "✓" : index + 1}
-            </span>
-            <span className="workflow-step__copy">
-              <strong>{step.label}</strong>
-            </span>
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
-
 export function AlertStack({ alerts, onDismiss }) {
   if (!alerts.length) return null;
   return (
@@ -559,7 +525,7 @@ export function AlertStack({ alerts, onDismiss }) {
             <button
               type="button"
               className="alert-dismiss"
-              aria-label="Закрыть уведомление"
+              aria-label="Закрыть"
               onClick={() => onDismiss(alert.id)}
             >
               ×

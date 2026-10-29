@@ -589,9 +589,7 @@ test("running passport progress and asset vulnerability rows use dark surfaces",
     fullPage: true,
   });
   await page.goto("/asset-cards");
-  await page
-    .getByRole("button", { name: "Сохранённые карточки", exact: true })
-    .click();
+  // Saved cards load as soon as the page opens.
   await page.getByRole("button", { name: "Открыть", exact: true }).click();
   await page.getByRole("tab", { name: "Уязвимости", exact: true }).click();
   await expect(page.locator(".asset-vulnerability-group")).toHaveCount(2);
@@ -902,7 +900,7 @@ test("VM Management launches and tracks a controlled scan workflow", async ({
   await page.getByLabel("Задача MP VM").selectOption("task-e2e-1");
   await page.getByRole("button", { name: "Проверить перед запуском" }).click();
   await expect(page.getByText("Проверка пройдена")).toBeVisible();
-  await page.getByRole("button", { name: "Запустить конвейер" }).click();
+  await page.getByRole("button", { name: "Запустить сканирование" }).click();
   const dialog = page.getByRole("dialog", { name: "Полное сканирование" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Загрузка карточек")).toBeVisible();
@@ -1202,7 +1200,7 @@ test("task selection, results, and a new task are separate actions", async ({
   ).toBeVisible();
   await expect(page.getByLabel("Название задачи")).toHaveCount(0);
   expect(historyRequests).toEqual([]);
-  await page.getByText("task-select-1", { exact: true }).first().dblclick();
+  await page.getByRole("row", { name: /Audit alpha/ }).dblclick();
   await expect(
     page.getByRole("heading", { name: "Запуски", exact: true }),
   ).toBeVisible();
@@ -1310,6 +1308,7 @@ test("vulnerability results wait for applied asset selection", async ({
   ).toBeVisible();
   await expect(page.getByText("История риска", { exact: true })).toHaveCount(0);
   expect(selections).toEqual([]);
+  await page.getByText("Ещё фильтры", { exact: true }).click();
   await page.getByLabel("Актив", { exact: true }).fill("host-e2e-1");
   await page.getByRole("button", { name: "Применить фильтры" }).click();
   await expect.poll(() => selections).toEqual(["host-e2e-1"]);

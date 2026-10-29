@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  remediationStatusLabel,
+  severityClass,
+  severityLabel,
+} from "../../shared/labels.js";
 import { api } from "../../api/client.js";
 import { PassportCard, PassportModal } from "../../panels.jsx";
-import { formatCount } from "../../shared/format.js";
+import { formatCount, formatDate } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
 import { Button, Disclosure, Field, Panel } from "../../shared/ui.jsx";
 import {
@@ -30,22 +35,11 @@ const TREND_PERIODS = [7, 30, 90];
 const RESOLUTION_PERIODS = [7, 30, 90];
 const TREND_METRICS = [
   { key: "affected_hosts", label: "Затронутые хосты" },
-  { key: "findings", label: "Findings" },
+  { key: "findings", label: "Находки" },
   { key: "unique_vulnerabilities", label: "Уникальные уязвимости" },
   { key: "high_risk_hosts", label: "Хосты высокого риска" },
 ];
 const TREND_SEVERITIES = ["critical", "high", "medium", "low", "unknown"];
-
-const SEVERITY_LABELS = {
-  critical: "Критическая",
-  high: "Высокая",
-  medium: "Средняя",
-  low: "Низкая",
-  none: "Не указана",
-  empty: "Не указана",
-  unknown: "Не указана",
-  unrated: "Не указана",
-};
 
 const SOURCE_LABELS = {
   all: "Все источники",
@@ -345,17 +339,11 @@ export function VulnerabilitiesDashboard({
   return (
     <Panel
       id={isDashboards ? "dashboards" : "vulnerabilities"}
-      title={isDashboards ? "Дашборды" : "Уязвимости"}
-      description={
-        isDashboards
-          ? "Общая аналитика риска, история и контроль."
-          : "Задайте условия и примените выборку для анализа уязвимостей."
-      }
       className="vulnerability-dashboard"
       action={
         isDashboards || applied ? (
           <Button variant="secondary" busy={refreshing} onClick={refresh}>
-            Перечитать срез
+            Обновить
           </Button>
         ) : null
       }
@@ -393,10 +381,8 @@ export function VulnerabilitiesDashboard({
           ) : null}
           {isDashboards || applied ? (
             <>
-              <MetricGlossary />
-
               {summaryQuery.isPending ? (
-                <LoadingState label="Загружаю сводку по уязвимостям…" />
+                <LoadingState label="Загрузка…" />
               ) : summaryQuery.isError ? (
                 <QueryError
                   title="Не удалось загрузить сводку"
@@ -408,10 +394,8 @@ export function VulnerabilitiesDashboard({
                 <>
                   {summary.coverage?.complete === false ? (
                     <div className="vulnerability-coverage-warning" role="note">
-                      <strong>Неполные данные.</strong>
-                      <span>
-                        Часть групп усечена; значения показывают нижнюю оценку.
-                      </span>
+                      <strong>Данные неполные</strong>{" "}
+                      <span>— значения занижены.</span>
                     </div>
                   ) : null}
                   <KpiGrid totals={summary.totals || {}} />
@@ -436,11 +420,10 @@ export function VulnerabilitiesDashboard({
                   </div>
                   <Disclosure
                     title="Охват и приоритеты"
-                    description="Свежесть данных и лидеры по риску"
                     meta={
                       summary.coverage?.complete === false
                         ? "Неполный охват"
-                        : "Актуальный срез"
+                        : null
                     }
                   >
                     <DashboardContext summary={summary} />
@@ -515,11 +498,7 @@ export function VulnerabilitiesDashboard({
               ) : null}
               {isDashboards ? (
                 <>
-                  <Disclosure
-                    title="Новые сигналы"
-                    description="Трендовые уязвимости и паспорта"
-                    meta="Дополнительно"
-                  >
+                  <Disclosure title="Трендовые уязвимости">
                     <TrendingVulnerabilities
                       query={trendingPassportsQuery}
                       context={trendingContext}
@@ -527,11 +506,7 @@ export function VulnerabilitiesDashboard({
                       onOpenPassport={openPassport}
                     />
                   </Disclosure>
-                  <Disclosure
-                    title="История риска"
-                    description="Динамика, дельты и полнота срезов"
-                    meta={`${trendDays} дней`}
-                  >
+                  <Disclosure title="История риска" meta={`${trendDays} дней`}>
                     <RiskTrendSection
                       query={trendsQuery}
                       periodDays={trendDays}
@@ -543,7 +518,7 @@ export function VulnerabilitiesDashboard({
             </>
           ) : (
             <EmptyState>
-              Задайте условия выборки и нажмите «Применить фильтры».
+              Задайте условия и нажмите «Применить фильтры».
             </EmptyState>
           )}
           {hostFinding ? (
@@ -645,14 +620,8 @@ function ResolutionStats({ query, periodDays, onPeriodChange }) {
     >
       <header className="resolution-stats__header">
         <div>
-          <span className="vulnerability-section-heading__eyebrow">
-            Отдельный срез
-          </span>
           <h3 id="resolution-stats-title">Подтверждённые устранения</h3>
-          <p>
-            Устранение учитывается только после полного свежего сканирования, в
-            котором находка больше не обнаружена.
-          </p>
+          <p>Учитываются только после свежего полного сканирования.</p>
         </div>
         <div
           className="risk-trend__periods"
@@ -674,7 +643,7 @@ function ResolutionStats({ query, periodDays, onPeriodChange }) {
       </header>
 
       {query.isPending ? (
-        <LoadingState label="Загружаю статистику устранений…" />
+        <LoadingState label="Загрузка…" />
       ) : query.isError ? (
         <QueryError
           title="Не удалось загрузить статистику устранений"
@@ -908,6 +877,15 @@ function ResolutionMetric({ label, value, note }) {
   );
 }
 
+const MORE_FILTER_KEYS = [
+  "asset_id",
+  "os",
+  "asset_type",
+  "source",
+  "has_fix",
+  "fix_q",
+];
+
 function VulnerabilityFilters({
   filters,
   assetOptions = [],
@@ -918,6 +896,7 @@ function VulnerabilityFilters({
 }) {
   const update = (key, value) =>
     onChange((current) => ({ ...current, [key]: value }));
+  const moreCount = MORE_FILTER_KEYS.filter((key) => filters[key]).length;
   return (
     <form
       className="vulnerability-filters"
@@ -938,35 +917,6 @@ function VulnerabilityFilters({
           placeholder="Имя, IP или FQDN"
         />
       </Field>
-      <Field label="Актив">
-        <input
-          value={filters.asset_id}
-          list="vulnerability-filter-asset-options"
-          onChange={(event) => update("asset_id", event.target.value)}
-          placeholder="Точный ID актива"
-        />
-      </Field>
-      <datalist id="vulnerability-filter-asset-options">
-        {assetOptions.map((option) => (
-          <option value={option.value} key={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </datalist>
-      <Field label="ОС">
-        <input
-          value={filters.os}
-          onChange={(event) => update("os", event.target.value)}
-          placeholder="Windows, Linux, Ubuntu"
-        />
-      </Field>
-      <Field label="Тип актива">
-        <input
-          value={filters.asset_type}
-          onChange={(event) => update("asset_type", event.target.value)}
-          placeholder="host, server, workstation"
-        />
-      </Field>
       <Field label="Критичность">
         <select
           value={filters.severity}
@@ -980,35 +930,6 @@ function VulnerabilityFilters({
           <option value="none">Не указана</option>
         </select>
       </Field>
-      <Field label="Источник">
-        <select
-          value={filters.source}
-          onChange={(event) => update("source", event.target.value)}
-        >
-          <option value="">Все источники</option>
-          <option value="os">Операционная система</option>
-          <option value="software">Установленное ПО</option>
-          <option value="docker">Docker-контейнеры</option>
-        </select>
-      </Field>
-      <Field label="Наличие исправления">
-        <select
-          value={filters.has_fix}
-          onChange={(event) => update("has_fix", event.target.value)}
-        >
-          <option value="">Все</option>
-          <option value="yes">Есть исправление</option>
-          <option value="no">Нет исправления</option>
-          <option value="any">Не важно</option>
-        </select>
-      </Field>
-      <Field label="Текст исправления">
-        <input
-          value={filters.fix_q}
-          onChange={(event) => update("fix_q", event.target.value)}
-          placeholder="Например: обновить, патч"
-        />
-      </Field>
       <div className="vulnerability-filters__actions">
         <Button type="submit" busy={busy}>
           Применить фильтры
@@ -1017,46 +938,76 @@ function VulnerabilityFilters({
           Сбросить
         </Button>
       </div>
+      <Disclosure
+        className="vulnerability-filters__more"
+        title="Ещё фильтры"
+        meta={moreCount ? `Задано: ${moreCount}` : null}
+        defaultOpen={moreCount > 0}
+      >
+        <div className="vulnerability-filters__more-grid">
+          <Field label="Актив">
+            <input
+              value={filters.asset_id}
+              list="vulnerability-filter-asset-options"
+              onChange={(event) => update("asset_id", event.target.value)}
+              placeholder="Точный ID актива"
+            />
+          </Field>
+          <datalist id="vulnerability-filter-asset-options">
+            {assetOptions.map((option) => (
+              <option value={option.value} key={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </datalist>
+          <Field label="ОС">
+            <input
+              value={filters.os}
+              onChange={(event) => update("os", event.target.value)}
+              placeholder="Windows, Linux, Ubuntu"
+            />
+          </Field>
+          <Field label="Тип актива">
+            <input
+              value={filters.asset_type}
+              onChange={(event) => update("asset_type", event.target.value)}
+              placeholder="host, server, workstation"
+            />
+          </Field>
+          <Field label="Источник">
+            <select
+              value={filters.source}
+              onChange={(event) => update("source", event.target.value)}
+            >
+              <option value="">Все источники</option>
+              <option value="os">Операционная система</option>
+              <option value="software">Установленное ПО</option>
+              <option value="docker">Docker-контейнеры</option>
+            </select>
+          </Field>
+          <Field label="Наличие исправления">
+            <select
+              value={filters.has_fix}
+              onChange={(event) => update("has_fix", event.target.value)}
+            >
+              <option value="">Все</option>
+              <option value="yes">Есть исправление</option>
+              <option value="no">Нет исправления</option>
+            </select>
+          </Field>
+          {/* The backend reads the fix text only together with «есть/нет исправления». */}
+          {filters.has_fix === "yes" || filters.has_fix === "no" ? (
+            <Field label="Текст исправления">
+              <input
+                value={filters.fix_q}
+                onChange={(event) => update("fix_q", event.target.value)}
+                placeholder="Например: обновить, патч"
+              />
+            </Field>
+          ) : null}
+        </div>
+      </Disclosure>
     </form>
-  );
-}
-
-function MetricGlossary() {
-  return (
-    <details className="vulnerability-glossary">
-      <summary>Как читать показатели: уязвимости, findings и хосты</summary>
-      <div className="vulnerability-glossary__grid">
-        <article>
-          <strong>Уязвимость</strong>
-          <p>
-            Уникальный тип проблемы, объединённый по идентификатору, CVE или
-            названию. Одна уязвимость может встречаться на многих хостах.
-          </p>
-        </article>
-        <article>
-          <strong>Finding</strong>
-          <p>
-            Конкретное обнаружение уязвимости на хосте и объекте — например, в
-            пакете или компоненте. На одном хосте может быть несколько findings
-            одной уязвимости.
-          </p>
-        </article>
-        <article>
-          <strong>Затронутый хост</strong>
-          <p>
-            Уникальный актив, где есть хотя бы один finding выбранной
-            уязвимости. Поэтому хостов обычно не больше, чем findings.
-          </p>
-        </article>
-        <article>
-          <strong>Паспорт</strong>
-          <p>
-            Справочная карточка с описанием, критичностью, CVSS, CVE и способом
-            устранения. Паспорт дополняет finding, но не заменяет список хостов.
-          </p>
-        </article>
-      </div>
-    </details>
   );
 }
 
@@ -1071,14 +1022,7 @@ function RiskTrendSection({ query, periodDays, onPeriodChange }) {
     <section className="risk-trend" aria-labelledby="risk-trend-title">
       <header className="risk-trend__header">
         <div>
-          <span className="vulnerability-section-heading__eyebrow">
-            История локального среза
-          </span>
           <h3 id="risk-trend-title">Динамика риска</h3>
-          <p>
-            Агрегаты по всем сохранённым карточкам. Фильтры текущего среза ниже
-            не изменяют исторический график.
-          </p>
         </div>
         <div
           className="risk-trend__periods"
@@ -1100,7 +1044,7 @@ function RiskTrendSection({ query, periodDays, onPeriodChange }) {
       </header>
 
       {query.isPending ? (
-        <LoadingState label="Загружаю историю риска…" />
+        <LoadingState label="Загрузка…" />
       ) : query.isError ? (
         <QueryError
           title="Не удалось загрузить историю риска"
@@ -1304,14 +1248,14 @@ function SeveritySnapshot({ point }) {
                   className={`risk-trend__severity-dot risk-trend__severity-dot--${severityClass(row.severity)}`}
                 />
                 <strong>{severityLabel(row.severity)}</strong>
-                <span>{formatCount(row.findings)} findings</span>
+                <span>{formatCount(row.findings)} находок</span>
                 <small>{formatCount(row.affected_hosts)} хостов</small>
               </li>
             ))}
           </ul>
         </>
       ) : (
-        <EmptyState>В последнем снимке нет findings.</EmptyState>
+        <EmptyState>Находок нет.</EmptyState>
       )}
     </article>
   );
@@ -1330,7 +1274,7 @@ function TrendTable({ rows }) {
             <tr>
               <th>Период</th>
               <th>Хосты</th>
-              <th>Findings</th>
+              <th>Находки</th>
               <th>Уязвимости</th>
               <th>Critical</th>
               <th>High</th>
@@ -1396,7 +1340,7 @@ function trendCoverageComplete(point) {
 function formatTrendDelta(delta) {
   if (delta === null) return "Нет предыдущей точки";
   if (!delta) return "Без изменений";
-  return `${delta > 0 ? "+" : "−"}${formatCount(Math.abs(delta))} к прошлой точке`;
+  return `${delta > 0 ? "+" : "−"}${formatCount(Math.abs(delta))}`;
 }
 
 function formatTrendDate(value) {
@@ -1427,7 +1371,7 @@ function DashboardContext({ summary }) {
         <strong>{source}</strong>
       </div>
       <div>
-        <span>Карточки с findings</span>
+        <span>Карточки с находками</span>
         <strong>
           {formatCount(coverage.cards_with_findings)} из{" "}
           {formatCount(coverage.cards_total)} · {coveragePercent}%
@@ -1443,8 +1387,8 @@ function DashboardContext({ summary }) {
         <span>Полнота</span>
         <strong>
           {coverage.complete === false
-            ? `Нижняя оценка · групп: ${formatCount(coverage.truncated_groups)}`
-            : "Группы не усечены"}
+            ? `Данные неполные · групп: ${formatCount(coverage.truncated_groups)}`
+            : "Данные полные"}
         </strong>
       </div>
     </section>
@@ -1461,16 +1405,15 @@ function KpiGrid({ totals }) {
     {
       label: "Высокий риск",
       value: totals.high_risk_hosts,
-      note: "хостов с Critical / High",
+      note: "критические и высокие",
       tone: "danger",
     },
-    { label: "Findings", value: totals.findings, note: "обнаружений" },
+    { label: "Находки", value: totals.findings },
   ];
   const secondaryCards = [
     {
       label: "Уникальные уязвимости",
       value: totals.unique_vulnerabilities,
-      note: "по выбранным фильтрам",
     },
     {
       label: "Уникальные CVE",
@@ -1497,7 +1440,6 @@ function KpiGrid({ totals }) {
       <Disclosure
         className="vulnerability-kpi-more"
         title="Дополнительные показатели"
-        description="Уникальные записи и данные без оценки"
       >
         <section className="vulnerability-kpi-grid">
           {secondaryCards.map((card) => (
@@ -1547,7 +1489,7 @@ function SeverityBreakdown({ rows, selectedSeverity, onSelect }) {
                 </span>
                 <span className="ranking-row__content">
                   <strong>{severityLabel(severity)}</strong>
-                  <span>{formatCount(row.findings)} findings</span>
+                  <span>{formatCount(row.findings)} находок</span>
                   <small>{formatCount(row.affected_hosts)} хостов</small>
                 </span>
               </button>
@@ -1599,7 +1541,7 @@ function TopVulnerabilities({ rows, selectedSelector, onSelect }) {
                     </span>
                     <small>
                       {formatCount(row.affected_hosts)} хостов ·{" "}
-                      {formatCount(row.findings)} findings
+                      {formatCount(row.findings)} находок
                       {row.passports?.length ? " · есть паспорт" : ""}
                     </small>
                   </span>
@@ -1695,16 +1637,9 @@ function TrendingVulnerabilities({
   return (
     <section
       className="trending-vulnerabilities"
-      aria-labelledby="trending-vulnerabilities-title"
+      aria-label="Трендовые уязвимости"
     >
       <div className="trending-vulnerabilities__heading">
-        <div>
-          <h3 id="trending-vulnerabilities-title">Трендовые уязвимости</h3>
-          <p>
-            Паспорта, отмеченные как трендовые, с разделением по месту
-            обнаружения
-          </p>
-        </div>
         <div className="trending-vulnerabilities__tools">
           <div
             className="trending-vulnerabilities__contexts"
@@ -1734,7 +1669,7 @@ function TrendingVulnerabilities({
       </div>
 
       {query.isPending ? (
-        <LoadingState label="Загружаю трендовые уязвимости…" />
+        <LoadingState label="Загрузка…" />
       ) : query.isError ? (
         <QueryError
           title="Не удалось загрузить трендовые уязвимости"
@@ -1963,7 +1898,7 @@ function VulnerabilityTable({
                 onSort={onSort}
                 initialDirection="desc"
               >
-                Findings
+                Находки
               </SortableHeader>
               <SortableHeader
                 column="last_seen"
@@ -1980,7 +1915,7 @@ function VulnerabilityTable({
             {pending ? (
               <tr>
                 <td colSpan={9} className="empty-cell">
-                  Загружаю уязвимости…
+                  Загрузка…
                 </td>
               </tr>
             ) : rows.length ? (
@@ -2125,9 +2060,6 @@ function HostDrilldown({
     <section className="host-drilldown" aria-labelledby="host-drilldown-title">
       <div className="vulnerability-section-heading">
         <div>
-          <span className="vulnerability-section-heading__eyebrow">
-            Drill-down · {formatCount(total)} хостов
-          </span>
           <h3 id="host-drilldown-title" ref={headingRef} tabIndex="-1">
             Хосты с уязвимостью «{label}»
           </h3>
@@ -2170,7 +2102,7 @@ function HostDrilldown({
           <strong>{formatCount(selected.affected_hosts ?? total)}</strong>
         </article>
         <article>
-          <span>Findings</span>
+          <span>Находки</span>
           <strong>{formatCount(selected.findings)}</strong>
         </article>
         <article>
@@ -2215,7 +2147,7 @@ function HostDrilldown({
                 onSort={onSort}
                 initialDirection="desc"
               >
-                Findings
+                Находки
               </SortableHeader>
               <th>Объекты</th>
               <th>Тип</th>
@@ -2235,7 +2167,7 @@ function HostDrilldown({
             {pending ? (
               <tr>
                 <td colSpan={11} className="empty-cell">
-                  Загружаю хосты…
+                  Загрузка…
                 </td>
               </tr>
             ) : rows.length ? (
@@ -2332,7 +2264,6 @@ function HostFindingModal({
       <article className="host-finding-card">
         <header>
           <div>
-            <span>Конкретная находка</span>
             <h3>{vulnerabilityLabel(selected)}</h3>
             <p>
               {hostLabel(row)} ·{" "}
@@ -2354,7 +2285,7 @@ function HostFindingModal({
             <strong>{formatScore(row.max_cvss ?? row.cvss_score)}</strong>
           </div>
           <div>
-            <span>Findings на хосте</span>
+            <span>Находки на хосте</span>
             <strong>{formatCount(row.finding_count)}</strong>
           </div>
           <div>
@@ -2413,7 +2344,7 @@ function HostFindingModal({
             className="button secondary"
             href={`/asset-cards?asset=${encodeURIComponent(row.asset_id)}`}
           >
-            Карточка хоста
+            Карточка актива
           </a>
           {canReadRemediation && remediation?.case_id ? (
             <a
@@ -2433,7 +2364,7 @@ function HostFindingModal({
         </div>
         {!canManageRemediation ? (
           <small className="host-finding-card__permission">
-            Для запуска устранения требуется право remediation.manage.
+            Нет прав на устранение.
           </small>
         ) : null}
       </article>
@@ -2583,18 +2514,6 @@ function resultTotal(data, rows) {
   return Number(data?.total ?? rows.length) || 0;
 }
 
-function severityClass(value) {
-  return ["critical", "high", "medium", "low"].includes(value) ? value : "none";
-}
-
-function severityLabel(value) {
-  return (
-    SEVERITY_LABELS[String(value || "none").toLowerCase()] ||
-    value ||
-    "Не указана"
-  );
-}
-
 function filterSeverity(value) {
   const normalized = String(value || "").toLowerCase();
   return ["empty", "unknown", "unrated"].includes(normalized)
@@ -2645,21 +2564,7 @@ function cardLabel(card) {
   return secondary ? `${primary} · ${secondary}` : primary;
 }
 
-function remediationStatusLabel(status) {
-  return (
-    {
-      open: "Открыта",
-      in_progress: "В работе",
-      risk_accepted: "Риск принят",
-      false_positive: "Ложное срабатывание",
-      resolved: "Устранена",
-      missing: "Не создана",
-    }[status || "missing"] || status
-  );
-}
-
 function remediationStartLabel(status) {
-  if (status === "open") return "Взять в работу";
   if (["risk_accepted", "false_positive"].includes(status)) {
     return "Возобновить устранение";
   }
@@ -2825,14 +2730,6 @@ function formatCalendarDate(value) {
   return Number.isNaN(date.getTime())
     ? String(value)
     : date.toLocaleDateString("ru-RU");
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? String(value)
-    : date.toLocaleString("ru-RU");
 }
 
 function barWidth(value, maximum) {

@@ -101,69 +101,8 @@ html[data-theme="dark"] body {
   letter-spacing: -0.02em;
 }
 
-.topbar__eyebrow {
-  display: none;
-}
-
-.topbar__next,
-.topbar__next:hover {
-  border-radius: 6px;
-  color: var(--bg);
-  background: var(--text);
-  font-weight: 500;
-  transform: none;
-}
-
-.topbar__next:hover {
-  opacity: 0.88;
-}
-
-html[data-theme="dark"] .topbar__next,
-html[data-theme="dark"] .topbar__next:hover {
-  color: var(--text-on-accent);
-  background: var(--accent);
-}
-
 .status-chip--ok {
   color: var(--green);
-}
-
-.workflow-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 28px;
-  border-block: 0;
-  border-bottom: 1px solid var(--line);
-  padding: 0;
-}
-
-.workflow-step,
-.workflow-step--active {
-  justify-content: flex-start;
-  margin-bottom: -1px;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 10px 0;
-  background: transparent;
-}
-
-.workflow-step--active {
-  border-bottom-color: var(--text);
-  color: var(--text);
-}
-
-.workflow-step--active .workflow-step__number,
-.workflow-step--complete .workflow-step__number,
-.workflow-step__number {
-  width: auto;
-  flex-basis: auto;
-  color: inherit;
-  background: transparent;
-}
-
-.workflow-step__copy strong {
-  font-size: 13px;
-  font-weight: 500;
 }
 
 .card,
@@ -209,4 +148,175 @@ html[data-theme="dark"] input:focus-visible,
 html[data-theme="dark"] select:focus-visible,
 html[data-theme="dark"] textarea:focus-visible {
   outline-color: var(--accent);
+}
+
+/* A busy button keeps its label and shows a spinner in front of it. */
+.button__spinner {
+  display: inline-block;
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.45em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.12em;
+  animation: button-spin 0.8s linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button__spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* A panel without its own title only carries actions for the page heading. */
+.panel__header--actions {
+  justify-content: flex-end;
+}
+
+/* Toasts float over the page so it does not jump and they stay in view. */
+.alerts {
+  position: fixed;
+  z-index: 50;
+  top: 16px;
+  right: 16px;
+  width: min(420px, calc(100vw - 32px));
+  margin: 0;
+}
+
+.alert {
+  box-shadow: var(--shadow-popover);
+}
+
+/* "Ещё" groups tools and administration under short subheadings. */
+.nav-more .nav-group + .nav-group {
+  margin-top: 8px;
+}
+
+.nav-group__label {
+  display: block;
+  padding: 6px 10px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* The connection chip is the way to the connection settings. */
+.status-chip--link {
+  color: var(--orange);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.status-chip--link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .topbar h1 {
+    font-size: 22px;
+  }
+
+  .topbar__actions {
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .topbar__actions .global-search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* On phones the chip shrinks to its dot; the name stays for screen readers. */
+  .status-chip {
+    order: 0;
+    gap: 0;
+    padding: 8px;
+    font-size: 0;
+  }
+
+  .status-chip span {
+    width: 8px;
+    height: 8px;
+  }
+
+  .account-menu > summary {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* One-line notes next to the control they explain. */
+.vm-launch-note,
+.field-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selection-count {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.asset-group-predicate {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+/* Bulk actions appear in one row only while something is selected. */
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 12px;
+}
+
+/* The file input stays reachable from the keyboard while the label looks like a button. */
+.upload-button input.visually-hidden {
+  position: absolute;
+  display: block;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.upload-button {
+  position: relative;
+}
+
+.upload-button:focus-within {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.toggle--danger span {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.report-downloads,
+.export-run {
+  align-items: center;
 }

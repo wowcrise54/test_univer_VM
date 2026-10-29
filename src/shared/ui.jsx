@@ -149,7 +149,8 @@ export function Button({
       aria-busy={busy ? "true" : undefined}
       onClick={handleClick}
     >
-      {busy ? "Выполняю..." : children}
+      {busy ? <span className="button__spinner" aria-hidden="true" /> : null}
+      {children}
     </button>
   );
 }
@@ -176,26 +177,41 @@ export function Toggle({ label, checked, onChange }) {
   );
 }
 
+/**
+ * A panel without a title belongs to the page heading: it only renders its
+ * actions row and is labelled by the workspace H1.
+ */
 export function Panel({
   id,
-  eyebrow,
   title,
-  description,
   action,
   children,
   className = "",
   ...props
 }) {
+  const labelledBy =
+    !title && !props["aria-label"] && !props["aria-labelledby"]
+      ? { "aria-labelledby": "workspace-title" }
+      : {};
   return (
-    <section id={id} className={`panel ${className}`} {...props}>
-      <div className="panel__header">
-        <div>
-          {eyebrow ? <div className="section-number">{eyebrow}</div> : null}
-          <h2>{title}</h2>
-          {description ? <p>{description}</p> : null}
+    <section
+      id={id}
+      className={`panel ${className}`}
+      {...labelledBy}
+      {...props}
+    >
+      {title || action ? (
+        <div
+          className={`panel__header${title ? "" : " panel__header--actions"}`}
+        >
+          {title ? (
+            <div>
+              <h2>{title}</h2>
+            </div>
+          ) : null}
+          {action ? <div className="panel__action">{action}</div> : null}
         </div>
-        {action ? <div className="panel__action">{action}</div> : null}
-      </div>
+      ) : null}
       {children}
     </section>
   );
@@ -203,7 +219,6 @@ export function Panel({
 
 export function Disclosure({
   title,
-  description,
   meta,
   defaultOpen = false,
   children,
@@ -226,7 +241,6 @@ export function Disclosure({
       <summary>
         <span className="disclosure__label">
           <strong>{title}</strong>
-          {description ? <small>{description}</small> : null}
         </span>
         {meta ? <span className="disclosure__meta">{meta}</span> : null}
         <span className="disclosure__chevron" aria-hidden="true">
@@ -276,7 +290,7 @@ export function ConfirmDialog({
   impact = [],
   confirmLabel = "Подтвердить",
   requireText = "",
-  requireHint = "чтобы подтвердить изменение MP VM",
+  requireHint = "для подтверждения",
   busy,
   onConfirm,
   onClose,
@@ -305,12 +319,11 @@ export function ConfirmDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={descriptionId}
+        aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
       >
-        <span className="confirm-dialog__eyebrow">Подтверждение действия</span>
         <h2 id={titleId}>{title}</h2>
-        <p id={descriptionId}>{description}</p>
+        {description ? <p id={descriptionId}>{description}</p> : null}
         {impact.length ? (
           <ul>
             {impact.map((item) => (

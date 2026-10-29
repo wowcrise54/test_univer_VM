@@ -113,13 +113,13 @@ export function formToPayload(form) {
 export function presetFormProblems(form) {
   const problems = [];
   if (!form.name.trim()) problems.push("Укажите название пресета.");
-  if (!form.scope_id) problems.push("Выберите область (scope).");
+  if (!form.scope_id) problems.push("Выберите инфраструктуру.");
   if (!form.profile_id) problems.push("Выберите профиль сканирования.");
   if (!form.role_ids.length) problems.push("Выберите хотя бы одну роль.");
   if (!form.allowed_asset_groups.length)
     problems.push("Добавьте хотя бы одну разрешённую группу активов.");
   if (form.host_discovery_enabled && !form.host_discovery_profile_id)
-    problems.push("Выберите профиль HostDiscovery.");
+    problems.push("Выберите профиль обнаружения хостов.");
   if (!/^[+-]\d{2}:\d{2}$/.test(form.time_zone.trim()))
     problems.push("Часовой пояс задаётся в формате +05:00.");
   return problems;

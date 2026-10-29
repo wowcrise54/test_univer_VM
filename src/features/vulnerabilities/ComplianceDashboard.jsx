@@ -4,6 +4,26 @@ import { formatCount } from "../../shared/format.js";
 import { Button } from "../../shared/ui.jsx";
 import { useComplianceDashboard } from "./useComplianceDashboard.js";
 
+const freshnessLabel = (value) =>
+  ({
+    stale: "Скан устарел",
+    missing_scan_date: "Нет даты сканирования",
+    fresh: "Свежий",
+  })[value] ||
+  value ||
+  "—";
+
+// Scan dates may arrive without a time; show them as calendar dates.
+const scanDate = (value) => {
+  if (!value) return "—";
+  const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (plain) return `${plain[3]}.${plain[2]}.${plain[1]}`;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString("ru-RU");
+};
+
 const today = () => new Date().toISOString().slice(0, 10);
 const categoryLabel = (value) =>
   ({
@@ -65,11 +85,6 @@ export function ComplianceDashboard({ enabled, showAlert }) {
       <header className="compliance-toolbar">
         <div>
           <h3 id="compliance-title">Контроль критических уязвимостей</h3>
-          <p>
-            {scope === "internet"
-              ? "Активы в диапазоне 10.255.0.0/16"
-              : "Пользовательские устройства и серверы по типу актива"}
-          </p>
         </div>
         <div className="compliance-actions">
           <div
@@ -80,6 +95,7 @@ export function ComplianceDashboard({ enabled, showAlert }) {
             <button
               type="button"
               className={scope === "internet" ? "is-active" : ""}
+              title="Активы в диапазоне 10.255.0.0/16"
               onClick={() => setScope("internet")}
             >
               Внешний контур
@@ -121,7 +137,7 @@ export function ComplianceDashboard({ enabled, showAlert }) {
         </div>
       ) : pending ? (
         <div className="vulnerability-loading" role="status">
-          Загружаю контрольный срез…
+          Загрузка…
         </div>
       ) : (
         <>
@@ -134,7 +150,7 @@ export function ComplianceDashboard({ enabled, showAlert }) {
               critical
             />
             <Metric
-              label="Не соответствует свежести"
+              label="Скан старше 30 дней"
               count={summary.stale_assets}
               warning
             />
@@ -156,13 +172,13 @@ export function ComplianceDashboard({ enabled, showAlert }) {
               row.ip_address,
               row.asset_type,
               categoryLabel(row.asset_category),
-              row.scan_at,
+              scanDate(row.scan_at),
               row.cve || row.vulnerability_id,
               row.cvss_score,
             ])}
           />
           <ReportTable
-            title="Не соответствует требованиям по свежести"
+            title="Скан старше 30 дней"
             empty="Все активы имеют результаты сканирования не старше 30 дней."
             headers={[
               "Актив",
@@ -178,9 +194,9 @@ export function ComplianceDashboard({ enabled, showAlert }) {
               row.ip_address,
               row.asset_type,
               categoryLabel(row.asset_category),
-              row.scan_at,
+              scanDate(row.scan_at),
               row.age_days,
-              row.freshness_reason,
+              freshnessLabel(row.freshness_reason),
             ])}
           />
         </>

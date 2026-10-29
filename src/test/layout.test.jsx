@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { AlertStack, Sidebar, Topbar, WorkflowRail } from "../app/layout.jsx";
+import {
+  AlertStack,
+  Sidebar,
+  SystemBanner,
+  Topbar,
+} from "../app/layout.jsx";
 import {
   normalizeRoutePath,
   routeById,
@@ -37,7 +42,7 @@ describe("guided application shell", () => {
     );
 
     expect(
-      screen.getByRole("link", { name: "VM Management" }),
+      screen.getByRole("link", { name: "Обзор" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "Уязвимости" }),
@@ -55,6 +60,12 @@ describe("guided application shell", () => {
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Активы" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Инструменты" })).toContainElement(
+      screen.getByRole("link", { name: "Задачи" }),
+    );
+    expect(
+      screen.queryByRole("group", { name: "Администрирование" }),
     ).not.toBeInTheDocument();
   });
 
@@ -76,21 +87,7 @@ describe("guided application shell", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the active stage and navigates directly between stages", () => {
-    const navigate = vi.fn();
-    render(<WorkflowRail activeRouteId="tasks" onNavigate={navigate} />);
-
-    expect(screen.getByRole("button", { name: /Сканирование/ })).toHaveClass(
-      "workflow-step--active",
-    );
-    expect(screen.getByRole("button", { name: /Обзор/ })).toHaveClass(
-      "workflow-step--complete",
-    );
-    fireEvent.click(screen.getByRole("button", { name: /Отчётность/ }));
-    expect(navigate).toHaveBeenCalledWith("/export");
-  });
-
-  it("offers connection setup before route-specific actions", () => {
+  it("turns the missing connection status into a link for managers", () => {
     const navigate = vi.fn();
     render(
       <Topbar
@@ -101,11 +98,41 @@ describe("guided application shell", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Настроить подключение/ }),
-    );
+    fireEvent.click(screen.getByRole("link", { name: "Нет подключения" }));
     expect(navigate).toHaveBeenCalledWith("/connection");
-    expect(screen.getByText("Нет подключения")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /→/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the status without a link when connection cannot be managed", () => {
+    render(
+      <Topbar
+        session={{ connected: false }}
+        route={routeById("tasks")}
+        onNavigate={vi.fn()}
+        currentUser={{ permissions: ["connection.read"] }}
+      />,
+    );
+    expect(
+      screen.getByRole("status", { name: "Нет подключения" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Нет подключения" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows only the page title in the header", () => {
+    render(
+      <Topbar
+        session={{ connected: true }}
+        route={routeById("operations")}
+        onNavigate={vi.fn()}
+        currentUser={{ permissions: [] }}
+      />,
+    );
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent("Операции");
+    expect(heading.closest("header").querySelector("p")).toBeNull();
+    expect(screen.queryByText("MP VM Client")).not.toBeInTheDocument();
   });
 
   it("shows the complete profile name without the username", () => {
@@ -150,6 +177,47 @@ describe("guided application shell", () => {
   });
 });
 
+describe("system banner", () => {
+  const mpvmMissing = {
+    state: "degraded",
+    components: {
+      database: { state: "ok" },
+      mpvm: { state: "degraded", message: "Нет активной сессии MP VM." },
+    },
+  };
+
+  it("stays hidden when only the MP VM session is missing", () => {
+    const { container } = render(
+      <SystemBanner status={mpvmMissing} onNavigate={vi.fn()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("reports a database outage and keeps the trace out of the message", () => {
+    render(
+      <SystemBanner
+        status={{
+          state: "down",
+          components: {
+            database: {
+              state: "down",
+              message: "PostgreSQL недоступен.",
+              trace_id: "trace-1",
+            },
+            mpvm: mpvmMissing.components.mpvm,
+          },
+        }}
+        onNavigate={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Часть системы недоступна")).toBeInTheDocument();
+    expect(screen.getByText("PostgreSQL недоступен.")).toBeInTheDocument();
+    expect(screen.getByText("Подробнее").closest("details")).not.toHaveAttribute(
+      "open",
+    );
+  });
+});
+
 describe("dismissible notifications", () => {
   it("removes one notification without clearing the other messages", () => {
     function Notifications() {
@@ -168,7 +236,7 @@ describe("dismissible notifications", () => {
     }
     render(<Notifications />);
     fireEvent.click(
-      screen.getAllByRole("button", { name: "Закрыть уведомление" })[0],
+      screen.getAllByRole("button", { name: "Закрыть" })[0],
     );
     expect(screen.queryByText("Сканирование запущено")).not.toBeInTheDocument();
     expect(screen.getByText("Архив готов")).toBeInTheDocument();

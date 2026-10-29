@@ -66,20 +66,23 @@ describe("VmManagementPage critical states", () => {
 
     const alert = await screen.findByText("MP VM недоступен");
     expect(alert.closest('[role="alert"]')).toBeInTheDocument();
-    expect(screen.getByText("Единый контур VM Management")).toBeInTheDocument();
+    expect(screen.getByText("Активные процессы")).toBeInTheDocument();
   });
 
   it("renders zero KPIs and empty queues while connected with no data", async () => {
     renderPage();
 
-    expect(await screen.findByText("Единый контур VM Management")).toBeInTheDocument();
+    expect(await screen.findByText("Активные процессы")).toBeInTheDocument();
     const kpis = screen.getAllByRole("article");
     expect(kpis).toHaveLength(4);
     for (const kpi of kpis) {
       expect(kpi.querySelector("strong")?.textContent).toBe("0");
     }
-    expect(screen.queryByText("MP VM не подключён")).not.toBeInTheDocument();
-    expect(await screen.findByText("По выбранным фильтрам действий нет.")).toBeInTheDocument();
+    expect(screen.queryByText(/Нет подключения к MP VM/)).not.toBeInTheDocument();
+    expect(await screen.findByText("Нет задач, требующих действия.")).toBeInTheDocument();
+    expect(screen.getByText("Процессов пока нет.")).toBeInTheDocument();
+    // One refresh button serves the whole page.
+    expect(screen.getAllByRole("button", { name: "Обновить" })).toHaveLength(1);
   });
 
   it("prompts to configure the connection when MP VM is not connected", async () => {
@@ -96,10 +99,7 @@ describe("VmManagementPage critical states", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("MP VM не подключён")).toBeInTheDocument();
-    expect(
-      screen.getByText("Для запуска сканирования установите рабочую сессию."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Нет подключения к MP VM/)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Задача MP VM" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Проверить перед запуском" })).toBeDisabled();
   });

@@ -42,7 +42,6 @@ export function SortableHeader({
       <button
         aria-label={sortActionLabel}
         className={`sortable-header${active ? " is-active" : ""}`}
-        title={sortActionLabel}
         type="button"
         onClick={() => onSort(column, initialDirection)}
       >

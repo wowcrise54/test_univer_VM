@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { operationKindLabel, operationStatusLabel } from "../shared/labels.js";
+import { formatDate } from "../shared/format.js";
 import { createPortal } from "react-dom";
 import { api, createIdempotencyKey, downloadApiFile } from "../api/client.js";
 import {
@@ -174,7 +176,7 @@ export function OperationsPage({
   const clearHistory = () => {
     if (
       !window.confirm(
-        "Скрыть завершённую историю операций? Записи и хронология останутся сохранены для аудита. Активные операции не будут затронуты.",
+        "Скрыть завершённые операции? Активные не затронутся.",
       )
     ) {
       return;
@@ -251,8 +253,6 @@ export function OperationsPage({
     <>
       <Panel
         id="operations"
-        title="Центр операций"
-        description="Активные задания, ошибки и восстановление в одном списке."
         action={
           <div className="operation-panel-actions">
             {currentUser?.permissions?.includes("operations.clear") ? (
@@ -261,7 +261,7 @@ export function OperationsPage({
                 busy={busy.clearOperationHistory}
                 onClick={clearHistory}
               >
-                Очистить историю
+                Скрыть завершённые
               </Button>
             ) : null}
             <Button
@@ -301,8 +301,53 @@ export function OperationsPage({
             aria-label="Поиск операций"
             value={filters.q}
             onChange={(event) => changeFilter("q", event.target.value)}
-            placeholder="Поиск по объекту, operation ID или сообщению"
+            placeholder="Поиск"
           />
+          <select
+            aria-label="Статус операции"
+            value={filters.status}
+            onChange={(event) => changeFilter("status", event.target.value)}
+          >
+            <option value="">Все статусы</option>
+            {[
+              "queued",
+              "running",
+              "cancelling",
+              "recovering",
+              "completed",
+              "completed_with_errors",
+              "failed",
+              "cancelled",
+              "interrupted",
+              "needs_attention",
+            ].map((status) => (
+              <option value={status} key={status}>
+                {operationStatusLabel(status)}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Тип операции"
+            value={filters.kind}
+            onChange={(event) => changeFilter("kind", event.target.value)}
+          >
+            <option value="">Все типы</option>
+            {[
+              "scan_postprocess",
+              "asset_card_build",
+              "asset_card_bulk_refresh",
+              "asset_search_reindex",
+              "passport_detail_sync",
+              "pdql_export",
+              "asset_removal",
+              "task_delete",
+              "automation_run",
+            ].map((kind) => (
+              <option value={kind} key={kind}>
+                {operationKindLabel(kind)}
+              </option>
+            ))}
+          </select>
           {filters.q || activeFilterCount ? (
             <Button variant="ghost" onClick={clearFilters}>
               Сбросить
@@ -310,60 +355,7 @@ export function OperationsPage({
           ) : null}
         </div>
 
-        <Disclosure
-          title="Фильтры и представления"
-          description="Статус, тип и сохранённые наборы"
-          meta={
-            activeFilterCount ? `Активно: ${activeFilterCount}` : "Без фильтров"
-          }
-        >
-          <div className="operation-filter-grid">
-            <select
-              aria-label="Статус операции"
-              value={filters.status}
-              onChange={(event) => changeFilter("status", event.target.value)}
-            >
-              <option value="">Все статусы</option>
-              {[
-                "queued",
-                "running",
-                "cancelling",
-                "recovering",
-                "completed",
-                "completed_with_errors",
-                "failed",
-                "cancelled",
-                "interrupted",
-                "needs_attention",
-              ].map((status) => (
-                <option value={status} key={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Тип операции"
-              value={filters.kind}
-              onChange={(event) => changeFilter("kind", event.target.value)}
-            >
-              <option value="">Все типы</option>
-              {[
-                "scan_postprocess",
-                "asset_card_build",
-                "asset_card_bulk_refresh",
-                "asset_search_reindex",
-                "passport_detail_sync",
-                "pdql_export",
-                "asset_removal",
-                "task_delete",
-                "automation_run",
-              ].map((kind) => (
-                <option value={kind} key={kind}>
-                  {kindLabel(kind)}
-                </option>
-              ))}
-            </select>
-          </div>
+        <Disclosure title="Сохранённые представления">
           <div className="saved-view-row">
             <select
               aria-label="Сохранённое представление"
@@ -462,11 +454,11 @@ export function OperationsPage({
                       <span
                         className={`operation-status operation-status--${operation.status}`}
                       >
-                        {statusLabel(operation.status)}
+                        {operationStatusLabel(operation.status)}
                       </span>
                     </td>
                     <td>
-                      <strong>{kindLabel(operation.kind)}</strong>
+                      <strong>{operationKindLabel(operation.kind)}</strong>
                       <small>{operation.message || operation.stage}</small>
                       <code title={operation.operation_id}>
                         {shortId(operation.operation_id)}
@@ -483,7 +475,7 @@ export function OperationsPage({
                       <div
                         className="operation-progress"
                         role="progressbar"
-                        aria-label={`Прогресс ${kindLabel(operation.kind)}`}
+                        aria-label={`Прогресс ${operationKindLabel(operation.kind)}`}
                         aria-valuemin="0"
                         aria-valuemax="100"
                         aria-valuenow={operation.progress_percent || 0}
@@ -545,7 +537,9 @@ export function OperationsPage({
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-cell">
-                    Операции с такими фильтрами не найдены.
+                    {filters.q || activeFilterCount
+                      ? "Операции с такими фильтрами не найдены."
+                      : "Операций пока нет."}
                   </td>
                 </tr>
               )}
@@ -553,6 +547,7 @@ export function OperationsPage({
           </table>
         </div>
 
+        {total > PAGE_SIZE || offset > 0 ? (
         <nav className="operation-pagination" aria-label="Страницы операций">
           <Button
             variant="secondary"
@@ -572,6 +567,7 @@ export function OperationsPage({
             Далее
           </Button>
         </nav>
+        ) : null}
       </Panel>
       {selected ? (
         <OperationDetail
@@ -638,7 +634,7 @@ function OperationDetail({
       >
         <header>
           <div>
-            <span>{kindLabel(operation.kind)}</span>
+            <span>{operationKindLabel(operation.kind)}</span>
             <h2 id="operation-detail-title">
               {operation.subject?.label || operation.operation_id}
             </h2>
@@ -650,7 +646,7 @@ function OperationDetail({
         <div className="operation-detail-grid" aria-live="polite">
           <div>
             <span>Статус</span>
-            <strong>{statusLabel(operation.status)}</strong>
+            <strong>{operationStatusLabel(operation.status)}</strong>
           </div>
           <div>
             <span>Этап</span>
@@ -730,7 +726,6 @@ function OperationDetail({
         ) : null}
         <Disclosure
           title="Хронология"
-          description="Этапы и изменения состояния"
           meta={`${(operation.events || []).length} событий`}
           defaultOpen={ACTIVE_STATUSES.has(operation.status)}
         >
@@ -740,7 +735,7 @@ function OperationDetail({
                 <span />
                 <p>
                   <strong>
-                    {statusLabel(event.status)} · {event.stage}
+                    {operationStatusLabel(event.status)} · {event.stage}
                   </strong>
                   <small>
                     {event.message || "Изменение состояния"} ·{" "}
@@ -751,10 +746,8 @@ function OperationDetail({
             ))}
           </section>
         </Disclosure>
-        <Disclosure
-          title="Технические данные"
-          description="Trace ID, параметры и результат"
-        >
+        {currentUser?.permissions?.includes("diagnostics.read") ? (
+        <Disclosure title="Технические данные">
           {operation.trace_id ? (
             <div className="trace-box">
               <span>Trace ID</span>
@@ -773,51 +766,13 @@ function OperationDetail({
             )}
           </pre>
         </Disclosure>
+        ) : null}
       </aside>
     </div>
   );
   return typeof document === "undefined"
     ? drawer
     : createPortal(drawer, document.body);
-}
-
-function kindLabel(kind) {
-  return (
-    {
-      automation_run: "Runbook автоматизации",
-      scan_postprocess: "Постобработка сканирования",
-      asset_card_build: "Карточка актива",
-      asset_card_bulk_refresh: "Массовое обновление карточек",
-      asset_search_reindex: "Индексация карточек",
-      passport_detail_sync: "Детали паспортов",
-      pdql_export: "PDQL экспорт",
-      asset_removal: "Удаление активов",
-      task_delete: "Удаление задачи MP VM",
-    }[kind] || kind
-  );
-}
-
-function statusLabel(status) {
-  return (
-    {
-      queued: "В очереди",
-      running: "Выполняется",
-      cancelling: "Останавливается",
-      recovering: "Восстанавливается",
-      completed: "Завершено",
-      completed_with_errors: "С ошибками",
-      failed: "Ошибка",
-      cancelled: "Отменено",
-      interrupted: "Прервано",
-      needs_attention: "Требует внимания",
-    }[status] || status
-  );
-}
-
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
 function shortId(value) {

@@ -33,6 +33,13 @@ function renderPanel({ busy = {}, downloadError = null, currentUser } = {}) {
   return { runBusy, showAlert };
 }
 
+// Reports are the first, always open section of the page.
+function openReports() {
+  expect(
+    screen.getByRole("heading", { name: "Отчёты по уязвимостям" }),
+  ).toBeInTheDocument();
+}
+
 describe("ExportPanel vulnerability reports", () => {
   beforeEach(() => {
     api.mockReset();
@@ -48,19 +55,43 @@ describe("ExportPanel vulnerability reports", () => {
     });
 
     expect(screen.queryByText("PDQL запрос")).not.toBeInTheDocument();
-    expect(screen.queryByText("Параметры экспорта")).not.toBeInTheDocument();
+    expect(screen.queryByText("PDQL-выгрузка")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Выполнить экспорт" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Импорт")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Отчётность по уязвимостям").length).toBe(2);
+    openReports();
+  });
+
+  it("keeps MP VM deletion off by default and names the destructive run", async () => {
+    api.mockResolvedValue({ imported: 1 });
+    renderPanel({
+      currentUser: {
+        permissions: ["imports_exports.read", "imports_exports.manage"],
+      },
+    });
+    const toggle = screen.getByLabelText(
+      "Удалить активы в MP VM после сохранения",
+    );
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Выполнить экспорт" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/exports/pdql",
+        expect.objectContaining({
+          body: expect.stringContaining('"delete_assets_after_export":false'),
+        }),
+      ),
+    );
+    fireEvent.click(toggle);
+    expect(
+      screen.getByRole("button", { name: "Экспортировать и удалить из MP VM" }),
+    ).toBeInTheDocument();
   });
 
   it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
+    openReports();
     fireEvent.change(
       screen.getByRole("textbox", { name: "Asset ID для отчёта" }),
       {
@@ -113,9 +144,7 @@ describe("ExportPanel vulnerability reports", () => {
     const { showAlert } = renderPanel({
       downloadError: new Error("Не удалось сформировать отчёт"),
     });
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
+    openReports();
     fireEvent.click(
       screen.getByRole("button", { name: "Скачать уязвимости ОС" }),
     );
@@ -129,11 +158,12 @@ describe("ExportPanel vulnerability reports", () => {
 
   it("keeps OS, software, and Docker download states independent", () => {
     renderPanel({ busy: { "report-os": true } });
-    fireEvent.click(
-      screen.getByText("CSV и Excel по сохранённым данным").closest("summary"),
-    );
-    const busyButton = screen.getByRole("button", { name: /Выполняю/ });
+    openReports();
+    const busyButton = screen.getByRole("button", {
+      name: "Скачать уязвимости ОС",
+    });
     expect(busyButton).toBeDisabled();
+    expect(busyButton).toHaveAttribute("aria-busy", "true");
     expect(
       screen.getByRole("button", { name: "Скачать уязвимости ПО" }),
     ).toBeEnabled();
@@ -241,7 +271,7 @@ describe("VulnerabilityPassportsPanel read-only view", () => {
     );
 
     expect(screen.queryByText("PDQL запрос")).not.toBeInTheDocument();
-    expect(screen.queryByText("Параметры PDQL")).not.toBeInTheDocument();
+    expect(screen.queryByText("Загрузить из MP VM")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Выполнить PDQL" }),
     ).not.toBeInTheDocument();

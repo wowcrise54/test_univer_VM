@@ -6,7 +6,7 @@ const EDIT_DRAFT_KEY = `${DRAFT_KEY}.edits`;
 function initialForm(utcOffset) {
   return {
     name: "",
-    description: "Windows audit vulnerability collection",
+    description: "",
     scope_id: "",
     profile_id: "",
     credential_id: "",

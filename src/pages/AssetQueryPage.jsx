@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatDate } from "../shared/format.js";
 import { api } from "../api/client.js";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
 import { ActionMenu, Button, Disclosure, Panel } from "../shared/ui.jsx";
@@ -17,7 +18,7 @@ const RESULT_COLUMNS = [
   ["ip_address", "IP-адрес"],
   ["fqdn", "FQDN"],
   ["os_name", "ОС"],
-  ["last_seen", "Свежесть"],
+  ["last_seen", "Обновлено"],
 ];
 const RESULT_COLUMN_KEYS = new Set(RESULT_COLUMNS.map(([key]) => key));
 
@@ -379,8 +380,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
   return (
     <Panel
       id="asset-query"
-      title="Выборки по карточкам активов"
-      description="Найдите активы по данным локальных карточек."
       action={
         <Button
           busy={busy.assetQuery}
@@ -415,18 +414,10 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
               ))}
             </select>
           </label>
-          <div className="asset-query-presets__local">
-            <strong>Локальное выполнение</strong>
-            <span>
-              Данные группируются локально по полям сохранённых карточек
-              активов. Запрос в MP VM не отправляется.
-            </span>
-          </div>
         </div>
         {activePreset ? (
           <div className="asset-query-preset-card">
             <div>
-              <span className="asset-query-preset-card__eyebrow">Пресет</span>
               <h3>{activePreset.name}</h3>
               <p>{activePreset.description}</p>
             </div>
@@ -473,10 +464,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
                 </Button>
               </div>
             ) : null}
-            <details className="asset-query-preset-pdql">
-              <summary>Исходный PDQL</summary>
-              <code>{activePreset.pdql}</code>
-            </details>
             <PresetResult
               preset={activePreset}
               result={presetResult}
@@ -533,18 +520,14 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         ) : null}
       </section>
 
-      <div
-        className={`index-coverage ${incomplete ? "index-coverage--warning" : ""}`}
-      >
-        <strong>
-          {coverage.indexed_cards || 0} из {coverage.total_cards || 0}
-        </strong>
-        <span>
-          {incomplete
-            ? "Карточки ещё индексируются: результат может быть неполным."
-            : "Все локальные карточки готовы к поиску."}
-        </span>
-      </div>
+      {incomplete ? (
+        <div className="index-coverage index-coverage--warning">
+          <strong>
+            {coverage.indexed_cards || 0} из {coverage.total_cards || 0}
+          </strong>
+          <span>Карточки ещё индексируются — результат может быть неполным.</span>
+        </div>
+      ) : null}
 
       <section className="asset-query-view" aria-label="Управление выборкой">
         <div className="asset-query-view__picker">
@@ -579,7 +562,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
         </div>
         <Disclosure
           title="Сохранение выборки"
-          description="Название и управление текущим набором условий"
           meta={
             activeView
               ? activeViewChanged
@@ -657,7 +639,6 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
 
       <Disclosure
         title="Настройки результата"
-        description="Колонки и экспорт"
         meta={`${columns.length} колонок`}
       >
         <div className="asset-query-result-options">
@@ -739,7 +720,7 @@ export function AssetQueryPage({ runBusy, busy, showAlert }) {
                   onSort={changeSort}
                   initialDirection="desc"
                 >
-                  Свежесть
+                  Обновлено
                 </SortableHeader>
               ) : null}
               <th>Совпадение</th>
@@ -1003,7 +984,7 @@ function PresetAssets({
               <th>Вендор</th>
               <th>Архитектура</th>
               <th>Путь установки</th></> : null}
-              <th>Свежесть</th>
+              <th>Обновлено</th>
             </tr>
           </thead>
           <tbody>
@@ -1499,10 +1480,6 @@ function valuePlaceholder(field, operator) {
 function friendlyFieldName(path) {
   const value = String(path || "");
   return value.split(".").filter(Boolean).at(-1) || "Параметр";
-}
-
-function formatDate(value) {
-  return value ? new Date(value).toLocaleString("ru-RU") : "—";
 }
 
 function contentDispositionFilename(value) {

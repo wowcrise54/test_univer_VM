@@ -116,7 +116,7 @@ describe("engineer scans page", () => {
     fireEvent.click(within(dialog).getByLabelText("Root / Branch"));
 
     fireEvent.change(
-      within(dialog).getByLabelText("Название (необязательно)"),
+      within(dialog).getByLabelText("Название"),
       {
         target: { value: "Night" },
       },
@@ -198,7 +198,7 @@ describe("engineer scans page", () => {
     expect(screen.getByText("Сканирование идёт")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Удалить" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "История" }));
-    expect(await screen.findByText("finished")).toBeInTheDocument();
+    expect(await screen.findByText("Завершён")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -217,7 +217,7 @@ describe("engineer scans page", () => {
       />,
     );
     expect(
-      await screen.findByText(/Для вашей роли пока нет пресетов/),
+      await screen.findByText(/Для вашей роли пресетов нет/),
     ).toBeInTheDocument();
   });
 
@@ -313,7 +313,7 @@ describe("preset form helpers", () => {
         ...emptyPresetForm(),
         host_discovery_enabled: true,
       }),
-    ).toContain("Выберите профиль HostDiscovery.");
+    ).toContain("Выберите профиль обнаружения хостов.");
   });
 
   it("turns a template draft into a new preset form", () => {
@@ -459,7 +459,7 @@ describe("preset administration", () => {
       target: { value: "New" },
     });
     await screen.findByRole("option", { name: "Main" });
-    fireEvent.change(screen.getByLabelText("Область (scope)"), {
+    fireEvent.change(screen.getByLabelText("Инфраструктура"), {
       target: { value: "scope-1" },
     });
     fireEvent.change(screen.getByLabelText("Профиль сканирования"), {
@@ -499,7 +499,7 @@ describe("preset administration", () => {
         name: "Рекомендации PT по использованию профилей",
       }),
     ).toHaveAttribute("href", TEMPLATES.docs_url);
-    expect(screen.getByText("без лимита")).toBeInTheDocument();
+    expect(screen.getAllByText("Проверка доступности").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("ОС"), {
       target: { value: "linux" },
@@ -533,7 +533,7 @@ describe("preset administration", () => {
     expect(screen.getByDisplayValue("[Audit][LNX]")).toBeInTheDocument();
     expect(
       screen.getByRole("checkbox", {
-        name: "Проверять доступность хостов (precheck) перед сканированием",
+        name: "Проверять доступность хостов перед сканированием",
       }),
     ).toBeChecked();
     expect(showAlert).toHaveBeenCalledWith(
@@ -556,7 +556,7 @@ describe("preset administration", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("checkbox", {
-        name: "Проверять доступность хостов (precheck) перед сканированием",
+        name: "Проверять доступность хостов перед сканированием",
       }),
     ).not.toBeChecked();
     expect(showAlert).toHaveBeenLastCalledWith(
