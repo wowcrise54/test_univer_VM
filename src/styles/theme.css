@@ -82,16 +82,13 @@ html[data-theme="dark"] .sidebar {
 html[data-theme="dark"] .brand__mark,
 html[data-theme="dark"] .nav a.is-active,
 html[data-theme="dark"] .nav a.is-active .nav-icon,
-html[data-theme="dark"] .nav-more summary:hover,
-html[data-theme="dark"] .workflow-step--active {
+html[data-theme="dark"] .nav-more summary:hover {
   color: var(--blue);
 }
 
 html[data-theme="dark"] .nav a,
 html[data-theme="dark"] .nav-more summary,
 html[data-theme="dark"] .nav-icon,
-html[data-theme="dark"] .workflow-step,
-html[data-theme="dark"] .topbar__eyebrow,
 html[data-theme="dark"] .topbar p,
 html[data-theme="dark"] .field span,
 html[data-theme="dark"] .profile-select label,
@@ -100,30 +97,13 @@ html[data-theme="dark"] .toggle {
 }
 
 html[data-theme="dark"] .nav a:hover,
-html[data-theme="dark"] .workflow-step:hover,
 html[data-theme="dark"] .nav-more summary:hover {
   color: var(--text);
   background: var(--bg-hover);
 }
 
-html[data-theme="dark"] .nav a.is-active,
-html[data-theme="dark"] .workflow-step--active {
+html[data-theme="dark"] .nav a.is-active {
   background: var(--blue-soft);
-}
-
-html[data-theme="dark"] .workflow-step__number {
-  color: var(--muted);
-  background: var(--panel-muted);
-}
-
-html[data-theme="dark"] .workflow-step--active .workflow-step__number {
-  color: var(--text-on-accent);
-  background: var(--blue);
-}
-
-html[data-theme="dark"] .workflow-step--complete .workflow-step__number {
-  color: var(--success);
-  background: transparent;
 }
 
 html[data-theme="dark"] .nav-badge {
@@ -131,8 +111,7 @@ html[data-theme="dark"] .nav-badge {
   background: var(--accent-soft);
 }
 
-html[data-theme="dark"] .nav-more,
-html[data-theme="dark"] .workflow-rail {
+html[data-theme="dark"] .nav-more {
   border-color: var(--line);
 }
 
@@ -303,7 +282,6 @@ html[data-theme="dark"] .vm-kpi,
 html[data-theme="dark"] .vm-campaign-grid > button,
 html[data-theme="dark"] .vulnerability-insight-card,
 html[data-theme="dark"] .trending-vulnerabilities,
-html[data-theme="dark"] .vulnerability-glossary__grid article,
 html[data-theme="dark"] .host-drilldown__summary article,
 html[data-theme="dark"] .resolution-card,
 html[data-theme="dark"] .risk-trend__card,
@@ -357,7 +335,6 @@ html[data-theme="dark"] .asset-view-bar,
 html[data-theme="dark"] .options-card,
 html[data-theme="dark"] .asset-card-builder,
 html[data-theme="dark"] .settings-card,
-html[data-theme="dark"] .vulnerability-glossary,
 html[data-theme="dark"] .automation-config-advanced,
 html[data-theme="dark"] .automation-step__behavior,
 html[data-theme="dark"] .automation-condition,
@@ -542,10 +519,8 @@ html[data-theme="dark"] .button.tiny-danger {
 
 html[data-theme="dark"] .button.primary,
 html[data-theme="dark"] .button.success,
-html[data-theme="dark"] .topbar__next,
 html[data-theme="dark"] .automation-step__number,
-html[data-theme="dark"] .sortable-header.is-active .sortable-header__icon,
-html[data-theme="dark"] .vm-launch-steps li.is-active span {
+html[data-theme="dark"] .sortable-header.is-active .sortable-header__icon {
   color: var(--text-on-accent);
 }
 
@@ -664,7 +639,6 @@ html[data-theme="dark"] .auth-mode button.is-active {
 
 html[data-theme="dark"] .auth-warning,
 html[data-theme="dark"] .sidebar-warning,
-html[data-theme="dark"] .vm-callout--warning,
 html[data-theme="dark"] .vm-preflight--blocked,
 html[data-theme="dark"] .vulnerability-context--warning,
 html[data-theme="dark"] .vulnerability-context--warning > div,
@@ -763,7 +737,6 @@ html[data-theme="dark"] .automation-danger-option.is-enabled {
 }
 
 html[data-theme="dark"] .vm-progress,
-html[data-theme="dark"] .vm-launch-steps li span,
 html[data-theme="dark"] .attention-summary span,
 html[data-theme="dark"] .vm-status,
 html[data-theme="dark"] .trending-vulnerability__context,
@@ -885,8 +858,7 @@ html[data-theme="dark"] .passport-job--interrupted {
   background: var(--danger-soft);
 }
 
-html[data-theme="dark"] .job-result-status--success,
-html[data-theme="dark"] .vm-launch-steps li.is-complete {
+html[data-theme="dark"] .job-result-status--success {
   color: var(--success);
 }
 
@@ -896,7 +868,6 @@ html[data-theme="dark"] .danger-text {
   color: var(--danger);
 }
 
-html[data-theme="dark"] .vulnerability-glossary__grid article,
 html[data-theme="dark"] .host-finding-card__facts > div,
 html[data-theme="dark"] .host-finding-card__details section,
 html[data-theme="dark"] .host-finding-card__remediation,
@@ -1149,7 +1120,6 @@ html[data-theme="dark"] .query-rule {
   background: var(--panel);
 }
 
-html[data-theme="dark"] .asset-query-presets__local,
 html[data-theme="dark"] .asset-query-view label > span,
 html[data-theme="dark"] .asset-query-preset-search label > span,
 html[data-theme="dark"] .asset-query-preset-card p,
@@ -1158,21 +1128,14 @@ html[data-theme="dark"] .query-rule__meta {
   color: var(--muted);
 }
 
-html[data-theme="dark"] .asset-query-presets__local strong {
-  color: var(--success);
-}
-
 html[data-theme="dark"] .passport-table td code {
   color: var(--muted);
 }
 
-html[data-theme="dark"] .asset-query-preset-card__eyebrow,
-html[data-theme="dark"] .asset-query-preset-pdql summary,
 html[data-theme="dark"] .query-evidence-details summary {
   color: var(--accent);
 }
 
-html[data-theme="dark"] .asset-query-preset-pdql,
 html[data-theme="dark"] .asset-query-preset-assets {
   border-color: var(--line);
 }
@@ -1449,11 +1412,6 @@ html[data-theme="dark"] .nav-scroll-hint {
 html[data-theme="dark"] .theme-toggle svg {
   width: 18px;
   height: 18px;
-}
-
-html[data-theme="dark"] .vm-launch-steps li.is-active span {
-  color: var(--text-on-accent);
-  background: var(--accent);
 }
 
 html[data-theme="dark"] :is(.task-folder-item small, .task-table-empty) {

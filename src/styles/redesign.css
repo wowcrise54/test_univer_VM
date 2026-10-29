@@ -101,69 +101,8 @@ html[data-theme="dark"] body {
   letter-spacing: -0.02em;
 }
 
-.topbar__eyebrow {
-  display: none;
-}
-
-.topbar__next,
-.topbar__next:hover {
-  border-radius: 6px;
-  color: var(--bg);
-  background: var(--text);
-  font-weight: 500;
-  transform: none;
-}
-
-.topbar__next:hover {
-  opacity: 0.88;
-}
-
-html[data-theme="dark"] .topbar__next,
-html[data-theme="dark"] .topbar__next:hover {
-  color: var(--text-on-accent);
-  background: var(--accent);
-}
-
 .status-chip--ok {
   color: var(--green);
-}
-
-.workflow-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 28px;
-  border-block: 0;
-  border-bottom: 1px solid var(--line);
-  padding: 0;
-}
-
-.workflow-step,
-.workflow-step--active {
-  justify-content: flex-start;
-  margin-bottom: -1px;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 10px 0;
-  background: transparent;
-}
-
-.workflow-step--active {
-  border-bottom-color: var(--text);
-  color: var(--text);
-}
-
-.workflow-step--active .workflow-step__number,
-.workflow-step--complete .workflow-step__number,
-.workflow-step__number {
-  width: auto;
-  flex-basis: auto;
-  color: inherit;
-  background: transparent;
-}
-
-.workflow-step__copy strong {
-  font-size: 13px;
-  font-weight: 500;
 }
 
 .card,

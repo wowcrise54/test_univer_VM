@@ -661,46 +661,6 @@ button.ranking-row:focus-visible,
   padding-top: 20px;
 }
 
-.vulnerability-glossary {
-  margin: 14px 0 18px;
-  border: 1px solid #d9e5f2;
-  border-radius: 14px;
-  background: #f8fbff;
-}
-
-.vulnerability-glossary summary {
-  padding: 12px 14px;
-  color: #174ea6;
-  font-size: 13px;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.vulnerability-glossary__grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  border-top: 1px solid #d9e5f2;
-  background: #d9e5f2;
-}
-
-.vulnerability-glossary__grid article {
-  padding: 13px 14px;
-  background: #fff;
-}
-
-.vulnerability-glossary__grid strong {
-  color: var(--text);
-  font-size: 12px;
-}
-
-.vulnerability-glossary__grid p {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .host-drilldown {
   scroll-margin-top: 18px;
 }
@@ -1694,7 +1654,6 @@ button.ranking-row:focus-visible,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .vulnerability-glossary__grid,
   .host-drilldown__summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1718,7 +1677,6 @@ button.ranking-row:focus-visible,
   .vulnerability-context,
   .vulnerability-kpi-grid,
   .vulnerability-insights-grid,
-  .vulnerability-glossary__grid,
   .host-drilldown__summary,
   .risk-trend__deltas,
   .resolution-kpi-grid,

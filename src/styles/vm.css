@@ -36,27 +36,7 @@
   background: #f4f8ff;
   color: var(--blue);
 }
-.vm-callout {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px 18px;
-  margin-bottom: 18px;
-  border-radius: var(--radius-md);
-  background: var(--blue-soft);
-}
-.vm-callout div {
-  display: grid;
-  gap: 3px;
-}
-.vm-callout span {
-  color: var(--muted);
-}
-.vm-callout--warning {
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-}
+
 .vm-stage-links {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -136,47 +116,7 @@
 .vm-launch-options input[type="checkbox"] {
   width: auto;
 }
-.vm-launch-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 0 0 16px;
-  padding: 0;
-  list-style: none;
-}
-.vm-launch-steps li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 800;
-}
-.vm-launch-steps li span {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: #e2e8f0;
-  color: #64748b;
-  font-size: 0.7rem;
-}
-.vm-launch-steps li.is-active {
-  color: #1d4ed8;
-}
-.vm-launch-steps li.is-active span {
-  color: #fff;
-  background: var(--blue);
-}
-.vm-launch-steps li.is-complete {
-  color: #166534;
-}
-.vm-launch-steps li.is-complete span {
-  color: #fff;
-  background: var(--green);
-}
+
 .vm-task-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -539,17 +479,7 @@
   color: var(--muted);
   font-size: 0.78rem;
 }
-.vm-next-action {
-  display: grid;
-  gap: 3px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--blue-soft);
-}
-.vm-next-action span {
-  color: #475569;
-  font-size: 0.82rem;
-}
+
 .vm-step-list {
   display: grid;
   gap: 0;
