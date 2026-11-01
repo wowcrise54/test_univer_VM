@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app import main
+from app.services import asset_card_builder
 
 
 class FakeSession:
@@ -325,7 +326,7 @@ class AssetCardExecutorTests(unittest.TestCase):
     def test_one_hundred_requests_complete_under_two_seconds_with_limit_ten(self):
         SlowClient.active = 0
         SlowClient.max_active = 0
-        with patch.object(main, "MpVmClient", SlowClient):
+        with patch.object(asset_card_builder, "MpVmClient", SlowClient):
             executor = main.AssetCardRequestExecutor(
                 auth=SimpleNamespace(api_url="https://fixture"),
                 token="token",
@@ -348,7 +349,7 @@ class AssetCardExecutorTests(unittest.TestCase):
 
     def test_cancellation_stops_scheduling_after_the_current_bounded_batch(self):
         cancel_event = threading.Event()
-        with patch.object(main, "MpVmClient", SlowClient):
+        with patch.object(asset_card_builder, "MpVmClient", SlowClient):
             executor = main.AssetCardRequestExecutor(
                 auth=SimpleNamespace(api_url="https://fixture"),
                 token="token",
@@ -380,7 +381,7 @@ class AssetCardExecutorTests(unittest.TestCase):
             max_depth=8,
         )
         main.ASSET_METADATA_CACHE.clear()
-        with patch.object(main, "MpVmClient", FixtureAssetClient):
+        with patch.object(asset_card_builder, "MpVmClient", FixtureAssetClient):
             executor = main.AssetCardRequestExecutor(auth=auth, token="token", workers=10)
             try:
                 parallel = main.build_asset_card(
@@ -416,7 +417,7 @@ class AssetCardExecutorTests(unittest.TestCase):
 
         main.ASSET_METADATA_CACHE.clear()
         ParallelTreeAssetClient.reset_metrics()
-        with patch.object(main, "MpVmClient", ParallelTreeAssetClient):
+        with patch.object(asset_card_builder, "MpVmClient", ParallelTreeAssetClient):
             executor = main.AssetCardRequestExecutor(auth=auth, token="token", workers=8)
             parallel_started = time.perf_counter()
             try:
@@ -444,7 +445,7 @@ class AssetCardExecutorTests(unittest.TestCase):
     def test_child_request_failure_becomes_a_warning_and_other_groups_finish(self):
         auth = SimpleNamespace(api_url="https://fixture")
         main.ASSET_METADATA_CACHE.clear()
-        with patch.object(main, "MpVmClient", PartialFailureAssetClient):
+        with patch.object(asset_card_builder, "MpVmClient", PartialFailureAssetClient):
             executor = main.AssetCardRequestExecutor(auth=auth, token="token", workers=10)
             try:
                 card = main.build_asset_card(

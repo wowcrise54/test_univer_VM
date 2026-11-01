@@ -12,6 +12,7 @@ from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from app import main, mpvm_client
+from app.services import scan_postprocess
 
 
 class FakeSession:
@@ -638,11 +639,11 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         with (
             patch.object(main, "MpVmClient", RemovalClient),
             patch.object(
-                main,
+                scan_postprocess,
                 "refresh_docker_containers_for_scanned_asset",
                 side_effect=lambda **_kwargs: events.append("docker_refreshed"),
             ),
-            patch.object(main, "build_scanned_asset_card", side_effect=lambda **_kwargs: events.append("card_saved") or "build-1"),
+            patch.object(scan_postprocess, "build_scanned_asset_card", side_effect=lambda **_kwargs: events.append("card_saved") or "build-1"),
             patch.object(main.db, "update_scan_postprocess_item", return_value=item),
             patch.object(main.db, "delete_asset_card") as local_delete,
         ):
@@ -662,8 +663,8 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         updates: list[dict] = []
         with (
             patch.object(main, "MpVmClient", return_value=client),
-            patch.object(main, "refresh_docker_containers_for_scanned_asset"),
-            patch.object(main, "build_scanned_asset_card", side_effect=RuntimeError("build failed")),
+            patch.object(scan_postprocess, "refresh_docker_containers_for_scanned_asset"),
+            patch.object(scan_postprocess, "build_scanned_asset_card", side_effect=RuntimeError("build failed")),
             patch.object(main.db, "update_scan_postprocess_item", side_effect=lambda _id, **kwargs: updates.append(kwargs) or item),
         ):
             main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
@@ -691,7 +692,7 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         updates: list[dict] = []
         with (
             patch.object(main, "MpVmClient", return_value=client),
-            patch.object(main, "build_scanned_asset_card") as build,
+            patch.object(scan_postprocess, "build_scanned_asset_card") as build,
             patch.object(main.db, "update_scan_postprocess_item", side_effect=lambda _id, **kwargs: updates.append(kwargs) or item),
         ):
             main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
@@ -955,7 +956,7 @@ class StartScannerTaskApiTests(unittest.TestCase):
             patch.object(main, "schedule_scan_postprocess", side_effect=lambda run_id, run_auth, run_token: main.run_scan_postprocess(run_id=run_id, auth=run_auth, token=run_token)),
             patch.object(main, "MpVmClient", OrchestratorClient),
             patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
-            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 1, "total_job_count": 1, "asset_count": 1}),
+            patch.object(scan_postprocess, "monitor_successful_scan_jobs", return_value={"successful_job_count": 1, "total_job_count": 1, "asset_count": 1}),
             patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 1, "failed_count": 0}),
             patch.object(main.db, "update_scan_postprocess_run"),
             patch.object(main.db, "finish_scan_postprocess_run") as finish_run,
@@ -1577,7 +1578,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         client.delete_scanner_task.return_value = {"id": "refresh-task-1", "mode": "delete_v3"}
         with (
             patch.object(main.db, "delete_scan_task") as delete_local,
-            patch.object(main, "update_refresh_task_cleanup_message") as update_message,
+            patch.object(scan_postprocess, "update_refresh_task_cleanup_message") as update_message,
         ):
             deleted = main.cleanup_auto_created_refresh_task(
                 client=client,
@@ -1596,7 +1597,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         client.delete_scanner_task.side_effect = mpvm_client.MpVmApiError("temporary failure")
         with (
             patch.object(main.db, "delete_scan_task") as delete_local,
-            patch.object(main, "update_refresh_task_cleanup_message") as update_message,
+            patch.object(scan_postprocess, "update_refresh_task_cleanup_message") as update_message,
         ):
             deleted = main.cleanup_auto_created_refresh_task(
                 client=client,
@@ -1630,11 +1631,11 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         with (
             patch.object(main, "MpVmClient", RefreshClient),
             patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
-            patch.object(main, "monitor_successful_scan_jobs", side_effect=lambda **_kwargs: events.append("card_actions") or {"successful_job_count": 1, "total_job_count": 1}),
+            patch.object(scan_postprocess, "monitor_successful_scan_jobs", side_effect=lambda **_kwargs: events.append("card_actions") or {"successful_job_count": 1, "total_job_count": 1}),
             patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 1, "failed_count": 0}),
-            patch.object(main, "finalize_asset_card_refresh", return_value={"previous_asset_id": "asset-old", "asset_id": "asset-new"}),
+            patch.object(scan_postprocess, "finalize_asset_card_refresh", return_value={"previous_asset_id": "asset-old", "asset_id": "asset-new"}),
             patch.object(main.db, "update_scan_task_status", side_effect=lambda *_args, **_kwargs: events.append("task_status")),
-            patch.object(main, "cleanup_auto_created_refresh_task", side_effect=lambda **_kwargs: events.append("task_deleted") or True),
+            patch.object(scan_postprocess, "cleanup_auto_created_refresh_task", side_effect=lambda **_kwargs: events.append("task_deleted") or True),
             patch.object(main.db, "finish_scan_postprocess_run", side_effect=lambda *_args, **_kwargs: events.append("terminal")),
             patch.object(main, "capture_vulnerability_snapshot", side_effect=lambda *_args, **_kwargs: events.append("snapshot")),
         ):
@@ -1657,7 +1658,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         with (
             patch.object(main, "MpVmClient", ScanClient),
             patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
-            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 0, "total_job_count": 2}),
+            patch.object(scan_postprocess, "monitor_successful_scan_jobs", return_value={"successful_job_count": 0, "total_job_count": 2}),
             patch.object(main.db, "update_scan_task_status") as update_task,
             patch.object(main.db, "finish_scan_postprocess_run") as finish,
         ):
@@ -1681,7 +1682,7 @@ class AssetCardRefreshScanTests(unittest.TestCase):
         with (
             patch.object(main, "MpVmClient", ScanClient),
             patch.object(main.db, "claim_scan_postprocess_run", return_value=claimed),
-            patch.object(main, "monitor_successful_scan_jobs", return_value={"successful_job_count": 2, "total_job_count": 2}),
+            patch.object(scan_postprocess, "monitor_successful_scan_jobs", return_value={"successful_job_count": 2, "total_job_count": 2}),
             patch.object(main.db, "refresh_scan_postprocess_counts", return_value={"completed_count": 0, "failed_count": 2}),
             patch.object(main.db, "update_scan_task_status") as update_task,
             patch.object(main.db, "finish_scan_postprocess_run") as finish,
@@ -1718,13 +1719,13 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
                 patch.object(main.db, "list_scan_postprocess_items", return_value=[]),
                 patch.object(main.db, "upsert_scan_postprocess_item", return_value=item),
                 patch.object(main.db, "update_scan_postprocess_run") as update_run,
-                patch.object(main, "resolve_scanned_target_once", return_value=([{
+                patch.object(scan_postprocess, "resolve_scanned_target_once", return_value=([{
                     "asset_id": "asset-1",
                     "target": "10.0.0.1",
                     "mp_job_id": "job-1",
                     "display_name": "Host 1",
                 }], "")),
-                patch.object(main, "process_scanned_asset_item") as process_item,
+                patch.object(scan_postprocess, "process_scanned_asset_item") as process_item,
                 patch.object(main.db, "refresh_scan_postprocess_counts"),
                 patch.object(main.time, "sleep"),
             ):
@@ -1783,8 +1784,8 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
                     side_effect=[RuntimeError("database unavailable"), item],
                 ) as upsert_item,
                 patch.object(main.db, "update_scan_postprocess_run"),
-                patch.object(main, "resolve_scanned_target_once", return_value=([asset], "")) as resolve_target,
-                patch.object(main, "process_scanned_asset_item") as process_item,
+                patch.object(scan_postprocess, "resolve_scanned_target_once", return_value=([asset], "")) as resolve_target,
+                patch.object(scan_postprocess, "process_scanned_asset_item") as process_item,
                 patch.object(main.db, "refresh_scan_postprocess_counts"),
                 patch.object(main.time, "sleep"),
             ):
@@ -1859,8 +1860,8 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             patch.object(main.db, "upsert_scan_postprocess_item", side_effect=save_item),
             patch.object(main.db, "update_scan_postprocess_run"),
             patch.object(main.db, "refresh_scan_postprocess_counts"),
-            patch.object(main, "resolve_scanned_target_once", side_effect=resolve_target),
-            patch.object(main, "process_scanned_asset_item"),
+            patch.object(scan_postprocess, "resolve_scanned_target_once", side_effect=resolve_target),
+            patch.object(scan_postprocess, "process_scanned_asset_item"),
         ):
             started = time.perf_counter()
             result = main.monitor_successful_scan_jobs(
@@ -1929,8 +1930,8 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             patch.object(main.db, "upsert_scan_postprocess_item", side_effect=save_item),
             patch.object(main.db, "update_scan_postprocess_run"),
             patch.object(main.db, "refresh_scan_postprocess_counts"),
-            patch.object(main, "resolve_scanned_target_once", return_value=(assets, "")),
-            patch.object(main, "process_scanned_asset_item", side_effect=process_item),
+            patch.object(scan_postprocess, "resolve_scanned_target_once", return_value=(assets, "")),
+            patch.object(scan_postprocess, "process_scanned_asset_item", side_effect=process_item),
         ):
             result = main.monitor_successful_scan_jobs(
                 client=client,

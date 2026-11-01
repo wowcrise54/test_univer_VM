@@ -285,3 +285,70 @@ def test_permissions_from_multiple_roles_are_used_as_a_union():
     ):
         response = TestClient(main.app).post("/api/operations/one/cancel")
     assert response.status_code == 200
+
+
+def test_audited_permissions_cover_writes_only_and_exist_in_route_map():
+    from app.api.permissions import ROUTE_PERMISSIONS
+
+    known = set(ROUTE_PERMISSIONS.values())
+    assert main.AUDITED_PERMISSIONS <= known
+    for (method, _path), permission in ROUTE_PERMISSIONS.items():
+        if permission in main.AUDITED_PERMISSIONS and method == "GET":
+            assert permission == "diagnostics.read", f"GET route would flood the audit log: {permission}"
+    assert {"tasks.execute", "operations.retry", "remediation.manage"} <= main.AUDITED_PERMISSIONS
+
+
+def test_lost_audit_event_is_kept_in_structured_log():
+    with (
+        patch.object(auth.db, "connect", side_effect=RuntimeError("db down")),
+        patch("app.diagnostics.log_exception") as log_exception,
+    ):
+        auth.audit_event(
+            request=None,
+            user=ADMIN,
+            event_type="critical_action",
+            decision="allow",
+            permission_key="tasks.execute",
+            target_type="api",
+            target_id="/api/scanner-tasks/1/start",
+        )
+
+    fields = log_exception.call_args.kwargs
+    assert log_exception.call_args.args == ("app", "audit.write_failed")
+    assert fields["audit_event_type"] == "critical_action"
+    assert fields["permission_key"] == "tasks.execute"
+    assert fields["actor_username"] == "admin"
+
+
+def _metrics_client(token: str, counters=None):
+    container = SimpleNamespace(
+        settings=SimpleNamespace(metrics_token=token),
+        database_recovery=SimpleNamespace(check=lambda: {"ready": True}),
+        session=SimpleNamespace(client=None, access_token=None),
+        repositories=SimpleNamespace(operations=SimpleNamespace(counters=lambda: counters or {})),
+    )
+    return TestClient(main.app), container
+
+
+def test_metrics_endpoint_is_disabled_without_token():
+    client, container = _metrics_client("")
+    with patch.object(main.app.state, "container", container):
+        assert client.get("/api/metrics").status_code == 404
+
+
+def test_metrics_endpoint_requires_matching_bearer_token_and_exposes_counters_only():
+    counters = {"active": 2, "attention": 1, "by_status": {"running": 2, 'fail"ed': 1}, "by_kind": {"scan": 3}}
+    client, container = _metrics_client("s3cret-token", counters)
+    with patch.object(main.app.state, "container", container):
+        assert client.get("/api/metrics").status_code == 401
+        assert client.get("/api/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        response = client.get("/api/metrics", headers={"Authorization": "Bearer s3cret-token"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "mpvm_database_ready 1" in response.text
+    assert "mpvm_session_connected 0" in response.text
+    assert "mpvm_operations_active 2" in response.text
+    assert 'mpvm_operations{status="running"} 2' in response.text
+    assert 'mpvm_operations{status="fail\\"ed"} 1' in response.text
+    assert "s3cret-token" not in response.text

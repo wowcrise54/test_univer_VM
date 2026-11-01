@@ -497,6 +497,22 @@ def audit_event(*,request:Request|None,user:dict[str,Any]|None,event_type:str,de
     except Exception:
         # Audit must never break the request, but a lost security event must be visible.
         logging.getLogger("mpvm.audit").warning("Не удалось записать событие аудита %s/%s", event_type, decision, exc_info=True)
+        # The database is the usual reason this fails, so keep the whole event in
+        # the JSONL log: the entry can be replayed into app_auth_audit_events.
+        from .diagnostics import log_exception
+
+        log_exception(
+            "app",
+            "audit.write_failed",
+            actor_user_id=(user or {}).get("id"),
+            actor_username=(user or {}).get("username"),
+            audit_event_type=event_type,
+            decision=decision,
+            permission_key=permission_key,
+            target_type=target_type,
+            target_id=target_id,
+            audit_details=details,
+        )
 
 
 def list_audit_events(limit:int=200,offset:int=0)->dict[str,Any]:
