@@ -1,1 +1,1 @@
-export { ConnectionPanel } from "../../panels.jsx";
+export { ConnectionPanel } from "./ConnectionPanel.jsx";

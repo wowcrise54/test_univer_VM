@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, createIdempotencyKey } from "../../api/client.js";
-import { TaskBuilderPanel } from "../../panels.jsx";
+import { TaskBuilderPanel } from "./TaskBuilderPanel.jsx";
 import { ActionMenu } from "../../shared/ui.jsx";
 
 const ALL_TASKS = "__all__";
