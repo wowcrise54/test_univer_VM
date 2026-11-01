@@ -13,6 +13,10 @@ class OperationsRepository:
     def summary(self) -> dict[str, Any]:
         return db.get_operations_summary(sync_sources=True)
 
+    def counters(self) -> dict[str, Any]:
+        """Read-only counters for metrics scraping: no source sync, no writes."""
+        return db.get_operations_summary(sync_sources=False)
+
     def get(self, operation_id: str) -> dict[str, Any] | None:
         return db.get_operation(operation_id, sync_sources=True)
 

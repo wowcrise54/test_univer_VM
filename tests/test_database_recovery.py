@@ -170,6 +170,30 @@ def test_concurrent_readiness_checks_do_not_duplicate_initialization():
     assert calls == ["initialized"]
 
 
+def test_check_during_running_check_reports_last_finished_result():
+    probing, finish = Event(), Event()
+    probes = 0
+
+    def probe():
+        nonlocal probes
+        probes += 1
+        if probes > 2:
+            probing.set()
+            assert finish.wait(5)
+        return True
+
+    recovery = coordinator(probe, [("bootstrap", lambda: None)])
+    assert recovery.check()["ready"] is True
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(recovery.check)
+        assert probing.wait(5)
+        concurrent = recovery.check()
+        finish.set()
+        assert running.result()["ready"] is True
+    assert concurrent["ready"] is True
+    assert concurrent["database_ready"] is True
+    assert "reason" not in concurrent
+
 @pytest.mark.parametrize("path", ["/api/live", "/api/ready"])
 def test_health_probes_are_public_and_sanitized(path):
     from fastapi.testclient import TestClient

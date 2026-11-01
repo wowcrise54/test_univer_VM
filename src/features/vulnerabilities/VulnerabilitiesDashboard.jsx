@@ -5,7 +5,7 @@ import {
   severityLabel,
 } from "../../shared/labels.js";
 import { api } from "../../api/client.js";
-import { PassportCard, PassportModal } from "../../panels.jsx";
+import { PassportCard, PassportModal } from "../passports/PassportCard.jsx";
 import { formatCount, formatDate } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
 import { Button, Disclosure, Field, Panel } from "../../shared/ui.jsx";

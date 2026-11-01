@@ -1,1 +1,1 @@
-export { VulnerabilityPassportsPanel } from "../../panels.jsx";
+export { VulnerabilityPassportsPanel } from "./VulnerabilityPassportsPanel.jsx";

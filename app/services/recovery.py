@@ -11,6 +11,8 @@ class DatabaseRecovery:
     Successful steps are checkpoints: a later outage must not interrupt active
     jobs or launch another scheduler. Failed steps must themselves be idempotent.
     A database connection alone never makes an unconfigured process ready.
+    A check that finds another one running answers with the last finished
+    result, so parallel status requests do not report a healthy database down.
     """
 
     def __init__(
@@ -26,12 +28,14 @@ class DatabaseRecovery:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._interval = interval_seconds
+        self._last: dict[str, Any] | None = None
 
     def configure(self, steps: Sequence[tuple[str, Callable[[], Any]]]) -> None:
         with self._lock:
             self._steps = tuple(steps)
             self._configured = True
             self._completed.clear()
+            self._last = None
 
     def check(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -39,7 +43,15 @@ class DatabaseRecovery:
             "schema_current": False, "recovery_complete": False,
         }
         if not self._lock.acquire(blocking=False):
-            return {**result, "reason": "recovery_in_progress"}
+            last = self._last
+            return dict(last) if last is not None else {**result, "reason": "recovery_in_progress"}
+        try:
+            self._last = self._run(result)
+            return dict(self._last)
+        finally:
+            self._lock.release()
+
+    def _run(self, result: dict[str, Any]) -> dict[str, Any]:
         try:
             result["schema_current"] = self._probe()
             result["database_ready"] = True
@@ -62,8 +74,6 @@ class DatabaseRecovery:
             # Reasons are types only; connection strings and raw errors stay out
             # of both public probes and protected status responses.
             return {**result, "ready": False, "reason": type(exc).__name__}
-        finally:
-            self._lock.release()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

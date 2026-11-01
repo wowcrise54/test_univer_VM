@@ -78,7 +78,7 @@ PostgreSQL — источник долговечного локального с
 
 [`MpVmClient`](../app/mpvm_client.py) — совместимый facade к transport/auth слоям в [`app/mpvm`](../app/mpvm). Он выполняет OAuth/access-token авторизацию и REST-вызовы для asset grid, scanner tasks/runs/jobs, групп активов, дерева и метаданных активов, уязвимостей, паспортов и операций удаления.
 
-HTTP session имеет явный timeout и retry adapter: до трёх повторов для connect/read/status ошибок, backoff `0.8`, статусы `429`, `500`, `502`, `503`, `504`, методы `GET`, `POST`, `PUT`, `DELETE`. Проверка TLS включена по умолчанию и управляется конфигурацией соединения.
+HTTP session имеет явный timeout и retry adapter: до трёх повторов для connect/read/status ошибок, backoff `0.8`, статусы `429`, `500`, `502`, `503`, `504`, только идемпотентные методы `GET`, `HEAD`, `OPTIONS` (`app/mpvm/transport.py`). Мутации (`POST`, `PUT`, `DELETE`) transport не повторяет: их повтор возможен только на уровне workflow, где есть ключ идемпотентности и сохранённый прогресс. Проверка TLS включена по умолчанию и управляется конфигурацией соединения.
 
 Сессия MP VM является общей процессной сессией backend, а не отдельной сессией каждого пользователя приложения. Она может быть создана из `MPVM_*` переменных при старте или через `/api/session/connect`.
 
@@ -144,9 +144,10 @@ SLA policy хранится в PostgreSQL. Просроченные risk accepta
 | Область | Основные пути | Назначение |
 |---|---|---|
 | Auth/RBAC | `/api/auth/*` | login/logout, users, roles, permissions, audit |
-| Состояние | `/api/health`, `/api/system/status`, `/api/defaults` | readiness/degraded state и runtime limits |
+| Состояние | `/api/live`, `/api/ready`, `/api/health`, `/api/system/status`, `/api/defaults` | `live` — процесс жив, не раскрывает конфигурацию; `ready` — `503`, пока PostgreSQL недоступна или восстановление не завершено, MP VM без сессии даёт `degraded`, но не `503`; `system/status` и runtime limits |
 | MP VM session | `/api/session/*`, `/api/mpvm/lookups` | подключение, отключение, справочники |
 | Scanner tasks | `/api/scanner-tasks/*`, `/api/mpvm/scanner-tasks/remote` | CRUD, validate, start/stop, результаты и postprocess |
+| Метрики | `/api/metrics` | Prometheus scrape по Bearer-токену `MPVM_METRICS_TOKEN`; без токена в конфигурации — `404` |
 | Operations | `/api/operations/*` | единый список, сводка, cancel, retry, diagnostics |
 | Assets/cards | `/api/assets/*`, `/api/asset-cards/*`, `/api/asset-card-query/*` | локальные findings, карточки, refresh и запросы |
 | Vulnerabilities | `/api/vulnerabilities/*`, `/api/vulnerability-passports/*` | аналитика, trends, passports и detail jobs |
@@ -201,7 +202,7 @@ PostgreSQL хранит status, stage, progress, request/result и ошибки.
 - локальный frontend/backend и status endpoint продолжают работать;
 - MP VM component получает `degraded`;
 - операции, требующие `require_mpvm`, завершаются структурированной ошибкой;
-- transport повторяет ограниченный набор временных HTTP/connect/read ошибок;
+- transport повторяет временные HTTP/connect/read ошибки только для `GET`/`HEAD`/`OPTIONS`;
 - polling имеет deadline и может best-effort остановить удалённую задачу по timeout.
 
 ### Частичный сбой фоновой работы

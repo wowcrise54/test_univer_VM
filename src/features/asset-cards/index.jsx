@@ -1,1 +1,1 @@
-export { AssetCardsPanel } from "../../panels.jsx";
+export { AssetCardsPanel } from "./AssetCardsPanel.jsx";

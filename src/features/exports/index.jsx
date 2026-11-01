@@ -1,1 +1,1 @@
-export { ExportPanel } from "../../panels.jsx";
+export { ExportPanel } from "./ExportPanel.jsx";
