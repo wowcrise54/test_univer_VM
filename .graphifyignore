@@ -1,0 +1,10 @@
+# Generated and runtime artifacts: not part of the application source
+output/
+exports/
+data/
+coverage/
+node_modules/
+app/static/
+*.csv
+*.pdf
+*.log
