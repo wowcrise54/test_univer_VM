@@ -134,3 +134,68 @@ def test_passport_os_family_follows_passport_text(test_db):
     with db.connect() as conn:
         conn.execute("UPDATE vulnerability_passports SET raw_detail_json = 'red hat advisory' WHERE internal_id = 'D'")
     assert family("D") == "rhel"
+
+
+def _links(conn):
+    return {
+        r["asset_vulnerability_id"]: r["passport_internal_id"]
+        for r in conn.execute("SELECT * FROM asset_card_vulnerability_passports").fetchall()
+    }
+
+
+def test_reconcile_limited_to_changed_passports_leaves_other_links_alone(test_db):
+    now = db.now_utc()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO asset_cards(asset_id,display_name,os_name,first_seen,last_seen) VALUES('a','a','Ubuntu 22.04',%s,%s)",
+            (now, now),
+        )
+        group_id = conn.execute(
+            """
+            INSERT INTO asset_card_vulnerability_groups(asset_id,source_type,collection_type,collection_id,group_order,updated_at)
+            VALUES('a','host','c','g1',0,%s) RETURNING id
+            """,
+            (now,),
+        ).fetchone()["id"]
+        _passport(conn, "OLD", "generic", ["CVE-1-1"], now)
+        _passport(conn, "OTHER", "other", ["CVE-9-9"], now)
+        changed = _finding(conn, "a", group_id, "i1", None, "CVE-1-1", now)
+        untouched = _finding(conn, "a", group_id, "i2", None, "CVE-9-9", now)
+        # A deliberately stale link: only a full relink would repair it.
+        conn.execute(
+            "INSERT INTO asset_card_vulnerability_passports VALUES (%s, 'OLD', 'stale', %s)", (untouched, now)
+        )
+        db.reconcile_asset_card_vulnerability_passport_links(conn, None, now, asset_id="a")
+        assert _links(conn) == {changed: "OLD", untouched: "OTHER"}
+        conn.execute(
+            "INSERT INTO asset_card_vulnerability_passports VALUES (%s, 'OLD', 'stale', %s) ON CONFLICT DO NOTHING", (untouched, now)
+        )
+        conn.execute("DELETE FROM asset_card_vulnerability_passports WHERE asset_vulnerability_id = %s", (untouched,))
+        conn.execute(
+            "INSERT INTO asset_card_vulnerability_passports VALUES (%s, 'OLD', 'stale', %s)", (untouched, now)
+        )
+        _passport(conn, "NEW", "ubuntu fix", ["CVE-1-1"], now, detail="ubuntu")
+        assert db.reconcile_asset_card_vulnerability_passport_links(conn, ["NEW"], now) == 1
+        links = _links(conn)
+    assert links[changed] == "NEW"
+    assert links[untouched] == "OLD"
+
+
+def test_reconcile_without_scope_relinks_every_asset_in_chunks(test_db, monkeypatch):
+    monkeypatch.setattr(db, "_RECONCILE_CHUNK_ASSETS", 1)
+    now = db.now_utc()
+    with db.connect() as conn:
+        _passport(conn, "P", "generic", ["CVE-1-1"], now)
+        findings = []
+        for asset in ("a", "b", "c"):
+            conn.execute("INSERT INTO asset_cards(asset_id,display_name,first_seen,last_seen) VALUES(%s,%s,%s,%s)", (asset, asset, now, now))
+            group_id = conn.execute(
+                """
+                INSERT INTO asset_card_vulnerability_groups(asset_id,source_type,collection_type,collection_id,group_order,updated_at)
+                VALUES(%s,'host','c','g',0,%s) RETURNING id
+                """,
+                (asset, now),
+            ).fetchone()["id"]
+            findings.append(_finding(conn, asset, group_id, f"i-{asset}", None, "CVE-1-1", now))
+        assert db.reconcile_asset_card_vulnerability_passport_links(conn, None, now) == 3
+        assert set(_links(conn)) == set(findings)
