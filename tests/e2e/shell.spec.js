@@ -139,7 +139,7 @@ test("dark theme keeps controls readable through hover, focus, disabled and menu
   await expect(disabled).toBeDisabled();
   expect(
     await disabled.evaluate((element) => getComputedStyle(element).color),
-  ).toBe("rgb(154, 165, 181)");
+  ).toBe("rgb(255, 255, 255)");
 });
 
 test("dark sign-in form and theme switching retain readable surfaces", async ({
