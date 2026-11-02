@@ -1,3 +1,4 @@
+import { messageLabel } from "../shared/labels.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDate } from "../shared/format.js";
 import { useRef, useState } from "react";
@@ -791,7 +792,7 @@ function NotificationsPanel({
               >
                 <div>
                   <strong>{item.title}</strong>
-                  <p>{item.message}</p>
+                  <p>{messageLabel(item.message)}</p>
                   <small>
                     {formatDate(item.created_at)} · {item.event_type}
                   </small>

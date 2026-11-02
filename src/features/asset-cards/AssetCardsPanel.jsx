@@ -1,3 +1,4 @@
+import { messageLabel } from "../../shared/labels.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, createIdempotencyKey } from "../../api/client.js";
 import { formatCount, splitTokens } from "../../shared/format.js";
@@ -1177,7 +1178,7 @@ export function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUse
                 >
                   <span style={{ width: `${progress}%` }} />
                 </div>
-                {job.message ? <small>{job.message}</small> : null}
+                {job.message ? <small>{messageLabel(job.message)}</small> : null}
               </div>
             );
           })}
@@ -1232,7 +1233,7 @@ export function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUse
           >
             <span style={{ width: `${assetCardJobProgress}%` }} />
           </div>
-          {assetCardJob.message ? <small>{assetCardJob.message}</small> : null}
+          {assetCardJob.message ? <small>{messageLabel(assetCardJob.message)}</small> : null}
         </section>
       ) : null}
 
@@ -1261,7 +1262,7 @@ export function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUse
             <div>
               <strong>Массовое обновление карточек активов</strong>
               <small>
-                {assetBulkRefreshOperation.message ||
+                {messageLabel(assetBulkRefreshOperation.message) ||
                   "Операция поставлена в очередь."}
               </small>
             </div>

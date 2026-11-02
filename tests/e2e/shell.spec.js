@@ -790,10 +790,10 @@ test("application shell keeps stable routes and navigation", async ({
   await page.goto("/connection");
   await expectRoute(page, "/connection");
 
-  await page.locator('.nav a[href="/operations"]').click();
+  await navigateFromSidebar(page, "/operations");
   await expectRoute(page, "/operations");
 
-  await page.locator('.nav a[href="/automations"]').click();
+  await navigateFromSidebar(page, "/automations");
   await expectRoute(page, "/automations");
   await expect(page.getByRole("tabpanel")).toBeVisible();
 });
@@ -987,22 +987,19 @@ test.describe("mobile shell", () => {
     await page.goto("/assets");
     await expectRoute(page, "/asset-cards");
 
-    const activeItem = page.locator('.nav a[aria-current="page"]');
-    await expect
-      .poll(() =>
-        activeItem.evaluate((element) => {
-          const scroller = element.closest(".nav");
-          const itemBox = element.getBoundingClientRect();
-          const scrollerBox = scroller.getBoundingClientRect();
-          return (
-            itemBox.left >= scrollerBox.left - 1 &&
-            itemBox.right <= scrollerBox.right + 1
-          );
-        }),
-      )
-      .toBe(true);
+    // The active secondary page lives in the "Ещё" dropdown, which stays shut
+    // until opened and must then fit inside the phone viewport.
+    const more = page.locator(".nav-more > summary");
+    await more.scrollIntoViewIfNeeded();
+    await more.click();
+    const activeItem = page.locator('.nav-more__panel a[aria-current="page"]');
+    await expect(activeItem).toBeVisible();
+    const panelBox = await page.locator(".nav-more__panel").boundingBox();
+    expect(panelBox.x).toBeGreaterThanOrEqual(0);
+    expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(360);
+    await page.keyboard.press("Escape");
 
-    await page.locator('.nav a[href="/operations"]').click();
+    await navigateFromSidebar(page, "/operations");
     await expectRoute(page, "/operations");
     await expect(page.locator(".operation-filters")).toBeVisible();
   });

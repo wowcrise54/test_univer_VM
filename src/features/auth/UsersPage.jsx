@@ -326,8 +326,8 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
                         >
                           Роли
                         </Button>
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
                           disabled={isSelf}
                           onClick={() =>
                             mutate(() =>
@@ -341,7 +341,7 @@ function UsersTab({ users, roles, form, setForm, currentUser, mutate }) {
                           }
                         >
                           {user.is_active ? "Отключить" : "Включить"}
-                        </button>
+                        </Button>
                         {!isSelf ? (
                           <Button
                             variant="tiny-danger"

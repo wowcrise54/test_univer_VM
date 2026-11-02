@@ -974,6 +974,7 @@ function FolderButton({
         type="button"
         className="task-folder-item__select"
         aria-current={active ? "page" : undefined}
+        title={label}
         onClick={onClick}
       >
         <span aria-hidden="true">▱</span>
