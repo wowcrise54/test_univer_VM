@@ -5,14 +5,14 @@ html[data-theme="dark"] {
   --bg-elevated: #242c38;
   --bg-input: var(--bg-primary);
   --bg-hover: #2b3543;
-  --text-primary: #dce1e8;
-  --text-secondary: #b0bac8;
-  --text-muted: #9aa5b5;
-  --text-on-accent: #171c24;
+  --text-primary: #ffffff;
+  --text-secondary: #ffffff;
+  --text-muted: #ffffff;
+  --text-on-accent: #ffffff;
   --border-primary: #323c4a;
   --border-control: #465468;
-  --accent: #88a2e8;
-  --accent-hover: #9ab1ef;
+  --accent: #4a68c9;
+  --accent-hover: #3f5bb8;
   --accent-soft: #29364c;
   --danger: #ed929c;
   --warning: #dcb779;
@@ -42,9 +42,9 @@ html[data-theme="dark"] {
   --green: var(--success);
   --orange: var(--warning);
   --red: var(--danger);
-  --operation-running-text: var(--accent);
-  --operation-success-text: var(--success);
-  --operation-error-text: var(--danger);
+  --operation-running-text: #ffffff;
+  --operation-success-text: #ffffff;
+  --operation-error-text: #ffffff;
   --task-empty-text: var(--text-muted);
   --shadow: 0 4px 12px rgb(0 0 0 / 18%);
   --shadow-surface: none;
@@ -1672,4 +1672,20 @@ html[data-theme="dark"]
     .action-menu > summary
   ) {
   border-radius: var(--radius-md);
+}
+
+/* Dark theme: all text is white, including status and accent-coloured text. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] body *:not(svg *) {
+  color: #ffffff !important;
+}
+
+html[data-theme="dark"] ::placeholder {
+  color: #ffffff !important;
+  opacity: 0.7;
+}
+
+/* All text is white, so disabled controls are told apart by dimming. */
+html[data-theme="dark"] :is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.55;
 }
