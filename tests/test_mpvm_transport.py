@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-import requests
+import warnings
 
-from app.mpvm.transport import build_retry_adapter
+import requests
+from urllib3.exceptions import InsecureRequestWarning
+
+from app.mpvm import transport
+from app.mpvm.transport import build_retry_adapter, build_session
 from app.mpvm_client import MpVmApiError, MpVmClient, compact_json_summary
 
 
@@ -62,3 +66,27 @@ def test_success_with_invalid_json_is_rejected_without_body_leak():
         assert "Cannot parse JSON" in str(exc)
     else:
         raise AssertionError("Expected invalid JSON error")
+
+
+def test_disabled_tls_verification_logs_once_and_silences_urllib3(monkeypatch):
+    events = []
+    monkeypatch.setattr(transport, "_TLS_WARNING_LOGGED", False)
+    monkeypatch.setattr(transport, "log_event", lambda *args, **kwargs: events.append(args[1]))
+
+    with warnings.catch_warnings():
+        build_session(verify_tls=False)
+        build_session(verify_tls=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.warn("unverified", InsecureRequestWarning)
+
+    assert events == ["tls.verification.disabled"]
+    assert not caught
+
+
+def test_enabled_tls_verification_logs_nothing(monkeypatch):
+    events = []
+    monkeypatch.setattr(transport, "_TLS_WARNING_LOGGED", False)
+    monkeypatch.setattr(transport, "log_event", lambda *args, **kwargs: events.append(args[1]))
+
+    assert build_session(verify_tls=True).verify is True
+    assert events == []

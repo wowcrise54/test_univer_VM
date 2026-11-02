@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+import logging
+import threading
+import warnings
+
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import InsecureRequestWarning
 from urllib3.util import Retry
 
-from ..diagnostics import DiagnosticSession
+from ..diagnostics import DiagnosticSession, log_event
+
+_TLS_WARNING_LOCK = threading.Lock()
+_TLS_WARNING_LOGGED = False
+
+
+def _note_tls_verification_disabled() -> None:
+    """Replace urllib3's per-request warning with one structured log record.
+
+    Disabled verification is a deliberate setting (MPVM_VERIFY_TLS=false), so a
+    warning on every request only buries real problems in the console.
+    """
+    global _TLS_WARNING_LOGGED
+    warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+    with _TLS_WARNING_LOCK:
+        if _TLS_WARNING_LOGGED:
+            return
+        _TLS_WARNING_LOGGED = True
+    log_event(
+        "mpvm-http",
+        "tls.verification.disabled",
+        level=logging.WARNING,
+        hint="Set MPVM_VERIFY_TLS=true and trust the MP VM CA to enable verification",
+    )
 
 
 def build_retry_adapter() -> HTTPAdapter:
@@ -27,6 +55,8 @@ def build_retry_adapter() -> HTTPAdapter:
 def build_session(*, verify_tls: bool) -> DiagnosticSession:
     session = DiagnosticSession()
     session.verify = verify_tls
+    if not verify_tls:
+        _note_tls_verification_disabled()
     session.headers.update({"User-Agent": "mp-vm-rest-client/1.0"})
     session.mount("https://", build_retry_adapter())
     session.mount("http://", build_retry_adapter())
