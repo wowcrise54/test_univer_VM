@@ -156,6 +156,7 @@ def init_db() -> None:
 def schema_statements() -> list[str]:
     """Return the idempotent baseline schema used by Alembic and legacy startup."""
 
+    from .repositories.passport_cve_schema import SCHEMA_SQL as PASSPORT_CVE_SQL
     from .repositories.risk_evidence_schema import EVIDENCE_COLUMNS_SQL, FUNCTIONS_SQL
 
     return [
@@ -667,6 +668,7 @@ def schema_statements() -> list[str]:
             updated_at TEXT NOT NULL
         )
         """,
+        *PASSPORT_CVE_SQL,
         """
         CREATE TABLE IF NOT EXISTS asset_card_search_field_catalog (
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
@@ -4571,62 +4573,32 @@ def reconcile_asset_card_vulnerability_passport_links(
                     ELSE NULL
                 END AS os_family
             FROM finding_base
-        ), passport_cve AS (
-            -- Only cves_json is read here: the heavy raw_*_json columns are
-            -- touched solely for passports that can match a scoped finding.
-            SELECT
-                passport.internal_id,
-                UPPER(COALESCE(
-                    cve ->> 'display_name', cve ->> 'displayName', cve ->> 'cve',
-                    cve ->> 'name', cve ->> 'value',
-                    CASE WHEN jsonb_typeof(cve) = 'string' THEN cve #>> '{}' END,
-                    ''
-                )) AS cve_name
-            FROM vulnerability_passports AS passport
-            LEFT JOIN LATERAL jsonb_array_elements(
-                COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb
-            ) AS cve ON TRUE
-        ), passport_base AS (
+        ), passport_context AS (
             SELECT
                 passport.internal_id,
                 passport.issue_time,
                 passport.raw_detail_json IS NOT NULL AS has_detail,
                 LOWER(CONCAT_WS(
-                    ' ', passport.name, passport.external_id, passport.package_id,
-                    passport.package_version, passport.raw_record_json,
-                    passport.raw_detail_json
-                )) AS search_text,
-                LOWER(CONCAT_WS(
                     ' ', passport.name, passport.package_id, passport.package_version
                 )) AS label_text,
-                passport_cve.cve_name
-            FROM passport_cve
-            JOIN vulnerability_passports AS passport
-              ON passport.internal_id = passport_cve.internal_id
-            WHERE passport_cve.internal_id IN (
+                COALESCE(passport_cve.cve_name, '') AS cve_name,
+                passport_os.os_family
+            FROM vulnerability_passports AS passport
+            LEFT JOIN vulnerability_passport_cves AS passport_cve
+              ON passport_cve.passport_internal_id = passport.internal_id
+            LEFT JOIN vulnerability_passport_os_family AS passport_os
+              ON passport_os.passport_internal_id = passport.internal_id
+            WHERE passport.internal_id IN (
                     SELECT vulnerability_id FROM finding_base
                     WHERE vulnerability_id IS NOT NULL
                 )
-               OR passport_cve.cve_name IN (
-                    SELECT cve_name FROM finding_base WHERE cve_name IS NOT NULL
+               OR passport.internal_id IN (
+                    SELECT matched.passport_internal_id
+                    FROM vulnerability_passport_cves AS matched
+                    WHERE matched.cve_name IN (
+                        SELECT cve_name FROM finding_base WHERE cve_name IS NOT NULL
+                    )
                 )
-        ), passport_context AS (
-            SELECT passport_base.*,
-                CASE
-                    WHEN search_text ~ 'windows' THEN 'windows'
-                    WHEN search_text ~ 'ubuntu' THEN 'ubuntu'
-                    WHEN search_text ~ 'debian' THEN 'debian'
-                    WHEN search_text ~ 'red hat|redhat|rhel' THEN 'rhel'
-                    WHEN search_text ~ 'centos' THEN 'centos'
-                    WHEN search_text ~ 'rocky' THEN 'rocky'
-                    WHEN search_text ~ 'alma' THEN 'almalinux'
-                    WHEN search_text ~ 'oracle.*linux' THEN 'oraclelinux'
-                    WHEN search_text ~ 'astra' THEN 'astra'
-                    WHEN search_text ~ '(^|[^a-z])alt([^a-z]|$)' THEN 'altlinux'
-                    WHEN search_text ~ 'suse|sles|opensuse' THEN 'suse'
-                    ELSE NULL
-                END AS os_family
-            FROM passport_base
         ), candidates AS (
             SELECT
                 finding.finding_id,
