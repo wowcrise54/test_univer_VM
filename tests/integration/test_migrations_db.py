@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20261027_0029``);
+* the migration graph has a single, expected head (``20261102_0030``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
@@ -36,7 +36,7 @@ from app import db, main
 # both in the Docker test stack and on a plain CI checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_HEAD = "20261027_0029"
+EXPECTED_HEAD = "20261102_0030"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a

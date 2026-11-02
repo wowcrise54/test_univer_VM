@@ -668,6 +668,16 @@ def schema_statements() -> list[str]:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS asset_card_search_field_catalog (
+            asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
+            field_path TEXT NOT NULL,
+            value_type TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            sample_value TEXT,
+            PRIMARY KEY (asset_id, field_path, value_type)
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS asset_card_software_inventory (
             id BIGSERIAL PRIMARY KEY,
             asset_id TEXT NOT NULL REFERENCES asset_cards(asset_id) ON DELETE CASCADE,
@@ -4381,6 +4391,26 @@ def replace_asset_card_search_index(
             ),
             [(asset_id, *row, updated_at) for row in rows],
         )
+    # Per-asset digest of the field catalog: listing fields would otherwise
+    # aggregate the whole (tens of millions of rows) search table per request.
+    conn.execute("DELETE FROM asset_card_search_field_catalog WHERE asset_id = %s", (asset_id,))
+    catalog: dict[tuple[str, str], list[str | None]] = {}
+    for _entity, field_path, field_name, value_type, value_text, *_rest in rows:
+        entry = catalog.setdefault((field_path, value_type), [field_name, value_text])
+        if field_name < entry[0]:
+            entry[0] = field_name
+        if value_text is not None and (entry[1] is None or value_text < entry[1]):
+            entry[1] = value_text
+    if catalog:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO asset_card_search_field_catalog
+                    (asset_id, field_path, value_type, field_name, sample_value)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [(asset_id, path, vtype, name, sample) for (path, vtype), (name, sample) in catalog.items()],
+            )
     return len(rows)
 
 
@@ -4541,6 +4571,21 @@ def reconcile_asset_card_vulnerability_passport_links(
                     ELSE NULL
                 END AS os_family
             FROM finding_base
+        ), passport_cve AS (
+            -- Only cves_json is read here: the heavy raw_*_json columns are
+            -- touched solely for passports that can match a scoped finding.
+            SELECT
+                passport.internal_id,
+                UPPER(COALESCE(
+                    cve ->> 'display_name', cve ->> 'displayName', cve ->> 'cve',
+                    cve ->> 'name', cve ->> 'value',
+                    CASE WHEN jsonb_typeof(cve) = 'string' THEN cve #>> '{}' END,
+                    ''
+                )) AS cve_name
+            FROM vulnerability_passports AS passport
+            LEFT JOIN LATERAL jsonb_array_elements(
+                COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb
+            ) AS cve ON TRUE
         ), passport_base AS (
             SELECT
                 passport.internal_id,
@@ -4554,16 +4599,17 @@ def reconcile_asset_card_vulnerability_passport_links(
                 LOWER(CONCAT_WS(
                     ' ', passport.name, passport.package_id, passport.package_version
                 )) AS label_text,
-                UPPER(COALESCE(
-                    cve ->> 'display_name', cve ->> 'displayName', cve ->> 'cve',
-                    cve ->> 'name', cve ->> 'value',
-                    CASE WHEN jsonb_typeof(cve) = 'string' THEN cve #>> '{}' END,
-                    ''
-                )) AS cve_name
-            FROM vulnerability_passports AS passport
-            LEFT JOIN LATERAL jsonb_array_elements(
-                COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb
-            ) AS cve ON TRUE
+                passport_cve.cve_name
+            FROM passport_cve
+            JOIN vulnerability_passports AS passport
+              ON passport.internal_id = passport_cve.internal_id
+            WHERE passport_cve.internal_id IN (
+                    SELECT vulnerability_id FROM finding_base
+                    WHERE vulnerability_id IS NOT NULL
+                )
+               OR passport_cve.cve_name IN (
+                    SELECT cve_name FROM finding_base WHERE cve_name IS NOT NULL
+                )
         ), passport_context AS (
             SELECT passport_base.*,
                 CASE
@@ -6267,9 +6313,9 @@ def list_asset_card_search_fields(q: str | None = None, limit: int = 100) -> dic
                 field_path,
                 MIN(field_name) AS field_name,
                 value_type,
-                COUNT(DISTINCT asset_id) AS asset_count,
-                MIN(value_text) FILTER (WHERE value_text IS NOT NULL) AS sample_value
-            FROM asset_card_search_fields
+                COUNT(*) AS asset_count,
+                MIN(sample_value) AS sample_value
+            FROM asset_card_search_field_catalog
             {where}
             GROUP BY field_path, value_type
             ORDER BY field_path, value_type
