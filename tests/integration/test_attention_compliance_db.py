@@ -299,3 +299,15 @@ def test_compliance_sorting_pages_preserve_total_on_empty_page(compliance_data, 
 def test_compliance_rejects_invalid_sort_options(compliance_data, method, options, message):
     with pytest.raises(ValueError, match=message):
         getattr(compliance_data, method)(scope="organization", assessment_date=ASSESSMENT, **options)
+
+
+def test_compliance_missing_ip_diagnostic_counts_every_finding_row_of_the_asset(test_db):
+    with db.connect() as conn:
+        _card(conn, "noip", "noip", "2026-01-20T00:00:00Z", ip=None, asset_type="Server")
+        _finding(conn, "noip", "os", "a")
+        _finding(conn, "noip", "os", "b", severity="low", cvss=2)
+    service = ComplianceService(ComplianceRepository())
+    organization = service.report_dataset(scope="organization", assessment_date=ASSESSMENT)
+    assert organization.diagnostics == {"invalid_or_missing_ip": 2}
+    assert [item["vulnerability_id"] for item in organization.findings] == ["a"]
+    assert service.report_dataset(scope="internet", assessment_date=ASSESSMENT).diagnostics == {"invalid_or_missing_ip": 0}
