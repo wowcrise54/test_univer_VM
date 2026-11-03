@@ -4,8 +4,13 @@ import json
 from typing import Any
 
 
+def _dumps(value: Any) -> str:
+    # Compact form: indentation and spaces cost an LLM client tokens and push the answer over the size limit.
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
 def _size(value: Any) -> int:
-    return len(json.dumps(value, ensure_ascii=False, default=str))
+    return len(_dumps(value))
 
 
 def fit_response(data: Any, max_chars: int) -> dict[str, Any]:
@@ -29,3 +34,8 @@ def fit_response(data: Any, max_chars: int) -> dict[str, Any]:
         result[key] = value[: max(1, len(value) // 2)]
         result["truncated_note"] = "The answer was shortened to fit the size limit; narrow the query or page with offset."
     return result
+
+
+def render(data: Any, max_chars: int) -> str:
+    """The tool result: ``data`` fitted to ``max_chars`` and serialized as compact JSON."""
+    return _dumps(fit_response(data, max_chars))

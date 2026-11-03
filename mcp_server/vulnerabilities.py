@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -138,7 +139,10 @@ def slim_host(row: dict[str, Any], *, stale_days: int, now: datetime | None = No
         values = row.get(key) or []
         if values:
             host[key] = values[:MAX_LISTED_OBJECTS]
-    return host
+    if host.get("hostname") == host.get("display_name"):
+        del host["hostname"]
+    # Empty fields only cost tokens; False is kept because it is an answer (stale: false).
+    return {key: value for key, value in host.items() if value is not None and value != [] and value != ""}
 
 
 def match_rows(rows: list[dict[str, Any]], query: str) -> tuple[list[dict[str, Any]], str]:
@@ -277,10 +281,16 @@ def _merge_hosts(per_selector: list[tuple[str, list[dict[str, Any]]]], *, stale_
                         "overdue": case.get("overdue"),
                     }
                 )
-    return sorted(
+    hosts = sorted(
         merged.values(),
         key=lambda h: (severity_rank(h.get("severity")), -(h.get("cvss_score") or 0), _text(h.get("display_name")).lower()),
     )
+    for host in hosts:
+        if not host["remediation"]:
+            del host["remediation"]
+        if len(per_selector) == 1:
+            del host["selectors"]  # every host belongs to the only selector
+    return hosts
 
 
 async def find_hosts_by_vulnerability(
@@ -333,6 +343,7 @@ async def find_hosts_by_vulnerability(
         "vulnerabilities": [slim_vulnerability(row) for row in matched],
         "total_hosts": len(merged),
         "stale_hosts": sum(1 for host in merged if host.get("stale")),
+        "hosts_by_severity": dict(Counter(_text(host.get("severity")) or "unknown" for host in merged)),
         "offset": offset,
         "limit": limit,
         "returned": len(page),

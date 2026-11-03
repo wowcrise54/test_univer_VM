@@ -11,7 +11,7 @@ from . import __version__
 from . import vulnerabilities as vuln
 from .client import AppClient
 from .config import McpSettings
-from .shaping import fit_response
+from .shaping import render
 
 INSTRUCTIONS = (
     "Read-only access to vulnerability data of MP VM Client. "
@@ -49,7 +49,7 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             bool,
             Field(description="Also add the global completeness of the local data. Slow on large databases; off by default."),
         ] = False,
-    ) -> dict[str, Any]:
+    ) -> str:
         """List the hosts that currently have a vulnerability, with fix availability from the MP VM passport."""
         result = await vuln.find_hosts_by_vulnerability(
             client,
@@ -63,16 +63,16 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             offset=offset,
             include_coverage=include_coverage,
         )
-        return fit_response(result, cap)
+        return render(result, cap)
 
     @read_only_tool
     async def get_vulnerability_fix_info(
         query: Annotated[str, Field(min_length=2, max_length=500, description="CVE id, vulnerability id or name.")],
         severity: Annotated[Severity | None, Field(description="Only findings of this severity.")] = None,
         source: Annotated[Source | None, Field(description="Only OS, software or docker findings.")] = None,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Tell whether a vulnerability can be fixed according to its MP VM passport (information only, nothing is applied)."""
-        return fit_response(await vuln.get_fix_info(client, query=query, severity=severity, source=source), cap)
+        return render(await vuln.get_fix_info(client, query=query, severity=severity, source=source), cap)
 
     @read_only_tool
     async def search_vulnerabilities(
@@ -86,7 +86,7 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         asset_type: Annotated[str | None, Field(max_length=200, description="Limit to this asset type.")] = None,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search vulnerabilities across all saved hosts; each row has the number of affected hosts and fix info."""
         result = await client.get(
             "/api/vulnerabilities",
@@ -101,7 +101,7 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             limit=limit,
             offset=offset,
         )
-        return fit_response(
+        return render(
             {
                 "total": result.get("total"),
                 "offset": offset,
@@ -118,12 +118,12 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         source: Annotated[Source | None, Field(description="OS, software or docker.")] = None,
         limit: Limit = 50,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """List the vulnerabilities of one host, with fix info."""
         result = await client.get(
             "/api/vulnerabilities", asset_id=asset_id, severity=severity, source=source, limit=limit, offset=offset
         )
-        return fit_response(
+        return render(
             {
                 "asset_id": asset_id,
                 "total": result.get("total"),
@@ -139,9 +139,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         q: Annotated[str | None, Field(max_length=500, description="Name, FQDN, IP or asset id fragment.")] = None,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Find hosts among the saved asset cards."""
-        return fit_response(await client.get("/api/asset-cards/local", q=q, limit=limit, offset=offset), cap)
+        return render(await client.get("/api/asset-cards/local", q=q, limit=limit, offset=offset), cap)
 
     @read_only_tool
     async def get_host(
@@ -149,15 +149,15 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         section: Annotated[
             Literal["summary", "configuration", "vulnerabilities"], Field(description="Which part of the card.")
         ] = "summary",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Get a saved host card (summary by default)."""
-        return fit_response(await client.get(f"/api/asset-cards/{quote(asset_id, safe='')}", section=section), cap)
+        return render(await client.get(f"/api/asset-cards/{quote(asset_id, safe='')}", section=section), cap)
 
     @read_only_tool
-    async def vulnerability_summary() -> dict[str, Any]:
+    async def vulnerability_summary() -> str:
         """Totals by severity, top vulnerabilities and hosts, and how complete and fresh the local data is. Can take minutes on a large database."""
         result = await client.get("/api/vulnerabilities/summary")
-        return fit_response(
+        return render(
             {
                 "source": result.get("source"),
                 "totals": result.get("totals"),
@@ -175,9 +175,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
     async def trending_vulnerabilities(
         limit: Annotated[int, Field(ge=1, le=100, description="Maximum number of rows.")] = 20,
         context: Annotated[Literal["all", "docker", "host"], Field(description="Scope of the ranking.")] = "all",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Trending vulnerabilities known to MP VM, ranked by affected hosts."""
-        return fit_response(await client.get("/api/vulnerabilities/trending", limit=limit, context=context), cap)
+        return render(await client.get("/api/vulnerabilities/trending", limit=limit, context=context), cap)
 
     @read_only_tool
     async def list_remediation_cases(
@@ -191,9 +191,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         overdue: Annotated[bool, Field(description="Only cases past their SLA due date.")] = False,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """List remediation cases (tracking of fixes: status, assignee, SLA). Read-only."""
-        return fit_response(
+        return render(
             await client.get(
                 "/api/remediation/cases",
                 q=q,
@@ -208,9 +208,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         )
 
     @read_only_tool
-    async def remediation_summary() -> dict[str, Any]:
+    async def remediation_summary() -> str:
         """Counts of remediation cases by status, overdue cases and SLA policy."""
-        return fit_response(
+        return render(
             {
                 "summary": await client.get("/api/remediation/summary"),
                 "resolution_stats": await client.get("/api/remediation/resolution-stats"),
@@ -227,9 +227,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         q: Annotated[str | None, Field(max_length=500, description="Host text filter.")] = None,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Coverage of the local data: how many hosts are missing, stale, truncated or failed to scan."""
-        return fit_response(
+        return render(
             {
                 "summary": await client.get("/api/coverage/summary"),
                 "assets": await client.get("/api/coverage/assets", issue=issue, q=q, limit=limit, offset=offset),
@@ -238,9 +238,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         )
 
     @read_only_tool
-    async def list_scan_tasks() -> dict[str, Any]:
+    async def list_scan_tasks() -> str:
         """Saved scanner tasks."""
-        return fit_response(await client.get("/api/scanner-tasks"), cap)
+        return render(await client.get("/api/scanner-tasks"), cap)
 
     @read_only_tool
     async def list_operations(
@@ -249,9 +249,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         q: Annotated[str | None, Field(max_length=500, description="Text filter.")] = None,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Background operations (scans, refreshes) and their progress, plus a summary."""
-        return fit_response(
+        return render(
             {
                 "summary": await client.get("/api/operations/summary"),
                 "operations": await client.get(
@@ -271,9 +271,9 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         tag: Annotated[str | None, Field(max_length=100, description="Tag.")] = None,
         limit: Limit = 25,
         offset: Offset = 0,
-    ) -> dict[str, Any]:
+    ) -> str:
         """Hosts ranked by remediation risk."""
-        return fit_response(
+        return render(
             await client.get(
                 "/api/risk/queue",
                 level=level,

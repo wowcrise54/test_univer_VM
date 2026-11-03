@@ -14,7 +14,7 @@ from mcp_server import client as client_module
 from mcp_server.client import ApiError, AppClient
 from mcp_server.config import McpSettings
 from mcp_server.http_auth import BearerAuthMiddleware
-from mcp_server.shaping import fit_response
+from mcp_server.shaping import fit_response, render
 from tests.mcp_server.fakes import COOKIE, FakeApi, make_settings
 
 
@@ -196,3 +196,9 @@ def test_fit_response_halves_the_largest_list_and_marks_truncation():
     assert 1 <= len(fitted["rows"]) < 400 and fitted["total"] == 400
     assert big["rows"] and len(big["rows"]) == 400  # input is not mutated
     assert fit_response([1, 2, 3], 10_000) == {"rows": [1, 2, 3]}
+
+
+def test_render_is_compact_json_without_indentation():
+    text = render({"a": [1, 2], "name": "Хост", "fix": {"has_fix": None}}, 10_000)
+    assert text == '{"a":[1,2],"name":"Хост","fix":{"has_fix":null}}'
+    assert "\n" not in render({"rows": [{"x": i} for i in range(50)]}, 10_000)

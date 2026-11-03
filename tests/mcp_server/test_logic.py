@@ -195,6 +195,21 @@ def test_find_hosts_fetches_selectors_concurrently():
     assert state["peak"] == 2 and result["total_hosts"] == 3  # two selectors, fetched together
 
 
+def test_host_rows_are_trimmed_to_what_carries_information():
+    api = FakeApi()
+    api.json("/api/vulnerabilities", {"total": 1, "rows": [vuln_row("id:1", vulnerability_id="V-1", cve="CVE-2026-1")]})
+    api.json(
+        "/api/vulnerabilities/hosts",
+        {"total": 2, "rows": [host_row("a", fqdn="", hostname="host-a", objects=[], docker_images=None), host_row("b")]},
+    )
+    result = _find(api, query="CVE-2026-1")
+    host = next(h for h in result["hosts"] if h["asset_id"] == "a")
+    assert "hostname" not in host  # same as display_name
+    assert not {"fqdn", "objects", "docker_images", "remediation", "selectors"} & host.keys()
+    assert host["stale"] is False  # False is an answer, not an empty field
+    assert result["hosts_by_severity"] == {"high": 2}
+
+
 def test_find_hosts_pages_the_result_after_merging():
     result = _find(_api_for_cve(), query="CVE-2024-3094", limit=2, offset=2)
     assert result["total_hosts"] == 3 and result["returned"] == 1
