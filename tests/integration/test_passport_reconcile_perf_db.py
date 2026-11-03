@@ -199,3 +199,16 @@ def test_reconcile_without_scope_relinks_every_asset_in_chunks(test_db, monkeypa
             findings.append(_finding(conn, asset, group_id, f"i-{asset}", None, "CVE-1-1", now))
         assert db.reconcile_asset_card_vulnerability_passport_links(conn, None, now) == 3
         assert set(_links(conn)) == set(findings)
+
+
+def test_upsert_passports_saves_in_batches_and_reports_progress(test_db, monkeypatch):
+    monkeypatch.setattr(db, "PASSPORT_SAVE_BATCH_SIZE", 2)
+    events = []
+    result = db.upsert_vulnerability_passports(
+        [{"internal_id": f"P{i}", "name": f"n{i}"} for i in range(5)],
+        progress=lambda stage, done, total: events.append((stage, done, total)),
+    )
+    assert result["saved"] == 5
+    assert [e for e in events if e[0] == "save"] == [("save", 2, 5), ("save", 4, 5), ("save", 5, 5)]
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM vulnerability_passports").fetchone()["n"] == 5

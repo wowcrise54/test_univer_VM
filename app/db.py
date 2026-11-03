@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,9 @@ _DB_CIRCUIT_REASON: str | None = None
 # before row locks: link rebuilds lock links before FK KEY SHARE on findings,
 # while card replacement/deletion locks findings before cascading to links.
 _VULNERABILITY_PASSPORT_WRITE_LOCK = (1297106509, 1448301139)
+# Passports are written in bounded batches so each statement stays short and the
+# refresh job can report progress.
+PASSPORT_SAVE_BATCH_SIZE = 5000
 ASSET_CARD_BUILD_JOB_LIMIT = 2
 _ASSET_CARD_BUILD_ADMISSION_LOCK = (1297106509, 1094927172)
 
@@ -2550,7 +2554,9 @@ def upsert_vulnerability_passports(
     *,
     source_pdql: str | None = None,
     pdql_token: str | None = None,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
+    """Upsert the catalog; ``progress(stage, done, total)`` reports "save" and "link" steps."""
     init_db()
     current = now_utc()
     skipped = 0
@@ -2636,7 +2642,7 @@ def upsert_vulnerability_passports(
                     old = candidates[0]
                     id_replacements.append((old["internal_id"], new_id))
 
-            if values:
+            for offset in range(0, len(values), PASSPORT_SAVE_BATCH_SIZE):
                 cursor.executemany(
                     """
                 INSERT INTO vulnerability_passports (
@@ -2660,8 +2666,10 @@ def upsert_vulnerability_passports(
                     pdql_token = EXCLUDED.pdql_token,
                     last_seen = EXCLUDED.last_seen
                     """,
-                    values,
+                    values[offset : offset + PASSPORT_SAVE_BATCH_SIZE],
                 )
+                if progress:
+                    progress("save", min(offset + PASSPORT_SAVE_BATCH_SIZE, len(values)), len(values))
             if id_replacements:
                 cursor.execute(
                     """
@@ -2739,7 +2747,12 @@ def upsert_vulnerability_passports(
                         (old_ids,),
                     )
                 replaced = len(id_replacements)
-        links_created = reconcile_asset_card_vulnerability_passport_links(conn, saved_ids, current)
+        links_created = reconcile_asset_card_vulnerability_passport_links(
+            conn,
+            saved_ids,
+            current,
+            progress=(lambda done, total: progress("link", done, total)) if progress else None,
+        )
     return {
         "saved": len(values),
         "skipped": skipped,
@@ -4601,16 +4614,19 @@ def reconcile_asset_card_vulnerability_passport_links(
     passport_ids: list[str] | None,
     linked_at: str,
     asset_id: str | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Choose one best passport per finding using vulnerability and host OS context.
 
     ``passport_ids`` limits the relink to findings those passports can affect;
     ``None`` relinks every finding, one bounded chunk of assets at a time.
+    ``progress(done_chunks, total_chunks)`` is called after each chunk.
     """
 
     _lock_vulnerability_passport_writes(conn)
     inserted_total = 0
-    for scope_sql, scope_params in _passport_link_scopes(conn, passport_ids, asset_id):
+    scopes = _passport_link_scopes(conn, passport_ids, asset_id)
+    for done, (scope_sql, scope_params) in enumerate(scopes, start=1):
         conn.execute(
             f"""
             DELETE FROM asset_card_vulnerability_passports AS link
@@ -4759,6 +4775,8 @@ def reconcile_asset_card_vulnerability_passport_links(
         (*scope_params, linked_at),
         )
         inserted_total += max(inserted.rowcount or 0, 0)
+        if progress:
+            progress(done, len(scopes))
     return inserted_total
 
 
