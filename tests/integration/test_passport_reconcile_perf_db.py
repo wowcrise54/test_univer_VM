@@ -134,3 +134,53 @@ def test_passport_os_family_follows_passport_text(test_db):
     with db.connect() as conn:
         conn.execute("UPDATE vulnerability_passports SET raw_detail_json = 'red hat advisory' WHERE internal_id = 'D'")
     assert family("D") == "rhel"
+
+
+def _asset_with_finding(conn, asset_id, vulnerability_id, now):
+    conn.execute(
+        "INSERT INTO asset_cards(asset_id,display_name,os_name,first_seen,last_seen) VALUES(%s,%s,'Ubuntu 22.04',%s,%s)",
+        (asset_id, asset_id, now, now),
+    )
+    group_id = conn.execute(
+        """
+        INSERT INTO asset_card_vulnerability_groups(asset_id,source_type,collection_type,collection_id,group_order,updated_at)
+        VALUES(%s,'host','c','g1',0,%s) RETURNING id
+        """,
+        (asset_id, now),
+    ).fetchone()["id"]
+    return _finding(conn, asset_id, group_id, f"i-{asset_id}", vulnerability_id, None, now)
+
+
+def test_full_reconcile_runs_in_asset_chunks_and_matches_per_asset_result(test_db, monkeypatch):
+    now = db.now_utc()
+    monkeypatch.setattr(db, "PASSPORT_LINK_CHUNK_FINDINGS", 1)
+    with db.connect() as conn:
+        _passport(conn, "P-A", "a", [], now)
+        _passport(conn, "P-B", "b", [], now)
+        finding_a = _asset_with_finding(conn, "a", "P-A", now)
+        finding_b = _asset_with_finding(conn, "b", "P-B", now)
+        finding_c = _asset_with_finding(conn, "c", "P-A", now)
+        calls = []
+        created = db.reconcile_asset_card_vulnerability_passport_links(
+            conn, None, now, progress=lambda done, total: calls.append((done, total))
+        )
+        links = {
+            r["asset_vulnerability_id"]: r["passport_internal_id"]
+            for r in conn.execute("SELECT * FROM asset_card_vulnerability_passports").fetchall()
+        }
+    assert created == 3
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+    assert links == {finding_a: "P-A", finding_b: "P-B", finding_c: "P-A"}
+
+
+def test_upsert_passports_saves_in_batches_and_reports_progress(test_db, monkeypatch):
+    monkeypatch.setattr(db, "PASSPORT_SAVE_BATCH_SIZE", 2)
+    events = []
+    result = db.upsert_vulnerability_passports(
+        [{"internal_id": f"P{i}", "name": f"n{i}"} for i in range(5)],
+        progress=lambda stage, done, total: events.append((stage, done, total)),
+    )
+    assert result["saved"] == 5
+    assert events == [("save", 2, 5), ("save", 4, 5), ("save", 5, 5)]
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM vulnerability_passports").fetchone()["n"] == 5
