@@ -11,6 +11,7 @@ import {
   useDialogAccessibility,
 } from "../../shared/ui.jsx";
 import { OS_LABELS } from "../task-presets/presetForm.js";
+import { TeamTaskDetails } from "./TeamTaskDetails.jsx";
 
 const ACTIVE_POSTPROCESS = new Set([
   "monitoring",
@@ -111,6 +112,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const [createPreset, setCreatePreset] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [historyTaskId, setHistoryTaskId] = useState(null);
+  const [detailsTaskId, setDetailsTaskId] = useState(null);
   const [osFilter, setOsFilter] = useState("");
 
   const presetsQuery = useQuery({
@@ -133,6 +135,8 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const tasks = (tasksQuery.data?.rows || []).filter(
     (task) => !osFilter || task.os_family === osFilter,
   );
+
+  const detailsTask = tasks.find((task) => task.mp_task_id === detailsTaskId);
 
   const refreshTasks = () =>
     queryClient.invalidateQueries({ queryKey: ["team-tasks"] });
@@ -285,6 +289,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                       actionMutation.mutate({ task, action: "stop" })
                     }
                     onDelete={() => setDeleteTarget(task)}
+                    onOpenDetails={() => setDetailsTaskId(task.mp_task_id)}
                     onToggleHistory={() =>
                       setHistoryTaskId((current) =>
                         current === task.mp_task_id ? null : task.mp_task_id,
@@ -304,6 +309,14 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           </table>
         </div>
       </Panel>
+
+      {detailsTask ? (
+        <TeamTaskDetails
+          task={detailsTask}
+          running={isTeamTaskRunning(detailsTask)}
+          onClose={() => setDetailsTaskId(null)}
+        />
+      ) : null}
 
       {createPreset ? (
         <CreateTeamTaskDialog
@@ -340,6 +353,7 @@ function TeamTaskRow({
   onStart,
   onStop,
   onDelete,
+  onOpenDetails,
   onToggleHistory,
 }) {
   const groups = task.preset_asset_groups || [];
@@ -347,7 +361,14 @@ function TeamTaskRow({
   const scope = [...groups.map((group) => group.name || group.id), ...targets];
   return (
     <>
-      <tr>
+      <tr
+        className="team-task-row"
+        title="Двойной клик — ход выполнения"
+        onDoubleClick={(event) => {
+          if (!event.target.closest("button, a, input, select, textarea"))
+            onOpenDetails();
+        }}
+      >
         <td>
           <strong>{task.name}</strong>
           <small className="preset-muted">
@@ -391,6 +412,9 @@ function TeamTaskRow({
                 Запустить
               </Button>
             )}
+            <Button variant="tiny" onClick={onOpenDetails}>
+              Ход выполнения
+            </Button>
             <Button
               variant="tiny"
               aria-expanded={historyOpen}
