@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
+
+from ..diagnostics import log_event
 
 
 class DatabaseRecovery:
@@ -59,8 +62,15 @@ class DatabaseRecovery:
                 return {**result, "reason": "startup_pending"}
             for name, step in self._steps:
                 if name not in self._completed:
+                    started = time.perf_counter()
                     step()
                     self._completed.add(name)
+                    log_event(
+                        "app",
+                        "startup.step.completed",
+                        step=name,
+                        duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    )
             result["recovery_complete"] = True
             result["database_ready"] = False
             result["schema_current"] = False
