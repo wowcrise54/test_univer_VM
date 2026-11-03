@@ -69,6 +69,7 @@ docker compose up --build
 | Метрики | `MPVM_METRICS_TOKEN` | Bearer-токен для `GET /api/metrics` (Prometheus text format: готовность БД, сессия MP VM, счётчики операций по статусам и типам). Пустое значение отключает эндпоинт (`404`); неверный токен даёт `401`. Секреты и идентификаторы в метрики не попадают. |
 | Автоматизация | `MPVM_AUTOMATION_SCHEDULER_POLL_SECONDS`, `MPVM_AUTOMATION_WEBHOOK_URL`, `MPVM_AUTOMATION_WEBHOOK_SECRET`, `MPVM_COVERAGE_STALE_DAYS` | Планировщик и необязательный HTTPS webhook с HMAC-подписью. |
 | Доступ в приложение | `MPVM_BOOTSTRAP_ADMIN_USERNAME`, `MPVM_BOOTSTRAP_ADMIN_PASSWORD`, `MPVM_BOOTSTRAP_ADMIN_DISPLAY_NAME`, `MPVM_AUTH_SESSION_HOURS`, `MPVM_AUTH_COOKIE_SECURE` | Начальная учётная запись и cookie-сессии. Для HTTPS включите `MPVM_AUTH_COOKIE_SECURE=true`. |
+| MCP-сервер | `MPVM_MCP_USERNAME`, `MPVM_MCP_PASSWORD`, `MPVM_MCP_AUTH_TOKEN`, `MPVM_MCP_API_URL`, `MPVM_MCP_TRANSPORT`, `MPVM_MCP_HOST`, `MPVM_MCP_PORT`, `MPVM_MCP_STALE_DAYS` | Читаются отдельным контейнером `mpvm-mcp` (`mcp_server/`, профиль `mcp`), а не приложением; подробности и остальные переменные — в [mcp.md](mcp.md). |
 
 Не публикуйте пароль, client secret, access token, webhook secret или готовый `.env`. Для хостового backend DSN по умолчанию использует `localhost:5432`; при запуске базы из Compose нужен порт `55432`.
 

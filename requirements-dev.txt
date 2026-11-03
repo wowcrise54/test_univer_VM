@@ -1,4 +1,5 @@
 -r requirements.txt
+-r requirements-mcp.txt
 httpcore2==2.12.0
 httpx2==2.12.0
 mypy==1.17.1

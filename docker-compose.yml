@@ -26,6 +26,25 @@ services:
       - ./output:/app/output
     restart: unless-stopped
 
+  # Read-only MCP server (docs/mcp.md). Off by default; start with: docker compose --profile mcp up -d mpvm-mcp
+  mpvm-mcp:
+    profiles: [mcp]
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    ports:
+      # Loopback only; the token below is still required.
+      - "${MPVM_MCP_BIND:-127.0.0.1}:${MPVM_MCP_PORT:-8765}:8765"
+    environment:
+      MPVM_MCP_API_URL: "${MPVM_MCP_API_URL:-http://mpvm-client:8000}"
+      MPVM_MCP_USERNAME: "${MPVM_MCP_USERNAME:-}"
+      MPVM_MCP_PASSWORD: "${MPVM_MCP_PASSWORD:-}"
+      MPVM_MCP_AUTH_TOKEN: "${MPVM_MCP_AUTH_TOKEN:-}"
+      MPVM_MCP_STALE_DAYS: "${MPVM_MCP_STALE_DAYS:-14}"
+    depends_on:
+      - mpvm-client
+    restart: unless-stopped
+
   postgres:
     # The persistent project volume was initialized by PostgreSQL 16.
     # A major-version upgrade requires pg_upgrade and must not happen implicitly.

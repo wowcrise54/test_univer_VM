@@ -1,0 +1,24 @@
+FROM python:3.14-slim
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MPVM_MCP_HOST=0.0.0.0
+
+WORKDIR /srv
+
+COPY requirements-mcp.txt .
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements-mcp.txt \
+    && useradd --system --no-create-home mcp
+
+COPY mcp_server ./mcp_server
+
+USER mcp
+
+EXPOSE 8765
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('MPVM_MCP_PORT', '8765'), timeout=4)" || exit 1
+
+CMD ["python", "-m", "mcp_server"]

@@ -224,6 +224,10 @@ compact(VulnerPassport.AffectedComponents.Name))
 
 Успешный ответ атомарно заменяет локальный снимок `vulnerability_passport_trends`; ошибка MP VM не удаляет предыдущий снимок. Дашборд читает его через `GET /api/vulnerabilities/trending` и считает заражённые хосты как `COUNT(DISTINCT asset_id)` по локальным findings, поэтому один хост с несколькими findings учитывается один раз. Принудительное обновление доступно через `POST /api/vulnerability-passports/trending/refresh`.
 
+## MCP-сервер для AI-клиентов
+
+Отдельный read-only контейнер `mpvm-mcp` (профиль Compose `mcp`) отвечает на вопрос «на каких хостах есть уязвимость X» и показывает, описано ли исправление в паспорте MP VM. Он работает через REST API приложения под ролью `viewer` и подключается к любому клиенту с поддержкой MCP. Запуск, подключение и список инструментов — в [docs/mcp.md](docs/mcp.md).
+
 ## Основные endpoints приложения
 
 - `POST /api/session/connect` - подключиться к MP VM.

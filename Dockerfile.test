@@ -8,6 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MYPY_CACHE_DIR=/tmp/mypy-cache
 
 WORKDIR /workspace
-COPY requirements.txt requirements-dev.txt ./
+COPY requirements.txt requirements-mcp.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements-dev.txt
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider"]
