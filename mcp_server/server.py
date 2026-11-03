@@ -17,8 +17,8 @@ INSTRUCTIONS = (
     "Read-only access to vulnerability data of MP VM Client. "
     "To answer 'which hosts have vulnerability X' call find_hosts_by_vulnerability with the CVE, vulnerability id "
     "or name; the answer lists hosts and says whether MP VM describes a fix. "
-    "Data is read from locally saved asset cards, so check last_seen / stale / data_source.coverage before trusting "
-    "that a host is still affected. Nothing here can change data or start a fix or a scan."
+    "Data is read from locally saved asset cards, so check last_seen / stale before trusting "
+    "that a host is still affected (include_coverage adds the global completeness, but is slow). Nothing here can change data or start a fix or a scan."
 )
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -45,6 +45,10 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
         host_q: Annotated[str | None, Field(max_length=500, description="Only hosts whose name, FQDN or IP contains this text.")] = None,
         limit: Limit = 50,
         offset: Offset = 0,
+        include_coverage: Annotated[
+            bool,
+            Field(description="Also add the global completeness of the local data. Slow on large databases; off by default."),
+        ] = False,
     ) -> dict[str, Any]:
         """List the hosts that currently have a vulnerability, with fix availability from the MP VM passport."""
         result = await vuln.find_hosts_by_vulnerability(
@@ -57,6 +61,7 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             host_q=host_q,
             limit=limit,
             offset=offset,
+            include_coverage=include_coverage,
         )
         return fit_response(result, cap)
 
@@ -150,7 +155,7 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
 
     @read_only_tool
     async def vulnerability_summary() -> dict[str, Any]:
-        """Totals by severity, top vulnerabilities and hosts, and how complete and fresh the local data is."""
+        """Totals by severity, top vulnerabilities and hosts, and how complete and fresh the local data is. Can take minutes on a large database."""
         result = await client.get("/api/vulnerabilities/summary")
         return fit_response(
             {

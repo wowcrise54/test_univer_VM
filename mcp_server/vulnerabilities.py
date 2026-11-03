@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from datetime import UTC, datetime
@@ -17,6 +18,9 @@ MAX_HOSTS_PER_SELECTOR = 2000
 MAX_FIX_TEXT_CHARS = 2000
 MAX_PASSPORTS = 5
 MAX_LISTED_OBJECTS = 5
+HOST_FETCH_CONCURRENCY = 3
+COVERAGE_TTL_SECONDS = 600.0
+COVERAGE_TIMEOUT_SECONDS = 20.0
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _TOKEN_SPLIT = re.compile(r"[,;\s]+")
@@ -159,24 +163,44 @@ def match_rows(rows: list[dict[str, Any]], query: str) -> tuple[list[dict[str, A
 
 
 class CoverageProbe:
-    """Best-effort, briefly cached completeness/freshness block of the local data."""
+    """Best-effort, cached completeness/freshness block of the local data.
 
-    def __init__(self, client: Getter, *, ttl_seconds: float = 60.0):
+    ``/api/vulnerabilities/summary`` aggregates every saved card and can take minutes on a large
+    database, so the answer is cached for a long time, shared between concurrent callers and
+    abandoned after ``timeout_seconds``.
+    """
+
+    def __init__(
+        self,
+        client: Getter,
+        *,
+        ttl_seconds: float = COVERAGE_TTL_SECONDS,
+        timeout_seconds: float = COVERAGE_TIMEOUT_SECONDS,
+    ):
         self._client = client
         self._ttl = ttl_seconds
-        self._cached: tuple[float, dict[str, Any] | None] | None = None
+        self._timeout = timeout_seconds
+        self._cached: tuple[float, dict[str, Any]] | None = None
+        self._pending: asyncio.Task[dict[str, Any] | None] | None = None
 
     async def get(self) -> dict[str, Any] | None:
-        now = time.monotonic()
-        if self._cached and now - self._cached[0] < self._ttl:
+        if self._cached and time.monotonic() - self._cached[0] < self._ttl:
             return self._cached[1]
+        if self._pending is None or self._pending.done():
+            self._pending = asyncio.ensure_future(self._fetch())
         try:
-            summary = await self._client.get("/api/vulnerabilities/summary")
-            coverage = summary.get("coverage") if isinstance(summary, dict) else None
-        except ApiError:
-            coverage = None
-        self._cached = (now, coverage if isinstance(coverage, dict) else None)
-        return self._cached[1]
+            # shield: a caller that gives up must not cancel the fetch other callers wait for
+            return await asyncio.wait_for(asyncio.shield(self._pending), self._timeout)
+        except (TimeoutError, ApiError):
+            return None
+
+    async def _fetch(self) -> dict[str, Any] | None:
+        summary = await self._client.get("/api/vulnerabilities/summary")
+        coverage = summary.get("coverage") if isinstance(summary, dict) else None
+        if isinstance(coverage, dict):
+            self._cached = (time.monotonic(), coverage)
+            return coverage
+        return None
 
 
 async def resolve_vulnerabilities(
@@ -270,24 +294,39 @@ async def find_hosts_by_vulnerability(
     host_q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_coverage: bool = False,
 ) -> dict[str, Any]:
     query = query.strip()
     matched, match_kind, rows_total = await resolve_vulnerabilities(client, query, severity=severity, source=source)
     selectors_truncated = len(matched) > MAX_SELECTORS or rows_total > PAGE_SIZE
     matched = matched[:MAX_SELECTORS]
 
-    per_selector: list[tuple[str, list[dict[str, Any]]]] = []
-    hosts_truncated = False
-    for row in matched:
-        selector = _text(row.get("selector"))
-        if not selector:
-            continue
-        hosts, _total, cut = await collect_hosts(client, selector, severity=severity, source=source, host_q=host_q)
-        hosts_truncated = hosts_truncated or cut
-        per_selector.append((selector, hosts))
+    selectors = [_text(row.get("selector")) for row in matched if _text(row.get("selector"))]
+    gate = asyncio.Semaphore(HOST_FETCH_CONCURRENCY)
+
+    async def fetch(selector: str) -> tuple[str, list[dict[str, Any]], bool]:
+        async with gate:
+            hosts, _total, cut = await collect_hosts(client, selector, severity=severity, source=source, host_q=host_q)
+        return selector, hosts, cut
+
+    fetched = await asyncio.gather(*(fetch(selector) for selector in selectors))
+    per_selector = [(selector, hosts) for selector, hosts, _cut in fetched]
+    hosts_truncated = any(cut for _selector, _hosts, cut in fetched)
 
     merged = _merge_hosts(per_selector, stale_days=stale_days)
     page = merged[offset : offset + limit]
+    seen = sorted(text for text in (_text(host.get("last_seen")) for host in merged) if text)
+    data_source: dict[str, Any] = {
+        "kind": "asset_cards",
+        "note": DATA_SOURCE_NOTE,
+        "stale_after_days": stale_days,
+        "hosts_oldest_last_seen": seen[0] if seen else None,
+        "hosts_freshest_last_seen": seen[-1] if seen else None,
+    }
+    if include_coverage:
+        data_source["coverage"] = await coverage.get()
+        if data_source["coverage"] is None:
+            data_source["coverage_note"] = "global coverage was not available in time; retry or call vulnerability_summary"
     return {
         "query": query,
         "match": match_kind,
@@ -299,12 +338,7 @@ async def find_hosts_by_vulnerability(
         "returned": len(page),
         "hosts": page,
         "truncated": selectors_truncated or hosts_truncated,
-        "data_source": {
-            "kind": "asset_cards",
-            "note": DATA_SOURCE_NOTE,
-            "stale_after_days": stale_days,
-            "coverage": await coverage.get(),
-        },
+        "data_source": data_source,
     }
 
 

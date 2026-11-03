@@ -117,9 +117,82 @@ def test_find_hosts_unions_selectors_and_ignores_substring_matches():
     assert hosts["b"]["stale"] is True and hosts["a"]["stale"] is False
     assert result["stale_hosts"] == 1
     assert hosts["a"]["remediation"][0]["status"] == "in_progress"
-    assert result["data_source"]["coverage"] == {"complete": True, "freshest_at": "2026-11-02T10:00:00Z"}
-    assert "not from a live MP VM" in result["data_source"]["note"]
+    source = result["data_source"]
+    assert "coverage" not in source  # the global summary is slow, so it is opt-in
+    assert source["hosts_oldest_last_seen"] < source["hosts_freshest_last_seen"]
+    assert "not from a live MP VM" in source["note"]
     assert result["truncated"] is False
+
+
+def test_find_hosts_does_not_call_the_slow_summary_unless_asked():
+    api = _api_for_cve()
+    _find(api, query="CVE-2024-3094")
+    assert "/api/vulnerabilities/summary" not in {r.url.path for r in api.data_requests()}
+
+    result = _find(api, query="CVE-2024-3094", include_coverage=True)
+    assert result["data_source"]["coverage"] == {"complete": True, "freshest_at": "2026-11-02T10:00:00Z"}
+    assert "/api/vulnerabilities/summary" in {r.url.path for r in api.data_requests()}
+
+
+def test_coverage_probe_caches_shares_one_fetch_and_gives_up_on_timeout():
+    calls: list[str] = []
+
+    class Slow:
+        async def get(self, path: str, **params):
+            calls.append(path)
+            await asyncio.sleep(0.2)
+            return {"coverage": {"complete": True}}
+
+    async def run():
+        probe = vuln.CoverageProbe(Slow(), ttl_seconds=60, timeout_seconds=1)
+        first = await asyncio.gather(probe.get(), probe.get(), probe.get())  # one shared fetch
+        again = await probe.get()  # served from the cache
+        impatient = vuln.CoverageProbe(Slow(), ttl_seconds=60, timeout_seconds=0.01)
+        gave_up = await impatient.get()
+        await asyncio.sleep(0.3)  # the abandoned fetch still finishes and fills the cache
+        return first, again, gave_up, await impatient.get()
+
+    first, again, gave_up, later = asyncio.run(run())
+    assert first == [{"complete": True}] * 3 and again == {"complete": True}
+    assert gave_up is None and later == {"complete": True}
+    assert len(calls) == 2
+
+
+def test_coverage_probe_survives_api_errors():
+    class Broken:
+        async def get(self, path: str, **params):
+            raise vuln.ApiError(500, "BOOM", "summary failed")
+
+    assert asyncio.run(vuln.CoverageProbe(Broken()).get()) is None
+
+
+def test_find_hosts_fetches_selectors_concurrently():
+    api = _api_for_cve()
+    state = {"now": 0, "peak": 0}
+
+    async def run():
+        client = AppClient(make_settings(), transport=api.transport())
+        original = client.get
+
+        async def tracked(path, **params):
+            if path.endswith("/hosts"):
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+                await asyncio.sleep(0.05)
+                try:
+                    return await original(path, **params)
+                finally:
+                    state["now"] -= 1
+            return await original(path, **params)
+
+        client.get = tracked  # type: ignore[method-assign]
+        try:
+            return await vuln.find_hosts_by_vulnerability(client, vuln.CoverageProbe(client), stale_days=14, query="CVE-2024-3094")
+        finally:
+            await client.aclose()
+
+    result = asyncio.run(run())
+    assert state["peak"] == 2 and result["total_hosts"] == 3  # two selectors, fetched together
 
 
 def test_find_hosts_pages_the_result_after_merging():
@@ -145,7 +218,7 @@ def test_find_hosts_with_no_match_returns_empty_answer():
     api.json("/api/vulnerabilities/summary", {"coverage": None})
     result = _find(api, query="CVE-1999-0001")
     assert (result["match"], result["total_hosts"], result["hosts"]) == ("none", 0, [])
-    assert result["data_source"]["coverage"] is None
+    assert result["data_source"]["hosts_freshest_last_seen"] is None
 
 
 def test_collect_hosts_follows_pagination():

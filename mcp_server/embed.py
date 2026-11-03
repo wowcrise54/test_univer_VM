@@ -49,17 +49,22 @@ def install_embedded_mcp(app: FastAPI, *, settings: McpSettings | None = None) -
         logger.error("MCP is not mounted, invalid configuration: %s", "; ".join(e["msg"] for e in exc.errors()))
         return False
     if not settings.enabled:
+        logger.info("MCP endpoint is off: set MPVM_MCP_ENABLED=true to serve it at %s", settings.path)
         return False
     problems = settings.problems()
     if problems:
         logger.error("MCP is not mounted: %s", "; ".join(problems))
         return False
 
-    import httpx2
+    try:
+        import httpx2
 
-    from .client import AppClient
-    from .http_auth import BearerAuthMiddleware
-    from .server import build_server
+        from .client import AppClient
+        from .http_auth import BearerAuthMiddleware
+        from .server import build_server
+    except ImportError as exc:  # the image was built without requirements-mcp.txt
+        logger.error("MCP is not mounted: a required package is missing (%s)", exc)
+        return False
 
     client = AppClient(settings, transport=httpx2.ASGITransport(app=app))
     server = build_server(settings, client)

@@ -72,9 +72,11 @@ def _call(client: TestClient, method: str, params: dict[str, Any] | None = None,
     return client.post(path, json=payload, headers=kwargs.pop("headers", MCP_HEADERS), **kwargs)
 
 
-def test_disabled_by_default_leaves_the_application_untouched():
+def test_disabled_by_default_leaves_the_application_untouched(caplog):
     app = _host_app()
-    assert install_embedded_mcp(app, settings=make_settings()) is False
+    with caplog.at_level(logging.INFO, logger=embed.logger.name):
+        assert install_embedded_mcp(app, settings=make_settings()) is False
+    assert "MCP endpoint is off" in caplog.text and "MPVM_MCP_ENABLED=true" in caplog.text
     with _served(app) as client:
         assert client.post("/mcp", json={}).status_code == 405  # the SPA catch-all, as before
 
@@ -88,6 +90,22 @@ def test_misconfiguration_does_not_mount_and_does_not_raise(caplog):
     assert "MPVM_MCP_USERNAME" in caplog.text
     with _served(app) as client:
         assert client.post("/mcp", json={}).status_code == 405
+
+
+def test_missing_mcp_package_does_not_stop_the_application(monkeypatch, caplog):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "httpx2":
+            raise ImportError("No module named 'httpx2'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    with caplog.at_level(logging.ERROR, logger=embed.logger.name):
+        assert install_embedded_mcp(_host_app(), settings=_enabled()) is False
+    assert "required package is missing" in caplog.text
 
 
 def test_invalid_environment_does_not_raise(monkeypatch, caplog):
@@ -126,7 +144,7 @@ def test_tool_call_reads_through_the_application_api_in_process():
     assert result["isError"] is False
     text = result["content"][0]["text"]
     assert "web-1" in text and "Patch it" in text and '"available"' in text
-    assert app.state.calls == ["vulnerabilities", "hosts"]
+    assert app.state.calls == ["vulnerabilities", "hosts"]  # no slow summary call by default
 
 
 def test_trailing_slash_is_served_without_a_redirect():

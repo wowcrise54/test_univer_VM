@@ -88,7 +88,7 @@ def test_find_hosts_tool_end_to_end_over_mcp():
     api = _api()
 
     async def scenario(client: Client):
-        return await client.call_tool("find_hosts_by_vulnerability", {"query": "CVE-2024-0001"})
+        return await client.call_tool("find_hosts_by_vulnerability", {"query": "CVE-2024-0001", "include_coverage": True})
 
     result = _with_client(api, scenario)
     assert not result.is_error

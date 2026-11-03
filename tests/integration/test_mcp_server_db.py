@@ -121,7 +121,7 @@ def _call(tool: str, arguments: dict[str, Any], username: str = "mcp-viewer") ->
 
 
 def test_find_hosts_by_cve_lists_hosts_with_fix_and_freshness(seeded):
-    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094"})
+    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094", "include_coverage": True})
 
     assert payload["match"] == "exact"
     assert {host["asset_id"] for host in payload["hosts"]} == {"web-1", "web-2"}

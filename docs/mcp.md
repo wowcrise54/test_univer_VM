@@ -95,12 +95,12 @@ claude mcp add --transport http mpvm https://<хост>/mcp --header "Authorizat
 
 | Инструмент | Что делает |
 | --- | --- |
-| `find_hosts_by_vulnerability` | **Главный.** По CVE, id или названию возвращает хосты с уязвимостью, найденные селекторы, `fix`, число устаревших хостов и блок `data_source`. Фильтры: `severity`, `source` (`os`/`software`/`docker`), `host_q`, `limit`, `offset`. |
+| `find_hosts_by_vulnerability` | **Главный.** По CVE, id или названию возвращает хосты с уязвимостью, найденные селекторы, `fix`, число устаревших хостов и блок `data_source`. Фильтры: `severity`, `source` (`os`/`software`/`docker`), `host_q`, `limit`, `offset`; `include_coverage` добавляет глобальную полноту данных, но это медленно (на большой БД минуты), поэтому по умолчанию выключено. |
 | `get_vulnerability_fix_info` | Можно ли исправить уязвимость по паспорту MP VM (только информация). |
 | `search_vulnerabilities` | Поиск уязвимостей: число затронутых хостов, фильтры по критичности, источнику, наличию исправления. |
 | `list_host_vulnerabilities` | Уязвимости одного хоста с признаком исправления. |
 | `find_hosts`, `get_host` | Поиск хостов и сохранённая карточка хоста. |
-| `vulnerability_summary` | Сводка по критичности, топ уязвимостей и хостов, полнота и свежесть данных. |
+| `vulnerability_summary` | Сводка по критичности, топ уязвимостей и хостов, полнота и свежесть данных. Запрос тяжёлый: на большой БД может занимать минуты. |
 | `trending_vulnerabilities` | Трендовые уязвимости MP VM. |
 | `list_remediation_cases`, `remediation_summary` | Отслеживание исправлений: статус, исполнитель, SLA, просрочка. Только чтение. |
 | `data_freshness` | Покрытие данных: хосты без карточки, устаревшие, усечённые, с ошибкой. |
@@ -115,7 +115,7 @@ claude mcp add --transport http mpvm https://<хост>/mcp --header "Authorizat
   - `available` — паспорт описывает исправление (`fix.how_to_fix`);
   - `not_described` — паспорт загружен, но описания исправления в нём нет;
   - `unknown` — паспорта нет или его детали ещё не загружены, ответить нельзя. В приложении флаг `has_fix=false` смешивает эти случаи, поэтому здесь они разделены; `fix.reason` объясняет причину.
-- `hosts[].stale` — карточка хоста старше `MPVM_MCP_STALE_DAYS`; такой хост мог уже быть исправлен или удалён. `data_source.coverage` — глобальная полнота и свежесть локальных данных (`complete`, `freshest_at`, `oldest_at`, `truncated_groups`).
+- `hosts[].stale` — карточка хоста старше `MPVM_MCP_STALE_DAYS`; такой хост мог уже быть исправлен или удалён. `data_source.hosts_oldest_last_seen` и `hosts_freshest_last_seen` — самая старая и самая свежая карточка среди найденных хостов. Глобальная полнота (`data_source.coverage`: `complete`, `freshest_at`, `oldest_at`, `truncated_groups`) приходит только с `include_coverage=true`; если за 20 секунд её получить не удалось, будет `coverage: null` и пояснение.
 - `hosts[].remediation` — заявки на устранение для этой пары «хост — уязвимость», если они есть.
 - `truncated: true` — результат неполон (слишком много совпадений или ответ обрезан по размеру); сузьте запрос или листайте `offset`.
 
