@@ -341,6 +341,7 @@ def _attach_fix_text(
 
 
 HAS_FIX_FILTER_VALUES = {"yes", "no", "any"}
+SUMMARY_FINDINGS_TABLE = "vulnerability_summary_findings"
 
 
 def _filtered_findings_cte(
@@ -863,36 +864,50 @@ class VulnerabilityAnalyticsRepository:
             has_fix=has_fix,
             fix_q=fix_q,
         )
+        findings_cte = f"WITH filtered_findings AS (SELECT * FROM {SUMMARY_FINDINGS_TABLE})"
         with db.connect() as conn:
+            # Per-card EXISTS stops at the first finding instead of joining every finding row.
             coverage_row = dict(
                 conn.execute(
                     """
                     SELECT
-                        COUNT(DISTINCT card.asset_id) AS cards_total,
-                        COUNT(DISTINCT finding.asset_id) FILTER (
-                            WHERE COALESCE(
+                        COUNT(*) AS cards_total,
+                        COUNT(*) FILTER (WHERE EXISTS (
+                            SELECT 1
+                            FROM asset_card_vulnerability_groups AS vulnerability_group
+                            JOIN asset_card_vulnerabilities AS finding
+                                ON finding.group_id = vulnerability_group.id
+                            WHERE vulnerability_group.asset_id = card.asset_id
+                              AND COALESCE(
                                 NULLIF(TRIM(finding.vulnerability_id), ''),
                                 NULLIF(TRIM(finding.cve_name), ''),
                                 NULLIF(TRIM(finding.name), ''),
                                 NULLIF(TRIM(finding.vulnerability_instance_id), '')
-                            ) IS NOT NULL
-                        ) AS cards_with_findings,
-                        COUNT(DISTINCT vulnerability_group.id)
-                            FILTER (WHERE vulnerability_group.truncated) AS truncated_groups,
+                              ) IS NOT NULL
+                        )) AS cards_with_findings,
+                        (
+                            SELECT COUNT(*)
+                            FROM asset_card_vulnerability_groups AS vulnerability_group
+                            JOIN asset_cards AS owner ON owner.asset_id = vulnerability_group.asset_id
+                            WHERE vulnerability_group.truncated
+                        ) AS truncated_groups,
                         MIN(card.last_seen) AS oldest_at,
                         MAX(card.last_seen) AS freshest_at
                     FROM asset_cards AS card
-                    LEFT JOIN asset_card_vulnerability_groups AS vulnerability_group
-                        ON vulnerability_group.asset_id = card.asset_id
-                    LEFT JOIN asset_card_vulnerabilities AS finding
-                        ON finding.group_id = vulnerability_group.id
                     """
                 ).fetchone()
                 or {}
             )
+            # The filtered join is the expensive part: run it once and aggregate the snapshot.
+            conn.execute(
+                f"CREATE TEMP TABLE {SUMMARY_FINDINGS_TABLE} ON COMMIT DROP AS "
+                + cte
+                + " SELECT * FROM filtered_findings",
+                params,
+            )
             totals_row = dict(
                 conn.execute(
-                    cte
+                    findings_cte
                     + """
                     , vulnerability_rollup AS (
                         SELECT selector, MIN(severity_rank) AS severity_rank
@@ -910,12 +925,11 @@ class VulnerabilityAnalyticsRepository:
                             AS unrated_vulnerabilities
                     FROM filtered_findings
                     """,
-                    params,
                 ).fetchone()
                 or {}
             )
             severity_rows = conn.execute(
-                cte
+                findings_cte
                 + """
                 SELECT
                     severity,
@@ -927,10 +941,9 @@ class VulnerabilityAnalyticsRepository:
                 GROUP BY severity
                 ORDER BY severity_rank
                 """,
-                params,
             ).fetchall()
             top_vulnerability_rows = conn.execute(
-                cte
+                findings_cte
                 + """
                 SELECT
                     aggregated.selector,
@@ -983,7 +996,6 @@ class VulnerabilityAnalyticsRepository:
                 ORDER BY aggregated.affected_hosts DESC, aggregated.findings DESC,
                     aggregated.selector ASC
                 """,
-                params,
             ).fetchall()
             fix_map: dict[Any, Any] = {}
             top_selectors = [row["selector"] for row in top_vulnerability_rows if row.get("selector")]
@@ -992,7 +1004,7 @@ class VulnerabilityAnalyticsRepository:
                 fix_rows = conn.execute(fix_sql, fix_params).fetchall()
                 fix_map = {row["selector"]: row.get("how_to_fix") for row in fix_rows}
             top_host_rows = conn.execute(
-                cte
+                findings_cte
                 + """
                 SELECT
                     asset_id,
@@ -1019,7 +1031,6 @@ class VulnerabilityAnalyticsRepository:
                     unique_vulnerabilities DESC, asset_id
                 LIMIT 8
                 """,
-                params,
             ).fetchall()
 
         coverage = {

@@ -250,17 +250,30 @@ class VmWorkflowRepository:
             )
 
     def overview(self) -> dict[str, Any]:
+        columns = "case_id,asset_id,title,cve,severity,status,due_at,verification_status"
+        # Same expression as idx_remediation_cases_open_attention so both reads walk that index.
+        rank = "CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END"
         with db.connect() as conn:
             row = conn.execute("""SELECT
               (SELECT COUNT(*) FROM vm_workflow_runs WHERE status IN ('queued','running','cancelling')) active_workflows,
               (SELECT COUNT(*) FROM operations WHERE status IN ('queued','running','cancelling','recovering')) active_operations,
-              (SELECT COUNT(*) FROM remediation_cases WHERE status IN ('open','in_progress') AND due_at<NOW()) overdue_cases,
-              (SELECT COUNT(*) FROM remediation_cases WHERE verification_status IN ('queued','running')) awaiting_verification,
-              (SELECT COUNT(*) FROM remediation_cases WHERE status IN ('open','in_progress')) open_cases,
-              (SELECT COUNT(*) FROM asset_cards) asset_count""").fetchone()
-            attention = conn.execute("""SELECT case_id,asset_id,title,cve,severity,status,due_at,verification_status
-              FROM remediation_cases WHERE status IN ('open','in_progress')
-              ORDER BY CASE WHEN due_at<NOW() THEN 0 ELSE 1 END,
-              CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,due_at NULLS LAST LIMIT 10""").fetchall()
+              cases.overdue_cases, cases.awaiting_verification, cases.open_cases,
+              (SELECT COUNT(*) FROM asset_cards) asset_count
+              FROM (SELECT
+                COUNT(*) FILTER (WHERE status IN ('open','in_progress') AND due_at<NOW()) overdue_cases,
+                COUNT(*) FILTER (WHERE verification_status IN ('queued','running')) awaiting_verification,
+                COUNT(*) FILTER (WHERE status IN ('open','in_progress')) open_cases
+                FROM remediation_cases) cases""").fetchone()
+            attention = conn.execute(
+                f"""SELECT {columns} FROM remediation_cases
+                WHERE status IN ('open','in_progress') AND due_at<NOW()
+                ORDER BY {rank},due_at LIMIT 10""").fetchall()
+            if len(attention) < 10:
+                attention += conn.execute(
+                    f"""SELECT {columns} FROM remediation_cases
+                    WHERE status IN ('open','in_progress') AND (due_at>=NOW() OR due_at IS NULL)
+                    ORDER BY {rank},due_at NULLS LAST LIMIT %s""",
+                    (10 - len(attention),),
+                ).fetchall()
         totals = dict(row) if row else {}
         return {**totals, "attention": [{**dict(item), "due_at": _iso(item.get("due_at"))} for item in attention]}

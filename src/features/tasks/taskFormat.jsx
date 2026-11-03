@@ -1,3 +1,5 @@
+import { taskStatusLabel } from "../../shared/labels.js";
+
 export function objectRecords(value) {
   return Array.isArray(value)
     ? value.filter(
@@ -44,26 +46,7 @@ export function formatCheckErrors(errors) {
   return typeof errors === "string" && errors ? ` · ${errors}` : "";
 }
 
-export function taskStatusLabel(value) {
-  return (
-    {
-      unknown: "Неизвестно",
-      running: "Выполняется",
-      in_progress: "Выполняется",
-      started: "Выполняется",
-      queued: "В очереди",
-      stopped: "Остановлена",
-      stopping: "Останавливается",
-      cancelled: "Остановлена",
-      failed: "Ошибка",
-      error: "Ошибка",
-      invalid: "Ошибка проверки",
-      created: "Не запускалась",
-      new: "Не запускалась",
-      idle: "Не запускалась",
-    }[value.toLowerCase()] || value
-  );
-}
+export { taskStatusLabel };
 
 export function StatusBadge({ status, result }) {
   const value = String(status || "unknown");

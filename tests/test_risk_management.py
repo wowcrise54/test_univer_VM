@@ -1,6 +1,7 @@
 import inspect
 
 from app import auth
+from app.repositories import risk as risk_repository
 from app.repositories.remediation import RemediationRepository
 from app.repositories.risk import MODEL_VERSION, RiskRepository, _risk_sql
 
@@ -18,7 +19,8 @@ def test_risk_model_is_versioned_and_bounded():
 
 
 def test_risk_queue_uses_materialized_exploitation_evidence_flag():
-    source = inspect.getsource(RiskRepository.queue)
+    # The queue and the summary share one source join, defined next to the repository.
+    source = inspect.getsource(RiskRepository.queue) + inspect.getsource(risk_repository)
     assert "vp.exploitation_evidence" in source
     assert "SIMILAR TO" not in source
     # Host-spread counts come from one pre-aggregated join, not a correlated

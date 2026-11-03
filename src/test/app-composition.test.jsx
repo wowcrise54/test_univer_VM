@@ -240,7 +240,9 @@ it("derives the active operation badge from rows when the summary has no active 
     return original(path, options);
   });
   page("/operations");
-  await screen.findByTitle("op-completed");
+  await screen.findByRole("button", {
+    name: "Скопировать ID операции: op-completed",
+  });
   expect(screen.getByRole("link", { name: "Операции" })).toHaveAttribute(
     "aria-current",
     "page",

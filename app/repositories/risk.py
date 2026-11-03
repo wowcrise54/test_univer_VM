@@ -31,6 +31,14 @@ def _risk_sql(alias: str = "x") -> str:
     ))::integer"""
 
 
+# Count and page must evaluate the same score, including host spread.
+_QUEUE_SOURCE_SQL = """FROM remediation_cases c
+    JOIN asset_cards card ON card.asset_id=c.asset_id
+    LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id
+    LEFT JOIN (SELECT vulnerability_key,COUNT(*) n FROM remediation_cases GROUP BY vulnerability_key) spread
+      ON spread.vulnerability_key=c.vulnerability_key"""
+
+
 class RiskRepository:
     def _validate(self, values: dict[str, Any]) -> dict[str, Any]:
         clean = {k: v for k, v in values.items() if k in {*CONTEXT_VALUES, "owner", "tags"}}
@@ -147,12 +155,7 @@ class RiskRepository:
         where = " AND ".join(clauses)
         limit = min(max(int(filters.get("limit", 50)), 1), 500)
         offset = max(int(filters.get("offset", 0)), 0)
-        # Count and page must evaluate the same score, including host spread.
-        source_sql = """FROM remediation_cases c
-            JOIN asset_cards card ON card.asset_id=c.asset_id
-            LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id
-            LEFT JOIN (SELECT vulnerability_key,COUNT(*) n FROM remediation_cases GROUP BY vulnerability_key) spread
-              ON spread.vulnerability_key=c.vulnerability_key"""
+        source_sql = _QUEUE_SOURCE_SQL
         with db.connect() as conn:
             total_row = conn.execute(
                 f"SELECT COUNT(*) count {source_sql} WHERE {where}",
@@ -205,8 +208,16 @@ class RiskRepository:
         }
 
     def summary(self) -> dict[str, Any]:
-        rows = self.queue(limit=500, offset=0)["rows"]
-        counts = {k: sum(r["risk_level"] == k for r in rows) for k in ("urgent", "high", "medium", "low")}
+        score = _risk_sql()
+        with db.connect() as conn:
+            row = conn.execute(
+                f"""SELECT COUNT(*) FILTER (WHERE risk_score >= 80) AS urgent,
+                  COUNT(*) FILTER (WHERE risk_score >= 60 AND risk_score < 80) AS high,
+                  COUNT(*) FILTER (WHERE risk_score >= 35 AND risk_score < 60) AS medium,
+                  COUNT(*) FILTER (WHERE risk_score < 35) AS low
+                  FROM (SELECT {score} risk_score {_QUEUE_SOURCE_SQL} WHERE c.status<>'resolved') scored"""
+            ).fetchone()
+        counts = {key: int((row or {}).get(key) or 0) for key in ("urgent", "high", "medium", "low")}
         return {**counts, "total": sum(counts.values()), "risk_model_version": MODEL_VERSION}
 
     def create_campaign(self, values: dict[str, Any], actor: str | None) -> dict[str, Any]:

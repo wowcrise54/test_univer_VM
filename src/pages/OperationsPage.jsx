@@ -6,8 +6,10 @@ import { api, createIdempotencyKey, downloadApiFile } from "../api/client.js";
 import {
   ActionMenu,
   Button,
+  CopyableId,
   Disclosure,
   Panel,
+  shortenId,
   useDialogAccessibility,
 } from "../shared/ui.jsx";
 import { SortableHeader, useTableSort } from "../shared/table.jsx";
@@ -460,15 +462,14 @@ export function OperationsPage({
                     <td>
                       <strong>{operationKindLabel(operation.kind)}</strong>
                       <small>{messageLabel(operation.message) || operation.stage}</small>
-                      <code title={operation.operation_id}>
-                        {shortId(operation.operation_id)}
-                      </code>
+                      <CopyableId
+                        value={operation.operation_id}
+                        label="ID операции"
+                      />
                     </td>
                     <td>
                       <span className="operation-subject">
-                        {operation.subject?.label ||
-                          operation.subject?.id ||
-                          "—"}
+                        <SubjectLabel subject={operation.subject} />
                       </span>
                     </td>
                     <td>
@@ -636,7 +637,7 @@ function OperationDetail({
           <div>
             <span>{operationKindLabel(operation.kind)}</span>
             <h2 id="operation-detail-title">
-              {operation.subject?.label || operation.operation_id}
+              {operation.subject?.label || shortenId(operation.operation_id)}
             </h2>
           </div>
           <button type="button" onClick={onClose} aria-label="Закрыть">
@@ -659,6 +660,12 @@ function OperationDetail({
           <div>
             <span>Обновлено</span>
             <strong>{formatDate(operation.updated_at)}</strong>
+          </div>
+          <div>
+            <span>ID операции</span>
+            <strong>
+              <CopyableId value={operation.operation_id} label="ID операции" />
+            </strong>
           </div>
         </div>
         {operation.message ? (
@@ -751,7 +758,7 @@ function OperationDetail({
           {operation.trace_id ? (
             <div className="trace-box">
               <span>Trace ID</span>
-              <code>{operation.trace_id}</code>
+              <CopyableId value={operation.trace_id} label="Trace ID" head={10} />
             </div>
           ) : null}
           <pre className="operation-raw-data">
@@ -775,7 +782,15 @@ function OperationDetail({
     : createPortal(drawer, document.body);
 }
 
-function shortId(value) {
-  const text = String(value || "");
-  return text.length > 18 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+const LONG_ID = /^[\w:.-]{20,}$/;
+
+/** Operation subjects are often raw UUIDs; show those in short, copyable form. */
+function SubjectLabel({ subject }) {
+  const text = String(subject?.label || subject?.id || "");
+  if (!text) return "—";
+  return LONG_ID.test(text) ? (
+    <CopyableId value={text} label="идентификатор объекта" />
+  ) : (
+    text
+  );
 }

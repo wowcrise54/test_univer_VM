@@ -9,6 +9,7 @@ from ..repositories.vulnerabilities import (
     VULNERABILITY_TRENDS_SCOPE,
     VulnerabilityAnalyticsRepository,
 )
+from .snapshot_cache import SnapshotCache
 
 TrendBucket = Literal["day", "week"]
 
@@ -41,9 +42,11 @@ def _next_bucket(value: datetime, bucket: TrendBucket) -> datetime:
 class VulnerabilityAnalyticsService:
     def __init__(self, repository: VulnerabilityAnalyticsRepository) -> None:
         self._repository = repository
+        self._snapshots = SnapshotCache(name="vulnerability-summary", ttl_seconds=60)
 
     def summary(self, **filters: Any) -> dict[str, Any]:
-        return self._repository.summary(**filters)
+        key = tuple(sorted((name, value) for name, value in filters.items() if value is not None))
+        return self._snapshots.get(key, lambda: self._repository.summary(**filters))
 
     def trending(self, *, limit: int = 20, context: str = "all") -> dict[str, Any]:
         return self._repository.trending(limit=limit, context=context)

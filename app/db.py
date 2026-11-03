@@ -860,6 +860,8 @@ ACTIVE_OPERATION_STATUSES = {"queued", "running", "cancelling", "recovering"}
 ATTENTION_OPERATION_STATUSES = {"failed", "interrupted", "completed_with_errors", "needs_attention"}
 CLEARABLE_OPERATION_STATUSES = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted", "needs_attention"}
 RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync", "automation_run"}
+# A running operation reports progress through updated_at; silence this long means its worker is gone.
+STALE_OPERATION_HOURS = 6
 
 
 def validated_sort_sql(sort_by: str | None, sort_dir: str | None, allowed: dict[str, str], *, default: str) -> tuple[str, str]:
@@ -1101,6 +1103,35 @@ def sync_operations_from_sources() -> None:
             finished_at=row.get("updated_at") if status not in ACTIVE_OPERATION_STATUSES else None,
             updated_at=row.get("updated_at"),
         )
+
+
+def interrupt_stale_operations(max_age_hours: float = STALE_OPERATION_HOURS) -> int:
+    """Close operations that look active but have not been updated for ``max_age_hours``.
+
+    Source rows that crashed mid-run (imports, removals, ad-hoc runner jobs) never reach a
+    terminal status on their own and would otherwise stay "active" forever. A worker that is
+    in fact still alive re-registers its real status on the next progress update.
+    """
+    init_db()
+    current = now_utc()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat(timespec="seconds")
+    message = f"Не обновлялась более {max_age_hours:g} ч; помечена прерванной автоматически."
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            UPDATE operations
+            SET status = 'interrupted', stage = 'interrupted', message = %s,
+                finished_at = COALESCE(finished_at, %s), updated_at = %s
+            WHERE status = ANY(%s) AND updated_at < %s
+            RETURNING *
+            """,
+            (message, current, current, sorted(ACTIVE_OPERATION_STATUSES), cutoff),
+        ).fetchall()
+        for row in rows:
+            _append_operation_event(conn, dict(row))
+    if rows:
+        log_event("app", "operations.stale.interrupted", count=len(rows), max_age_hours=max_age_hours)
+    return len(rows)
 
 
 def list_operations(
