@@ -74,35 +74,38 @@ def test_payload_builder_keeps_contract_without_groups():
     assert payload["include"] == {"assets": [], "targets": ["10.0.0.1"], "assetsGroups": []}
 
 
-def test_create_builds_payload_only_from_preset_and_selected_groups(service, repository):
-    result = service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-2", "g-1", "g-2"], name="Nightly",
-                            description="desc", unrestricted=False, idempotency_key="key-1")
+def test_create_builds_payload_only_from_preset_and_typed_targets(service, repository):
+    result = service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1", "10.0.0.2"],
+                            name="Nightly", description="desc", unrestricted=False, idempotency_key="key-1")
 
     payload = service.create_remote.call_args.args[0]
     assert payload["name"] == "[WIN] Nightly"
     assert payload["scope"] == "scope-1" and payload["profile"] == "profile-audit"
-    assert payload["include"] == {"assets": [], "targets": [], "assetsGroups": ["g-2", "g-1"]}
+    assert payload["include"] == {"assets": [], "targets": ["10.0.0.1", "10.0.0.2"], "assetsGroups": []}
     auth_ref = payload["overrides"]["transports"]["windows"]["wmi_and_rpc_and_re"]["connection"]["auth"]
     assert auth_ref == {"ref_value": "cred-win", "ref_type": "credential"}
     assert payload["agents"] == {"agentIds": ["agent-1"]}
     assert payload["triggerParameters"]["isEnabled"] is False
     repository.attach_task.assert_called_once()
-    assert repository.attach_task.call_args.kwargs["asset_groups"][0]["id"] == "g-2"
+    assert repository.attach_task.call_args.kwargs["asset_groups"] == []
     assert repository.attach_task.call_args.kwargs["preset_version"] == 3
     statuses = [call.kwargs["status"] for call in repository.register_operation.call_args_list]
     assert statuses == ["running", "completed"]
     assert result["idempotent_replay"] is False
 
 
-@pytest.mark.parametrize(("groups", "message"), [
-    ([], "хотя бы одну"),
-    (["g-1", "g-2", "g-3"], "не больше 2"),
-    (["g-9"], "не разрешены"),
-])
-def test_create_rejects_groups_outside_preset_policy(service, groups, message):
-    with pytest.raises(ValueError, match=message):
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=groups, name=None, description=None,
-                       unrestricted=False)
+@pytest.mark.parametrize("groups", [["g-1"], ["g-1", "g-2", "g-3"], ["g-9"]])
+def test_create_rejects_asset_groups_while_they_are_switched_off(service, groups):
+    with pytest.raises(ValueError, match="Группы активов пока недоступны"):
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=groups, targets=["10.0.0.1"], name=None,
+                       description=None, unrestricted=False)
+    service.create_remote.assert_not_called()
+
+
+def test_create_requires_at_least_one_target(service):
+    with pytest.raises(ValueError, match="хотя бы один IP-адрес"):
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=[], name=None,
+                       description=None, unrestricted=False)
     service.create_remote.assert_not_called()
 
 
@@ -119,13 +122,6 @@ def test_create_scans_ip_and_fqdn_targets_typed_by_engineer(service, repository)
     assert request["targets"] == ["srv01.corp.local", "10.0.0.15"]
 
 
-def test_create_combines_groups_and_targets(service):
-    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], targets=["10.0.1.0/24"],
-                   name="Mixed", description=None, unrestricted=False)
-    payload = service.create_remote.call_args.args[0]
-    assert payload["include"] == {"assets": [], "targets": ["10.0.1.0/24"], "assetsGroups": ["g-1"]}
-
-
 def test_create_accepts_any_well_formed_target(service):
     service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[],
                    targets=["192.168.5.0/24", "10.9.9.1-10.9.9.20", "other.example.com", "  "],
@@ -137,7 +133,7 @@ def test_create_accepts_any_well_formed_target(service):
 @pytest.mark.parametrize(("targets", "message"), [
     (["10.0.0.300"], "IP-адрес"),
     (["not a host"], "FQDN"),
-    (["   "], "хотя бы одну группу"),
+    (["   "], "хотя бы один IP-адрес"),
 ])
 def test_create_rejects_malformed_targets(service, targets, message):
     with pytest.raises(ValueError, match=message):
@@ -155,7 +151,7 @@ def test_host_discovery_without_profile_fails_before_mpvm(service, repository):
     service.create_remote.assert_not_called()
 
     repository.get.return_value = _preset(host_discovery_enabled=True, host_discovery_profile_id="hd-1")
-    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                    unrestricted=False)
     assert service.create_remote.call_args.args[0]["hostDiscovery"] == {"enabled": True, "profile": "hd-1"}
 
@@ -163,16 +159,16 @@ def test_host_discovery_without_profile_fails_before_mpvm(service, repository):
 def test_preset_of_another_team_is_invisible(service, repository):
     repository.get.return_value = _preset(role_ids=[LINUX_ROLE])
     with pytest.raises(LookupError):
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False)
-    assert service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+    assert service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                           unrestricted=True)["task"]
 
 
 def test_archived_preset_blocks_create_and_start(service, repository):
     repository.get.return_value = _preset(is_active=False)
     with pytest.raises(DomainError) as created:
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False)
     with pytest.raises(DomainError) as started:
         service.start("task-1", ENGINEER, idempotency_key=None, unrestricted=False)
@@ -183,21 +179,21 @@ def test_archived_preset_blocks_create_and_start(service, repository):
 def test_idempotent_create_replays_completed_operation(service, repository):
     repository.operation_by_key.return_value = {"kind": "team_task_create", "status": "completed",
                                                 "operation_id": "op-1", "result": {"mp_task_id": "task-1"}}
-    result = service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+    result = service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                             unrestricted=False, idempotency_key="key-1")
     assert result["idempotent_replay"] is True and result["operation_id"] == "op-1"
     service.create_remote.assert_not_called()
 
     repository.operation_by_key.return_value = {"kind": "task_delete", "status": "completed"}
     with pytest.raises(DomainError, match="другой операцией"):
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False, idempotency_key="key-1")
 
 
 def test_local_persist_failure_keeps_remote_task(service, repository):
     repository.record_task.side_effect = RuntimeError("db down")
     with pytest.raises(TeamTaskPersistError) as error:
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False)
     assert error.value.mp_task_id == "task-1"
     service.delete_task.assert_not_called()
@@ -211,7 +207,7 @@ def test_start_resyncs_payload_from_current_preset(service, repository):
 
     assert result == {"status": "started"}
     payload = repository.record_task.call_args.args[1]
-    assert payload["include"]["assetsGroups"] == ["g-1"] and payload["include"]["targets"] == []
+    assert payload["include"]["assetsGroups"] == [{"id": "g-1"}] and payload["include"]["targets"] == []
     assert payload["overrides"]["transports"]["windows"]["wmi_and_rpc_and_re"]["connection"]["auth"]["ref_value"] == "cred-rotated"
     assert payload["description"] == "nightly"
     service.start_task.assert_called_once_with("task-1", {"precheck_enabled": True}, "start-1", "win.eng")
@@ -261,11 +257,17 @@ def test_foreign_task_is_not_found_for_every_action(service, repository):
     service.delete_task.assert_not_called()
 
 
-def test_update_keeps_name_and_rebuilds_groups(service, repository):
-    service.update("task-1", ENGINEER, asset_group_ids=["g-3"], name=None, description=None, unrestricted=False)
+def test_update_keeps_name_and_rebuilds_targets(service, repository):
+    with pytest.raises(ValueError, match="Группы активов пока недоступны"):
+        service.update("task-1", ENGINEER, asset_group_ids=["g-3"], targets=["10.0.0.1"], name=None,
+                       description=None, unrestricted=False)
+    service.update_remote.assert_not_called()
+
+    service.update("task-1", ENGINEER, asset_group_ids=[], targets=["10.0.0.20"], name=None, description=None,
+                   unrestricted=False)
     task_id, payload = service.update_remote.call_args.args
     assert task_id == "task-1" and payload["name"] == "[WIN] Servers"
-    assert payload["include"]["assetsGroups"] == ["g-3"] and payload["description"] == "nightly"
+    assert payload["include"]["targets"] == ["10.0.0.20"] and payload["description"] == "nightly"
 
     service.update("task-1", ENGINEER, asset_group_ids=[], targets=["10.0.0.15"], name=None, description=None,
                    unrestricted=False)
@@ -293,7 +295,7 @@ def http(service):
 
 def test_create_rejects_client_supplied_scan_settings(http, service):
     client, _ = http
-    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID, "asset_group_ids": ["g-1"],
+    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID, "targets": ["10.0.0.1"],
                                                     "credential_id": "attacker-cred"})
     assert response.status_code == 422
     service.create_remote.assert_not_called()
@@ -302,7 +304,7 @@ def test_create_rejects_client_supplied_scan_settings(http, service):
 def test_create_and_start_uses_derived_idempotency_key(http, service):
     client, audit = http
     response = client.post("/api/team-tasks", headers={"X-Idempotency-Key": "abc"},
-                           json={"preset_id": PRESET_ID, "asset_group_ids": ["g-1"], "start_now": True})
+                           json={"preset_id": PRESET_ID, "targets": ["10.0.0.1"], "start_now": True})
     assert response.status_code == 201, response.text
     assert response.json()["start"] == {"status": "started"}
     assert service.start_task.call_args.args[2] == "abc:start"
@@ -364,7 +366,7 @@ def test_engineer_roles_are_seeded_as_system_roles():
 
 def test_update_stop_delete_and_jobs_routes(http, service, repository):
     client, audit = http
-    assert client.put("/api/team-tasks/task-1", json={"asset_group_ids": ["g-2"], "name": "Renamed"}).status_code == 200
+    assert client.put("/api/team-tasks/task-1", json={"targets": ["10.0.0.2"], "name": "Renamed"}).status_code == 200
     assert service.update_remote.call_args.args[1]["name"] == "[WIN] Renamed"
     assert client.post("/api/team-tasks/task-1/stop").json() == {"stopped": True}
     response = client.post("/api/team-tasks/task-1/delete", headers={"X-Idempotency-Key": "del-1"})
@@ -387,7 +389,7 @@ def test_list_and_replayed_create_are_not_audited_twice(http, service, repositor
     repository.operation_by_key.return_value = {"kind": "team_task_create", "status": "completed",
                                                 "operation_id": "op-1", "result": {"mp_task_id": "task-1"}}
     response = client.post("/api/team-tasks", headers={"X-Idempotency-Key": "abc"},
-                           json={"preset_id": PRESET_ID, "asset_group_ids": ["g-1"]})
+                           json={"preset_id": PRESET_ID, "targets": ["10.0.0.1"]})
     assert response.status_code == 201 and response.json()["idempotent_replay"] is True
     audit.assert_not_called()
 
@@ -400,7 +402,7 @@ def test_list_and_replayed_create_are_not_audited_twice(http, service, repositor
 def test_infrastructure_errors_on_create(http, service, error, status, code):
     client, _ = http
     service.create_remote.side_effect = error
-    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID, "asset_group_ids": ["g-1"]})
+    response = client.post("/api/team-tasks", json={"preset_id": PRESET_ID, "targets": ["10.0.0.1"]})
     assert response.status_code == status
     assert response.json()["detail"]["code"] == code
 
@@ -414,7 +416,7 @@ def test_unexpected_errors_are_not_masked(http, service):
 def test_mpvm_failure_marks_create_operation_failed(service, repository):
     service.create_remote.side_effect = MpVmApiError("down")
     with pytest.raises(MpVmApiError):
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False)
     assert repository.register_operation.call_args_list[-1].kwargs["status"] == "failed"
 
@@ -422,10 +424,37 @@ def test_mpvm_failure_marks_create_operation_failed(service, repository):
 def test_incomplete_replay_and_auto_name(service, repository):
     repository.operation_by_key.return_value = {"kind": "team_task_create", "status": "failed", "result": {}}
     with pytest.raises(DomainError, match="не завершилась"):
-        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                        unrestricted=False, idempotency_key="k")
     repository.operation_by_key.return_value = None
     repository.get.return_value = _preset(name_prefix="")
-    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name=None, description=None,
                    unrestricted=False)
-    assert service.create_remote.call_args.args[0]["name"].startswith("Servers ")
+    assert service.create_remote.call_args.args[0]["name"].startswith("10.0.0.1 ")
+
+
+def test_payload_sends_json_objects_even_when_preset_stores_strings_or_agent_objects(service, repository):
+    repository.get.return_value = _preset(
+        trigger_parameters='{"isEnabled": false, "type": "Daily"}',
+        denied_scan_settings="not json",
+        agent_ids=[{"id": "agent-1", "name": "Collector"}, "agent-2", None],
+    )
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name="N", description="", unrestricted=False)
+
+    payload = service.create_remote.call_args.args[0]
+    assert payload["triggerParameters"] == {"isEnabled": False, "type": "Daily"}
+    assert payload["deniedScanSettings"] == {"isEnabled": False, "periods": []}
+    assert payload["agents"] == {"agentIds": ["agent-1", "agent-2"]}
+
+
+def test_remote_create_failure_logs_payload_shape_without_values(service, repository):
+    from unittest.mock import patch
+
+    service.create_remote.side_effect = RuntimeError("BadRequest")
+    with patch("app.services.team_tasks.log_event") as log_event, pytest.raises(RuntimeError):
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"], name="Secret name", description="", unrestricted=False)
+
+    fields = log_event.call_args.kwargs
+    assert fields["payload_shape"]["include"]["targets"] == ["str"]
+    assert fields["payload_shape"]["name"] == "str"
+    assert "Secret name" not in str(fields)

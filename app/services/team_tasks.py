@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import builtins
+import json
 import threading
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from ..diagnostics import log_event
 from ..domain.errors import DomainError
 from ..domain.scan_targets import normalize_scan_targets
 from ..mpvm_client import build_scanner_task_payload
@@ -20,6 +22,31 @@ TaskAction = Callable[[str], dict[str, Any]]
 TaskDeleter = Callable[[str, str | None], dict[str, Any]]
 
 MAX_TASK_NAME = 200
+
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    """MP VM rejects a non-object where it expects one ("Unable to cast jToken to JObject")."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) and value else None
+
+
+def _agent_ids(value: Any) -> builtins.list[str]:
+    items = value if isinstance(value, list) else []
+    ids = [item.get("id") if isinstance(item, dict) else item for item in items]
+    return [str(item) for item in ids if item]
+
+
+def _payload_shape(value: Any, depth: int = 0) -> Any:
+    """JSON types of a payload, without values, for diagnosing MP VM validation errors."""
+    if isinstance(value, dict) and depth < 4:
+        return {key: _payload_shape(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [type(item).__name__ for item in value[:3]] or "list(empty)"
+    return type(value).__name__
 
 
 class TeamTaskPersistError(RuntimeError):
@@ -96,6 +123,10 @@ class TeamTasksService:
         try:
             mp_task_id = self.create_remote(payload)
         except Exception as exc:
+            log_event(
+                "app", "team_task.create_remote.failed", level=40, preset_id=preset["preset_id"],
+                payload_shape=_payload_shape(payload), error=str(exc)[:300],
+            )
             self._finish_operation(operation_id, operation, status="failed", message="MP VM не создал задачу.",
                                    error={"message": str(exc)[:1000]})
             raise
@@ -206,22 +237,15 @@ class TeamTasksService:
         groups = cls._selected_groups(preset, asset_group_ids)
         selected_targets = cls._typed_targets(targets)
         if not groups and not selected_targets:
-            raise ValueError("Выберите хотя бы одну группу активов, IP-адрес или FQDN.")
+            raise ValueError("Укажите хотя бы один IP-адрес, подсеть или FQDN.")
         return groups, selected_targets
 
     @staticmethod
     def _selected_groups(preset: dict[str, Any], asset_group_ids: builtins.list[str]) -> builtins.list[dict[str, Any]]:
-        requested = list(dict.fromkeys(str(value).strip() for value in asset_group_ids if str(value).strip()))
-        if not requested:
-            return []
-        limit = int(preset.get("max_groups_per_task") or 1)
-        if len(requested) > limit:
-            raise ValueError(f"Пресет разрешает не больше {limit} групп в одной задаче.")
-        allowed = {str(group["id"]): group for group in preset.get("allowed_asset_groups") or []}
-        forbidden = [value for value in requested if value not in allowed]
-        if forbidden:
-            raise ValueError(f"Группы не разрешены пресетом: {', '.join(forbidden)}.")
-        return [allowed[value] for value in requested]
+        # Asset groups are switched off for now: tasks are scanned by typed targets only.
+        if any(str(value).strip() for value in asset_group_ids):
+            raise ValueError("Группы активов пока недоступны: укажите IP-адреса, подсети или FQDN.")
+        return []
 
     @staticmethod
     def _typed_targets(targets: builtins.list[str]) -> builtins.list[str]:
@@ -270,15 +294,15 @@ class TeamTasksService:
             scope_id=preset["scope_id"],
             profile_id=preset["profile_id"],
             include_targets=list(targets),
-            agent_ids=list(preset.get("agent_ids") or []),
+            agent_ids=_agent_ids(preset.get("agent_ids")),
             credential_id=preset.get("credential_id"),
             credential_transport=preset.get("credential_transport") or "windows",
             host_discovery_enabled=bool(preset.get("host_discovery_enabled")),
             host_discovery_profile_id=preset.get("host_discovery_profile_id"),
             time_zone=preset.get("time_zone") or "+05:00",
             is_fqdn_priority=bool(preset.get("is_fqdn_priority", True)),
-            trigger_parameters=preset.get("trigger_parameters"),
-            denied_scan_settings=preset.get("denied_scan_settings"),
+            trigger_parameters=_json_object(preset.get("trigger_parameters")),
+            denied_scan_settings=_json_object(preset.get("denied_scan_settings")),
             include_asset_group_ids=[str(group["id"]) for group in groups],
         )
 

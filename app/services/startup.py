@@ -24,7 +24,10 @@ def database_startup_steps(runtime: Any) -> list[tuple[str, Callable[[], Any]]]:
         ("postprocess_leases", lambda: runtime.db.release_scan_postprocess_leases()),
         ("operations", lambda: runtime.db.sync_operations_from_sources()),
         ("snapshot", lambda: runtime.CONTAINER.services.vulnerabilities.ensure_baseline()),
-        ("remediation", lambda: runtime.CONTAINER.services.remediation.reconcile_all()),
+        # Walks every asset one by one; the API does not need it to start serving.
+        ("remediation", lambda: runtime.CONTAINER.operation_runner.submit(
+            "maintenance", runtime.CONTAINER.services.remediation.reconcile_all,
+        )),
         ("digest", lambda: runtime.CONTAINER.services.remediation.ensure_daily_digest(
             webhook_enabled=bool(runtime.SETTINGS.automation_webhook_url),
         )),

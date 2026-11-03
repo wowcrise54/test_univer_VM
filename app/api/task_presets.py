@@ -43,7 +43,8 @@ class TaskPresetRequest(BaseModel):
     trigger_parameters: TaskTriggerParameters | None = None
     denied_scan_settings: DeniedScanSettings | None = None
     start_options: StartScannerTaskRequest = Field(default_factory=StartScannerTaskRequest)
-    allowed_asset_groups: list[AssetGroupRef] = Field(min_length=1, max_length=500)
+    # Asset groups are switched off for now: presets are scanned by typed targets only.
+    allowed_asset_groups: list[AssetGroupRef] = Field(default_factory=list, max_length=500)
     max_groups_per_task: int = Field(default=5, ge=1, le=100)
     max_active_tasks: int | None = Field(default=None, ge=1, le=100)
     name_prefix: str = Field(default="", max_length=60)

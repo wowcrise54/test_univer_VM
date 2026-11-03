@@ -1220,7 +1220,8 @@ def build_scanner_task_payload(
         "include": {
             "assets": [],
             "targets": include_targets,
-            "assetsGroups": list(include_asset_group_ids or []),
+            # MP VM expects group objects, not bare ids ("Unable to cast jToken to JObject").
+            "assetsGroups": [{"id": str(group_id)} for group_id in include_asset_group_ids or []],
         },
         "exclude": {
             "assets": [],

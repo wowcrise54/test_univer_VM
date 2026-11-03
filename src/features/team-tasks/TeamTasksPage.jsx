@@ -11,6 +11,7 @@ import {
   useDialogAccessibility,
 } from "../../shared/ui.jsx";
 import { OS_LABELS } from "../task-presets/presetForm.js";
+import { TeamTaskDetails } from "./TeamTaskDetails.jsx";
 
 const ACTIVE_POSTPROCESS = new Set([
   "monitoring",
@@ -111,6 +112,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const [createPreset, setCreatePreset] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [historyTaskId, setHistoryTaskId] = useState(null);
+  const [detailsTaskId, setDetailsTaskId] = useState(null);
   const [osFilter, setOsFilter] = useState("");
 
   const presetsQuery = useQuery({
@@ -133,6 +135,8 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const tasks = (tasksQuery.data?.rows || []).filter(
     (task) => !osFilter || task.os_family === osFilter,
   );
+
+  const detailsTask = tasks.find((task) => task.mp_task_id === detailsTaskId);
 
   const refreshTasks = () =>
     queryClient.invalidateQueries({ queryKey: ["team-tasks"] });
@@ -207,14 +211,6 @@ export function TeamTasksPage({ currentUser, showAlert }) {
               {preset.description ? <p>{preset.description}</p> : null}
               <dl>
                 <div>
-                  <dt>Группы</dt>
-                  <dd>{(preset.allowed_asset_groups || []).length}</dd>
-                </div>
-                <div>
-                  <dt>В задаче</dt>
-                  <dd>до {preset.max_groups_per_task}</dd>
-                </div>
-                <div>
                   <dt>Запуск</dt>
                   <dd>
                     {preset.trigger_parameters ? "По расписанию" : "Разовый"}
@@ -259,7 +255,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
               <tr>
                 <th scope="col">Задача</th>
                 <th scope="col">Пресет</th>
-                <th scope="col">Группы</th>
+                <th scope="col">Цели</th>
                 <th scope="col">Автор</th>
                 <th scope="col">Состояние</th>
                 <th scope="col">
@@ -285,6 +281,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                       actionMutation.mutate({ task, action: "stop" })
                     }
                     onDelete={() => setDeleteTarget(task)}
+                    onOpenDetails={() => setDetailsTaskId(task.mp_task_id)}
                     onToggleHistory={() =>
                       setHistoryTaskId((current) =>
                         current === task.mp_task_id ? null : task.mp_task_id,
@@ -304,6 +301,14 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           </table>
         </div>
       </Panel>
+
+      {detailsTask ? (
+        <TeamTaskDetails
+          task={detailsTask}
+          running={isTeamTaskRunning(detailsTask)}
+          onClose={() => setDetailsTaskId(null)}
+        />
+      ) : null}
 
       {createPreset ? (
         <CreateTeamTaskDialog
@@ -342,6 +347,7 @@ function TeamTaskRow({
   onStart,
   onStop,
   onDelete,
+  onOpenDetails,
   onToggleHistory,
 }) {
   const groups = task.preset_asset_groups || [];
@@ -349,7 +355,14 @@ function TeamTaskRow({
   const scope = [...groups.map((group) => group.name || group.id), ...targets];
   return (
     <>
-      <tr>
+      <tr
+        className="team-task-row"
+        title="Двойной клик — ход выполнения"
+        onDoubleClick={(event) => {
+          if (!event.target.closest("button, a, input, select, textarea"))
+            onOpenDetails();
+        }}
+      >
         <td>
           <strong>{task.name}</strong>
           <small className="preset-muted">
@@ -393,6 +406,9 @@ function TeamTaskRow({
                 Запустить
               </Button>
             )}
+            <Button variant="tiny" onClick={onOpenDetails}>
+              Ход выполнения
+            </Button>
             <Button
               variant="tiny"
               aria-expanded={historyOpen}
@@ -456,15 +472,12 @@ function TeamTaskHistory({ taskId }) {
 
 function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
   const titleId = useId();
-  const [selected, setSelected] = useState([]);
   const [targetsText, setTargetsText] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [search, setSearch] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState(() =>
     createIdempotencyKey("team-task"),
   );
-  const limit = Number(preset.max_groups_per_task || 1);
 
   const createMutation = useMutation({
     mutationFn: (startNow) =>
@@ -475,7 +488,6 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         },
         body: JSON.stringify({
           preset_id: preset.preset_id,
-          asset_group_ids: selected,
           targets,
           name: name.trim() || null,
           description: description.trim() || null,
@@ -505,23 +517,8 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
     createMutation.isPending ? undefined : onClose,
   );
 
-  const query = search.trim().toLocaleLowerCase("ru-RU");
-  const groups = (preset.allowed_asset_groups || []).filter(
-    (group) =>
-      !query ||
-      String(group.path || group.name || group.id)
-        .toLocaleLowerCase("ru-RU")
-        .includes(query),
-  );
-  const toggle = (id) =>
-    setSelected((current) =>
-      current.includes(id)
-        ? current.filter((value) => value !== id)
-        : [...current, id],
-    );
   const targets = parseTargets(targetsText);
-  const overLimit = selected.length > limit;
-  const blocked = (!selected.length && !targets.length) || overLimit;
+  const blocked = !targets.length;
 
   const dialog = (
     <div
@@ -543,38 +540,6 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
         <h2 id={titleId}>{preset.name}</h2>
         {preset.description ? <p>{preset.description}</p> : null}
         <fieldset className="preset-fieldset">
-          <legend>
-            Группы · {selected.length}/{limit}
-          </legend>
-          <input
-            type="search"
-            value={search}
-            placeholder="Поиск группы"
-            aria-label="Поиск группы активов"
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          <div className="preset-group-list">
-            {groups.map((group) => (
-              <label className="toggle" key={group.id}>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(group.id)}
-                  onChange={() => toggle(group.id)}
-                />
-                <span>{group.path || group.name || group.id}</span>
-              </label>
-            ))}
-            {!groups.length ? (
-              <p className="preset-muted">Группы не найдены.</p>
-            ) : null}
-          </div>
-          {overLimit ? (
-            <p className="preset-error" role="alert">
-              Пресет разрешает не больше {limit} групп в одной задаче.
-            </p>
-          ) : null}
-        </fieldset>
-        <fieldset className="preset-fieldset">
           <legend>IP-адреса, подсети и FQDN · указано {targets.length}</legend>
           <textarea
             rows={3}
@@ -584,7 +549,7 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
             onChange={(event) => setTargetsText(event.target.value)}
           />
           <small className="preset-muted">
-            По одному в строке; можно без групп.
+            По одному в строке.
           </small>
         </fieldset>
         <Field label="Название">

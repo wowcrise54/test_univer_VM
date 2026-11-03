@@ -56,7 +56,10 @@ def build_compliance_dataset(
     *,
     scope: ComplianceScope,
     assessment_date: date,
+    missing_ip_rows: int | None = None,
 ) -> ComplianceDataset:
+    """``missing_ip_rows`` replaces the in-memory missing-IP row count when the
+    caller pre-filtered ``rows`` to critical findings only."""
     scoped = [dict(row) for row in rows if _in_scope(dict(row), scope)]
     assets_by_id: dict[str, dict[str, Any]] = {}
     invalid_ip_count = 0
@@ -64,7 +67,7 @@ def build_compliance_dataset(
         asset_id = str(row.get("asset_id") or "")
         if not asset_id:
             continue
-        if not row.get("ip_address"):
+        if missing_ip_rows is None and not row.get("ip_address"):
             invalid_ip_count += 1
         assets_by_id.setdefault(asset_id, _asset_row(row, assessment_date))
 
@@ -131,7 +134,9 @@ def build_compliance_dataset(
         findings=tuple(findings),
         assets=assets,
         stale_assets=stale_assets,
-        diagnostics={"invalid_or_missing_ip": invalid_ip_count},
+        diagnostics={
+            "invalid_or_missing_ip": invalid_ip_count if missing_ip_rows is None else missing_ip_rows
+        },
     )
 
 
@@ -148,6 +153,8 @@ class ComplianceRepository:
     }
 
     def _rows(self, asset_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """Every asset once, plus only its critical findings: the dataset never
+        reads other severities, and loading all of them took ~30 s per request."""
         db.init_db()
         selected = list(dict.fromkeys(asset_ids or [])) or None
         with db.connect() as conn:
@@ -166,12 +173,32 @@ class ComplianceRepository:
                     ON vulnerability_group.asset_id = card.asset_id
                 LEFT JOIN asset_card_vulnerabilities AS finding
                     ON finding.group_id = vulnerability_group.id
+                   AND LOWER(TRIM(COALESCE(finding.severity, ''))) = 'critical'
                 WHERE (%s::text[] IS NULL OR card.asset_id = ANY(%s))
                 ORDER BY card.asset_id, finding.id
                 """,
                 (selected, selected),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def _missing_ip_rows(self, asset_ids: list[str] | None = None) -> int:
+        """Rows (one per group/finding, at least one per asset) of assets without an IP."""
+        selected = list(dict.fromkeys(asset_ids or [])) or None
+        with db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM asset_cards AS card
+                LEFT JOIN asset_card_vulnerability_groups AS vulnerability_group
+                    ON vulnerability_group.asset_id = card.asset_id
+                LEFT JOIN asset_card_vulnerabilities AS finding
+                    ON finding.group_id = vulnerability_group.id
+                WHERE COALESCE(card.ip_address, '') = ''
+                  AND (%s::text[] IS NULL OR card.asset_id = ANY(%s))
+                """,
+                (selected, selected),
+            ).fetchone()
+        return int(row["n"] or 0)
 
     def dataset(
         self,
@@ -180,8 +207,13 @@ class ComplianceRepository:
         assessment_date: date,
         asset_ids: list[str] | None = None,
     ) -> ComplianceDataset:
+        # Assets without an IP are never in the internet scope.
+        missing_ip_rows = 0 if scope == "internet" else self._missing_ip_rows(asset_ids)
         return build_compliance_dataset(
-            self._rows(asset_ids), scope=scope, assessment_date=assessment_date
+            self._rows(asset_ids),
+            scope=scope,
+            assessment_date=assessment_date,
+            missing_ip_rows=missing_ip_rows,
         )
 
     def summary(self, *, scope: ComplianceScope, assessment_date: date) -> dict[str, Any]:

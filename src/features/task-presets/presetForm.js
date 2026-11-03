@@ -95,9 +95,8 @@ export function formToPayload(form) {
         ? form.precheck_profile_id || null
         : null,
     },
-    allowed_asset_groups: form.allowed_asset_groups.map((group) => ({
-      id: group.id,
-    })),
+    // Asset groups are switched off for now; presets scan typed targets only.
+    allowed_asset_groups: [],
     max_groups_per_task: Number(form.max_groups_per_task) || 1,
     max_active_tasks:
       form.max_active_tasks === "" || form.max_active_tasks === null
@@ -116,8 +115,6 @@ export function presetFormProblems(form) {
   if (!form.scope_id) problems.push("Выберите инфраструктуру.");
   if (!form.profile_id) problems.push("Выберите профиль сканирования.");
   if (!form.role_ids.length) problems.push("Выберите хотя бы одну роль.");
-  if (!form.allowed_asset_groups.length)
-    problems.push("Добавьте хотя бы одну разрешённую группу активов.");
   if (form.host_discovery_enabled && !form.host_discovery_profile_id)
     problems.push("Выберите профиль обнаружения хостов.");
   if (!/^[+-]\d{2}:\d{2}$/.test(form.time_zone.trim()))

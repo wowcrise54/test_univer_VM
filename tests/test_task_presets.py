@@ -70,12 +70,12 @@ def test_flatten_asset_groups_builds_paths_and_skips_groups_without_id():
     ]
 
 
-def test_create_normalizes_and_uses_server_group_names(service, repository):
+def test_create_normalizes_and_drops_asset_groups(service, repository):
     preset = service.create(_values(), [11], actor="admin")
     values = repository.create.call_args.args[0]
     assert values["name"] == "Linux audit" and values["name_prefix"] == "[LNX]"
     assert values["host_discovery_profile_id"] is None
-    assert values["allowed_asset_groups"] == [{"id": "g-2", "name": "DB", "path": "Root / Linux servers / DB"}]
+    assert values["allowed_asset_groups"] == []
     assert preset["role_ids"] == [11]
 
 
@@ -83,11 +83,9 @@ def test_create_normalizes_and_uses_server_group_names(service, repository):
     ({"credential_transport": "windows"}, [11], "Транспорт"),
     ({}, [], "хотя бы одну роль"),
     ({}, [11, 99], "Роли не найдены: 99"),
-    ({"allowed_asset_groups": []}, [11], "разрешённую группу"),
     ({"profile_id": "missing"}, [11], "Профиль сканирования missing"),
     ({"credential_id": "missing"}, [11], "Учётная запись missing"),
     ({"start_options": {"precheck_profile_id": "missing"}}, [11], "precheck"),
-    ({"allowed_asset_groups": [{"id": "g-404"}]}, [11], "g-404"),
     ({"host_discovery_enabled": True, "host_discovery_profile_id": ""}, [11], "профиль"),
 ])
 def test_create_rejects_invalid_presets(service, repository, overrides, roles, message):
@@ -128,13 +126,13 @@ def test_draft_from_ssh_task():
         "mp_task_id": "task-1", "credential_id": "cred-ssh",
         "payload": {"name": "Linux nightly", "scope": "scope-1", "profile": "profile-audit",
                     "overrides": {"transports": {"terminal": {"ssh": {}}}},
-                    "include": {"targets": ["10.0.0.1"], "assetsGroups": ["g-1"]},
+                    "include": {"targets": ["10.0.0.1"], "assetsGroups": [{"id": "g-1", "name": "Servers"}, "g-2"]},
                     "triggerParameters": {"isEnabled": False, "timeZone": "+03:00"},
                     "agents": {"agentIds": ["agent-1"]}},
     })
     assert draft["os_family"] == "linux" and draft["credential_transport"] == "ssh"
     assert draft["trigger_parameters"] is None and draft["time_zone"] == "+03:00"
-    assert draft["allowed_asset_groups"] == [{"id": "g-1"}] and draft["agent_ids"] == ["agent-1"]
+    assert draft["allowed_asset_groups"] == [] and draft["agent_ids"] == ["agent-1"]
 
 
 def test_template_catalogue_follows_the_mpvm_recommendations():
@@ -240,7 +238,6 @@ def test_create_update_archive_are_audited(http):
 
 @pytest.mark.parametrize("body", [
     _request_body(role_ids=[]),
-    _request_body(allowed_asset_groups=[]),
     _request_body(time_zone="Europe/Moscow"),
     _request_body(password="secret"),
     _request_body(start_options={"precheck_timeout_minutes": 0}),
@@ -358,3 +355,8 @@ def test_service_requires_configured_providers_and_handles_update_misses(reposit
 
 def test_asset_groups_are_flattened_for_the_editor(service):
     assert service.asset_groups()["rows"][-1]["path"] == "Root / Linux servers / DB"
+
+
+def test_preset_request_does_not_require_asset_groups():
+    request = task_presets_api.TaskPresetRequest.model_validate(_request_body(allowed_asset_groups=[]))
+    assert request.preset_values()["allowed_asset_groups"] == []
