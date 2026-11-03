@@ -1468,7 +1468,7 @@ function SeverityBreakdown({ rows, selectedSeverity, onSelect }) {
   return (
     <InsightCard
       title="Распределение по критичности"
-      description="Количество findings и затронутых хостов"
+      description="Количество находок и затронутых хостов"
     >
       {rows.length ? (
         <div className="severity-bars">
@@ -1564,8 +1564,8 @@ function TopHosts({ rows, onSelect }) {
   );
   return (
     <InsightCard
-      title="Хосты по числу findings"
-      description="Рейтинг по количеству findings"
+      title="Хосты по числу находок"
+      description="Рейтинг по количеству находок"
     >
       {rows.length ? (
         <ol className="vulnerability-ranking vulnerability-ranking--hosts">
@@ -1599,7 +1599,7 @@ function TopHosts({ rows, onSelect }) {
                   </strong>
                   <span>{row.ip_address || row.fqdn || "Адрес не указан"}</span>
                   <small>
-                    {formatCount(findings)} findings ·{" "}
+                    {formatCount(findings)} находок ·{" "}
                     {formatCount(row.unique_vulnerabilities)} уязвимостей
                   </small>
                 </span>

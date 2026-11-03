@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { operationKindLabel, operationStatusLabel } from "../shared/labels.js";
+import { operationKindLabel, operationStatusLabel, messageLabel } from "../shared/labels.js";
 import { formatDate } from "../shared/format.js";
 import { createPortal } from "react-dom";
 import { api, createIdempotencyKey, downloadApiFile } from "../api/client.js";
@@ -459,7 +459,7 @@ export function OperationsPage({
                     </td>
                     <td>
                       <strong>{operationKindLabel(operation.kind)}</strong>
-                      <small>{operation.message || operation.stage}</small>
+                      <small>{messageLabel(operation.message) || operation.stage}</small>
                       <code title={operation.operation_id}>
                         {shortId(operation.operation_id)}
                       </code>
@@ -662,7 +662,7 @@ function OperationDetail({
           </div>
         </div>
         {operation.message ? (
-          <p className="operation-message">{operation.message}</p>
+          <p className="operation-message">{messageLabel(operation.message)}</p>
         ) : null}
         <div className="operation-detail-actions">
           {operation.can_cancel ? (
@@ -738,7 +738,7 @@ function OperationDetail({
                     {operationStatusLabel(event.status)} · {event.stage}
                   </strong>
                   <small>
-                    {event.message || "Изменение состояния"} ·{" "}
+                    {messageLabel(event.message) || "Изменение состояния"} ·{" "}
                     {formatDate(event.created_at)}
                   </small>
                 </p>

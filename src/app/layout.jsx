@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client.js";
 import { searchTypeLabel } from "../shared/labels.js";
 import { ActionMenu } from "../shared/ui.jsx";
@@ -55,9 +55,48 @@ export function Sidebar({
   const secondaryRoutes = visibleRoutes.filter(
     (route) => route.group !== "primary",
   );
-  const secondaryActive = secondaryRoutes.some(
-    (route) => route.path === activePath,
-  );
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
+
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!moreRef.current?.contains(event.target)) setMoreOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setMoreOpen(false);
+      moreRef.current?.querySelector("summary")?.focus({ preventScroll: true });
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [moreOpen]);
+
+  useEffect(() => setMoreOpen(false), [activePath]);
+
+  // The panel is fixed so the scrolling mobile nav cannot clip it.
+  const [morePos, setMorePos] = useState(null);
+  useLayoutEffect(() => {
+    if (!moreOpen) return undefined;
+    const place = () => {
+      const rect = moreRef.current?.querySelector("summary")?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(280, window.innerWidth - 16);
+      setMorePos({
+        top: rect.bottom + 4,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        width,
+        maxHeight: Math.max(160, window.innerHeight - rect.bottom - 16),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [moreOpen]);
 
   useEffect(() => {
     if (
@@ -72,7 +111,29 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand__mark">MP</div>
+        <svg
+          className="brand__mark"
+          viewBox="0 0 24 24"
+          width="22"
+          height="22"
+          aria-hidden="true"
+        >
+          <path
+            d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M8 15V9l4 4 4-4v6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
         <strong>VM Client</strong>
       </div>
       <nav ref={navRef} className="nav" aria-label="Основная навигация">
@@ -88,8 +149,14 @@ export function Sidebar({
           ))}
         </div>
         {secondaryRoutes.length ? (
-          <details className="nav-more" open={secondaryActive}>
+          <details
+            className="nav-more"
+            ref={moreRef}
+            open={moreOpen}
+            onToggle={(event) => setMoreOpen(event.currentTarget.open)}
+          >
             <summary>Ещё</summary>
+            <div className="nav-more__panel" style={morePos || undefined}>
             {navigationGroups
               .filter((group) => group.id !== "primary")
               .map((group) => {
@@ -124,6 +191,7 @@ export function Sidebar({
                   </div>
                 );
               })}
+            </div>
           </details>
         ) : null}
         <span className="nav-scroll-hint" aria-hidden="true">
@@ -150,6 +218,7 @@ function NavLink({ route, activePath, activeOperations, onNavigate }) {
           ? `Операции — активных: ${activeOperations}`
           : undefined
       }
+      title={route.label}
       className={`nav-link${activePath === route.path ? " is-active" : ""}`}
       data-route-id={route.id}
       data-active={activePath === route.path ? "true" : undefined}

@@ -323,8 +323,10 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           preset={createPreset}
           showAlert={showAlert}
           onClose={() => setCreatePreset(null)}
-          onCreated={async () => {
+          onCreated={async (task, startNow) => {
+            // Close at once; the scan itself starts in the background.
             setCreatePreset(null);
+            if (startNow) actionMutation.mutate({ task, action: "start" });
             await refreshTasks();
           }}
         />
@@ -501,25 +503,17 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
           targets,
           name: name.trim() || null,
           description: description.trim() || null,
-          start_now: startNow,
+          start_now: false,
         }),
       }),
     onSuccess: async (result, startNow) => {
-      const started = result?.start?.status === "started";
-      if (!startNow) {
-        showAlert(`Задача «${result.task.name}» создана.`, "success");
-      } else if (started) {
-        showAlert(
-          `Задача «${result.task.name}» создана и запущена.`,
-          "success",
-        );
-      } else {
-        showAlert(
-          `Задача «${result.task.name}» создана, но не запущена: ${result?.start?.error || result?.start?.status || "см. статус"}.`,
-          "warning",
-        );
-      }
-      await onCreated();
+      showAlert(
+        startNow
+          ? `Задача «${result.task.name}» создана, запускаем сканирование…`
+          : `Задача «${result.task.name}» создана.`,
+        startNow ? "info" : "success",
+      );
+      await onCreated(result.task, startNow);
     },
     onError: (error) => {
       // Keep the key only when the outcome is unknown (network failure); a

@@ -13,7 +13,10 @@ export async function api(path, options = {}) {
   recordFrontendEvent("ui.fetch.started", { method, path }, { level: "debug", requestId });
   let response;
   try {
+    // API data is never served from the HTTP cache: a pending request to the same
+    // URL (e.g. a slow POST) makes the browser stall later GETs on its cache lock.
     response = await fetch(path, {
+      cache: "no-store",
       ...options,
       headers: { ...headers, ...(options.headers || {}), "X-Request-ID": requestId },
     });
@@ -88,7 +91,10 @@ export async function downloadApiFile(path, options = {}) {
   recordFrontendEvent("ui.fetch.started", { method, path, download: true }, { level: "debug", requestId });
   let response;
   try {
+    // API data is never served from the HTTP cache: a pending request to the same
+    // URL (e.g. a slow POST) makes the browser stall later GETs on its cache lock.
     response = await fetch(path, {
+      cache: "no-store",
       ...options,
       headers: { ...headers, ...(options.headers || {}), "X-Request-ID": requestId },
     });

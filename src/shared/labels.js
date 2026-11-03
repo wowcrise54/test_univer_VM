@@ -97,3 +97,22 @@ export function campaignStatusLabel(status) {
     }[status] || status
   );
 }
+
+// Service messages are stored in English by the backend; show them in Russian.
+export const MESSAGE_LABELS = {
+  "Asset card build completed.": "Сборка карточки актива завершена.",
+  "Asset card saved locally.": "Карточка актива сохранена локально.",
+  "Cancelled before start.": "Отменено до запуска.",
+  "Runbook queued.": "Сценарий поставлен в очередь.",
+  "Automation run removed before step execution.":
+    "Запуск автоматизации удалён до выполнения шагов.",
+  "Processing cancelled by operator.": "Обработка отменена оператором.",
+  "Scanner task deletion failed.": "Не удалось удалить задачу сканирования.",
+  "No asset IDs found in CSV or via IP resolution.":
+    "В CSV и по IP-адресам не найдено идентификаторов активов.",
+};
+
+export function messageLabel(value) {
+  if (typeof value !== "string") return value;
+  return MESSAGE_LABELS[value.trim()] || value;
+}
