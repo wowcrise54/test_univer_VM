@@ -49,6 +49,9 @@ def create_app(
         response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
+        if request.url.path.startswith("/api/"):
+            # API responses are live data; a cached entry also serializes later requests to the same URL.
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

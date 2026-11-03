@@ -33,6 +33,8 @@ describe("api() client contract", () => {
     expect(init.method).toBeUndefined();
     expect(init.headers["Content-Type"]).toBe("application/json");
     expect(typeof init.headers["X-Request-ID"]).toBe("string");
+    // Live API data must bypass the HTTP cache (it can stall same-URL GETs).
+    expect(init.cache).toBe("no-store");
   });
 
   it("returns the raw text body for non-JSON responses", async () => {

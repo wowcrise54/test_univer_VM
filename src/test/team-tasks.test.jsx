@@ -86,6 +86,7 @@ describe("engineer scans page", () => {
       if (path.endsWith("/runs?limit=10"))
         return { items: [{ id: "run-1", status: "finished" }] };
       if (path.endsWith("/stop")) return {};
+      if (path.endsWith("/start")) return { status: "started" };
       throw new Error(`unexpected ${path}`);
     });
   });
@@ -123,11 +124,23 @@ describe("engineer scans page", () => {
     );
     fireEvent.click(create);
 
+    // The dialog closes once the task exists; the scan starts afterwards.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
     await waitFor(() =>
       expect(showAlert).toHaveBeenCalledWith(
-        "Задача «[WIN] DC» создана и запущена.",
+        "Задача «[WIN] DC» запущена.",
         "success",
       ),
+    );
+    expect(showAlert).toHaveBeenCalledWith(
+      "Задача «[WIN] DC» создана, запускаем сканирование…",
+      "info",
+    );
+    expect(api).toHaveBeenCalledWith(
+      "/api/team-tasks/task-2/start",
+      expect.objectContaining({ method: "POST" }),
     );
     const [, request] = api.mock.calls.find(
       ([path, options]) => path === "/api/team-tasks" && options?.method,
@@ -138,7 +151,7 @@ describe("engineer scans page", () => {
       targets: [],
       name: "Night",
       description: null,
-      start_now: true,
+      start_now: false,
     });
     expect(request.headers["X-Idempotency-Key"]).toBe("key-1:run");
   });
