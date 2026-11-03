@@ -15,6 +15,8 @@ from .config import McpSettings
 logger = logging.getLogger("mpvm_mcp")
 
 SESSION_COOKIE = "mpvm_app_session"
+# Placeholder origin: requests go to the application in-process over ASGI, only the path matters.
+INTERNAL_API_URL = "http://mcp.internal"
 LOGIN_RETRY_COOLDOWN_SECONDS = 30.0
 _WRITE_PERMISSION_SUFFIXES = (".manage", ".execute", ".cancel", ".retry", ".build", ".policy", ".team", ".clear")
 
@@ -73,9 +75,8 @@ class AppClient:
     def __init__(self, settings: McpSettings, *, transport: httpx2.AsyncBaseTransport | None = None):
         self._settings = settings
         self._http = httpx2.AsyncClient(
-            base_url=settings.api_url,
+            base_url=INTERNAL_API_URL,
             timeout=settings.timeout_seconds,
-            verify=settings.verify_tls,
             headers={"User-Agent": f"mpvm-mcp/{__version__}", "Accept": "application/json"},
             transport=transport,
         )

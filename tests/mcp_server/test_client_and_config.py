@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from mcp_server import client as client_module
 from mcp_server.client import ApiError, AppClient
-from mcp_server.config import McpSettings, is_loopback
+from mcp_server.config import McpSettings
 from mcp_server.http_auth import BearerAuthMiddleware
 from mcp_server.shaping import fit_response
 from tests.mcp_server.fakes import COOKIE, FakeApi, make_settings
@@ -146,24 +146,23 @@ def test_client_warns_when_the_account_can_write(caplog):
     assert "remediation.manage" in caplog.text and "tasks.execute" in caplog.text
 
 
-def test_settings_require_credentials_and_token_for_network_binding():
-    with pytest.raises(ValidationError, match="MPVM_MCP_USERNAME"):
-        McpSettings()
+def test_settings_report_what_is_missing():
     base = {"username": "u", "password": "p"}
-    with pytest.raises(ValidationError, match="MPVM_MCP_AUTH_TOKEN"):
-        McpSettings(host="0.0.0.0", **base)
-    assert McpSettings(host="0.0.0.0", auth_token="t", **base).auth_token == "t"
-    assert McpSettings(host="127.0.0.1", **base).auth_token == ""
-    assert McpSettings(host="0.0.0.0", transport="stdio", **base).transport == "stdio"
-    with pytest.raises(ValidationError, match="http"):
-        McpSettings(api_url="mpvm-client:8000", **base)
-    assert McpSettings(api_url="http://x:8000/", **base).api_url == "http://x:8000"
+    assert len(McpSettings().problems()) == 2
+    assert "MPVM_MCP_USERNAME" in McpSettings(auth_token="t").problems()[0]
+    # the endpoint shares the application port, so a token is always mandatory
+    assert "MPVM_MCP_AUTH_TOKEN" in McpSettings(**base).problems()[0]
+    assert McpSettings(auth_token="t", **base).problems() == []
+
+
+def test_settings_validate_fields_and_hide_secrets():
+    base = {"username": "u", "password": "p"}
     assert "secret-token" not in repr(McpSettings(auth_token="secret-token", **base))
-
-
-def test_is_loopback():
-    assert is_loopback("localhost") and is_loopback("127.0.0.1") and is_loopback("[::1]")
-    assert not is_loopback("0.0.0.0") and not is_loopback("10.1.2.3") and not is_loopback("example.com")
+    assert McpSettings(path=" /mcp/ ").path == "/mcp"
+    assert McpSettings(path="/vulnsearch/mcp").path == "/vulnsearch/mcp"
+    for bad in ("mcp", "/", "", "/api", "/api/mcp", "/static/x", "/m cp", "/mcp?x=1"):
+        with pytest.raises(ValidationError, match="MPVM_MCP_PATH"):
+            McpSettings(path=bad)
 
 
 def _guarded(token: str = "s3cret") -> TestClient:
@@ -175,9 +174,9 @@ def _guarded(token: str = "s3cret") -> TestClient:
     return TestClient(app)
 
 
-def test_bearer_middleware_guards_everything_but_health():
+def test_bearer_middleware_guards_every_request():
     client = _guarded()
-    assert client.get("/healthz").status_code == 200
+    assert client.get("/healthz").status_code == 401
     denied = client.post("/mcp")
     assert denied.status_code == 401 and denied.headers["www-authenticate"] == "Bearer"
     assert client.post("/mcp", headers={"Authorization": "Bearer wrong"}).status_code == 401

@@ -5,14 +5,12 @@ import json
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-HEALTH_PATH = "/healthz"
-
 
 class BearerAuthMiddleware:
     """Reject HTTP requests that do not carry the shared MCP token.
 
     Accepts ``Authorization: Bearer <token>`` and, for harnesses that can only set
-    a custom header, ``X-API-Key: <token>``. The health path stays open.
+    a custom header, ``X-API-Key: <token>``.
     """
 
     def __init__(self, app: ASGIApp, token: str):
@@ -20,7 +18,7 @@ class BearerAuthMiddleware:
         self._token = token.encode()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not self._token or scope.get("path") == HEALTH_PATH:
+        if scope["type"] != "http" or not self._token:
             await self.app(scope, receive, send)
             return
         headers = {key.decode("latin-1").lower(): value for key, value in scope.get("headers", [])}

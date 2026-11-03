@@ -101,7 +101,7 @@ def seeded(test_db):
 
 
 def _client(username: str = "mcp-viewer") -> AppClient:
-    settings = make_settings(api_url="http://testserver", username=username, password=PASSWORD)
+    settings = make_settings(username=username, password=PASSWORD)
     return AppClient(settings, transport=httpx2.ASGITransport(app=main.app))
 
 
@@ -196,7 +196,7 @@ def test_the_viewer_account_cannot_change_anything(seeded):
 def test_a_wrong_password_is_reported_without_leaking_secrets(seeded):
     async def run() -> ApiError:
         client = AppClient(
-            make_settings(api_url="http://testserver", username="mcp-viewer", password="definitely-wrong-1"),
+            make_settings(username="mcp-viewer", password="definitely-wrong-1"),
             transport=httpx2.ASGITransport(app=main.app),
         )
         try:

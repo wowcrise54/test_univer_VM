@@ -697,3 +697,10 @@ def spa_fallback(full_path: str) -> FileResponse:
     if full_path.startswith(("api/", "static/")):
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(STATIC_DIR / "index.html")
+
+
+# Added last so the MCP path is matched before the other middleware; it has its own bearer-token guard.
+# Off unless MPVM_MCP_ENABLED is set (docs/mcp.md).
+from mcp_server.embed import install_embedded_mcp  # noqa: E402
+
+install_embedded_mcp(app)
