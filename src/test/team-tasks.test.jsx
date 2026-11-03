@@ -91,7 +91,7 @@ describe("engineer scans page", () => {
     });
   });
 
-  it("creates and starts a task with only the selected groups", async () => {
+  it("creates and starts a task from typed targets without any group picker", async () => {
     const showAlert = vi.fn();
     renderWithClient(
       <TeamTasksPage
@@ -104,24 +104,22 @@ describe("engineer scans page", () => {
       await screen.findByRole("button", { name: "Создать задачу" }),
     );
     const dialog = screen.getByRole("dialog", { name: "Windows audit" });
+    expect(within(dialog).queryByLabelText("Root / Servers")).toBeNull();
+    expect(within(dialog).queryByLabelText("Поиск группы активов")).toBeNull();
     const create = within(dialog).getByRole("button", {
       name: "Создать и запустить",
     });
     expect(create).toBeDisabled();
 
-    fireEvent.click(within(dialog).getByLabelText("Root / Servers"));
-    fireEvent.click(within(dialog).getByLabelText("Root / DC"));
-    fireEvent.click(within(dialog).getByLabelText("Root / Branch"));
-    expect(within(dialog).getByRole("alert")).toHaveTextContent("не больше 2");
-    expect(create).toBeDisabled();
-    fireEvent.click(within(dialog).getByLabelText("Root / Branch"));
-
     fireEvent.change(
-      within(dialog).getByLabelText("Название"),
-      {
-        target: { value: "Night" },
-      },
+      within(dialog).getByLabelText(
+        "IP-адреса, подсети и FQDN для сканирования",
+      ),
+      { target: { value: "10.0.0.15" } },
     );
+    fireEvent.change(within(dialog).getByLabelText("Название"), {
+      target: { value: "Night" },
+    });
     fireEvent.click(create);
 
     // The dialog closes once the task exists; the scan starts afterwards.
@@ -147,8 +145,7 @@ describe("engineer scans page", () => {
     );
     expect(JSON.parse(request.body)).toEqual({
       preset_id: "preset-1",
-      asset_group_ids: ["g-1", "g-2"],
-      targets: [],
+      targets: ["10.0.0.15"],
       name: "Night",
       description: null,
       start_now: false,
@@ -186,7 +183,6 @@ describe("engineer scans page", () => {
       ([path, options]) => path === "/api/team-tasks" && options?.method,
     );
     expect(JSON.parse(request.body)).toMatchObject({
-      asset_group_ids: [],
       targets: ["192.168.5.0/24", "srv01.corp.local", "10.0.0.15"],
       start_now: false,
     });
@@ -306,7 +302,7 @@ describe("preset form helpers", () => {
       credential_transport: "ssh",
       host_discovery_profile_id: null,
       start_options: { precheck_enabled: true, precheck_profile_id: "p-2" },
-      allowed_asset_groups: [{ id: "g-1" }, { id: "g-2" }, { id: "g-3" }],
+      allowed_asset_groups: [],
       max_active_tasks: null,
       expected_version: 2,
       role_ids: [10],
@@ -317,7 +313,7 @@ describe("preset form helpers", () => {
   });
 
   it("lists missing required fields", () => {
-    expect(presetFormProblems(emptyPresetForm())).toHaveLength(5);
+    expect(presetFormProblems(emptyPresetForm())).toHaveLength(4);
     expect(
       presetFormProblems({ ...emptyPresetForm(), time_zone: "MSK" }),
     ).toContain("Часовой пояс задаётся в формате +05:00.");
@@ -479,7 +475,7 @@ describe("preset administration", () => {
       target: { value: "profile-1" },
     });
     fireEvent.click(screen.getByRole("checkbox", { name: "Инженер Windows" }));
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Root / DC" }));
+    expect(screen.queryByRole("checkbox", { name: "Root / DC" })).toBeNull();
     expect(save).toBeEnabled();
     fireEvent.click(save);
 
@@ -497,7 +493,7 @@ describe("preset administration", () => {
       scope_id: "scope-1",
       profile_id: "profile-1",
       role_ids: [10],
-      allowed_asset_groups: [{ id: "g-2" }],
+      allowed_asset_groups: [],
       credential_transport: "windows",
     });
   });

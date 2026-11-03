@@ -123,16 +123,16 @@ def test_team_tasks_are_scoped_by_preset_roles(test_db):
         delete_task=lambda task_id, key: {},
     )
     win_user, lin_user = _engineer("engineer_windows"), _engineer("engineer_linux")
-    created = service.create(win_user, preset_id=windows["preset_id"], asset_group_ids=["Windows audit-group"],
+    created = service.create(win_user, preset_id=windows["preset_id"], asset_group_ids=[], targets=["10.0.0.1"],
                              name="Nightly", description=None, unrestricted=False, idempotency_key="create-1")
-    service.create(lin_user, preset_id=linux["preset_id"], asset_group_ids=["Linux audit-group"],
+    service.create(lin_user, preset_id=linux["preset_id"], asset_group_ids=[], targets=["10.0.0.2"],
                    name=None, description=None, unrestricted=False)
 
     task = created["task"]
     assert task["mp_task_id"] == "task-win" and task["created_by"] == "engineer_windows.user"
     assert task["preset_name"] == "Windows audit" and task["preset_version"] == 1
-    assert task["payload"]["include"]["assetsGroups"] == [{"id": "Windows audit-group"}]
-    assert task["preset_asset_groups"] == [{"id": "Windows audit-group", "name": "Windows audit"}]
+    assert task["payload"]["include"] == {"assets": [], "targets": ["10.0.0.1"], "assetsGroups": []}
+    assert task["preset_asset_groups"] == [] and task["preset_targets"] == ["10.0.0.1"]
 
     assert [row["mp_task_id"] for row in service.list(win_user, unrestricted=False)["rows"]] == ["task-win"]
     assert {row["mp_task_id"] for row in service.list(win_user, unrestricted=True)["rows"]} == {"task-win", "task-lin"}
