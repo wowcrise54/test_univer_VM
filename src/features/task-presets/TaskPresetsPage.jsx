@@ -17,7 +17,6 @@ import {
   templateDraftToForm,
 } from "./presetForm.js";
 
-const GROUP_RENDER_LIMIT = 200;
 
 function nameById(items, id) {
   if (!id) return "—";
@@ -43,12 +42,6 @@ export function TaskPresetsPage({ showAlert }) {
   const lookupsQuery = useQuery({
     queryKey: ["task-presets", "lookups"],
     queryFn: () => api("/api/task-presets/lookups"),
-    enabled: Boolean(form),
-    staleTime: 60000,
-  });
-  const groupsQuery = useQuery({
-    queryKey: ["task-presets", "asset-groups"],
-    queryFn: () => api("/api/task-presets/asset-groups"),
     enabled: Boolean(form),
     staleTime: 60000,
   });
@@ -182,7 +175,6 @@ export function TaskPresetsPage({ showAlert }) {
               <tr>
                 <th scope="col">Название</th>
                 <th scope="col">ОС</th>
-                <th scope="col">Группы</th>
                 <th scope="col">Роли</th>
                 <th scope="col">Лимиты</th>
                 <th scope="col">Состояние</th>
@@ -203,14 +195,12 @@ export function TaskPresetsPage({ showAlert }) {
                     ) : null}
                   </td>
                   <td>{OS_LABELS[preset.os_family] || preset.os_family}</td>
-                  <td>{(preset.allowed_asset_groups || []).length}</td>
                   <td>
                     {(preset.role_ids || [])
                       .map((id) => nameById(roles, id))
                       .join(", ") || "—"}
                   </td>
                   <td>
-                    до {preset.max_groups_per_task} групп ·{" "}
                     {preset.max_active_tasks
                       ? `${preset.max_active_tasks} одновременно`
                       : "без лимита запусков"}
@@ -257,9 +247,6 @@ export function TaskPresetsPage({ showAlert }) {
           roles={roles}
           lookups={lookups}
           lookupsError={lookupsQuery.error}
-          groups={groupsQuery.data?.rows || []}
-          groupsLoading={groupsQuery.isLoading}
-          groupsError={groupsQuery.error}
           templates={templatesQuery.data?.rows || []}
           saving={saveMutation.isPending}
           onSave={() => saveMutation.mutate(form)}
@@ -377,40 +364,18 @@ function PresetEditor({
   roles,
   lookups,
   lookupsError,
-  groups,
-  groupsLoading,
-  groupsError,
   templates,
   saving,
   onSave,
   onCancel,
 }) {
-  const [groupSearch, setGroupSearch] = useState("");
   const update = (patch) => setForm((current) => ({ ...current, ...patch }));
   const problems = presetFormProblems(form);
   const profiles = lookups.scanner_profiles || [];
   const template = templates.find(
     (item) => form.template_id && item.template_id === form.template_id,
   );
-  const selectedIds = new Set(form.allowed_asset_groups.map((item) => item.id));
-  const groupById = new Map(groups.map((group) => [group.id, group]));
-  const query = groupSearch.trim().toLocaleLowerCase("ru-RU");
-  const visibleGroups = groups
-    .filter(
-      (group) =>
-        !query ||
-        String(group.path || group.name)
-          .toLocaleLowerCase("ru-RU")
-          .includes(query),
-    )
-    .slice(0, GROUP_RENDER_LIMIT);
 
-  const toggleGroup = (group) =>
-    update({
-      allowed_asset_groups: selectedIds.has(group.id)
-        ? form.allowed_asset_groups.filter((item) => item.id !== group.id)
-        : [...form.allowed_asset_groups, group],
-    });
   const toggleList = (key, id) =>
     update({
       [key]: form[key].includes(id)
@@ -523,17 +488,6 @@ function PresetEditor({
             maxLength={60}
             placeholder="[WIN]"
             onChange={(event) => update({ name_prefix: event.target.value })}
-          />
-        </Field>
-        <Field label="Групп в одной задаче, не больше">
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={form.max_groups_per_task}
-            onChange={(event) =>
-              update({ max_groups_per_task: event.target.value })
-            }
           />
         </Field>
         <Field label="Одновременных запусков">
@@ -652,60 +606,6 @@ function PresetEditor({
           </div>
         </fieldset>
       ) : null}
-
-      <fieldset className="preset-fieldset">
-        <legend>
-          Разрешённые группы активов MP VM · выбрано{" "}
-          {form.allowed_asset_groups.length}
-        </legend>
-        {form.allowed_asset_groups.length ? (
-          <ul className="preset-chips" aria-label="Выбранные группы">
-            {form.allowed_asset_groups.map((group) => (
-              <li key={group.id}>
-                <span>
-                  {group.path ||
-                    group.name ||
-                    groupById.get(group.id)?.path ||
-                    group.id}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Убрать группу ${group.name || group.id}`}
-                  onClick={() => toggleGroup(group)}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <input
-          type="search"
-          value={groupSearch}
-          placeholder="Поиск группы по пути"
-          aria-label="Поиск группы активов"
-          onChange={(event) => setGroupSearch(event.target.value)}
-        />
-        {groupsError ? (
-          <p className="preset-error" role="alert">
-            Не удалось загрузить группы MP VM:{" "}
-            {groupsError.operatorMessage || groupsError.message}
-          </p>
-        ) : null}
-        <div className="preset-group-list">
-          {groupsLoading ? <p className="preset-muted">Загрузка…</p> : null}
-          {visibleGroups.map((group) => (
-            <label className="toggle" key={group.id}>
-              <input
-                type="checkbox"
-                checked={selectedIds.has(group.id)}
-                onChange={() => toggleGroup(group)}
-              />
-              <span>{group.path || group.name}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
 
       {problems.length ? (
         <ul className="preset-problems" aria-label="Что нужно заполнить">

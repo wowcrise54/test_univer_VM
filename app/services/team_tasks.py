@@ -237,22 +237,15 @@ class TeamTasksService:
         groups = cls._selected_groups(preset, asset_group_ids)
         selected_targets = cls._typed_targets(targets)
         if not groups and not selected_targets:
-            raise ValueError("Выберите хотя бы одну группу активов, IP-адрес или FQDN.")
+            raise ValueError("Укажите хотя бы один IP-адрес, подсеть или FQDN.")
         return groups, selected_targets
 
     @staticmethod
     def _selected_groups(preset: dict[str, Any], asset_group_ids: builtins.list[str]) -> builtins.list[dict[str, Any]]:
-        requested = list(dict.fromkeys(str(value).strip() for value in asset_group_ids if str(value).strip()))
-        if not requested:
-            return []
-        limit = int(preset.get("max_groups_per_task") or 1)
-        if len(requested) > limit:
-            raise ValueError(f"Пресет разрешает не больше {limit} групп в одной задаче.")
-        allowed = {str(group["id"]): group for group in preset.get("allowed_asset_groups") or []}
-        forbidden = [value for value in requested if value not in allowed]
-        if forbidden:
-            raise ValueError(f"Группы не разрешены пресетом: {', '.join(forbidden)}.")
-        return [allowed[value] for value in requested]
+        # Asset groups are switched off for now: tasks are scanned by typed targets only.
+        if any(str(value).strip() for value in asset_group_ids):
+            raise ValueError("Группы активов пока недоступны: укажите IP-адреса, подсети или FQDN.")
+        return []
 
     @staticmethod
     def _typed_targets(targets: builtins.list[str]) -> builtins.list[str]:

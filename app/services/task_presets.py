@@ -135,10 +135,7 @@ class TaskPresetService:
             "time_zone": (trigger or {}).get("timeZone") or "+05:00",
             "trigger_parameters": trigger if trigger and trigger.get("isEnabled") else None,
             "denied_scan_settings": denied if denied and denied.get("isEnabled") else None,
-            "allowed_asset_groups": [
-                {"id": str(value.get("id") if isinstance(value, dict) else value)}
-                for value in include.get("assetsGroups") or []
-            ],
+            "allowed_asset_groups": [],
             "source_task_id": task.get("mp_task_id"),
         }
 
@@ -160,16 +157,13 @@ class TaskPresetService:
         missing_roles = set(role_ids) - self._repository.existing_role_ids(role_ids)
         if missing_roles:
             raise ValueError(f"Роли не найдены: {', '.join(str(value) for value in sorted(missing_roles))}.")
-        groups = clean.get("allowed_asset_groups") or []
-        unique_groups = list({str(group["id"]): group for group in groups}.values())
-        if not unique_groups:
-            raise ValueError("Укажите хотя бы одну разрешённую группу активов.")
-        clean["allowed_asset_groups"] = unique_groups
+        # Asset groups are switched off for now; whatever a client sends is dropped.
+        clean["allowed_asset_groups"] = []
         self._check_mpvm_references(clean)
         return clean
 
     def _check_mpvm_references(self, clean: dict[str, Any]) -> None:
-        """Reject IDs that MP VM does not know and refresh the cached group names."""
+        """Reject IDs that MP VM does not know."""
         if self.lookups_provider:
             lookups = self.lookups_provider()
             profiles = _ids(lookups.get("scanner_profiles"))
@@ -186,12 +180,6 @@ class TaskPresetService:
             precheck_profile = (clean.get("start_options") or {}).get("precheck_profile_id")
             if precheck_profile and str(precheck_profile) not in profiles:
                 raise ValueError(f"Профиль precheck {precheck_profile} не найден в MP VM.")
-        if self.groups_provider:
-            known_groups = {group["id"]: group for group in flatten_asset_groups(self.groups_provider())}
-            unknown = [str(group["id"]) for group in clean["allowed_asset_groups"] if str(group["id"]) not in known_groups]
-            if unknown:
-                raise ValueError(f"Группы активов не найдены в MP VM: {', '.join(unknown)}.")
-            clean["allowed_asset_groups"] = [known_groups[str(group["id"])] for group in clean["allowed_asset_groups"]]
 
 
 def user_role_ids(user: dict[str, Any] | None) -> builtins.list[int]:
