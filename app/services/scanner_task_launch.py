@@ -423,6 +423,7 @@ def run_precheck_for_scanner_task(
         payload=precheck_payload,
         status="precheck_created",
         remote_response={"audit_task_id": task_id},
+        parent_task_id=task_id,
     )
 
     if not options.skip_validation:
@@ -518,7 +519,10 @@ def run_false_targets_precheck(
     retry_payload["name"] = build_precheck_task_name("MP VM false retry", str(retry_payload.get("name") or audit_task_id))
     retry_task_id = client.create_scanner_task(token, retry_payload)
     lineage = {"audit_task_id": audit_task_id, "parent_precheck_task_id": source_precheck_task_id}
-    db.record_scan_task(mp_task_id=retry_task_id, payload=retry_payload, status="precheck_created", remote_response=lineage)
+    db.record_scan_task(
+        mp_task_id=retry_task_id, payload=retry_payload, status="precheck_created", remote_response=lineage,
+        parent_task_id=str(audit_task_id),
+    )
 
     if not options.skip_validation:
         valid, error = client.validate_scanner_task_with_retry(
@@ -559,8 +563,40 @@ def run_false_targets_precheck(
     return retry_result
 
 
+def cleanup_precheck_tasks(
+    *, client: MpVmClient, token: str, audit_task_id: str, forget_locally: bool = False,
+) -> dict[str, int]:
+    """Delete the precheck tasks created for an audit task from MP VM.
+
+    Best effort: a precheck task that cannot be deleted stays registered, so the
+    next completion or deletion of the audit task retries it. Without
+    ``forget_locally`` the local row is kept (hidden) because its result still
+    feeds the retry of unreachable targets.
+    """
+    deleted = failed = 0
+    for precheck_id in db.list_child_scan_task_ids(audit_task_id):
+        try:
+            client.delete_scanner_task(token, precheck_id, mode="delete_v3")
+        except (MpVmApiError, requests.RequestException) as exc:
+            failed += 1
+            scan_log(
+                logging.WARNING, "precheck_task_cleanup_failed",
+                audit_task_id=audit_task_id, precheck_task_id=precheck_id, error=str(exc)[:300],
+            )
+            continue
+        deleted += 1
+        if forget_locally:
+            db.delete_scan_task(precheck_id)
+        else:
+            db.mark_scan_task_removed(precheck_id)
+    if deleted or failed:
+        scan_log(logging.INFO, "precheck_tasks_cleaned", audit_task_id=audit_task_id, deleted=deleted, failed=failed)
+    return {"deleted": deleted, "failed": failed}
+
+
 def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) -> dict[str, Any]:
     if payload.mode == "local_only":
+        db.delete_child_scan_tasks(task_id)
         db.delete_scan_task(task_id)
         host.CONTAINER.services.scanner_task_folders.unassign_task(task_id)
         return {"id": task_id, "mode": payload.mode, "localOnly": True}
@@ -569,10 +605,14 @@ def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) ->
     try:
         if payload.mode == "auto":
             if not remote_scanner_task_exists(client, token, task_id):
+                cleanup_precheck_tasks(client=client, token=token, audit_task_id=task_id, forget_locally=True)
+                db.delete_child_scan_tasks(task_id)
                 db.delete_scan_task(task_id)
                 host.CONTAINER.services.scanner_task_folders.unassign_task(task_id)
                 return {"id": task_id, "mode": payload.mode, "localOnly": True, "remoteFound": False}
             response = client.delete_scanner_task(token, task_id, mode="delete_v3")
+            cleanup_precheck_tasks(client=client, token=token, audit_task_id=task_id, forget_locally=True)
+            db.delete_child_scan_tasks(task_id)
             db.delete_scan_task(task_id)
             host.CONTAINER.services.scanner_task_folders.unassign_task(task_id)
             return {**response, "mode": payload.mode, "remoteFound": True}
@@ -583,6 +623,8 @@ def delete_scanner_task_impl(task_id: str, payload: DeleteScannerTaskRequest) ->
             mode=payload.mode,
             put_payload=payload.put_payload,
         )
+        cleanup_precheck_tasks(client=client, token=token, audit_task_id=task_id, forget_locally=True)
+        db.delete_child_scan_tasks(task_id)
         db.delete_scan_task(task_id)
         host.CONTAINER.services.scanner_task_folders.unassign_task(task_id)
         return response
