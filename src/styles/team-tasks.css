@@ -272,3 +272,26 @@
     grid-template-columns: 1fr;
   }
 }
+
+.team-task-row {
+  cursor: default;
+}
+
+.team-details-dialog {
+  width: min(1100px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.team-details-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 16px;
+  margin: 12px 0;
+}
+
+@media (max-width: 760px) {
+  .team-details-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

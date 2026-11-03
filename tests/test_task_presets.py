@@ -128,13 +128,13 @@ def test_draft_from_ssh_task():
         "mp_task_id": "task-1", "credential_id": "cred-ssh",
         "payload": {"name": "Linux nightly", "scope": "scope-1", "profile": "profile-audit",
                     "overrides": {"transports": {"terminal": {"ssh": {}}}},
-                    "include": {"targets": ["10.0.0.1"], "assetsGroups": ["g-1"]},
+                    "include": {"targets": ["10.0.0.1"], "assetsGroups": [{"id": "g-1", "name": "Servers"}, "g-2"]},
                     "triggerParameters": {"isEnabled": False, "timeZone": "+03:00"},
                     "agents": {"agentIds": ["agent-1"]}},
     })
     assert draft["os_family"] == "linux" and draft["credential_transport"] == "ssh"
     assert draft["trigger_parameters"] is None and draft["time_zone"] == "+03:00"
-    assert draft["allowed_asset_groups"] == [{"id": "g-1"}] and draft["agent_ids"] == ["agent-1"]
+    assert draft["allowed_asset_groups"] == [{"id": "g-1"}, {"id": "g-2"}] and draft["agent_ids"] == ["agent-1"]
 
 
 def test_template_catalogue_follows_the_mpvm_recommendations():

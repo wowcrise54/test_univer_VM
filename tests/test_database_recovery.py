@@ -206,3 +206,14 @@ def test_health_probes_are_public_and_sanitized(path):
     assert "database_url" not in response.text
     assert "database_error" not in response.text
     assert "api_url" not in response.text
+
+
+def test_each_completed_startup_step_logs_its_duration():
+    from unittest.mock import patch
+
+    recovery = coordinator(lambda: True, [("first", lambda: None), ("second", lambda: None)])
+    with patch("app.services.recovery.log_event") as log_event:
+        assert recovery.check()["ready"] is True
+    steps = [call.kwargs["step"] for call in log_event.call_args_list]
+    assert steps == ["first", "second"]
+    assert all(call.kwargs["duration_ms"] >= 0 for call in log_event.call_args_list)

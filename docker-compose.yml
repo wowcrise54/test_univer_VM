@@ -30,6 +30,9 @@ services:
     # The persistent project volume was initialized by PostgreSQL 16.
     # A major-version upgrade requires pg_upgrade and must not happen implicitly.
     image: postgres:16-alpine
+    # Parallel queries allocate shared memory in /dev/shm; Docker's 64 MB default
+    # fails with "could not resize shared memory segment ... No space left".
+    shm_size: 1gb
     command:
       - postgres
       - -c

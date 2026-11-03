@@ -138,3 +138,10 @@ class ScannerTaskPayloadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_asset_groups_are_sent_as_objects_with_ids():
+    payload = build_scanner_task_payload(name="n", description=None, scope_id="s", profile_id="p",
+                                         include_targets=[], include_asset_group_ids=["g-1", 2])
+    assert payload["include"]["assetsGroups"] == [{"id": "g-1"}, {"id": "2"}]
+    assert payload["exclude"]["assetsGroups"] == []

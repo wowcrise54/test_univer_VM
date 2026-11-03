@@ -624,3 +624,77 @@ describe("preset administration", () => {
     );
   });
 });
+
+describe("team task progress", () => {
+  const JOB = {
+    id: "job-1",
+    status: "finished",
+    errorStatus: "success",
+    startedAt: "2026-10-20T10:00:00Z",
+    finishedAt: "2026-10-20T10:02:05Z",
+    agent: { name: "Collector-1" },
+    targets: ["10.0.0.5"],
+    profile: { name: "Full audit" },
+    connectionCheckResults: [
+      { transport: "ssh", status: "failed", errors: ["timeout"] },
+    ],
+  };
+
+  beforeEach(() => {
+    api.mockReset();
+    api.mockImplementation(async (path, options = {}) => {
+      if (path === "/api/task-presets") return { rows: [PRESET] };
+      if (path === "/api/team-tasks" && !options.method)
+        return { rows: [TASK] };
+      if (path === "/api/team-tasks/task-1/runs?limit=20")
+        return {
+          items: [
+            { id: "run-2", status: "finished", startedAt: "2026-10-20T10:00:00Z" },
+            { id: "run-1", status: "failed", startedAt: "2026-10-19T10:00:00Z" },
+          ],
+        };
+      if (path === "/api/team-tasks/task-1/runs/run-2/jobs")
+        return { items: [JOB] };
+      if (path === "/api/team-tasks/task-1/runs/run-1/jobs")
+        return { items: [{ ...JOB, id: "job-0", targets: ["10.0.0.9"] }] };
+      throw new Error(`unexpected ${path}`);
+    });
+  });
+
+  function renderPage() {
+    return renderWithClient(
+      <TeamTasksPage
+        currentUser={{ permissions: ["tasks.team"] }}
+        showAlert={vi.fn()}
+      />,
+    );
+  }
+
+  it("opens run progress on double click and switches between runs", async () => {
+    renderPage();
+    fireEvent.doubleClick((await screen.findByText("[WIN] Servers")).closest("tr"));
+
+    const dialog = await screen.findByRole("dialog", { name: "[WIN] Servers" });
+    expect(await within(dialog).findByText("10.0.0.5")).toBeInTheDocument();
+    expect(within(dialog).getByText("Collector-1")).toBeInTheDocument();
+    expect(within(dialog).getByText("Full audit")).toBeInTheDocument();
+    expect(within(dialog).getByText(/timeout/)).toBeInTheDocument();
+
+    const runs = within(dialog).getAllByRole("button", { pressed: false });
+    fireEvent.click(runs[0]);
+    expect(await within(dialog).findByText("10.0.0.9")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens the same view from the keyboard-reachable button and ignores double clicks on actions", async () => {
+    renderPage();
+    const stop = await screen.findByRole("button", { name: "Остановить" });
+    fireEvent.doubleClick(stop);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ход выполнения" }));
+    expect(await screen.findByRole("dialog", { name: "[WIN] Servers" })).toBeInTheDocument();
+  });
+});

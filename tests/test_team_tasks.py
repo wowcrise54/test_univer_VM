@@ -81,7 +81,7 @@ def test_create_builds_payload_only_from_preset_and_selected_groups(service, rep
     payload = service.create_remote.call_args.args[0]
     assert payload["name"] == "[WIN] Nightly"
     assert payload["scope"] == "scope-1" and payload["profile"] == "profile-audit"
-    assert payload["include"] == {"assets": [], "targets": [], "assetsGroups": ["g-2", "g-1"]}
+    assert payload["include"] == {"assets": [], "targets": [], "assetsGroups": [{"id": "g-2"}, {"id": "g-1"}]}
     auth_ref = payload["overrides"]["transports"]["windows"]["wmi_and_rpc_and_re"]["connection"]["auth"]
     assert auth_ref == {"ref_value": "cred-win", "ref_type": "credential"}
     assert payload["agents"] == {"agentIds": ["agent-1"]}
@@ -123,7 +123,7 @@ def test_create_combines_groups_and_targets(service):
     service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], targets=["10.0.1.0/24"],
                    name="Mixed", description=None, unrestricted=False)
     payload = service.create_remote.call_args.args[0]
-    assert payload["include"] == {"assets": [], "targets": ["10.0.1.0/24"], "assetsGroups": ["g-1"]}
+    assert payload["include"] == {"assets": [], "targets": ["10.0.1.0/24"], "assetsGroups": [{"id": "g-1"}]}
 
 
 def test_create_accepts_any_well_formed_target(service):
@@ -211,7 +211,7 @@ def test_start_resyncs_payload_from_current_preset(service, repository):
 
     assert result == {"status": "started"}
     payload = repository.record_task.call_args.args[1]
-    assert payload["include"]["assetsGroups"] == ["g-1"] and payload["include"]["targets"] == []
+    assert payload["include"]["assetsGroups"] == [{"id": "g-1"}] and payload["include"]["targets"] == []
     assert payload["overrides"]["transports"]["windows"]["wmi_and_rpc_and_re"]["connection"]["auth"]["ref_value"] == "cred-rotated"
     assert payload["description"] == "nightly"
     service.start_task.assert_called_once_with("task-1", {"precheck_enabled": True}, "start-1", "win.eng")
@@ -265,7 +265,7 @@ def test_update_keeps_name_and_rebuilds_groups(service, repository):
     service.update("task-1", ENGINEER, asset_group_ids=["g-3"], name=None, description=None, unrestricted=False)
     task_id, payload = service.update_remote.call_args.args
     assert task_id == "task-1" and payload["name"] == "[WIN] Servers"
-    assert payload["include"]["assetsGroups"] == ["g-3"] and payload["description"] == "nightly"
+    assert payload["include"]["assetsGroups"] == [{"id": "g-3"}] and payload["description"] == "nightly"
 
     service.update("task-1", ENGINEER, asset_group_ids=[], targets=["10.0.0.15"], name=None, description=None,
                    unrestricted=False)
@@ -429,3 +429,30 @@ def test_incomplete_replay_and_auto_name(service, repository):
     service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name=None, description=None,
                    unrestricted=False)
     assert service.create_remote.call_args.args[0]["name"].startswith("Servers ")
+
+
+def test_payload_sends_json_objects_even_when_preset_stores_strings_or_agent_objects(service, repository):
+    repository.get.return_value = _preset(
+        trigger_parameters='{"isEnabled": false, "type": "Daily"}',
+        denied_scan_settings="not json",
+        agent_ids=[{"id": "agent-1", "name": "Collector"}, "agent-2", None],
+    )
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name="N", description="", unrestricted=False)
+
+    payload = service.create_remote.call_args.args[0]
+    assert payload["triggerParameters"] == {"isEnabled": False, "type": "Daily"}
+    assert payload["deniedScanSettings"] == {"isEnabled": False, "periods": []}
+    assert payload["agents"] == {"agentIds": ["agent-1", "agent-2"]}
+
+
+def test_remote_create_failure_logs_payload_shape_without_values(service, repository):
+    from unittest.mock import patch
+
+    service.create_remote.side_effect = RuntimeError("BadRequest")
+    with patch("app.services.team_tasks.log_event") as log_event, pytest.raises(RuntimeError):
+        service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=["g-1"], name="Secret name", description="", unrestricted=False)
+
+    fields = log_event.call_args.kwargs
+    assert fields["payload_shape"]["include"]["assetsGroups"] == ["dict"]
+    assert fields["payload_shape"]["name"] == "str"
+    assert "Secret name" not in str(fields)
