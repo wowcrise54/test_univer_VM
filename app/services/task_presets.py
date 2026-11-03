@@ -135,7 +135,10 @@ class TaskPresetService:
             "time_zone": (trigger or {}).get("timeZone") or "+05:00",
             "trigger_parameters": trigger if trigger and trigger.get("isEnabled") else None,
             "denied_scan_settings": denied if denied and denied.get("isEnabled") else None,
-            "allowed_asset_groups": [{"id": str(value)} for value in include.get("assetsGroups") or []],
+            "allowed_asset_groups": [
+                {"id": str(value.get("id") if isinstance(value, dict) else value)}
+                for value in include.get("assetsGroups") or []
+            ],
             "source_task_id": task.get("mp_task_id"),
         }
 

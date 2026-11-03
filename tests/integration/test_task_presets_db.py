@@ -131,7 +131,7 @@ def test_team_tasks_are_scoped_by_preset_roles(test_db):
     task = created["task"]
     assert task["mp_task_id"] == "task-win" and task["created_by"] == "engineer_windows.user"
     assert task["preset_name"] == "Windows audit" and task["preset_version"] == 1
-    assert task["payload"]["include"]["assetsGroups"] == ["Windows audit-group"]
+    assert task["payload"]["include"]["assetsGroups"] == [{"id": "Windows audit-group"}]
     assert task["preset_asset_groups"] == [{"id": "Windows audit-group", "name": "Windows audit"}]
 
     assert [row["mp_task_id"] for row in service.list(win_user, unrestricted=False)["rows"]] == ["task-win"]
