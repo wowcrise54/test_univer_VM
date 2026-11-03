@@ -1545,6 +1545,7 @@ def record_scan_task(
     payload: dict[str, Any],
     status: str,
     remote_response: dict[str, Any] | None = None,
+    parent_task_id: str | None = None,
 ) -> dict[str, Any]:
     current = now_utc()
     include = payload.get("include") if isinstance(payload.get("include"), dict) else {}
@@ -1558,9 +1559,9 @@ def record_scan_task(
                 mp_task_id, name, description, scope_id, profile_id, agent_ids_json, credential_id,
                 include_targets_json, exclude_targets_json, host_discovery_enabled,
                 host_discovery_profile_id, payload_json, status, last_remote_response_json,
-                created_at, updated_at
+                created_at, updated_at, parent_task_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(mp_task_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
@@ -1576,6 +1577,7 @@ def record_scan_task(
                 status = EXCLUDED.status,
                 last_remote_response_json = EXCLUDED.last_remote_response_json,
                 updated_at = EXCLUDED.updated_at,
+                parent_task_id = COALESCE(EXCLUDED.parent_task_id, scan_tasks.parent_task_id),
                 deleted_at = NULL
             """,
             (
@@ -1595,6 +1597,7 @@ def record_scan_task(
                 json.dumps(remote_response or {}, ensure_ascii=False),
                 current,
                 current,
+                parent_task_id,
             ),
         )
     return get_scan_task(mp_task_id) or {}
@@ -1631,9 +1634,35 @@ def delete_scan_task(mp_task_id: str) -> None:
         conn.execute("DELETE FROM scan_tasks WHERE mp_task_id = %s", (mp_task_id,))
 
 
+def list_child_scan_task_ids(parent_task_id: str) -> list[str]:
+    """Precheck tasks created for an audit task that still exist in MP VM."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT mp_task_id FROM scan_tasks WHERE parent_task_id = %s AND deleted_at IS NULL ORDER BY id",
+            (parent_task_id,),
+        ).fetchall()
+    return [str(row["mp_task_id"]) for row in rows]
+
+
+def mark_scan_task_removed(mp_task_id: str) -> None:
+    """The task is gone from MP VM; keep its local result (e.g. failed targets for a retry)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE scan_tasks SET deleted_at = %s WHERE mp_task_id = %s AND deleted_at IS NULL",
+            (now_utc(), mp_task_id),
+        )
+
+
+def delete_child_scan_tasks(parent_task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM scan_tasks WHERE parent_task_id = %s", (parent_task_id,))
+
+
 def list_scan_tasks() -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM scan_tasks ORDER BY updated_at DESC, id DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM scan_tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC"
+        ).fetchall()
         postprocess_rows = conn.execute(
             """
             SELECT DISTINCT ON (mp_task_id) *

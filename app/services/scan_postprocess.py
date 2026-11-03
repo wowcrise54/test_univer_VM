@@ -350,9 +350,20 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             error=error,
         )
     finally:
+        cleanup_finished_task_prechecks(client=client, token=token, task_id=task_id)
         client.session.close()
         with SCAN_POSTPROCESS_FUTURES_LOCK:
             SCAN_POSTPROCESS_CANCEL_EVENTS.pop(run_id, None)
+
+
+def cleanup_finished_task_prechecks(*, client: MpVmClient, token: str, task_id: str) -> None:
+    """The precheck tasks of a finished audit task are no longer needed in MP VM."""
+    from .scanner_task_launch import cleanup_precheck_tasks
+
+    try:
+        cleanup_precheck_tasks(client=client, token=token, audit_task_id=task_id)
+    except Exception:  # noqa: BLE001 - never let cleanup change the outcome of the run
+        SCAN_LOG.exception("[scan-postprocess] precheck cleanup failed task_id=%s", task_id)
 
 
 def raise_if_scan_postprocess_cancelled(run_id: str) -> None:
