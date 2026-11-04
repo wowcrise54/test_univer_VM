@@ -282,7 +282,9 @@ class RemediationRepository:
                         severity, cvss_score, passport_internal_id, due_at
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (asset_id, vulnerability_key) DO NOTHING
+                    -- No conflict target: case_id is derived from the same pair, so a
+                    -- concurrent insert can trip the primary key before the pair index.
+                    ON CONFLICT DO NOTHING
                     RETURNING *
                     """,
                     (
