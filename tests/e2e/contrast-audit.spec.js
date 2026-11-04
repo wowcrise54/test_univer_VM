@@ -237,10 +237,7 @@ function auditContrast() {
     const a = top[3] + bottom[3] * (1 - top[3]);
     if (!a) return [0, 0, 0, 0];
     return [0, 1, 2]
-      .map(
-        (i) =>
-          (top[i] * top[3] + bottom[i] * bottom[3] * (1 - top[3])) / a,
-      )
+      .map((i) => (top[i] * top[3] + bottom[i] * bottom[3] * (1 - top[3])) / a)
       .concat(a);
   };
   const lum = ([r, g, b]) => {
@@ -286,7 +283,8 @@ function auditContrast() {
       "input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]), textarea, select",
     );
     const own = [...element.childNodes].some(
-      (n) => n.nodeType === Node.TEXT_NODE && /[\p{L}\p{N}]/u.test(n.textContent),
+      (n) =>
+        n.nodeType === Node.TEXT_NODE && /[\p{L}\p{N}]/u.test(n.textContent),
     );
     if (!own && !(isField && (element.value || element.placeholder))) continue;
     const style = getComputedStyle(element);
@@ -408,16 +406,18 @@ for (const width of WIDTHS) {
     expect(box.x + box.width).toBeLessThanOrEqual(width);
     expect(box.y + box.height).toBeLessThanOrEqual(900);
     await mkdir("output/playwright/audit", { recursive: true });
-    await page.screenshot({ path: `output/playwright/audit/menu-${width}.png` });
+    await page.screenshot({
+      path: `output/playwright/audit/menu-${width}.png`,
+    });
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await more.locator("summary").click();
     await expect(panel).toBeVisible();
     await page.locator("main.workspace h1").click();
     await expect(panel).toBeHidden();
-    const labels = await panel.locator("a").evaluateAll((links) =>
-      links.map((link) => link.getAttribute("title")),
-    );
+    const labels = await panel
+      .locator("a")
+      .evaluateAll((links) => links.map((link) => link.getAttribute("title")));
     expect(labels.every(Boolean)).toBe(true);
   });
 }

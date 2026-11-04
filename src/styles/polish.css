@@ -159,7 +159,10 @@ main tbody tr:hover td {
 
 /* Tasks: readable folder names and a centered status row. */
 .task-list-workspace {
-  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr) minmax(240px, 290px);
+  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr) minmax(
+      240px,
+      290px
+    );
 }
 
 .task-folder-item__select > span:nth-child(2) {
