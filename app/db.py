@@ -2620,8 +2620,9 @@ def upsert_vulnerability_passports(
             )
         )
         saved_ids.append(internal_id)
-    values.sort(key=lambda value: value[0])
-    saved_ids.sort()
+    # One row per passport: a batched upsert cannot touch the same row twice.
+    values = sorted({value[0]: value for value in values}.values(), key=lambda value: value[0])
+    saved_ids = [value[0] for value in values]
     with connect() as conn:
         _lock_vulnerability_passport_writes(conn)
         with conn.cursor() as cursor:
@@ -2673,15 +2674,35 @@ def upsert_vulnerability_passports(
                     old = candidates[0]
                     id_replacements.append((old["internal_id"], new_id))
 
+            # Only new or content-changed passports are rewritten (and so fire
+            # the CVE/OS-family trigger and need their links rebuilt); a refresh
+            # of an unchanged catalog just touches last_seen.
+            changed_passport_ids: list[str] = []
             for offset in range(0, len(values), PASSPORT_SAVE_BATCH_SIZE):
-                cursor.executemany(
+                batch = values[offset : offset + PASSPORT_SAVE_BATCH_SIZE]
+                columns = list(zip(*batch, strict=True))
+                changed_rows = cursor.execute(
                     """
                 INSERT INTO vulnerability_passports (
                     internal_id, external_id, name, severity, score, issue_time,
                     package_id, package_version, cves_json, metrics_json,
                     raw_record_json, source_pdql, pdql_token, first_seen, last_seen
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                SELECT incoming.internal_id, incoming.external_id, incoming.name,
+                       incoming.severity, incoming.score, incoming.issue_time,
+                       incoming.package_id, incoming.package_version,
+                       incoming.cves_json, incoming.metrics_json,
+                       incoming.raw_record_json, incoming.source_pdql,
+                       incoming.pdql_token, incoming.first_seen, incoming.last_seen
+                FROM unnest(
+                    %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],
+                    %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],
+                    %s::text[], %s::text[], %s::text[], %s::text[], %s::text[]
+                ) AS incoming(
+                    internal_id, external_id, name, severity, score, issue_time,
+                    package_id, package_version, cves_json, metrics_json,
+                    raw_record_json, source_pdql, pdql_token, first_seen, last_seen
+                )
                 ON CONFLICT(internal_id) DO UPDATE SET
                     external_id = EXCLUDED.external_id,
                     name = EXCLUDED.name,
@@ -2696,8 +2717,45 @@ def upsert_vulnerability_passports(
                     source_pdql = EXCLUDED.source_pdql,
                     pdql_token = EXCLUDED.pdql_token,
                     last_seen = EXCLUDED.last_seen
+                WHERE (
+                    vulnerability_passports.external_id,
+                    vulnerability_passports.name,
+                    vulnerability_passports.severity,
+                    vulnerability_passports.score,
+                    vulnerability_passports.issue_time,
+                    vulnerability_passports.package_id,
+                    vulnerability_passports.package_version,
+                    vulnerability_passports.cves_json,
+                    vulnerability_passports.metrics_json,
+                    vulnerability_passports.raw_record_json
+                ) IS DISTINCT FROM (
+                    EXCLUDED.external_id,
+                    EXCLUDED.name,
+                    EXCLUDED.severity,
+                    EXCLUDED.score,
+                    EXCLUDED.issue_time,
+                    EXCLUDED.package_id,
+                    EXCLUDED.package_version,
+                    EXCLUDED.cves_json,
+                    EXCLUDED.metrics_json,
+                    EXCLUDED.raw_record_json
+                )
+                RETURNING internal_id
                     """,
-                    values[offset : offset + PASSPORT_SAVE_BATCH_SIZE],
+                    [list(column) for column in columns],
+                ).fetchall()
+                batch_changed = [row["internal_id"] for row in changed_rows]
+                changed_passport_ids.extend(batch_changed)
+                # Unchanged rows kept their content; mark them as seen without
+                # touching the columns the CVE/OS-family trigger watches.
+                cursor.execute(
+                    """
+                    UPDATE vulnerability_passports
+                    SET last_seen = %s, source_pdql = %s, pdql_token = %s
+                    WHERE internal_id = ANY(%s)
+                      AND internal_id <> ALL(%s)
+                    """,
+                    (current, source_pdql, pdql_token, list(columns[0]), batch_changed),
                 )
                 if progress:
                     progress("save", min(offset + PASSPORT_SAVE_BATCH_SIZE, len(values)), len(values))
@@ -2780,12 +2838,13 @@ def upsert_vulnerability_passports(
                 replaced = len(id_replacements)
         links_created = reconcile_asset_card_vulnerability_passport_links(
             conn,
-            saved_ids,
+            changed_passport_ids,
             current,
             progress=(lambda done, total: progress("link", done, total)) if progress else None,
         )
     return {
         "saved": len(values),
+        "changed": len(changed_passport_ids),
         "skipped": skipped,
         "replaced": replaced,
         "ambiguous": ambiguous,
@@ -4584,6 +4643,8 @@ def deduplicate_asset_card_vulnerability_findings(
 
 _RECONCILE_CHUNK_ASSETS = 100
 _RECONCILE_CHUNK_FINDINGS = 5000
+# Above this many changed passports a relink of every asset is the cheaper plan.
+_RECONCILE_TARGETED_MAX_PASSPORTS = 20000
 
 
 def _passport_link_scopes(
@@ -4599,6 +4660,10 @@ def _passport_link_scopes(
 
     if asset_id is not None:
         return [("finding.asset_id = %s", (asset_id,))]
+    if passport_ids is not None and len(passport_ids) > _RECONCILE_TARGETED_MAX_PASSPORTS:
+        # Looking up the findings of this many passports costs more than
+        # relinking every asset (a full catalog refresh timed out here).
+        passport_ids = None
     if passport_ids is None:
         asset_ids = [
             row["asset_id"]
@@ -4621,10 +4686,12 @@ def _passport_link_scopes(
             SELECT finding.id
             FROM asset_card_vulnerabilities AS finding
             WHERE finding.vulnerability_id = ANY(%s)
-               OR UPPER(TRIM(finding.cve_name)) IN (
-                    SELECT cve_name FROM vulnerability_passport_cves
-                    WHERE passport_internal_id = ANY(%s)
-               )
+            UNION
+            SELECT finding.id
+            FROM vulnerability_passport_cves AS passport_cve
+            JOIN asset_card_vulnerabilities AS finding
+              ON UPPER(TRIM(finding.cve_name)) = passport_cve.cve_name
+            WHERE passport_cve.passport_internal_id = ANY(%s)
             UNION
             SELECT link.asset_vulnerability_id
             FROM asset_card_vulnerability_passports AS link
