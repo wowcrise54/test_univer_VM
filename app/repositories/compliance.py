@@ -198,6 +198,7 @@ class ComplianceRepository:
                 """,
                 (selected, selected),
             ).fetchone()
+        assert row is not None
         return int(row["n"] or 0)
 
     def dataset(
