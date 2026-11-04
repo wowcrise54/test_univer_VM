@@ -198,7 +198,7 @@ class ComplianceRepository:
                 """,
                 (selected, selected),
             ).fetchone()
-        return int(row["n"] or 0)
+        return int(row["n"] or 0) if row else 0
 
     def dataset(
         self,

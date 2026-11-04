@@ -6,6 +6,7 @@ from typing import Any
 
 from ..diagnostics import log_exception
 from ..repositories.remediation import STATUSES, CoverageRepository, RemediationRepository
+from .snapshot_cache import SnapshotCache
 
 
 class RemediationService:
@@ -13,6 +14,7 @@ class RemediationService:
         self.repository = repository
         self.stale_days = stale_days
         self.webhook_enabled = webhook_enabled
+        self._snapshots = SnapshotCache(name="remediation-summary", ttl_seconds=30)
 
     def list(self, **filters: Any) -> dict[str, Any]:
         return self.repository.list(**filters)
@@ -48,9 +50,11 @@ class RemediationService:
             "status", "assignee", "due_at", "risk_reason", "risk_expires_at",
             "exception_reason", "exception_expires_at",
         ) if key in payload}
-        return self.repository.update(
+        result = self.repository.update(
             case_id, changes, expected_version=int(payload["expected_version"]), comment=payload.get("comment")
         )
+        self._snapshots.invalidate()
+        return result
 
     def bulk_update(self, case_ids: builtins.list[str], payload: dict[str, Any]) -> dict[str, Any]:
         updated: builtins.list[dict[str, Any]] = []
@@ -68,6 +72,9 @@ class RemediationService:
         return {"updated": updated, "updated_count": len(updated), "conflicts": conflicts}
 
     def summary(self) -> dict[str, Any]:
+        return self._snapshots.get("summary", self._load_summary)
+
+    def _load_summary(self) -> dict[str, Any]:
         result = self.repository.summary()
         self.repository.ensure_daily_digest(webhook_enabled=self.webhook_enabled, summary=result)
         return result
@@ -90,7 +97,7 @@ class RemediationService:
         if not clean_asset_id or not clean_selector:
             raise ValueError("Asset and vulnerability selector are required.")
 
-        return self.repository.start_for_finding(
+        result = self.repository.start_for_finding(
             asset_id=clean_asset_id,
             vulnerability_key=clean_selector,
             assignee=assignee,
@@ -98,16 +105,23 @@ class RemediationService:
             comment=comment or "Задача запущена из вкладки «Уязвимости».",
             resume_exception=resume_exception,
         )
+        self._snapshots.invalidate()
+        return result
 
     def policy(self) -> dict[str, Any]:
         return self.repository.policy()
 
     def update_policy(self, values: dict[str, int], *, apply_to_open: bool) -> dict[str, Any]:
-        return self.repository.update_policy(values, apply_to_open=apply_to_open)
+        result = self.repository.update_policy(values, apply_to_open=apply_to_open)
+        self._snapshots.invalidate()
+        return result
 
     def reconcile_asset(self, asset_id: str) -> dict[str, int]:
         try:
-            return self.repository.reconcile_asset(asset_id, stale_days=self.stale_days)
+            result = self.repository.reconcile_asset(asset_id, stale_days=self.stale_days)
+            if any(result.values()):
+                self._snapshots.invalidate()
+            return result
         except Exception:
             log_exception("remediation", "case.reconcile.failed", asset_id=asset_id)
             return {"created": 0, "reopened": 0, "resolved": 0}
@@ -128,9 +142,10 @@ class CoverageService:
     def __init__(self, repository: CoverageRepository, *, stale_days: int) -> None:
         self.repository = repository
         self.stale_days = stale_days
+        self._snapshots = SnapshotCache(name="coverage-summary", ttl_seconds=30)
 
     def summary(self) -> dict[str, Any]:
-        return self.repository.summary(stale_days=self.stale_days)
+        return self._snapshots.get("summary", lambda: self.repository.summary(stale_days=self.stale_days))
 
     def list_assets(self, **filters: Any) -> dict[str, Any]:
         return self.repository.list_assets(stale_days=self.stale_days, **filters)

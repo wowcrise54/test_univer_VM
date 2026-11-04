@@ -3,23 +3,29 @@ from __future__ import annotations
 from typing import Any
 
 from ..repositories.risk import RiskRepository
+from .snapshot_cache import SnapshotCache
 
 
 class RiskService:
     def __init__(self, repository: RiskRepository) -> None:
         self.repository = repository
+        self._snapshots = SnapshotCache(name="risk-summary", ttl_seconds=30)
 
     def queue(self, **filters: Any) -> dict[str, Any]:
         return self.repository.queue(**filters)
 
     def summary(self) -> dict[str, Any]:
-        return self.repository.summary()
+        return self._snapshots.get("summary", self.repository.summary)
 
     def set_contexts(self, asset_ids: list[str], values: dict[str, Any], actor: str | None, expected_versions: dict[str, int] | None = None) -> dict[str, Any]:
-        return self.repository.set_contexts(asset_ids, values, actor, expected_versions)
+        result = self.repository.set_contexts(asset_ids, values, actor, expected_versions)
+        self._snapshots.invalidate()
+        return result
 
     def import_contexts(self, csv_text: str, actor: str | None) -> dict[str, Any]:
-        return self.repository.import_csv(csv_text, actor)
+        result = self.repository.import_csv(csv_text, actor)
+        self._snapshots.invalidate()
+        return result
 
     def create_campaign(self, values: dict[str, Any], actor: str | None) -> dict[str, Any]:
         return self.repository.create_campaign(values, actor)

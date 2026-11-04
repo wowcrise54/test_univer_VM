@@ -40,6 +40,39 @@ export function remediationStatusLabel(status) {
   return REMEDIATION_STATUS_LABELS[status] || status;
 }
 
+// Statuses of scanner tasks (the "Задачи" workspace and the "Сканирование" page).
+export const TASK_STATUS_LABELS = {
+  unknown: "Неизвестно",
+  created: "Создана",
+  updated: "Изменена",
+  new: "Не запускалась",
+  idle: "Не запускалась",
+  preset_synced: "Готовится к запуску",
+  updated_before_start: "Готовится к запуску",
+  valid: "Проверена",
+  queued: "В очереди",
+  running: "Выполняется",
+  in_progress: "Выполняется",
+  started: "Выполняется",
+  stop_requested: "Остановка",
+  stopping: "Останавливается",
+  stopped: "Остановлена",
+  cancelled: "Остановлена",
+  failed: "Ошибка",
+  error: "Ошибка",
+  invalid: "Ошибка проверки",
+  validation_failed: "Ошибка проверки",
+  precheck_finished: "Хосты доступны",
+  precheck_updated_targets: "Хосты доступны",
+  precheck_failed: "Хосты недоступны",
+  precheck_validation_failed: "Ошибка проверки хостов",
+};
+
+export function taskStatusLabel(value, overrides) {
+  const key = String(value ?? "").toLowerCase();
+  return overrides?.[key] || TASK_STATUS_LABELS[key] || String(value ?? "");
+}
+
 export function operationStatusLabel(status) {
   return (
     {

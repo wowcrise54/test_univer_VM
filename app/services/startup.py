@@ -23,6 +23,7 @@ def database_startup_steps(runtime: Any) -> list[tuple[str, Callable[[], Any]]]:
         ("card_jobs", lambda: runtime.db.interrupt_active_asset_card_build_jobs()),
         ("postprocess_leases", lambda: runtime.db.release_scan_postprocess_leases()),
         ("operations", lambda: runtime.db.sync_operations_from_sources()),
+        ("stale_operations", lambda: runtime.db.interrupt_stale_operations()),
         ("snapshot", lambda: runtime.CONTAINER.services.vulnerabilities.ensure_baseline()),
         # Walks every asset one by one; the API does not need it to start serving.
         ("remediation", lambda: runtime.CONTAINER.operation_runner.submit(

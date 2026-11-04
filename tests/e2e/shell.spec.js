@@ -1028,7 +1028,7 @@ test("operation drawer traps focus, closes with Escape, and blocks a duplicate c
 
   await page.goto("/operations");
   const operationRow = page
-    .locator('code[title="operation-e2e-001"]')
+    .getByRole("button", { name: "Скопировать ID операции: operation-e2e-001" })
     .locator("xpath=ancestor::tr");
   await expect(operationRow).toBeVisible();
 

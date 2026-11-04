@@ -8,7 +8,13 @@ import { api } from "../../api/client.js";
 import { PassportCard, PassportModal } from "../passports/PassportCard.jsx";
 import { formatCount, formatDate } from "../../shared/format.js";
 import { nextTableSort, SortableHeader } from "../../shared/table.jsx";
-import { Button, Disclosure, Field, Panel } from "../../shared/ui.jsx";
+import {
+  Button,
+  Disclosure,
+  Field,
+  Panel,
+  SnapshotStamp,
+} from "../../shared/ui.jsx";
 import {
   useVulnerabilityDashboard,
   VULNERABILITY_PAGE_SIZE,
@@ -1369,6 +1375,7 @@ function DashboardContext({ summary }) {
       <div>
         <span>Источник текущего среза</span>
         <strong>{source}</strong>
+        <SnapshotStamp snapshot={summary.snapshot} />
       </div>
       <div>
         <span>Карточки с находками</span>

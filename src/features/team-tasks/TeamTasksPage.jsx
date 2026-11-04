@@ -10,6 +10,7 @@ import {
   Panel,
   useDialogAccessibility,
 } from "../../shared/ui.jsx";
+import { taskStatusLabel } from "../../shared/labels.js";
 import { OS_LABELS } from "../task-presets/presetForm.js";
 import { TeamTaskDetails } from "./TeamTaskDetails.jsx";
 
@@ -21,18 +22,8 @@ const ACTIVE_POSTPROCESS = new Set([
   "cancelling",
 ]);
 
-const STATUS_LABELS = {
-  created: "Создана",
-  updated: "Изменена",
-  preset_synced: "Готовится к запуску",
-  updated_before_start: "Готовится к запуску",
-  valid: "Проверена",
-  started: "Запущена",
-  stop_requested: "Остановка",
-  validation_failed: "Ошибка проверки",
-  precheck_failed: "Хосты недоступны",
-  precheck_updated_targets: "Хосты доступны",
-};
+// A task that was just started is "Запущена" here; the shared label says "Выполняется".
+const STATUS_LABELS = { started: "Запущена" };
 
 function runStatusLabel(value) {
   if (!value) return "—";
@@ -73,7 +64,7 @@ export function teamTaskStatus(task) {
     return POSTPROCESS_LABELS[postprocess];
   }
   const status = String(task?.status || "");
-  return STATUS_LABELS[status] || status || "—";
+  return status ? taskStatusLabel(status, STATUS_LABELS) : "—";
 }
 
 // Targets are separated by commas, semicolons, spaces or new lines; the

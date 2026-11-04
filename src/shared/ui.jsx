@@ -363,3 +363,91 @@ export function ConfirmDialog({
     ? dialog
     : createPortal(dialog, document.body);
 }
+
+/** Keeps the head and tail of a long identifier: `3f2a9c1e…7b4d`. */
+export function shortenId(value, head = 8, tail = 4) {
+  const text = String(value ?? "");
+  return text.length > head + tail + 1
+    ? `${text.slice(0, head)}…${text.slice(-tail)}`
+    : text;
+}
+
+async function writeClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("copy rejected");
+  } finally {
+    field.remove();
+  }
+}
+
+/** A long identifier shown in short form; a click copies the full value. */
+export function CopyableId({ value, label = "ID", head = 8, tail = 4 }) {
+  const [state, setState] = useState("idle");
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const text = String(value ?? "");
+  if (!text) return <span>—</span>;
+
+  const copy = async (event) => {
+    event.stopPropagation();
+    try {
+      await writeClipboard(text);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), 1800);
+  };
+
+  return (
+    <button
+      type="button"
+      className="copyable-id"
+      title={`${text}\nНажмите, чтобы скопировать`}
+      aria-label={`Скопировать ${label}: ${text}`}
+      onClick={copy}
+    >
+      <code>{shortenId(text, head, tail)}</code>
+      <span className="copyable-id__state" role="status">
+        {state === "copied"
+          ? "Скопировано"
+          : state === "failed"
+            ? "Не удалось"
+            : ""}
+      </span>
+    </button>
+  );
+}
+
+/** "Обновлено в 12:03" for cached dashboard data; flags a snapshot being refreshed. */
+export function SnapshotStamp({ snapshot }) {
+  if (!snapshot?.generated_at) return null;
+  const date = new Date(snapshot.generated_at);
+  if (Number.isNaN(date.getTime())) return null;
+  const time = new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+  return (
+    <small
+      className={`snapshot-stamp${snapshot.stale ? " is-stale" : ""}`}
+      title="Значения берутся из кеша сервера и пересчитываются в фоне"
+    >
+      Обновлено в {time}
+      {snapshot.stale ? " · пересчитывается" : ""}
+    </small>
+  );
+}

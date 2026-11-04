@@ -116,7 +116,6 @@ class TaskPresetService:
         transport = "ssh" if "terminal" in transports else "windows"
         trigger = payload.get("triggerParameters") if isinstance(payload.get("triggerParameters"), dict) else None
         denied = payload.get("deniedScanSettings") if isinstance(payload.get("deniedScanSettings"), dict) else None
-        include: dict[str, Any] = payload["include"] if isinstance(payload.get("include"), dict) else {}
         host_discovery: dict[str, Any] = (
             payload["hostDiscovery"] if isinstance(payload.get("hostDiscovery"), dict) else {}
         )

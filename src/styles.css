@@ -3468,11 +3468,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .task-inspector-actions select { min-height: 34px; padding: 6px 9px; border: 1px solid #ccd9e4; border-radius: 5px; color: #29445b; background: white; }
 .task-bulk-actions button { min-height: 32px; padding: 5px 10px; }
 .task-table-scroll { max-width: 100%; overflow-x: auto; }
-.task-workspace-table { width: 100%; min-width: 1600px; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 0.76rem; }
-.task-workspace-table col { width: 140px; }
+.task-workspace-table { width: 100%; min-width: 900px; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 0.76rem; }
+.task-workspace-table col { width: 120px; }
 .task-workspace-table .task-workspace-table__select-column { width: 40px; }
-.task-workspace-table .task-workspace-table__status-column { width: 200px; }
-.task-workspace-table .task-workspace-table__name-column { width: 240px; }
+.task-workspace-table .task-workspace-table__status-column { width: 150px; }
+.task-workspace-table .task-workspace-table__name-column { width: auto; }
 .task-workspace-table th { position: sticky; top: 0; z-index: 1; padding: 8px 6px; border-bottom: 1px solid #d8e3eb; color: #71869a; background: #f8fafb; font-size: 0.65rem; font-weight: 800; letter-spacing: 0.025em; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .task-workspace-table td { min-width: 0; max-width: none; overflow: hidden; padding: 8px 6px; border-bottom: 1px solid #edf1f4; color: #526b80; vertical-align: middle; overflow-wrap: anywhere; }
 .task-workspace-table .task-status { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
@@ -3481,7 +3481,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .task-workspace-table tbody tr:hover td { background: #f5f9fb; }
 .task-workspace-table tbody tr.is-selected td { background: #e7f2f8; }
 .task-workspace-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 var(--task-cyan); }
-.task-workspace-table td strong { display: block; overflow: hidden; color: #213b52; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.task-workspace-table td strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; color: #213b52; font-weight: 750; white-space: normal; overflow-wrap: anywhere; }
 .task-workspace-table td small { display: block; margin-top: 3px; overflow: hidden; color: #8296a8; font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
 .task-workspace-table td:first-child input { accent-color: var(--task-blue); }
 .task-table-empty { height: 130px; color: var(--task-empty-text, #8094a6) !important; text-align: center; }
@@ -3592,7 +3592,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .task-workspace-table td::before { color: #8295a7; content: attr(data-label); font-size: 0.65rem; font-weight: 750; letter-spacing: 0.02em; }
   .task-workspace-table td strong,
   .task-workspace-table td small { white-space: normal; overflow-wrap: anywhere; }
-  .task-workspace-table td strong { max-height: none; }
+  .task-workspace-table td strong { display: block; max-height: none; -webkit-line-clamp: unset; line-clamp: unset; }
   .task-workspace-table tbody tr.task-table-message-row { display: block; }
   .task-workspace-table tbody tr.task-table-message-row td { display: block; }
 }

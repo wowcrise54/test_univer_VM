@@ -785,7 +785,10 @@ export function TaskWorkspace(props) {
                         <StatusBadge status={task.status} />
                       </td>
                       <td data-label="Название">
-                        <strong title={task.mp_task_id}>
+                        <strong
+                          title={`${task.name || task.mp_task_id}
+ID: ${task.mp_task_id}`}
+                        >
                           {task.name || task.mp_task_id}
                         </strong>
                       </td>
