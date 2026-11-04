@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import functools
+import logging
+import time
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
@@ -11,7 +14,10 @@ from . import __version__
 from . import vulnerabilities as vuln
 from .client import AppClient
 from .config import McpSettings
+from .principal import TokenAuthenticator, current_principal
 from .shaping import render
+
+logger = logging.getLogger("mpvm_mcp")
 
 INSTRUCTIONS = (
     "Read-only access to vulnerability data of MP VM Client. "
@@ -29,14 +35,42 @@ Limit = Annotated[int, Field(ge=1, le=200, description="Maximum number of rows t
 Offset = Annotated[int, Field(ge=0, description="Rows to skip, for paging.")]
 
 
-def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
+def _audited(fn: Any, authenticator: TokenAuthenticator) -> Any:
+    """Record every tool call of a token principal in the application audit log."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        principal = current_principal.get()
+        if principal is None:
+            return await fn(*args, **kwargs)
+        started = time.monotonic()
+        error: str | None = None
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:
+            error = str(getattr(exc, "code", "") or type(exc).__name__)
+            raise
+        finally:
+            try:
+                await authenticator.record_tool_call(
+                    principal, fn.__name__, ok=error is None, error=error, duration_ms=int((time.monotonic() - started) * 1000)
+                )
+            except Exception:  # an audit failure must not turn a read into an error
+                logger.warning("MCP tool call %s was not audited", fn.__name__, exc_info=True)
+
+    return wrapper
+
+
+def build_server(
+    settings: McpSettings, client: AppClient | Any, *, authenticator: TokenAuthenticator | None = None
+) -> MCPServer:
     server = MCPServer("mpvm-vulnerabilities", instructions=INSTRUCTIONS, version=__version__)
     coverage = vuln.CoverageProbe(client)
     searches = vuln.SearchCache()
     cap = settings.max_response_chars
 
     def read_only_tool(fn: Any) -> Any:
-        return server.tool(annotations=READ_ONLY)(fn)
+        return server.tool(annotations=READ_ONLY)(_audited(fn, authenticator) if authenticator else fn)
 
     @read_only_tool
     async def find_hosts_by_vulnerability(

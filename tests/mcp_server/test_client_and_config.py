@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 from mcp_server import client as client_module
 from mcp_server.client import ApiError, AppClient
 from mcp_server.config import McpSettings
-from mcp_server.http_auth import BearerAuthMiddleware
+from mcp_server.http_auth import McpAuthMiddleware
 from mcp_server.shaping import fit_response, render
 from tests.mcp_server.fakes import COOKIE, FakeApi, make_settings
 
@@ -148,11 +148,18 @@ def test_client_warns_when_the_account_can_write(caplog):
 
 def test_settings_report_what_is_missing():
     base = {"username": "u", "password": "p"}
-    assert len(McpSettings().problems()) == 2
+    # personal access tokens need no environment settings; only the deprecated shared token does
+    assert McpSettings().problems() == []
+    assert McpSettings(**base).problems() == []
     assert "MPVM_MCP_USERNAME" in McpSettings(auth_token="t").problems()[0]
-    # the endpoint shares the application port, so a token is always mandatory
-    assert "MPVM_MCP_AUTH_TOKEN" in McpSettings(**base).problems()[0]
     assert McpSettings(auth_token="t", **base).problems() == []
+
+
+def test_allowed_origins_are_normalized():
+    assert McpSettings().origins == frozenset()
+    assert McpSettings(allowed_origins=" https://A.example/ ,,http://b.example:8080").origins == frozenset(
+        {"https://a.example", "http://b.example:8080"}
+    )
 
 
 def test_settings_validate_fields_and_hide_secrets():
@@ -165,26 +172,48 @@ def test_settings_validate_fields_and_hide_secrets():
             McpSettings(path=bad)
 
 
-def _guarded(token: str = "s3cret") -> TestClient:
+def _guarded(token: str = "s3cret", **options) -> TestClient:
     async def ok(_request):
         return PlainTextResponse("ok")
 
     app = Starlette(routes=[Route("/mcp", ok, methods=["GET", "POST"]), Route("/healthz", ok)])
-    app.add_middleware(BearerAuthMiddleware, token=token)
+    app.add_middleware(McpAuthMiddleware, legacy_token=token, **options)
     return TestClient(app)
 
 
-def test_bearer_middleware_guards_every_request():
+def test_legacy_token_middleware_guards_every_request():
     client = _guarded()
     assert client.get("/healthz").status_code == 401
     denied = client.post("/mcp")
     assert denied.status_code == 401 and denied.headers["www-authenticate"] == "Bearer"
+    assert denied.headers["cache-control"] == "no-store"
     assert client.post("/mcp", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.post("/mcp", headers={"Authorization": "Basic s3cret"}).status_code == 401
     assert client.post("/mcp", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     assert client.post("/mcp", headers={"Authorization": "bearer s3cret"}).status_code == 200
+
+
+def test_x_api_key_is_refused_unless_enabled():
+    assert _guarded().post("/mcp", headers={"X-API-Key": "s3cret"}).status_code == 401
+    client = _guarded(allow_x_api_key=True)
     assert client.post("/mcp", headers={"X-API-Key": "s3cret"}).status_code == 200
     assert client.post("/mcp", headers={"X-API-Key": "nope"}).status_code == 401
+
+
+def test_the_guard_fails_closed_without_any_credential():
+    client = _guarded(token="")
+    assert client.post("/mcp").status_code == 401
+    assert client.post("/mcp", headers={"Authorization": "Bearer "}).status_code == 401
+    assert client.post("/mcp", headers={"Authorization": "Bearer anything"}).status_code == 401
+
+
+def test_a_browser_origin_is_refused_unless_listed():
+    bearer = {"Authorization": "Bearer s3cret"}
+    client = _guarded(allowed_origins={"https://ok.example"})
+    assert client.post("/mcp", headers={**bearer, "Origin": "https://evil.example"}).status_code == 403
+    assert client.post("/mcp", headers={**bearer, "Origin": "https://ok.example/"}).status_code == 200
+    assert client.post("/mcp", headers=bearer).status_code == 200  # a client that is not a browser sends none
+    assert _guarded().post("/mcp", headers={**bearer, "Origin": "https://ok.example"}).status_code == 403
 
 
 def test_fit_response_halves_the_largest_list_and_marks_truncation():

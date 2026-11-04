@@ -69,6 +69,8 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "security.roles.read": ("Безопасность", "Просмотр ролей и разрешений"),
     "security.roles.manage": ("Безопасность", "Создание и изменение ролей"),
     "security.audit.read": ("Безопасность", "Просмотр аудита доступа"),
+    "security.mcp_tokens.read": ("Безопасность", "Просмотр токенов доступа MCP"),
+    "security.mcp_tokens.manage": ("Безопасность", "Выпуск, ротация и отзыв токенов доступа MCP"),
 }
 
 VIEWER_PERMISSIONS = {
@@ -332,13 +334,24 @@ def _login_via_ldap(username: str, password: str, request: Request) -> dict[str,
     return _provision_ldap_user(identity)
 
 
-def create_session(user_id: int, *, hours: int) -> str:
+def create_session(
+    user_id: int,
+    *,
+    hours: int = 0,
+    lifetime: timedelta | None = None,
+    mcp_token_id: int | None = None,
+    permission_cap: list[str] | None = None,
+) -> str:
+    """Open a session. An MCP token session is capped to ``permission_cap`` and ends with its token."""
     token, current = secrets.token_urlsafe(48), _utc_now()
+    expires_at = current + (lifetime if lifetime is not None else timedelta(hours=hours))
     with db.connect() as conn:
         conn.execute("DELETE FROM app_auth_sessions WHERE expires_at<=%s OR revoked_at IS NOT NULL", (_iso(current),))
-        conn.execute("""INSERT INTO app_auth_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at)
-            VALUES(%s,%s,%s,%s,%s,%s)""", (str(uuid.uuid4()), user_id, _token_hash(token), _iso(current), _iso(current+timedelta(hours=hours)), _iso(current)))
-        conn.execute("UPDATE app_users SET last_login_at=%s,updated_at=%s WHERE id=%s", (_iso(current), _iso(current), user_id))
+        conn.execute("""INSERT INTO app_auth_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at,mcp_token_id,permission_cap)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""", (str(uuid.uuid4()), user_id, _token_hash(token), _iso(current), _iso(expires_at), _iso(current),
+            mcp_token_id, permission_cap))
+        if mcp_token_id is None:
+            conn.execute("UPDATE app_users SET last_login_at=%s,updated_at=%s WHERE id=%s", (_iso(current), _iso(current), user_id))
     return token
 
 
@@ -346,11 +359,23 @@ def get_session_user(token: str | None) -> dict[str, Any] | None:
     if not token: return None
     current, hashed = _iso(_utc_now()), _token_hash(token)
     with db.connect() as conn:
-        row = conn.execute("""SELECT users.* FROM app_auth_sessions sessions JOIN app_users users ON users.id=sessions.user_id
-            WHERE sessions.token_hash=%s AND sessions.revoked_at IS NULL AND sessions.expires_at>%s AND users.is_active=TRUE""", (hashed, current)).fetchone()
+        row = conn.execute("""SELECT users.*, sessions.permission_cap, sessions.mcp_token_id, 'mpvm_mcp_' || tokens.public_id AS mcp_token_public_id,
+                tokens.name AS mcp_token_name
+            FROM app_auth_sessions sessions JOIN app_users users ON users.id=sessions.user_id
+            LEFT JOIN app_mcp_tokens tokens ON tokens.id=sessions.mcp_token_id
+            WHERE sessions.token_hash=%s AND sessions.revoked_at IS NULL AND sessions.expires_at>%s AND users.is_active=TRUE
+              AND (sessions.mcp_token_id IS NULL OR (tokens.revoked_at IS NULL AND tokens.expires_at>now()))""", (hashed, current)).fetchone()
         if not row: return None
         conn.execute("UPDATE app_auth_sessions SET last_seen_at=%s WHERE token_hash=%s AND last_seen_at<%s", (current, hashed, _iso(_utc_now()-timedelta(minutes=5))))
-        return public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=_permissions_for_user(conn, row["id"]))
+        permissions = _permissions_for_user(conn, row["id"])
+        mcp_token = None
+        if row["mcp_token_id"] is not None:
+            # A token session never gets more than its scopes, and never a write permission.
+            allowed = {key for key in (row["permission_cap"] or []) if key.endswith(".read")}
+            permissions = [key for key in permissions if key in allowed]
+            mcp_token = {"id": row["mcp_token_public_id"], "name": row["mcp_token_name"]}
+        user = public_user(dict(row), roles=_roles_for_user(conn, row["id"]), permissions=permissions)
+        return {**user, "mcp_token": mcp_token} if mcp_token else user
 
 
 def revoke_session(token: str | None) -> None:
@@ -491,6 +516,7 @@ def delete_role(role_id:int)->None:
 
 
 def audit_event(*,request:Request|None,user:dict[str,Any]|None,event_type:str,decision:str,permission_key:str|None=None,target_type:str|None=None,target_id:str|None=None,details:dict[str,Any]|None=None)->None:
+    if user and user.get("mcp_token"): details={**(details or {}),"mcp_token":user["mcp_token"]}
     try:
         with db.connect() as conn: conn.execute("""INSERT INTO app_auth_audit_events(actor_user_id,actor_username,event_type,permission_key,decision,target_type,target_id,ip_address,user_agent,trace_id,request_id,details_json,created_at)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",((user or {}).get("id"),(user or {}).get("username"),event_type,permission_key,decision,target_type,target_id,request.client.host if request and request.client else None,request.headers.get("user-agent") if request else None,getattr(request.state,"trace_id",None) if request else None,getattr(request.state,"request_id",None) if request else None,json.dumps(details or {},ensure_ascii=False),db.now_utc()))

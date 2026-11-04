@@ -16,13 +16,19 @@ class McpSettings(BaseSettings):
     enabled: bool = False
     path: str = "/mcp"
 
-    # The dedicated viewer account the tools read the API with.
-    username: str = ""
-    password: str = Field(default="", repr=False)
     timeout_seconds: float = Field(default=30.0, gt=0, le=600)
 
-    # Token that HTTP clients send to the embedded endpoint.
+    # Personal access tokens issued in the application are the way to authenticate. The three
+    # settings below are the deprecated single shared token: when ``auth_token`` is set, clients
+    # may still send it and the tools read the API as this viewer account.
+    username: str = ""
+    password: str = Field(default="", repr=False)
     auth_token: str = Field(default="", repr=False)
+    # Also accept the token in ``X-API-Key``. Off: a second header is one more place for it to leak.
+    allow_x_api_key: bool = False
+    # Browser origins allowed to call the endpoint, comma separated. Requests with any other
+    # ``Origin`` are refused; MCP clients that are not browsers send none.
+    allowed_origins: str = ""
 
     # Answer shaping.
     stale_days: int = Field(default=14, ge=1, le=3650)
@@ -32,6 +38,10 @@ class McpSettings(BaseSettings):
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @property
+    def origins(self) -> frozenset[str]:
+        return frozenset(item.strip().rstrip("/").lower() for item in self.allowed_origins.split(",") if item.strip())
 
     @field_validator("path")
     @classmethod
@@ -46,9 +56,6 @@ class McpSettings(BaseSettings):
     def problems(self) -> list[str]:
         """Configuration errors that stop the MCP endpoint from being mounted."""
         found: list[str] = []
-        if not self.username or not self.password:
-            found.append("MPVM_MCP_USERNAME and MPVM_MCP_PASSWORD are required (use a dedicated viewer account)")
-        # The endpoint shares the application's port, so it is reachable wherever the app is.
-        if not self.auth_token:
-            found.append("MPVM_MCP_AUTH_TOKEN is required when MCP is served from the application port")
+        if self.auth_token and (not self.username or not self.password):
+            found.append("MPVM_MCP_USERNAME and MPVM_MCP_PASSWORD are required with MPVM_MCP_AUTH_TOKEN (use a dedicated viewer account)")
         return found

@@ -699,8 +699,10 @@ def spa_fallback(full_path: str) -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-# Added last so the MCP path is matched before the other middleware; it has its own bearer-token guard.
+# Added last so the MCP path is matched before the other middleware; it has its own token guard.
 # Off unless MPVM_MCP_ENABLED is set (docs/mcp.md).
 from mcp_server.embed import install_embedded_mcp  # noqa: E402
 
-install_embedded_mcp(app)
+from .services.mcp_tokens import McpTokenAuthenticator  # noqa: E402
+
+install_embedded_mcp(app, authenticator=McpTokenAuthenticator())

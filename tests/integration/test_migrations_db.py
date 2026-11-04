@@ -36,7 +36,7 @@ from app import db, main
 # both in the Docker test stack and on a plain CI checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_HEAD = "20261103_0032"
+EXPECTED_HEAD = "20261105_0034"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -53,6 +53,7 @@ DROPPED_AT_BASE = {
     "scanner_task_folder_assignments",  # 0026
     "scan_task_presets",      # 0028
     "scan_task_preset_roles", # 0028
+    "app_mcp_tokens",         # 0034
 }
 
 # 0002 uses the expand/contract strategy: its downgrade is a no-op that keeps

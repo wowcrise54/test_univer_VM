@@ -10,6 +10,7 @@ from functools import partial
 from typing import Any, Protocol
 
 from .client import ApiError
+from .principal import current_principal
 
 FIX_AVAILABLE = "available"
 FIX_NOT_DESCRIBED = "not_described"
@@ -188,6 +189,16 @@ def match_rows(rows: list[dict[str, Any]], query: str) -> tuple[list[dict[str, A
     return rows, "partial"
 
 
+def caller_scope() -> int | None:
+    """Whose answers a cache entry holds: the token of the request, or None for the shared service account.
+
+    Callers differ in what the application lets them read, so one caller must never be served
+    what the application answered to another.
+    """
+    principal = current_principal.get()
+    return principal.key if principal else None
+
+
 class CoverageProbe:
     """Best-effort, cached completeness/freshness block of the local data.
 
@@ -206,25 +217,28 @@ class CoverageProbe:
         self._client = client
         self._ttl = ttl_seconds
         self._timeout = timeout_seconds
-        self._cached: tuple[float, dict[str, Any]] | None = None
-        self._pending: asyncio.Task[dict[str, Any] | None] | None = None
+        self._cached: dict[int | None, tuple[float, dict[str, Any]]] = {}
+        self._pending: dict[int | None, asyncio.Task[dict[str, Any] | None]] = {}
 
     async def get(self) -> dict[str, Any] | None:
-        if self._cached and time.monotonic() - self._cached[0] < self._ttl:
-            return self._cached[1]
-        if self._pending is None or self._pending.done():
-            self._pending = asyncio.ensure_future(self._fetch())
+        scope = caller_scope()
+        cached = self._cached.get(scope)
+        if cached and time.monotonic() - cached[0] < self._ttl:
+            return cached[1]
+        pending = self._pending.get(scope)
+        if pending is None or pending.done():
+            pending = self._pending[scope] = asyncio.ensure_future(self._fetch(scope))
         try:
             # shield: a caller that gives up must not cancel the fetch other callers wait for
-            return await asyncio.wait_for(asyncio.shield(self._pending), self._timeout)
+            return await asyncio.wait_for(asyncio.shield(pending), self._timeout)
         except (TimeoutError, ApiError):
             return None
 
-    async def _fetch(self) -> dict[str, Any] | None:
+    async def _fetch(self, scope: int | None) -> dict[str, Any] | None:
         summary = await self._client.get("/api/vulnerabilities/summary")
         coverage = summary.get("coverage") if isinstance(summary, dict) else None
         if isinstance(coverage, dict):
-            self._cached = (time.monotonic(), coverage)
+            self._cached[scope] = (time.monotonic(), coverage)
             return coverage
         return None
 
@@ -427,7 +441,7 @@ async def find_hosts_by_vulnerability(
     if cache is None:
         found = await compute()
     else:
-        found = await cache.get_or_compute((query.lower(), severity, source, host_q, stale_days), compute)
+        found = await cache.get_or_compute((caller_scope(), query.lower(), severity, source, host_q, stale_days), compute)
 
     brief = detail == "brief"
     merged: list[dict[str, Any]] = found["hosts"]

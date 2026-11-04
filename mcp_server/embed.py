@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import McpSettings
+from .principal import TokenAuthenticator
 
 logger = logging.getLogger("mpvm_mcp")
 
@@ -41,8 +42,13 @@ class McpPathRouter:
         await self.app(scope, receive, send)
 
 
-def install_embedded_mcp(app: FastAPI, *, settings: McpSettings | None = None) -> bool:
-    """Mount MCP on ``app`` when ``MPVM_MCP_ENABLED`` is set. Never raises: a broken MCP must not stop the app."""
+def install_embedded_mcp(
+    app: FastAPI, *, settings: McpSettings | None = None, authenticator: TokenAuthenticator | None = None
+) -> bool:
+    """Mount MCP on ``app`` when ``MPVM_MCP_ENABLED`` is set. Never raises: a broken MCP must not stop the app.
+
+    ``authenticator`` checks personal access tokens; without it only the deprecated shared token works.
+    """
     try:
         settings = settings or McpSettings()
     except ValidationError as exc:
@@ -56,28 +62,47 @@ def install_embedded_mcp(app: FastAPI, *, settings: McpSettings | None = None) -
         logger.error("MCP is not mounted: %s", "; ".join(problems))
         return False
 
+    if authenticator is None and not settings.auth_token:
+        logger.error("MCP is not mounted: no authentication is configured (issue MCP access tokens in the application)")
+        return False
+
     try:
         import httpx2
 
         from .client import AppClient
-        from .http_auth import BearerAuthMiddleware
+        from .http_auth import McpAuthMiddleware
         from .server import build_server
     except ImportError as exc:  # the image was built without requirements-mcp.txt
         logger.error("MCP is not mounted: a required package is missing (%s)", exc)
         return False
 
-    client = AppClient(settings, transport=httpx2.ASGITransport(app=app))
-    server = build_server(settings, client)
+    if settings.auth_token:
+        logger.warning(
+            "MPVM_MCP_AUTH_TOKEN (one shared token for every client) is deprecated: "
+            "issue a personal MCP access token per client and remove it"
+        )
+    client = AppClient(
+        settings,
+        transport=httpx2.ASGITransport(app=app),
+        session_opener=authenticator.open_session if authenticator else None,
+    )
+    server = build_server(settings, client, authenticator=authenticator)
     mcp_app = server.streamable_http_app(
         streamable_http_path=settings.path,
-        host="0.0.0.0",  # DNS-rebinding protection is for loopback servers; the bearer token guards this one
+        host="0.0.0.0",  # DNS-rebinding protection is for loopback servers; the token and the Origin check guard this one
         stateless_http=True,
         json_response=True,
     )
     app.add_middleware(
         McpPathRouter,
         path=settings.path,
-        handler=BearerAuthMiddleware(mcp_app, settings.auth_token),
+        handler=McpAuthMiddleware(
+            mcp_app,
+            authenticator=authenticator,
+            legacy_token=settings.auth_token,
+            allow_x_api_key=settings.allow_x_api_key,
+            allowed_origins=settings.origins,
+        ),
     )
 
     application_lifespan: Any = app.router.lifespan_context

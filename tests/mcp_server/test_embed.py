@@ -84,9 +84,9 @@ def test_disabled_by_default_leaves_the_application_untouched(caplog):
 def test_misconfiguration_does_not_mount_and_does_not_raise(caplog):
     app = _host_app()
     with caplog.at_level(logging.ERROR, logger=embed.logger.name):
-        assert install_embedded_mcp(app, settings=make_settings(enabled=True)) is False  # no token
-        assert install_embedded_mcp(app, settings=make_settings(enabled=True, username="", password="")) is False
-    assert "MPVM_MCP_AUTH_TOKEN is required" in caplog.text
+        assert install_embedded_mcp(app, settings=make_settings(enabled=True)) is False  # no way to authenticate
+        assert install_embedded_mcp(app, settings=make_settings(enabled=True, auth_token="t", username="", password="")) is False
+    assert "no authentication is configured" in caplog.text
     assert "MPVM_MCP_USERNAME" in caplog.text
     with _served(app) as client:
         assert client.post("/mcp", json={}).status_code == 405
