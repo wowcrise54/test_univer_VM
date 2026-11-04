@@ -282,7 +282,9 @@ class RemediationRepository:
                         severity, cvss_score, passport_internal_id, due_at
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (asset_id, vulnerability_key) DO NOTHING
+                    -- No conflict target: case_id is derived from the same pair, so a
+                    -- concurrent insert can trip the primary key before the pair index.
+                    ON CONFLICT DO NOTHING
                     RETURNING *
                     """,
                     (
@@ -837,6 +839,23 @@ class RemediationRepository:
 
 
 class CoverageRepository:
+    BASE_SQL = """WITH latest_operation AS (
+            SELECT DISTINCT ON (subject_id) subject_id,status,operation_id FROM operations
+            WHERE kind='asset_card_build' ORDER BY subject_id,created_at DESC
+        ), base AS (
+            SELECT COALESCE(card.asset_id,NULLIF(asset.mp_asset_id,''),asset.asset_key) asset_id,
+              COALESCE(card.display_name,asset.fqdn,asset.ip_address,asset.asset_key) display_name,
+              COALESCE(card.ip_address,asset.ip_address) ip_address,COALESCE(card.fqdn,asset.fqdn) fqdn,
+              card.last_seen,card.asset_id IS NULL missing_card,
+              card.asset_id IS NOT NULL AND NULLIF(card.last_seen,'')::timestamptz < NOW()-(%s||' days')::interval stale,
+              COALESCE(EXISTS(SELECT 1 FROM asset_card_vulnerability_groups g WHERE g.asset_id=card.asset_id AND g.truncated),FALSE) truncated,
+              COALESCE(op.status IN ('failed','interrupted','completed_with_errors'),FALSE) last_refresh_failed,
+              op.operation_id
+            FROM assets asset FULL OUTER JOIN asset_cards card
+              ON card.asset_id=COALESCE(NULLIF(asset.mp_asset_id,''),asset.asset_key)
+            LEFT JOIN latest_operation op ON op.subject_id=COALESCE(card.asset_id,NULLIF(asset.mp_asset_id,''),asset.asset_key)
+        )"""
+
     def list_assets(
         self, *, stale_days: int, q: str | None, issue: str | None, limit: int, offset: int
     ) -> dict[str, Any]:
@@ -854,22 +873,7 @@ class CoverageRepository:
         if issue in issue_map:
             clauses.append(issue_map[issue])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        base_sql = """WITH latest_operation AS (
-            SELECT DISTINCT ON (subject_id) subject_id,status,operation_id FROM operations
-            WHERE kind='asset_card_build' ORDER BY subject_id,created_at DESC
-        ), base AS (
-            SELECT COALESCE(card.asset_id,NULLIF(asset.mp_asset_id,''),asset.asset_key) asset_id,
-              COALESCE(card.display_name,asset.fqdn,asset.ip_address,asset.asset_key) display_name,
-              COALESCE(card.ip_address,asset.ip_address) ip_address,COALESCE(card.fqdn,asset.fqdn) fqdn,
-              card.last_seen,card.asset_id IS NULL missing_card,
-              card.asset_id IS NOT NULL AND NULLIF(card.last_seen,'')::timestamptz < NOW()-(%s||' days')::interval stale,
-              COALESCE(EXISTS(SELECT 1 FROM asset_card_vulnerability_groups g WHERE g.asset_id=card.asset_id AND g.truncated),FALSE) truncated,
-              COALESCE(op.status IN ('failed','interrupted','completed_with_errors'),FALSE) last_refresh_failed,
-              op.operation_id
-            FROM assets asset FULL OUTER JOIN asset_cards card
-              ON card.asset_id=COALESCE(NULLIF(asset.mp_asset_id,''),asset.asset_key)
-            LEFT JOIN latest_operation op ON op.subject_id=COALESCE(card.asset_id,NULLIF(asset.mp_asset_id,''),asset.asset_key)
-        )"""
+        base_sql = self.BASE_SQL
         sql = f"""{base_sql} SELECT *, COUNT(*) OVER() total FROM base {where}
           ORDER BY (missing_card OR stale OR truncated OR last_refresh_failed) DESC,display_name,asset_id LIMIT %s OFFSET %s"""
         with db.connect() as conn:
@@ -882,19 +886,28 @@ class CoverageRepository:
         return {"rows": [dict(row) for row in rows], "total": total, "stale_days": stale_days}
 
     def summary(self, *, stale_days: int) -> dict[str, Any]:
-        result = self.list_assets(stale_days=stale_days, q=None, issue=None, limit=50000, offset=0)
-        rows = result["rows"]
-        total = len(rows)
-        healthy = sum(
-            not any(row[key] for key in ("missing_card", "stale", "truncated", "last_refresh_failed")) for row in rows
-        )
+        with db.connect() as conn:
+            row = conn.execute(
+                f"""{self.BASE_SQL} SELECT
+                  COUNT(*) AS total_assets,
+                  COUNT(*) FILTER (WHERE NOT (missing_card OR stale OR truncated OR last_refresh_failed)) AS healthy_assets,
+                  COUNT(*) FILTER (WHERE missing_card) AS missing_card,
+                  COUNT(*) FILTER (WHERE stale) AS stale,
+                  COUNT(*) FILTER (WHERE truncated) AS truncated,
+                  COUNT(*) FILTER (WHERE last_refresh_failed) AS last_refresh_failed
+                  FROM base""",
+                (stale_days,),
+            ).fetchone()
+        counts = dict(row) if row else {}
+        total = int(counts.get("total_assets") or 0)
+        healthy = int(counts.get("healthy_assets") or 0)
         return {
             "total_assets": total,
             "healthy_assets": healthy,
             "coverage_percent": round(healthy * 100 / total, 1) if total else 100.0,
-            "missing_card": sum(bool(row["missing_card"]) for row in rows),
-            "stale": sum(bool(row["stale"]) for row in rows),
-            "truncated": sum(bool(row["truncated"]) for row in rows),
-            "last_refresh_failed": sum(bool(row["last_refresh_failed"]) for row in rows),
+            "missing_card": int(counts.get("missing_card") or 0),
+            "stale": int(counts.get("stale") or 0),
+            "truncated": int(counts.get("truncated") or 0),
+            "last_refresh_failed": int(counts.get("last_refresh_failed") or 0),
             "stale_days": stale_days,
         }

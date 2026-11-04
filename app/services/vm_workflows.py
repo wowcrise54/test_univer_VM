@@ -7,6 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 
 from ..repositories.vm_workflows import ACTIVE, TERMINAL, VmWorkflowRepository
+from .snapshot_cache import SnapshotCache
 
 if TYPE_CHECKING:
     from ..core.runtime import OperationRunner
@@ -45,6 +46,7 @@ class VmWorkflowService:
         self.operation_provider: Callable[[], dict[str, Any]] | None = None
         self._scheduled: set[str] = set()
         self._lock = threading.Lock()
+        self._overview_snapshots = SnapshotCache(name="vm-overview", ttl_seconds=30)
 
     def configure(
         self, *, scan_starter: Starter, verification_starter: VerificationStarter,
@@ -60,7 +62,7 @@ class VmWorkflowService:
         self.operation_provider = operation_provider
 
     def overview(self) -> dict[str, Any]:
-        result = self.repository.overview()
+        result = self._overview_snapshots.get("overview", self.repository.overview)
         result["system"] = self.status_provider() if self.status_provider else {"state": "unknown"}
         result["coverage"] = self.coverage.summary() if self.coverage else {}
         result["risk"] = self.risk.summary() if self.risk else {}

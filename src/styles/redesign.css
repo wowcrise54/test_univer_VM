@@ -219,6 +219,14 @@ html[data-theme="dark"] textarea:focus-visible {
   text-decoration: underline;
 }
 
+.status-chip em {
+  font-style: normal;
+}
+
+.status-chip__short {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .topbar {
     gap: 10px;
@@ -241,17 +249,25 @@ html[data-theme="dark"] textarea:focus-visible {
     min-width: 0;
   }
 
-  /* On phones the chip shrinks to its dot; the name stays for screen readers. */
+  /* On phones the chip keeps a short caption next to its dot. */
   .status-chip {
     order: 0;
-    gap: 0;
-    padding: 8px;
-    font-size: 0;
+    gap: 6px;
+    padding: 6px 8px;
+    min-height: 32px;
   }
 
   .status-chip span {
     width: 8px;
     height: 8px;
+  }
+
+  .status-chip__full {
+    display: none;
+  }
+
+  .status-chip__short {
+    display: inline;
   }
 
   .account-menu > summary {

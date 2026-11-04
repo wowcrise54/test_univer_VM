@@ -391,27 +391,38 @@ export function Topbar({
 
 function ConnectionChip({ connected, canManage, onNavigate }) {
   const label = connected ? "Подключено" : "Нет подключения";
+  const shortLabel = connected ? "Онлайн" : "Нет связи";
   const className = connected ? "status-chip status-chip--ok" : "status-chip";
+  // The short caption replaces the full one on narrow screens (see redesign.css).
+  const caption = (
+    <>
+      <span aria-hidden="true" />
+      <em className="status-chip__full">{label}</em>
+      <em className="status-chip__short" aria-hidden="true">
+        {shortLabel}
+      </em>
+    </>
+  );
   if (canManage && !connected) {
     return (
       <a
         href="/connection"
         className={`${className} status-chip--link`}
+        title="Подключение к MP VM не настроено. Открыть настройки."
+        aria-label={label}
         onClick={(event) => {
           if (!shouldHandleLinkClick(event)) return;
           event.preventDefault();
           onNavigate("/connection");
         }}
       >
-        <span aria-hidden="true" />
-        {label}
+        {caption}
       </a>
     );
   }
   return (
-    <div className={className} role="status" aria-label={label}>
-      <span aria-hidden="true" />
-      {label}
+    <div className={className} role="status" aria-label={label} title={label}>
+      {caption}
     </div>
   );
 }

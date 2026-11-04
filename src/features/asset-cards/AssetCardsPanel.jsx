@@ -11,6 +11,7 @@ import {
   ActionMenu,
   Button,
   ConfirmDialog,
+  CopyableId,
   Disclosure,
   Field,
   Panel,
@@ -809,7 +810,7 @@ export function AssetCardsPanel({ defaults, busy, runBusy, showAlert, currentUse
                         {row.display_name || row.hostname || row.asset_id}
                       </strong>
                       <span>
-                        <code>{row.asset_id}</code>
+                        <CopyableId value={row.asset_id} label="ID актива" />
                       </span>
                     </td>
                     <td>

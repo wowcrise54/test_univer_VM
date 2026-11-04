@@ -10,7 +10,7 @@ from alembic import op
 from app.repositories.mcp_tokens_schema import SCHEMA_SQL
 
 revision = "20261105_0034"
-down_revision = "20261103_0032"
+down_revision = "20261104_0033"
 branch_labels = None
 depends_on = None
 

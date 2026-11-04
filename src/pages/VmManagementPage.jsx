@@ -6,7 +6,7 @@ import {
 } from "../shared/labels.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, createIdempotencyKey } from "../api/client.js";
-import { Button, Panel } from "../shared/ui.jsx";
+import { Button, Panel, SnapshotStamp } from "../shared/ui.jsx";
 
 const ACTIVE = new Set(["queued", "running", "cancelling"]);
 const workflowStatus = {
@@ -143,6 +143,7 @@ export function VmManagementPage({ session, currentUser, showAlert, onNavigate }
     <Panel id="vm-overview"
       action={<Button variant="secondary" busy={overview.isFetching || attention.isFetching} onClick={refresh}>Обновить</Button>}>
       {overview.error ? <div className="inline-error" role="alert">{overview.error.operatorMessage || overview.error.message}</div> : null}
+      <SnapshotStamp snapshot={data.snapshot} />
       <div className="vm-kpis" aria-label="Сводка">
         <Kpi label="Активные процессы" value={data.active_workflows} tone="blue" />
         <Kpi label="Открытые кейсы" value={data.open_cases} />

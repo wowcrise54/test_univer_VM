@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 import builtins
+import threading
+import time
 from typing import Any
 
 from .. import db
 
+STALE_SWEEP_INTERVAL_SECONDS = 300
+
 
 class OperationsRepository:
+    def __init__(self) -> None:
+        self._sweep_lock = threading.Lock()
+        self._last_sweep = float("-inf")
+
+    def _sweep_stale(self) -> None:
+        """Close long-silent "active" rows, at most once per interval, before they are counted."""
+        with self._sweep_lock:
+            now = time.monotonic()
+            if now - self._last_sweep < STALE_SWEEP_INTERVAL_SECONDS:
+                return
+            self._last_sweep = now
+        db.interrupt_stale_operations()
+
     def list(self, **filters: Any) -> dict[str, Any]:
+        self._sweep_stale()
         return db.list_operations(**filters, sync_sources=True)
 
     def summary(self) -> dict[str, Any]:
+        self._sweep_stale()
         return db.get_operations_summary(sync_sources=True)
 
     def counters(self) -> dict[str, Any]:

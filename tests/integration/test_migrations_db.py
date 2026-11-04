@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20261103_0032``);
+* the migration graph has a single, expected head (``20261105_0034``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
