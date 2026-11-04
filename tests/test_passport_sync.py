@@ -133,6 +133,63 @@ class PassportDetailWorkerTests(unittest.TestCase):
         self.assertLess(self.job["loaded_count"], 1000)
         self.assertLessEqual(FakePassportClient.max_active, 10)
 
+    def test_fetching_continues_while_a_batch_is_being_saved(self):
+        fetched = 0
+        counter_lock = threading.Lock()
+        original_get = FakePassportClient.get_vulnerability_passport
+
+        def counting_get(client, token, passport_id):
+            nonlocal fetched
+            result = original_get(client, token, passport_id)
+            with counter_lock:
+                fetched += 1
+            return result
+
+        fetched_during_first_save: list[int] = []
+        original_save = self.save_batch
+
+        def blocking_save(job_id, *, details, errors):
+            if not fetched_during_first_save:
+                # A synchronous save would stall the loop after ~one batch plus
+                # the requests already in flight (about 30 of 100).
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    with counter_lock:
+                        if fetched >= 60:
+                            break
+                    time.sleep(0.005)
+                with counter_lock:
+                    fetched_during_first_save.append(fetched)
+            return original_save(job_id, details=details, errors=errors)
+
+        with (
+            patch.object(FakePassportClient, "get_vulnerability_passport", counting_get),
+            patch.object(self, "save_batch", blocking_save),
+        ):
+            self.run_worker([f"passport-{index}" for index in range(100)])
+
+        self.assertGreaterEqual(fetched_during_first_save[0], 60)
+        self.assertEqual(self.final_status, "completed")
+        self.assertEqual(self.job["loaded_count"], 100)
+
+    def test_a_failed_save_fails_the_job_without_hanging(self):
+        calls = 0
+        original_save = self.save_batch
+
+        def failing_save(job_id, *, details, errors):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("database is gone")
+            return original_save(job_id, details=details, errors=errors)
+
+        with patch.object(self, "save_batch", failing_save):
+            self.run_worker([f"passport-{index}" for index in range(100)])
+
+        self.assertEqual(self.final_status, "failed")
+        self.assertIn("database is gone", self.job["message"])
+        self.assertEqual(self.reconcile_links_calls, 0)
+
     def test_individual_errors_do_not_stop_the_job(self):
         original_get = FakePassportClient.get_vulnerability_passport
 
@@ -474,7 +531,7 @@ class VulnerabilityPassportWriteLockTests(unittest.TestCase):
         events = []
         connection = self.connection()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.executemany.side_effect = lambda *_args: events.append("upsert")
+        cursor.execute.side_effect = lambda *_args: events.append("upsert")
 
         with patch.object(
             db,
@@ -490,8 +547,29 @@ class VulnerabilityPassportWriteLockTests(unittest.TestCase):
 
         self.assertEqual(saved, 2)
         self.assertEqual(events, ["lock", "upsert"])
-        values = cursor.executemany.call_args.args[1]
-        self.assertEqual([value[0] for value in values], ["passport-1", "passport-2"])
+        columns = cursor.execute.call_args.args[1]
+        self.assertEqual(columns[0], ["passport-1", "passport-2"])
+
+    def test_detail_batch_merges_a_repeated_passport_into_one_row(self):
+        connection = self.connection()
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        with patch.object(db, "_lock_vulnerability_passport_writes"):
+            saved = db._upsert_vulnerability_passport_details(
+                connection,
+                [
+                    ("passport-1", {"name": "First", "severityRating": "high"}),
+                    ("passport-1", {"description": "no name or severity"}),
+                ],
+                "2026-07-24T11:27:00+00:00",
+                reconcile_links=False,
+            )
+
+        self.assertEqual(saved, 1)
+        columns = cursor.execute.call_args.args[1]
+        self.assertEqual(columns[0], ["passport-1"])
+        self.assertEqual(columns[1], ["First"])
+        self.assertEqual(columns[2], ["high"])
 
 
 if __name__ == "__main__":

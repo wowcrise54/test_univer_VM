@@ -286,3 +286,67 @@ def test_reconcile_of_very_many_passports_relinks_every_asset_instead(test_db, m
         conn.execute("INSERT INTO asset_card_vulnerability_passports VALUES (%s, 'P1', 'stale', %s)", (unrelated, now))
         db.reconcile_asset_card_vulnerability_passport_links(conn, ["P1", "P2"], now)
         assert _links(conn) == {unrelated: "OTHER"}
+
+
+def test_detail_batch_upsert_fills_details_and_keeps_known_values(test_db):
+    now = db.now_utc()
+    with db.connect() as conn:
+        _passport(conn, "P-OLD", "old name", ["CVE-1-1"], now)
+        conn.execute("UPDATE vulnerability_passports SET severity = 'high', score = '7.5' WHERE internal_id = 'P-OLD'")
+
+    saved = db.upsert_vulnerability_passport_details(
+        [
+            ("P-OLD", {"description": "no name, severity or score"}),
+            ("P-NEW", {"name": "new passport", "severityRating": "low", "score": 2.1, "packageId": "pkg"}),
+            ("P-NEW", {"name": "new passport v2"}),
+        ]
+    )
+
+    assert saved == 2
+    with db.connect() as conn:
+        rows = {
+            r["internal_id"]: r
+            for r in conn.execute("SELECT * FROM vulnerability_passports ORDER BY internal_id").fetchall()
+        }
+        families = {
+            r["passport_internal_id"]
+            for r in conn.execute("SELECT passport_internal_id FROM vulnerability_passport_os_family").fetchall()
+        }
+    old, new = rows["P-OLD"], rows["P-NEW"]
+    assert (old["name"], old["severity"], old["score"]) == ("old name", "high", "7.5")
+    assert "no name, severity or score" in old["raw_detail_json"] and old["detail_updated_at"]
+    assert (new["name"], new["severity"], new["package_id"]) == ("new passport v2", "low", "pkg")
+    assert new["detail_updated_at"] and new["first_seen"]
+    assert {"P-OLD", "P-NEW"} <= families
+
+
+def test_trigger_rebuilds_only_the_tables_whose_inputs_changed(test_db):
+    now = db.now_utc()
+    with db.connect() as conn:
+        _passport(conn, "P1", "generic", ["CVE-1-1"], now)
+
+    def snapshot():
+        with db.connect() as conn:
+            cve_ctid = conn.execute(
+                "SELECT ctid::text AS ctid FROM vulnerability_passport_cves WHERE passport_internal_id = 'P1'"
+            ).fetchone()["ctid"]
+            family = conn.execute(
+                "SELECT os_family FROM vulnerability_passport_os_family WHERE passport_internal_id = 'P1'"
+            ).fetchone()["os_family"]
+        return cve_ctid, family
+
+    first_ctid, family = snapshot()
+    assert family is None
+    # A detail load changes the text behind os_family but not the CVE list: the
+    # CVE row is left untouched (same tuple), the family is recomputed.
+    db.upsert_vulnerability_passport_details([("P1", {"description": "fixed in Debian"})])
+    ctid, family = snapshot()
+    assert ctid == first_ctid and family == "debian"
+    # Rewriting identical values changes nothing.
+    db.upsert_vulnerability_passport_details([("P1", {"description": "fixed in Debian"})])
+    assert snapshot() == (first_ctid, "debian")
+    # A changed CVE list is picked up.
+    with db.connect() as conn:
+        conn.execute("UPDATE vulnerability_passports SET cves_json = %s WHERE internal_id = 'P1'", (json.dumps(["CVE-9-9"]),))
+        names = [r["cve_name"] for r in conn.execute("SELECT cve_name FROM vulnerability_passport_cves").fetchall()]
+    assert names == ["CVE-9-9"]

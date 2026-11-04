@@ -60,18 +60,31 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_family TEXT;
 BEGIN
-    BEGIN
-        DELETE FROM vulnerability_passport_cves WHERE passport_internal_id = NEW.internal_id;
-        INSERT INTO vulnerability_passport_cves (passport_internal_id, cve_name)
-        SELECT DISTINCT NEW.internal_id, name
-        FROM (
-            SELECT {CVE_NAME_SQL} AS name
-            FROM jsonb_array_elements(COALESCE(NULLIF(NEW.cves_json, ''), '[]')::jsonb) AS cve
-        ) AS names
-        WHERE name <> '';
-    EXCEPTION WHEN others THEN
-        NULL;
-    END;
+    -- An update that leaves the watched inputs alone has nothing to rebuild;
+    -- detail loads, for one, change raw_detail_json but never cves_json.
+    IF TG_OP = 'INSERT' OR NEW.cves_json IS DISTINCT FROM OLD.cves_json THEN
+        BEGIN
+            DELETE FROM vulnerability_passport_cves WHERE passport_internal_id = NEW.internal_id;
+            INSERT INTO vulnerability_passport_cves (passport_internal_id, cve_name)
+            SELECT DISTINCT NEW.internal_id, name
+            FROM (
+                SELECT {CVE_NAME_SQL} AS name
+                FROM jsonb_array_elements(COALESCE(NULLIF(NEW.cves_json, ''), '[]')::jsonb) AS cve
+            ) AS names
+            WHERE name <> '';
+        EXCEPTION WHEN others THEN
+            NULL;
+        END;
+    END IF;
+    IF TG_OP = 'UPDATE' AND (
+        NEW.name, NEW.external_id, NEW.package_id, NEW.package_version,
+        NEW.raw_record_json, NEW.raw_detail_json
+    ) IS NOT DISTINCT FROM (
+        OLD.name, OLD.external_id, OLD.package_id, OLD.package_version,
+        OLD.raw_record_json, OLD.raw_detail_json
+    ) THEN
+        RETURN NEW;
+    END IF;
     SELECT {OS_FAMILY_CASE_SQL} INTO v_family
     FROM (
         SELECT LOWER(CONCAT_WS(

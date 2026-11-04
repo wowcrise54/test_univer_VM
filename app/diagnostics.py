@@ -236,15 +236,21 @@ def sanitize_url(url: str) -> str:
 
 
 class ChannelFilter(logging.Filter):
-    def __init__(self, channel: str, *, errors_only: bool = False) -> None:
+    def __init__(self, channel: str, *, errors_only: bool = False, catch_all: bool = False) -> None:
         super().__init__()
         self.channel = channel
         self.errors_only = errors_only
+        # Events of a channel that has no file of its own (job and workflow
+        # channels) are kept in this channel's file instead of being dropped.
+        self.catch_all = catch_all
 
     def filter(self, record: logging.LogRecord) -> bool:
         if self.errors_only:
             return record.levelno >= logging.ERROR
-        return getattr(record, "channel", "app") == self.channel
+        channel = getattr(record, "channel", "app")
+        if self.catch_all and channel not in CHANNEL_FILES:
+            return True
+        return channel == self.channel
 
 
 class ConsoleFilter(logging.Filter):
@@ -314,7 +320,7 @@ def configure_diagnostics(
                 delay=True,
             )
             handler.setLevel(level if channel != "payloads" else logging.DEBUG)
-            handler.addFilter(ChannelFilter(channel))
+            handler.addFilter(ChannelFilter(channel, catch_all=channel == "app"))
             handler.setFormatter(formatter)
             handlers.append(handler)
         errors = logging.handlers.RotatingFileHandler(

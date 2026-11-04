@@ -91,6 +91,22 @@ class DiagnosticLoggingTests(unittest.TestCase):
         self.assertIn("fixture failure", errors)
         self.assertIn("Traceback", errors)
 
+    def test_events_of_a_channel_without_a_file_are_kept_in_the_app_log(self):
+        self.configure()
+        diagnostics.log_event("vm-workflow", "workflow.step", step=1)
+        diagnostics.log_event("database", "database.step", step=2)
+        diagnostics.flush_diagnostics()
+        diagnostics.shutdown_diagnostics()
+
+        app_events = [
+            json.loads(line) for line in (self.log_dir / "app.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        database_events = [
+            json.loads(line) for line in (self.log_dir / "database.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual([(e["channel"], e["event"]) for e in app_events], [("vm-workflow", "workflow.step")])
+        self.assertEqual([e["event"] for e in database_events], ["database.step"])
+
     def test_debug_payload_is_sanitized_and_truncated(self):
         self.configure(debug_payloads=True, payload_max_bytes=256)
         diagnostics.capture_debug_payload(
