@@ -121,7 +121,7 @@ def _call(tool: str, arguments: dict[str, Any], username: str = "mcp-viewer") ->
 
 
 def test_find_hosts_by_cve_lists_hosts_with_fix_and_freshness(seeded):
-    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094", "include_coverage": True})
+    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094", "include_coverage": True, "detail": "full"})
 
     assert payload["match"] == "exact"
     assert {host["asset_id"] for host in payload["hosts"]} == {"web-1", "web-2"}
@@ -134,7 +134,7 @@ def test_find_hosts_by_cve_lists_hosts_with_fix_and_freshness(seeded):
 
 
 def test_find_hosts_by_vulnerability_id_and_fix_states(seeded):
-    by_id = _call("find_hosts_by_vulnerability", {"query": "V-9999"})
+    by_id = _call("find_hosts_by_vulnerability", {"query": "V-9999", "detail": "full"})
     assert [host["asset_id"] for host in by_id["hosts"]] == ["db-1"]
     assert by_id["vulnerabilities"][0]["fix"]["status"] == "not_described"
 
@@ -144,7 +144,7 @@ def test_find_hosts_by_vulnerability_id_and_fix_states(seeded):
 
 
 def test_substring_of_another_cve_is_not_reported_as_a_host_of_it(seeded):
-    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094"})
+    payload = _call("find_hosts_by_vulnerability", {"query": "CVE-2024-3094", "detail": "full"})
     assert "db-1" not in {host["asset_id"] for host in payload["hosts"]}  # db-1 only has CVE-2024-30940
 
 

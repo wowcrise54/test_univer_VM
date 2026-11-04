@@ -4,7 +4,9 @@ import asyncio
 import re
 import time
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Protocol
 
 from .client import ApiError
@@ -22,6 +24,11 @@ MAX_LISTED_OBJECTS = 5
 HOST_FETCH_CONCURRENCY = 3
 COVERAGE_TTL_SECONDS = 600.0
 COVERAGE_TIMEOUT_SECONDS = 20.0
+SEARCH_CACHE_TTL_SECONDS = 120.0
+SEARCH_CACHE_MAX_ENTRIES = 64
+BRIEF_FIX_TEXT_CHARS = 600
+BRIEF_PASSPORTS = 2
+HOST_COLUMNS = ["asset_id", "name", "ip", "os", "severity", "last_seen", "age_days", "stale", "case"]
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _TOKEN_SPLIT = re.compile(r"[,;\s]+")
@@ -55,7 +62,7 @@ def parse_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def fix_info(row: dict[str, Any]) -> dict[str, Any]:
+def fix_info(row: dict[str, Any], *, brief: bool = False) -> dict[str, Any]:
     """Whether MP VM describes a fix for this vulnerability, based on its passports.
 
     ``has_fix=false`` in the application mixes "the passport has no fix" with
@@ -71,12 +78,13 @@ def fix_info(row: dict[str, Any]) -> dict[str, Any]:
         status, reason = FIX_UNKNOWN, "a passport is linked but its details are not loaded yet"
     else:
         status, reason = FIX_UNKNOWN, "no vulnerability passport is linked to this finding"
-    truncated = len(how_to_fix) > MAX_FIX_TEXT_CHARS
-    return {
+    text_chars = BRIEF_FIX_TEXT_CHARS if brief else MAX_FIX_TEXT_CHARS
+    truncated = len(how_to_fix) > text_chars
+    info = {
         "status": status,
         "has_fix": True if status == FIX_AVAILABLE else (False if status == FIX_NOT_DESCRIBED else None),
         "reason": reason,
-        "how_to_fix": how_to_fix[:MAX_FIX_TEXT_CHARS] if how_to_fix else None,
+        "how_to_fix": how_to_fix[:text_chars] if how_to_fix else None,
         "how_to_fix_truncated": truncated,
         "passports": [
             {
@@ -86,13 +94,18 @@ def fix_info(row: dict[str, Any]) -> dict[str, Any]:
                 "score": item.get("score"),
                 "has_detail": bool(item.get("has_detail")),
             }
-            for item in passports[:MAX_PASSPORTS]
+            for item in passports[: BRIEF_PASSPORTS if brief else MAX_PASSPORTS]
         ],
     }
+    if brief:
+        # status already says what has_fix says; drop empty and false fields
+        # (the full text is available from get_vulnerability_fix_info)
+        info = {key: value for key, value in info.items() if key != "has_fix" and value not in (None, [], False)}
+    return info
 
 
-def slim_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+def slim_vulnerability(row: dict[str, Any], *, brief: bool = False) -> dict[str, Any]:
+    vulnerability = {
         "selector": row.get("selector"),
         "vulnerability_id": row.get("vulnerability_id"),
         "cve": row.get("cve"),
@@ -104,8 +117,13 @@ def slim_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
         "sources": row.get("sources") or [],
         "short_description": row.get("short_description"),
         "last_seen": row.get("last_seen"),
-        "fix": fix_info(row),
+        "fix": fix_info(row, brief=brief),
     }
+    if brief:
+        vulnerability.pop("findings", None)
+        vulnerability["short_description"] = _text(row.get("short_description"))[:200] or None
+        vulnerability = {key: value for key, value in vulnerability.items() if value not in (None, [], "")}
+    return vulnerability
 
 
 def host_staleness(last_seen: Any, *, stale_days: int, now: datetime | None = None) -> tuple[float | None, bool | None]:
@@ -293,20 +311,66 @@ def _merge_hosts(per_selector: list[tuple[str, list[dict[str, Any]]]], *, stale_
     return hosts
 
 
-async def find_hosts_by_vulnerability(
+class SearchCache:
+    """Short-lived cache of finished host searches.
+
+    The same question is often repeated (a retry, the next page, another client), and the
+    application needs seconds to answer it. Concurrent identical searches share one run.
+    """
+
+    def __init__(self, *, ttl_seconds: float = SEARCH_CACHE_TTL_SECONDS, max_entries: int = SEARCH_CACHE_MAX_ENTRIES):
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._done: dict[Any, tuple[float, Any]] = {}
+        self._pending: dict[Any, asyncio.Future[Any]] = {}
+
+    async def get_or_compute(self, key: Any, compute: Callable[[], Awaitable[Any]]) -> Any:
+        hit = self._done.get(key)
+        if hit and time.monotonic() - hit[0] < self._ttl:
+            return hit[1]
+        task = self._pending.get(key)
+        if task is None:
+            task = asyncio.ensure_future(compute())
+            self._pending[key] = task
+            task.add_done_callback(partial(self._finish, key))
+        # shield: a caller that disconnects must not cancel the run other callers wait for
+        return await asyncio.shield(task)
+
+    def _finish(self, key: Any, task: asyncio.Future[Any]) -> None:
+        self._pending.pop(key, None)
+        if task.cancelled() or task.exception() is not None:
+            return  # errors are not cached, and calling exception() marks them as retrieved
+        self._done[key] = (time.monotonic(), task.result())
+        while len(self._done) > self._max:
+            oldest = min(self._done.items(), key=lambda item: item[1][0])[0]
+            del self._done[oldest]
+
+
+def brief_host_row(host: dict[str, Any]) -> list[Any]:
+    """One host as a positional row matching HOST_COLUMNS (a fraction of the size of the object form)."""
+    case = host.get("remediation")
+    return [
+        host.get("asset_id"),
+        host.get("display_name"),
+        host.get("ip_address"),
+        host.get("os"),
+        host.get("severity"),
+        _text(host.get("last_seen"))[:10] or None,
+        host.get("age_days"),
+        host.get("stale"),
+        case[0].get("status") if case else None,
+    ]
+
+
+async def _search(
     client: Getter,
-    coverage: CoverageProbe,
     *,
     query: str,
     stale_days: int,
-    severity: str | None = None,
-    source: str | None = None,
-    host_q: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-    include_coverage: bool = False,
+    severity: str | None,
+    source: str | None,
+    host_q: str | None,
 ) -> dict[str, Any]:
-    query = query.strip()
     matched, match_kind, rows_total = await resolve_vulnerabilities(client, query, severity=severity, source=source)
     selectors_truncated = len(matched) > MAX_SELECTORS or rows_total > PAGE_SIZE
     matched = matched[:MAX_SELECTORS]
@@ -320,15 +384,48 @@ async def find_hosts_by_vulnerability(
         return selector, hosts, cut
 
     fetched = await asyncio.gather(*(fetch(selector) for selector in selectors))
-    per_selector = [(selector, hosts) for selector, hosts, _cut in fetched]
-    hosts_truncated = any(cut for _selector, _hosts, cut in fetched)
+    return {
+        "matched": matched,
+        "match": match_kind,
+        "hosts": _merge_hosts([(selector, hosts) for selector, hosts, _cut in fetched], stale_days=stale_days),
+        "truncated": selectors_truncated or any(cut for _selector, _hosts, cut in fetched),
+    }
 
-    merged = _merge_hosts(per_selector, stale_days=stale_days)
+
+async def find_hosts_by_vulnerability(
+    client: Getter,
+    coverage: CoverageProbe,
+    *,
+    query: str,
+    stale_days: int,
+    severity: str | None = None,
+    source: str | None = None,
+    host_q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_coverage: bool = False,
+    detail: str = "full",
+    cache: SearchCache | None = None,
+) -> dict[str, Any]:
+    query = query.strip()
+
+    async def compute() -> dict[str, Any]:
+        return await _search(
+            client, query=query, stale_days=stale_days, severity=severity, source=source, host_q=host_q
+        )
+
+    if cache is None:
+        found = await compute()
+    else:
+        found = await cache.get_or_compute((query.lower(), severity, source, host_q, stale_days), compute)
+
+    brief = detail == "brief"
+    merged: list[dict[str, Any]] = found["hosts"]
     page = merged[offset : offset + limit]
     seen = sorted(text for text in (_text(host.get("last_seen")) for host in merged) if text)
     data_source: dict[str, Any] = {
         "kind": "asset_cards",
-        "note": DATA_SOURCE_NOTE,
+        "note": "from saved asset cards, not live MP VM" if brief else DATA_SOURCE_NOTE,
         "stale_after_days": stale_days,
         "hosts_oldest_last_seen": seen[0] if seen else None,
         "hosts_freshest_last_seen": seen[-1] if seen else None,
@@ -337,20 +434,25 @@ async def find_hosts_by_vulnerability(
         data_source["coverage"] = await coverage.get()
         if data_source["coverage"] is None:
             data_source["coverage_note"] = "global coverage was not available in time; retry or call vulnerability_summary"
-    return {
+    result: dict[str, Any] = {
         "query": query,
-        "match": match_kind,
-        "vulnerabilities": [slim_vulnerability(row) for row in matched],
+        "match": found["match"],
+        "vulnerabilities": [slim_vulnerability(row, brief=brief) for row in found["matched"]],
         "total_hosts": len(merged),
         "stale_hosts": sum(1 for host in merged if host.get("stale")),
         "hosts_by_severity": dict(Counter(_text(host.get("severity")) or "unknown" for host in merged)),
         "offset": offset,
         "limit": limit,
         "returned": len(page),
-        "hosts": page,
-        "truncated": selectors_truncated or hosts_truncated,
+        "truncated": found["truncated"],
         "data_source": data_source,
     }
+    if brief:
+        result["host_columns"] = HOST_COLUMNS
+        result["hosts"] = [brief_host_row(host) for host in page]
+    else:
+        result["hosts"] = page
+    return result
 
 
 async def get_fix_info(

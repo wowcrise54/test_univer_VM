@@ -94,7 +94,8 @@ def test_find_hosts_tool_end_to_end_over_mcp():
     assert not result.is_error
     payload = body(result)
     assert payload["match"] == "exact" and payload["total_hosts"] == 1
-    assert payload["hosts"][0]["asset_id"] == "a"
+    row = dict(zip(payload["host_columns"], payload["hosts"][0], strict=True))  # brief rows are the default
+    assert row["asset_id"] == "a" and row["case"] == "open"
     assert payload["vulnerabilities"][0]["fix"]["status"] == "available"
     assert payload["vulnerabilities"][0]["fix"]["how_to_fix"] == "Install KB500"
     assert payload["data_source"]["coverage"]["complete"] is False

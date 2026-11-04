@@ -32,6 +32,7 @@ Offset = Annotated[int, Field(ge=0, description="Rows to skip, for paging.")]
 def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
     server = MCPServer("mpvm-vulnerabilities", instructions=INSTRUCTIONS, version=__version__)
     coverage = vuln.CoverageProbe(client)
+    searches = vuln.SearchCache()
     cap = settings.max_response_chars
 
     def read_only_tool(fn: Any) -> Any:
@@ -49,6 +50,15 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             bool,
             Field(description="Also add the global completeness of the local data. Slow on large databases; off by default."),
         ] = False,
+        detail: Annotated[
+            Literal["brief", "full"],
+            Field(
+                description=(
+                    "brief (default): hosts as compact rows in the order of host_columns. "
+                    "full: one object per host with all fields; several times larger."
+                )
+            ),
+        ] = "brief",
     ) -> str:
         """List the hosts that currently have a vulnerability, with fix availability from the MP VM passport."""
         result = await vuln.find_hosts_by_vulnerability(
@@ -62,6 +72,8 @@ def build_server(settings: McpSettings, client: AppClient | Any) -> MCPServer:
             limit=limit,
             offset=offset,
             include_coverage=include_coverage,
+            detail=detail,
+            cache=searches,
         )
         return render(result, cap)
 
