@@ -37,6 +37,7 @@ export const routes = [
       "security.users.read",
       "security.roles.read",
       "security.audit.read",
+      "security.mcp_tokens.read",
     ],
     group: "admin",
     path: "/users",

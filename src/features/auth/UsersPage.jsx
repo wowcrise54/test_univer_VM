@@ -11,6 +11,7 @@ import {
   RoleChips,
   RolePicker,
 } from "./RoleAssignment.jsx";
+import { McpTokensTab } from "./McpTokensTab.jsx";
 
 const EMPTY_USER = {
   username: "",
@@ -25,7 +26,9 @@ export function UsersPage({ currentUser, showAlert }) {
       ? "users"
       : currentUser?.permissions?.includes("security.roles.read")
         ? "roles"
-        : "audit",
+        : currentUser?.permissions?.includes("security.audit.read")
+          ? "audit"
+          : "mcp",
   );
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -40,6 +43,9 @@ export function UsersPage({ currentUser, showAlert }) {
   );
   const canReadAudit = currentUser?.permissions?.includes(
     "security.audit.read",
+  );
+  const canReadTokens = currentUser?.permissions?.includes(
+    "security.mcp_tokens.read",
   );
 
   const load = async () => {
@@ -80,7 +86,7 @@ export function UsersPage({ currentUser, showAlert }) {
     }
   };
 
-  if (!canReadUsers && !canReadRoles && !canReadAudit)
+  if (!canReadUsers && !canReadRoles && !canReadAudit && !canReadTokens)
     return (
       <section className="panel">
         <p>Недостаточно прав.</p>
@@ -116,6 +122,14 @@ export function UsersPage({ currentUser, showAlert }) {
             Аудит
           </button>
         ) : null}
+        {canReadTokens ? (
+          <button
+            className={tab === "mcp" ? "is-active" : ""}
+            onClick={() => setTab("mcp")}
+          >
+            Токены MCP
+          </button>
+        ) : null}
       </nav>
       {tab === "users" && canReadUsers ? (
         <UsersTab
@@ -136,6 +150,13 @@ export function UsersPage({ currentUser, showAlert }) {
         />
       ) : null}
       {tab === "audit" && canReadAudit ? <AuditTab rows={audit} /> : null}
+      {tab === "mcp" && canReadTokens ? (
+        <McpTokensTab
+          currentUser={currentUser}
+          users={users}
+          showAlert={showAlert}
+        />
+      ) : null}
     </section>
   );
 }

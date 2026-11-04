@@ -24,7 +24,7 @@ docker compose -p mpvm-ui-tests -f compose.test.yml run --rm --build --no-deps e
 После получения обоих отчётов:
 
 ```powershell
-docker compose -p mpvm-ui-tests -f compose.test.yml run --rm --no-deps tests sh -c 'ruff check app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py tests/test_architecture.py tests/test_automations.py && mypy app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py && python scripts/check_coverage_thresholds.py --report output/coverage-python.json && python scripts/check_coverage_ratchet.py --python output/coverage-python.json --frontend output/coverage-js/coverage-summary.json'
+docker compose -p mpvm-ui-tests -f compose.test.yml run --rm --no-deps tests sh -c 'ruff check app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py mcp_server tests/test_architecture.py tests/test_automations.py tests/mcp_server && mypy app/core app/api app/automations app/domain app/mpvm app/repositories app/services app/factory.py mcp_server && python scripts/check_coverage_thresholds.py --report output/coverage-python.json && python scripts/check_coverage_ratchet.py --python output/coverage-python.json --frontend output/coverage-js/coverage-summary.json'
 ```
 
 `.coverage-ratchet.json` защищает общее покрытие строк отдельно для Python и frontend. `.coverage-thresholds.json` задаёт пороги ветвей для критической и остальных групп backend, а `module_floors` — отдельные требования строк/ветвей для выбранных модулей. Отсутствующий в отчёте модуль тоже приводит к отказу gate.
