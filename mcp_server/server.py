@@ -18,7 +18,7 @@ INSTRUCTIONS = (
     "To answer 'which hosts have vulnerability X' call find_hosts_by_vulnerability with the CVE, vulnerability id "
     "or name; the answer lists hosts and says whether MP VM describes a fix. "
     "Data is read from locally saved asset cards, so check last_seen / stale before trusting "
-    "that a host is still affected (include_coverage adds the global completeness, but is slow). Nothing here can change data or start a fix or a scan."
+    "that a host is still affected (include_coverage adds the global completeness, but is slow). When you show hosts to a person, keep the stale flag (or age) and last_seen, show the component that is vulnerable, and state fix.status; do not present stale hosts as certainly affected. Nothing here can change data or start a fix or a scan."
 )
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)

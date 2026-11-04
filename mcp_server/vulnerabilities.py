@@ -28,7 +28,11 @@ SEARCH_CACHE_TTL_SECONDS = 120.0
 SEARCH_CACHE_MAX_ENTRIES = 64
 BRIEF_FIX_TEXT_CHARS = 600
 BRIEF_PASSPORTS = 2
-HOST_COLUMNS = ["asset_id", "name", "ip", "os", "severity", "last_seen", "age_days", "stale", "case"]
+HOST_COLUMNS = [
+    "asset_id", "name", "ip", "os", "severity", "last_seen", "age_days", "stale", "src", "component", "case",
+]
+MAX_COMPONENT_CHARS = 120
+MAX_COMPONENTS = 3
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _TOKEN_SPLIT = re.compile(r"[,;\s]+")
@@ -349,6 +353,10 @@ class SearchCache:
 def brief_host_row(host: dict[str, Any]) -> list[Any]:
     """One host as a positional row matching HOST_COLUMNS (a fraction of the size of the object form)."""
     case = host.get("remediation")
+    # what is vulnerable on the host: affected software / OS objects, plus the docker image if any
+    parts = [*(host.get("objects") or [])[:MAX_COMPONENTS], *(host.get("docker_images") or [])[:1]]
+    component = "; ".join(_text(part) for part in parts if _text(part))[:MAX_COMPONENT_CHARS] or None
+    sources = "/".join(_text(source) for source in host.get("sources") or []) or None
     return [
         host.get("asset_id"),
         host.get("display_name"),
@@ -358,6 +366,8 @@ def brief_host_row(host: dict[str, Any]) -> list[Any]:
         _text(host.get("last_seen"))[:10] or None,
         host.get("age_days"),
         host.get("stale"),
+        sources,
+        component,
         case[0].get("status") if case else None,
     ]
 

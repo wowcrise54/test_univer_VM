@@ -156,3 +156,28 @@ def test_cache_evicts_the_oldest_entry():
         return key
 
     assert asyncio.run(run()) == ["b", "c"]
+
+
+def test_brief_rows_show_what_is_vulnerable_and_where_it_comes_from():
+    api = FakeApi()
+    api.json("/api/vulnerabilities", {"total": 1, "rows": [vuln_row("id:1", vulnerability_id="V-1", cve="CVE-1")]})
+    api.json(
+        "/api/vulnerabilities/hosts",
+        {
+            "total": 2,
+            "rows": [
+                host_row(
+                    "a",
+                    sources=["software", "docker"],
+                    objects=["openssl 1.1.1k", "libssl 1.1.1", "curl 7.68", "extra 1"],
+                    docker_images=["registry.corp/app:1.2.3"],
+                ),
+                host_row("b", objects=["x" * 500]),
+            ],
+        },
+    )
+    result = _find(api, query="CVE-1", detail="brief")
+    rows = {row[0]: dict(zip(result["host_columns"], row, strict=True)) for row in result["hosts"]}
+    assert rows["a"]["src"] == "software/docker"
+    assert rows["a"]["component"] == "openssl 1.1.1k; libssl 1.1.1; curl 7.68; registry.corp/app:1.2.3"  # three objects + image
+    assert len(rows["b"]["component"]) == vuln.MAX_COMPONENT_CHARS
