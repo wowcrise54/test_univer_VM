@@ -4610,8 +4610,9 @@ def deduplicate_asset_card_vulnerability_findings(
     return findings, duplicate_count
 
 
-_RECONCILE_CHUNK_ASSETS = 100
 _RECONCILE_CHUNK_FINDINGS = 5000
+# A full relink handles this many findings per statement.
+_RECONCILE_FULL_CHUNK_FINDINGS = 10000
 # Above this many changed passports a relink of every asset is the cheaper plan.
 _RECONCILE_TARGETED_MAX_PASSPORTS = 20000
 
@@ -4634,16 +4635,29 @@ def _passport_link_scopes(
         # relinking every asset (a full catalog refresh timed out here).
         passport_ids = None
     if passport_ids is None:
-        asset_ids = [
-            row["asset_id"]
+        # Chunk by finding id, not by asset: an asset can own any number of
+        # findings, so a fixed asset count gave statements of unbounded size.
+        starts = [
+            row["id"]
             for row in conn.execute(
-                "SELECT DISTINCT asset_id FROM asset_card_vulnerabilities ORDER BY asset_id"
+                """
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS position
+                    FROM asset_card_vulnerabilities
+                ) AS ordered
+                WHERE (position - 1) %% %s = 0
+                ORDER BY id
+                """,
+                (_RECONCILE_FULL_CHUNK_FINDINGS,),
             ).fetchall()
         ]
-        return [
-            ("finding.asset_id = ANY(%s)", (asset_ids[offset : offset + _RECONCILE_CHUNK_ASSETS],))
-            for offset in range(0, len(asset_ids), _RECONCILE_CHUNK_ASSETS)
+        scopes: list[tuple[str, tuple[Any, ...]]] = [
+            ("finding.id >= %s AND finding.id < %s", (low, high))
+            for low, high in zip(starts, starts[1:], strict=False)
         ]
+        if starts:
+            scopes.append(("finding.id >= %s", (starts[-1],)))
+        return scopes
     if not passport_ids:
         return []
     # A changed passport can only affect findings that name it, share a CVE with
@@ -4694,6 +4708,7 @@ def reconcile_asset_card_vulnerability_passport_links(
     inserted_total = 0
     scopes = _passport_link_scopes(conn, passport_ids, asset_id)
     for done, (scope_sql, scope_params) in enumerate(scopes, start=1):
+        chunk_started = time.perf_counter()
         conn.execute(
             f"""
             DELETE FROM asset_card_vulnerability_passports AS link
@@ -4705,26 +4720,36 @@ def reconcile_asset_card_vulnerability_passport_links(
         )
         inserted = conn.execute(
             f"""
-            WITH finding_base AS (
+            WITH scoped_finding AS MATERIALIZED (
+                SELECT finding.id, finding.asset_id, finding.group_id,
+                       finding.vulnerability_id, finding.cve_name
+                FROM asset_card_vulnerabilities AS finding
+                WHERE {scope_sql}
+            ), group_image AS MATERIALIZED (
+                -- Parse each group's JSON once, not once per finding.
+                SELECT vulnerability_group.id,
+                       vulnerability_group.group_json::jsonb ->> 'image_os_name' AS image_os_name,
+                       vulnerability_group.group_json::jsonb ->> 'image_os_version' AS image_os_version
+                FROM asset_card_vulnerability_groups AS vulnerability_group
+                WHERE vulnerability_group.id IN (SELECT group_id FROM scoped_finding)
+            ), finding_base AS (
                 SELECT
                     finding.id AS finding_id,
                     NULLIF(TRIM(finding.vulnerability_id), '') AS vulnerability_id,
                     UPPER(NULLIF(TRIM(finding.cve_name), '')) AS cve_name,
                     LOWER(COALESCE(
-                        NULLIF((vulnerability_group.group_json::jsonb ->> 'image_os_name'), ''),
+                        NULLIF(group_image.image_os_name, ''),
                         card.os_name,
                         ''
                     )) AS os_name,
                     LOWER(COALESCE(
-                        NULLIF((vulnerability_group.group_json::jsonb ->> 'image_os_version'), ''),
+                        NULLIF(group_image.image_os_version, ''),
                         card.os_version,
                         ''
                     )) AS os_version
-                FROM asset_card_vulnerabilities AS finding
+                FROM scoped_finding AS finding
                 JOIN asset_cards AS card ON card.asset_id = finding.asset_id
-                JOIN asset_card_vulnerability_groups AS vulnerability_group
-                  ON vulnerability_group.id = finding.group_id
-                WHERE {scope_sql}
+                JOIN group_image ON group_image.id = finding.group_id
             ), finding_context AS (
                 SELECT finding_base.*,
                     SUBSTRING(
@@ -4746,6 +4771,16 @@ def reconcile_asset_card_vulnerability_passport_links(
                         ELSE NULL
                     END AS os_family
                 FROM finding_base
+            ), relevant_passport AS MATERIALIZED (
+                -- Two index-driven lookups; an OR of IN-subqueries made every
+                -- chunk scan the whole passport catalog.
+                SELECT vulnerability_id AS internal_id FROM finding_base
+                WHERE vulnerability_id IS NOT NULL
+                UNION
+                SELECT matched.passport_internal_id
+                FROM (SELECT DISTINCT cve_name FROM finding_base WHERE cve_name IS NOT NULL) AS wanted
+                JOIN vulnerability_passport_cves AS matched
+                  ON matched.cve_name = wanted.cve_name
             ), passport_context AS (
                 SELECT
                     passport.internal_id,
@@ -4756,22 +4791,13 @@ def reconcile_asset_card_vulnerability_passport_links(
                     )) AS label_text,
                     COALESCE(passport_cve.cve_name, '') AS cve_name,
                     passport_os.os_family
-                FROM vulnerability_passports AS passport
+                FROM relevant_passport
+                JOIN vulnerability_passports AS passport
+                  ON passport.internal_id = relevant_passport.internal_id
                 LEFT JOIN vulnerability_passport_cves AS passport_cve
                   ON passport_cve.passport_internal_id = passport.internal_id
                 LEFT JOIN vulnerability_passport_os_family AS passport_os
                   ON passport_os.passport_internal_id = passport.internal_id
-                WHERE passport.internal_id IN (
-                        SELECT vulnerability_id FROM finding_base
-                        WHERE vulnerability_id IS NOT NULL
-                    )
-                   OR passport.internal_id IN (
-                        SELECT matched.passport_internal_id
-                        FROM vulnerability_passport_cves AS matched
-                        WHERE matched.cve_name IN (
-                            SELECT cve_name FROM finding_base WHERE cve_name IS NOT NULL
-                        )
-                    )
             ), candidates AS (
                 SELECT
                     finding.finding_id,
@@ -4842,6 +4868,15 @@ def reconcile_asset_card_vulnerability_passport_links(
         (*scope_params, linked_at),
         )
         inserted_total += max(inserted.rowcount or 0, 0)
+        if len(scopes) > 1:
+            log_event(
+                "passport-link",
+                "relink.chunk.completed",
+                chunk=done,
+                chunks=len(scopes),
+                links=max(inserted.rowcount or 0, 0),
+                duration_ms=round((time.perf_counter() - chunk_started) * 1000),
+            )
         if progress:
             progress(done, len(scopes))
     return inserted_total

@@ -183,7 +183,7 @@ def test_reconcile_limited_to_changed_passports_leaves_other_links_alone(test_db
 
 
 def test_reconcile_without_scope_relinks_every_asset_in_chunks(test_db, monkeypatch):
-    monkeypatch.setattr(db, "_RECONCILE_CHUNK_ASSETS", 1)
+    monkeypatch.setattr(db, "_RECONCILE_FULL_CHUNK_FINDINGS", 1)
     now = db.now_utc()
     with db.connect() as conn:
         _passport(conn, "P", "generic", ["CVE-1-1"], now)
