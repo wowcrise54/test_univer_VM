@@ -1365,16 +1365,24 @@ function engineerApiOverrides(created) {
         preset_name: ENGINEER_PRESET.name,
         preset_is_active: true,
         os_family: "windows",
-        status: "started",
+        status: "created",
         created_by: "win.eng",
-        preset_asset_groups: [ENGINEER_PRESET.allowed_asset_groups[0]],
+        preset_targets: created.request.targets,
         postprocess: { status: "monitoring" },
       };
       created.rows = [task];
       await route.fulfill({
         status: 201,
-        json: { task, start: { status: "started" }, idempotent_replay: false },
+        json: { task, idempotent_replay: false },
       });
+    },
+    "POST /api/team-tasks/task-new/start": async (route) => {
+      created.startRequests += 1;
+      created.rows = created.rows.map((task) => ({
+        ...task,
+        status: "started",
+      }));
+      await route.fulfill({ json: { status: "started" } });
     },
   };
 }
@@ -1385,7 +1393,7 @@ for (const width of [1440, 768, 390]) {
   }) => {
     await page.setViewportSize({ width, height: 900 });
     const pageErrors = collectPageErrors(page);
-    const created = { rows: [], request: null };
+    const created = { rows: [], request: null, startRequests: 0 };
     await installApiMock(page, engineerApiOverrides(created));
 
     await page.goto("/");
@@ -1394,7 +1402,9 @@ for (const width of [1440, 768, 390]) {
 
     await page.getByRole("button", { name: "Создать задачу" }).click();
     const dialog = page.getByRole("dialog", { name: ENGINEER_PRESET.name });
-    await dialog.getByLabel("Root / Windows / Servers").check();
+    await dialog
+      .getByLabel("IP-адреса, подсети и FQDN для сканирования")
+      .fill("10.0.0.0/24, srv-01.corp.local");
     await dialog.getByRole("button", { name: "Создать и запустить" }).click();
 
     await expect(dialog).toHaveCount(0);
@@ -1404,12 +1414,12 @@ for (const width of [1440, 768, 390]) {
     await expect(page.getByText("Сканирование идёт")).toBeVisible();
     expect(created.request).toEqual({
       preset_id: "preset-win",
-      asset_group_ids: ["g-servers"],
-      targets: [],
+      targets: ["10.0.0.0/24", "srv-01.corp.local"],
       name: null,
       description: null,
-      start_now: true,
+      start_now: false,
     });
+    expect(created.startRequests).toBe(1);
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth + 1,
     );
