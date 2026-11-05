@@ -2,8 +2,8 @@
 
 Behind a reverse proxy that only forwards the application port, MCP lives at a
 separate path (``MPVM_MCP_PATH``, ``/mcp`` by default) of the same server. The
-tools still call the REST API, in-process over ASGI and under the viewer
-account, so RBAC and audit stay in the backend.
+tools still call the REST API, in-process over ASGI and in the read-capped
+session of the token owner, so RBAC and audit stay in the backend.
 """
 
 from __future__ import annotations
@@ -42,12 +42,10 @@ class McpPathRouter:
         await self.app(scope, receive, send)
 
 
-def install_embedded_mcp(
-    app: FastAPI, *, settings: McpSettings | None = None, authenticator: TokenAuthenticator | None = None
-) -> bool:
+def install_embedded_mcp(app: FastAPI, *, authenticator: TokenAuthenticator, settings: McpSettings | None = None) -> bool:
     """Mount MCP on ``app`` when ``MPVM_MCP_ENABLED`` is set. Never raises: a broken MCP must not stop the app.
 
-    ``authenticator`` checks personal access tokens; without it only the deprecated shared token works.
+    ``authenticator`` checks the personal access tokens that are the only way in.
     """
     try:
         settings = settings or McpSettings()
@@ -57,15 +55,6 @@ def install_embedded_mcp(
     if not settings.enabled:
         logger.info("MCP endpoint is off: set MPVM_MCP_ENABLED=true to serve it at %s", settings.path)
         return False
-    problems = settings.problems()
-    if problems:
-        logger.error("MCP is not mounted: %s", "; ".join(problems))
-        return False
-
-    if authenticator is None and not settings.auth_token:
-        logger.error("MCP is not mounted: no authentication is configured (issue MCP access tokens in the application)")
-        return False
-
     try:
         import httpx2
 
@@ -76,15 +65,10 @@ def install_embedded_mcp(
         logger.error("MCP is not mounted: a required package is missing (%s)", exc)
         return False
 
-    if settings.auth_token:
-        logger.warning(
-            "MPVM_MCP_AUTH_TOKEN (one shared token for every client) is deprecated: "
-            "issue a personal MCP access token per client and remove it"
-        )
     client = AppClient(
         settings,
         transport=httpx2.ASGITransport(app=app),
-        session_opener=authenticator.open_session if authenticator else None,
+        session_opener=authenticator.open_session,
     )
     server = build_server(settings, client, authenticator=authenticator)
     mcp_app = server.streamable_http_app(
@@ -99,7 +83,6 @@ def install_embedded_mcp(
         handler=McpAuthMiddleware(
             mcp_app,
             authenticator=authenticator,
-            legacy_token=settings.auth_token,
             allow_x_api_key=settings.allow_x_api_key,
             allowed_origins=settings.origins,
         ),

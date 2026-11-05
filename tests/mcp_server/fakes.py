@@ -7,15 +7,42 @@ from typing import Any
 
 import httpx2
 
+from mcp_server.client import AppClient
 from mcp_server.config import McpSettings
+from mcp_server.principal import AuthRejected, Principal
 
 COOKIE = "session-token-1"
 
+# The principal the tools read as when a test calls them without going through the HTTP guard.
+TEST_PRINCIPAL = Principal(
+    key=9001, token_id="mpvm_mcp_testtesttest", name="test", owner_id=1, owner_username="tester", client_ip="testclient"
+)
+
 
 def make_settings(**overrides: Any) -> McpSettings:
-    values: dict[str, Any] = {"username": "mcp-viewer", "password": "S3cure-Passw0rd!", "stale_days": 14}
+    values: dict[str, Any] = {"stale_days": 14}
     values.update(overrides)
     return McpSettings(**values)
+
+
+class SessionOpener:
+    """Stands in for the application's token-session opener and counts the sessions it opens."""
+
+    def __init__(self, *, reject: bool = False) -> None:
+        self.opened = 0
+        self.reject = reject
+
+    async def __call__(self, principal: Principal) -> str:
+        if self.reject:
+            raise AuthRejected(401)
+        self.opened += 1
+        return COOKIE
+
+
+def make_client(
+    transport: httpx2.AsyncBaseTransport, *, opener: SessionOpener | None = None, **settings: Any
+) -> AppClient:
+    return AppClient(make_settings(**settings), transport=transport, session_opener=opener or SessionOpener())
 
 
 def iso_ago(days: float) -> str:
@@ -68,9 +95,7 @@ class FakeApi:
     def __init__(self) -> None:
         self.requests: list[httpx2.Request] = []
         self.routes: dict[str, Callable[[httpx2.Request], httpx2.Response]] = {}
-        self.login_status = 200
         self.reject_cookie_once = False
-        self.logins = 0
 
     def json(self, path: str, payload: Any, status: int = 200) -> None:
         self.routes[path] = lambda _request: httpx2.Response(status, json=payload)
@@ -81,19 +106,6 @@ class FakeApi:
     def _handle(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
         path = request.url.path
-        if path == "/api/auth/login":
-            self.logins += 1
-            if self.login_status != 200:
-                return httpx2.Response(
-                    self.login_status, json={"detail": {"code": "INVALID_CREDENTIALS", "message": "bad credentials"}}
-                )
-            return httpx2.Response(
-                200,
-                json={"authenticated": True, "user": {"permissions": []}},
-                headers={"set-cookie": f"mpvm_app_session={COOKIE}; HttpOnly; Path=/; SameSite=strict"},
-            )
-        if path == "/api/auth/me":
-            return httpx2.Response(200, json={"authenticated": True, "user": {"permissions": ["assets.read"]}})
         if self.reject_cookie_once:
             self.reject_cookie_once = False
             return httpx2.Response(401, json={"detail": {"code": "AUTH_REQUIRED", "message": "login"}})
@@ -108,7 +120,7 @@ class FakeApi:
         return dict(request.url.params)
 
     def data_requests(self) -> list[httpx2.Request]:
-        return [r for r in self.requests if not r.url.path.startswith("/api/auth/")]
+        return list(self.requests)
 
 
 def body(result: Any) -> dict[str, Any]:

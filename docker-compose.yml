@@ -23,10 +23,6 @@ services:
       MPVM_MCP_PATH: "${MPVM_MCP_PATH:-/mcp}"
       MPVM_MCP_ALLOWED_ORIGINS: "${MPVM_MCP_ALLOWED_ORIGINS:-}"
       MPVM_MCP_ALLOW_X_API_KEY: "${MPVM_MCP_ALLOW_X_API_KEY:-false}"
-      # Deprecated shared token and its service account; personal tokens need none of these.
-      MPVM_MCP_USERNAME: "${MPVM_MCP_USERNAME:-}"
-      MPVM_MCP_PASSWORD: "${MPVM_MCP_PASSWORD:-}"
-      MPVM_MCP_AUTH_TOKEN: "${MPVM_MCP_AUTH_TOKEN:-}"
       MPVM_MCP_STALE_DAYS: "${MPVM_MCP_STALE_DAYS:-14}"
     depends_on:
       postgres:

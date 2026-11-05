@@ -420,3 +420,52 @@ def test_case_deleted_after_start_transaction_returns_a_missing_finding_error(te
     with pytest.raises(LookupError, match="FINDING_NOT_FOUND"):
         _start(repository)
     assert repository.list() == {"rows": [], "total": 0}
+
+
+def test_reconciliation_writes_existing_cases_in_one_statement_and_applies_changes(test_db):
+    from app.diagnostics import DiagnosticConnection
+
+    repository = RemediationRepository()
+    _asset_with_finding()
+    current = db.now_utc()
+    with db.connect() as conn:
+        group_id = conn.execute("SELECT id FROM asset_card_vulnerability_groups WHERE asset_id='host-1'").fetchone()["id"]
+        for number in (2, 3):
+            conn.execute(
+                """INSERT INTO asset_card_vulnerabilities
+                   (asset_id, group_id, vulnerability_instance_id, vulnerability_id,
+                    cve_name, name, severity, cvss_score, updated_at)
+                   VALUES ('host-1', %s, %s, %s, %s, 'Finding', 'medium', 5.5, %s)""",
+                (group_id, f"finding-{number}", f"vuln-{number}", f"CVE-2026-{number}", current),
+            )
+    assert repository.reconcile_asset("host-1", stale_days=7)["created"] == 3
+    before = {case["case_id"]: case for case in repository.list()["rows"]}
+    assert len(before) == 3
+
+    with db.connect() as conn:
+        conn.execute("UPDATE asset_card_vulnerabilities SET name='Renamed', cvss_score=9.1 WHERE vulnerability_id='vuln-2'")
+        conn.execute("UPDATE remediation_cases SET status='resolved', resolved_at=NOW() WHERE vulnerability_key='id:vuln-3'")
+
+    statements: list[str] = []
+    original_execute = DiagnosticConnection.execute
+
+    def counting_execute(conn, query, *args, **kwargs):
+        statements.append(str(query))
+        return original_execute(conn, query, *args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(DiagnosticConnection, "execute", counting_execute)
+    try:
+        result = repository.reconcile_asset("host-1", stale_days=7)
+    finally:
+        monkeypatch.undo()
+
+    assert result == {"created": 0, "reopened": 1, "resolved": 0}
+    assert sum("UPDATE remediation_cases AS target" in statement for statement in statements) == 1
+    after = {case["vulnerability_key"]: repository.get(case["case_id"]) for case in before.values()}
+    assert after["id:vuln-2"]["title"] == "Renamed"
+    assert float(after["id:vuln-2"]["cvss_score"]) == 9.1
+    assert after["id:vuln-3"]["status"] == "open" and after["id:vuln-3"]["resolved_at"] is None
+    assert any(event["event_type"] == "finding_reappeared" for event in after["id:vuln-3"]["events"])
+    for case in before.values():
+        assert after[case["vulnerability_key"]]["version"] == case["version"] + 1

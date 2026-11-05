@@ -6,15 +6,15 @@ from typing import Any
 import pytest
 
 from mcp_server import vulnerabilities as vuln
-from mcp_server.client import ApiError, AppClient
+from mcp_server.client import ApiError
 from mcp_server.shaping import render
-from tests.mcp_server.fakes import FakeApi, host_row, iso_ago, make_settings, vuln_row
+from tests.mcp_server.fakes import FakeApi, host_row, iso_ago, make_client, vuln_row
 from tests.mcp_server.test_logic import _api_for_cve
 
 
 def _find(api: FakeApi, **kwargs: Any) -> dict[str, Any]:
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             return await vuln.find_hosts_by_vulnerability(client, vuln.CoverageProbe(client), stale_days=14, **kwargs)
         finally:
@@ -84,7 +84,7 @@ def test_cache_serves_repeats_and_pages_without_asking_the_application_again():
     cache = vuln.SearchCache()
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             probe = vuln.CoverageProbe(client)
             first = await vuln.find_hosts_by_vulnerability(client, probe, stale_days=14, query="CVE-2024-3094", limit=2, cache=cache)

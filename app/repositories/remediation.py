@@ -728,41 +728,29 @@ class RemediationRepository:
             existing = {row["vulnerability_key"]: row for row in existing_rows}
             current_keys: set[str] = set()
             created = reopened = resolved = 0
+            existing_updates: list[tuple[Any, ...]] = []
+            reopened_case_ids: list[str] = []
             for finding in rows:
                 key = finding["vulnerability_key"]
                 current_keys.add(key)
                 old = existing.get(key)
                 if old:
-                    reopen = old["status"] == "resolved"
-                    conn.execute(
-                        """UPDATE remediation_cases SET title=%s,cve=%s,severity=%s,cvss_score=%s,
-                           passport_internal_id=%s,last_seen_at=NOW(),status=CASE WHEN status='resolved' THEN 'open' ELSE status END,
-                           resolved_at=CASE WHEN status='resolved' THEN NULL ELSE resolved_at END,
-                           reopened_at=CASE WHEN status='resolved' THEN NOW() ELSE reopened_at END,
-                           due_at=CASE WHEN status='resolved' THEN NOW()+CASE %s WHEN 'critical' THEN (%s||' days')::interval
-                             WHEN 'high' THEN (%s||' days')::interval WHEN 'medium' THEN (%s||' days')::interval
-                             WHEN 'low' THEN (%s||' days')::interval END ELSE due_at END,
-                           version=version+1,updated_at=NOW() WHERE case_id=%s""",
+                    # Written below in bulk: one statement per asset instead of one
+                    # per finding (an asset can own thousands of findings, and the
+                    # startup walk visits every asset).
+                    existing_updates.append(
                         (
+                            old["case_id"],
                             finding["title"],
                             finding["cve"],
                             finding["severity"],
-                            finding["cvss_score"],
+                            None if finding["cvss_score"] is None else str(finding["cvss_score"]),
                             finding["passport_internal_id"],
-                            finding["severity"],
-                            policy["critical_days"],
-                            policy["high_days"],
-                            policy["medium_days"],
-                            policy["low_days"],
-                            old["case_id"],
-                        ),
-                    )
-                    if reopen:
-                        reopened += 1
-                        conn.execute(
-                            "INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_reappeared','resolved','open')",
-                            (old["case_id"],),
                         )
+                    )
+                    if old["status"] == "resolved":
+                        reopened += 1
+                        reopened_case_ids.append(old["case_id"])
                     continue
                 severity = finding["severity"]
                 raw_days = policy.get(f"{severity}_days") if severity != "unknown" else None
@@ -794,6 +782,39 @@ class RemediationRepository:
                     (case_id,),
                 )
                 created += 1
+            # Sorted so concurrent writers lock the rows in the same order.
+            existing_updates.sort(key=lambda item: item[0])
+            for offset in range(0, len(existing_updates), 5000):
+                columns = [list(column) for column in zip(*existing_updates[offset : offset + 5000], strict=True)]
+                conn.execute(
+                    """UPDATE remediation_cases AS target SET title=incoming.title,cve=incoming.cve,
+                       severity=incoming.severity,cvss_score=incoming.cvss_score::numeric,
+                       passport_internal_id=incoming.passport_internal_id,last_seen_at=NOW(),
+                       status=CASE WHEN target.status='resolved' THEN 'open' ELSE target.status END,
+                       resolved_at=CASE WHEN target.status='resolved' THEN NULL ELSE target.resolved_at END,
+                       reopened_at=CASE WHEN target.status='resolved' THEN NOW() ELSE target.reopened_at END,
+                       due_at=CASE WHEN target.status='resolved' THEN NOW()+CASE incoming.severity
+                         WHEN 'critical' THEN (%s||' days')::interval
+                         WHEN 'high' THEN (%s||' days')::interval WHEN 'medium' THEN (%s||' days')::interval
+                         WHEN 'low' THEN (%s||' days')::interval END ELSE target.due_at END,
+                       version=target.version+1,updated_at=NOW()
+                       FROM unnest(%s::text[],%s::text[],%s::text[],%s::text[],%s::text[],%s::text[])
+                         AS incoming(case_id,title,cve,severity,cvss_score,passport_internal_id)
+                       WHERE target.case_id=incoming.case_id""",
+                    (
+                        policy["critical_days"],
+                        policy["high_days"],
+                        policy["medium_days"],
+                        policy["low_days"],
+                        *columns,
+                    ),
+                )
+            if reopened_case_ids:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO remediation_case_events(case_id,event_type,old_status,new_status) VALUES (%s,'finding_reappeared','resolved','open')",
+                        [(case_id,) for case_id in reopened_case_ids],
+                    )
             truncated = conn.execute(
                 "SELECT EXISTS(SELECT 1 FROM asset_card_vulnerability_groups WHERE asset_id=%s AND truncated) AS value",
                 (asset_id,),

@@ -4,31 +4,26 @@ import logging
 from contextlib import contextmanager
 from typing import Any
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mcp_server import embed
 from mcp_server.embed import install_embedded_mcp
-from tests.mcp_server.fakes import COOKIE, host_row, make_settings, vuln_row
+from tests.mcp_server.fakes import host_row, make_settings, vuln_row
+from tests.mcp_server.test_token_auth import ALICE, FakeAuthenticator
 
-TOKEN = "embedded-token"
 MCP_HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
+    "Authorization": f"Bearer {ALICE}",
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream",
 }
 
 
 def _host_app() -> FastAPI:
-    """A stand-in for the application: a cookie-protected API and the SPA catch-all that answers GET only."""
+    """A stand-in for the application: the read API and the SPA catch-all that answers GET only."""
     app = FastAPI()
     calls: list[str] = []
     app.state.calls = calls
-
-    @app.post("/api/auth/login")
-    def login(response: Response) -> dict[str, Any]:
-        response.set_cookie("mpvm_app_session", COOKIE)
-        return {"authenticated": True, "user": {"permissions": ["assets.read"]}}
 
     @app.get("/api/auth/me")
     def me() -> dict[str, Any]:
@@ -56,9 +51,13 @@ def _host_app() -> FastAPI:
 
 
 def _enabled(**overrides: Any):
-    values: dict[str, Any] = {"enabled": True, "auth_token": TOKEN}
+    values: dict[str, Any] = {"enabled": True}
     values.update(overrides)
     return make_settings(**values)
+
+
+def _install(app: FastAPI, **overrides: Any) -> bool:
+    return install_embedded_mcp(app, settings=_enabled(**overrides), authenticator=FakeAuthenticator())
 
 
 @contextmanager
@@ -75,21 +74,10 @@ def _call(client: TestClient, method: str, params: dict[str, Any] | None = None,
 def test_disabled_by_default_leaves_the_application_untouched(caplog):
     app = _host_app()
     with caplog.at_level(logging.INFO, logger=embed.logger.name):
-        assert install_embedded_mcp(app, settings=make_settings()) is False
+        assert install_embedded_mcp(app, settings=make_settings(), authenticator=FakeAuthenticator()) is False
     assert "MCP endpoint is off" in caplog.text and "MPVM_MCP_ENABLED=true" in caplog.text
     with _served(app) as client:
         assert client.post("/mcp", json={}).status_code == 405  # the SPA catch-all, as before
-
-
-def test_misconfiguration_does_not_mount_and_does_not_raise(caplog):
-    app = _host_app()
-    with caplog.at_level(logging.ERROR, logger=embed.logger.name):
-        assert install_embedded_mcp(app, settings=make_settings(enabled=True)) is False  # no way to authenticate
-        assert install_embedded_mcp(app, settings=make_settings(enabled=True, auth_token="t", username="", password="")) is False
-    assert "no authentication is configured" in caplog.text
-    assert "MPVM_MCP_USERNAME" in caplog.text
-    with _served(app) as client:
-        assert client.post("/mcp", json={}).status_code == 405
 
 
 def test_missing_mcp_package_does_not_stop_the_application(monkeypatch, caplog):
@@ -104,23 +92,25 @@ def test_missing_mcp_package_does_not_stop_the_application(monkeypatch, caplog):
 
     monkeypatch.setattr(builtins, "__import__", failing_import)
     with caplog.at_level(logging.ERROR, logger=embed.logger.name):
-        assert install_embedded_mcp(_host_app(), settings=_enabled()) is False
+        assert _install(_host_app()) is False
     assert "required package is missing" in caplog.text
 
 
 def test_invalid_environment_does_not_raise(monkeypatch, caplog):
     monkeypatch.setenv("MPVM_MCP_PATH", "/api/mcp")
     with caplog.at_level(logging.ERROR, logger=embed.logger.name):
-        assert install_embedded_mcp(_host_app()) is False
+        assert install_embedded_mcp(_host_app(), authenticator=FakeAuthenticator()) is False
     assert "invalid configuration" in caplog.text
 
 
 def test_mcp_is_served_on_the_application_port_behind_a_token():
     app = _host_app()
-    assert install_embedded_mcp(app, settings=_enabled()) is True
+    assert _install(app) is True
     with _served(app) as client:
         assert client.post("/mcp", json={}, headers={"Content-Type": "application/json"}).status_code == 401
         assert _call(client, "tools/list", headers={**MCP_HEADERS, "Authorization": "Bearer nope"}).status_code == 401
+        unknown = "mpvm_mcp_cccccccccccc_" + "c" * 43
+        assert _call(client, "tools/list", headers={**MCP_HEADERS, "Authorization": f"Bearer {unknown}"}).status_code == 401
 
         tools = _call(client, "tools/list")
         assert tools.status_code == 200
@@ -134,7 +124,7 @@ def test_mcp_is_served_on_the_application_port_behind_a_token():
 
 def test_tool_call_reads_through_the_application_api_in_process():
     app = _host_app()
-    install_embedded_mcp(app, settings=_enabled())
+    _install(app)
     with _served(app) as client:
         result = _call(
             client,
@@ -149,7 +139,7 @@ def test_tool_call_reads_through_the_application_api_in_process():
 
 def test_trailing_slash_is_served_without_a_redirect():
     app = _host_app()
-    install_embedded_mcp(app, settings=_enabled())
+    _install(app)
     with _served(app) as client:
         response = _call(client, "tools/list", path="/mcp/", follow_redirects=False)
     assert response.status_code == 200
@@ -157,7 +147,7 @@ def test_trailing_slash_is_served_without_a_redirect():
 
 def test_endpoint_path_is_configurable():
     app = _host_app()
-    install_embedded_mcp(app, settings=_enabled(path="/vulnsearch/mcp"))
+    _install(app, path="/vulnsearch/mcp")
     with _served(app) as client:
         assert _call(client, "tools/list", path="/vulnsearch/mcp").status_code == 200
         assert client.post("/mcp", json={}).status_code == 405  # the default path is not taken over
@@ -165,7 +155,7 @@ def test_endpoint_path_is_configurable():
 
 def test_other_paths_and_methods_pass_through_to_the_application():
     app = _host_app()
-    install_embedded_mcp(app, settings=_enabled())
+    _install(app)
     with _served(app) as client:
         assert client.get("/mcp-other").json() == {"spa": "mcp-other"}
         assert client.get("/api/auth/me").status_code == 200

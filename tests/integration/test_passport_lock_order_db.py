@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, current_thread
+from threading import Event, Timer, current_thread
 from time import monotonic, sleep
 from unittest.mock import patch
 
@@ -93,3 +93,35 @@ def test_passport_refresh_and_card_writes_do_not_deadlock(test_db, refresh, writ
         findings = conn.execute("SELECT count(*) AS count FROM asset_card_vulnerabilities").fetchone()["count"]
         links = conn.execute("SELECT count(*) AS count FROM asset_card_vulnerability_passports").fetchone()["count"]
     assert findings == links == (0 if write == "delete" else 1)
+
+
+def test_passport_lock_wait_is_not_cut_short_by_statement_timeout(test_db):
+    holder_has_lock = Event()
+    release_holder = Event()
+
+    def hold_lock():
+        with db.connect() as conn:
+            db._lock_vulnerability_passport_writes(conn)
+            holder_has_lock.set()
+            assert release_holder.wait(10)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        holder = executor.submit(hold_lock)
+        try:
+            assert holder_has_lock.wait(5)
+            with db.connect() as conn:
+                conn.execute("SET statement_timeout = '300ms'")
+                # A plain advisory lock would be cancelled after 300 ms; the
+                # wait has its own limit, so it outlasts the server timeout.
+                waiter_started = monotonic()
+                threading_timer = Timer(1.0, release_holder.set)
+                threading_timer.start()
+                db._lock_vulnerability_passport_writes(conn)
+                waited = monotonic() - waiter_started
+                restored = next(iter(conn.execute("SHOW statement_timeout").fetchone().values()))
+        finally:
+            release_holder.set()
+        holder.result(timeout=10)
+
+    assert waited >= 0.9
+    assert restored == "300ms"

@@ -6,9 +6,8 @@ from typing import Any
 import httpx2
 from mcp import Client
 
-from mcp_server.client import AppClient
 from mcp_server.server import build_server
-from tests.mcp_server.fakes import FakeApi, body, host_row, make_settings, vuln_row
+from tests.mcp_server.fakes import FakeApi, body, host_row, make_client, make_settings, vuln_row
 
 EXPECTED_TOOLS = {
     "find_hosts_by_vulnerability",
@@ -30,7 +29,7 @@ EXPECTED_TOOLS = {
 
 def _with_client(api: FakeApi, scenario: Any, **settings: Any):
     async def run():
-        app_client = AppClient(make_settings(**settings), transport=api.transport())
+        app_client = make_client(api.transport(), **settings)
         server = build_server(make_settings(**settings), app_client)
         try:
             async with Client(server) as mcp_client:
