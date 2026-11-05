@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from typing import Any
 
 from .common import as_dict, first_present, normalize_boolean
@@ -126,6 +127,91 @@ def dedupe_vulnerability_passports(passports: list[dict[str, Any]]) -> list[dict
         seen.add(key_text)
         result.append(passport)
     return result
+
+
+def plan_passport_replacements(
+    successors: list[dict[str, Any]],
+    stale: list[dict[str, Any]],
+    *,
+    loose: bool,
+) -> tuple[list[tuple[str, str]], int]:
+    """Pair passports MP VM no longer returns with the passport that replaced them.
+
+    MP VM re-issues a passport under a new ``internalId`` (and may bump the
+    package version), so the old row is kept next to the new one and it is
+    unclear which one a finding belongs to. Rows are paired from the strictest
+    key to the loosest one and only when the successor is unambiguous:
+
+    1. ``(external_id, package_id, package_version)``;
+    2. ``(external_id, package_id)`` - a new version of the same package
+       (``loose`` only);
+    3. ``external_id`` - only when package data is missing on either side
+       (``loose`` only).
+
+    ``loose`` must be set only when ``stale`` really are passports that are gone
+    from MP VM (a complete catalog refresh); for a partial refresh an unseen
+    passport may still be alive, so only an exact key match is trusted.
+
+    Returns ``([(old_internal_id, new_internal_id), ...], ambiguous_count)``.
+    Several old rows may map to one new row; one old row never maps to two.
+    """
+
+    def key_of(row: dict[str, Any], depth: int) -> tuple[Any, ...] | None:
+        external_id = row.get("external_id")
+        if not external_id:
+            return None
+        package_id = row.get("package_id")
+        if depth == 1:
+            return (external_id, package_id, row.get("package_version"))
+        if depth == 2:
+            return None if package_id is None else (external_id, package_id)
+        return (external_id,)
+
+    pending_successors = {
+        str(row["internal_id"]): row for row in successors if row.get("internal_id")
+    }
+    pending_stale = {
+        str(row["internal_id"]): row
+        for row in stale
+        if row.get("internal_id") and str(row["internal_id"]) not in pending_successors
+    }
+    pairs: list[tuple[str, str]] = []
+    ambiguous: set[str] = set()
+    for depth in (1, 2, 3) if loose else (1,):
+        stale_groups: dict[tuple[Any, ...], list[str]] = defaultdict(list)
+        successor_groups: dict[tuple[Any, ...], list[str]] = defaultdict(list)
+        for internal_id, row in pending_stale.items():
+            key = key_of(row, depth)
+            if key is not None:
+                stale_groups[key].append(internal_id)
+        for internal_id, row in pending_successors.items():
+            key = key_of(row, depth)
+            if key is not None:
+                successor_groups[key].append(internal_id)
+        for key, old_ids in stale_groups.items():
+            new_ids = successor_groups.get(key)
+            if not new_ids:
+                continue
+            if len(new_ids) > 1:
+                ambiguous.update(new_ids)
+                continue
+            new_id = new_ids[0]
+            if depth == 3 and not _passport_package_unknown(
+                pending_successors[new_id], [pending_stale[i] for i in old_ids]
+            ):
+                # Both sides name a package and the packages differ: they are
+                # different passports of one CVE, not a re-issue of one.
+                continue
+            for old_id in old_ids:
+                pairs.append((old_id, new_id))
+                del pending_stale[old_id]
+    return pairs, len(ambiguous - {new_id for _, new_id in pairs})
+
+
+def _passport_package_unknown(successor: dict[str, Any], stale: list[dict[str, Any]]) -> bool:
+    return successor.get("package_id") is None or all(
+        row.get("package_id") is None for row in stale
+    )
 
 
 def merge_trending_vulnerability_records(

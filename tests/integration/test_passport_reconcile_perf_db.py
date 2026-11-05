@@ -286,3 +286,82 @@ def test_reconcile_of_very_many_passports_relinks_every_asset_instead(test_db, m
         conn.execute("INSERT INTO asset_card_vulnerability_passports VALUES (%s, 'P1', 'stale', %s)", (unrelated, now))
         db.reconcile_asset_card_vulnerability_passport_links(conn, ["P1", "P2"], now)
         assert _links(conn) == {unrelated: "OTHER"}
+
+
+def _catalog_passport(internal_id, version="1.0", external_id="PT-1", name="fix"):
+    return {
+        "internal_id": internal_id, "external_id": external_id, "name": name,
+        "package_id": "pkg", "package_version": version, "cves": [{"displayName": "CVE-1-1"}],
+    }
+
+
+def _seed_asset_with_finding(vulnerability_id):
+    now = db.now_utc()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO asset_cards(asset_id,display_name,first_seen,last_seen) VALUES('a','a',%s,%s)", (now, now))
+        group_id = conn.execute(
+            """
+            INSERT INTO asset_card_vulnerability_groups(asset_id,source_type,collection_type,collection_id,group_order,updated_at)
+            VALUES('a','host','c','g',0,%s) RETURNING id
+            """,
+            (now,),
+        ).fetchone()["id"]
+        return _finding(conn, "a", group_id, "i1", vulnerability_id, "CVE-1-1", now)
+
+
+def _passport_ids():
+    with db.connect() as conn:
+        return sorted(r["internal_id"] for r in conn.execute("SELECT internal_id FROM vulnerability_passports").fetchall())
+
+
+def _link_of(finding_id):
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT passport_internal_id FROM asset_card_vulnerability_passports WHERE asset_vulnerability_id = %s",
+            (finding_id,),
+        ).fetchone()
+    return row["passport_internal_id"] if row else None
+
+
+def test_complete_refresh_replaces_reissued_passport_and_moves_detail_and_links(test_db):
+    db.upsert_vulnerability_passports([_catalog_passport("OLD")])
+    db.upsert_vulnerability_passport_detail("OLD", {"name": "fix", "howToFix": "update"})
+    finding = _seed_asset_with_finding("OLD")
+    with db.connect() as conn:
+        db.reconcile_asset_card_vulnerability_passport_links(conn, None, db.now_utc())
+    assert _link_of(finding) == "OLD"
+
+    # MP VM re-issued the passport under a new internalId with a bumped package version.
+    result = db.upsert_vulnerability_passports([_catalog_passport("NEW", version="2.0")], full_catalog=True)
+
+    assert result["replaced"] == 1 and result["stale"] == 0
+    assert _passport_ids() == ["NEW"]
+    assert _link_of(finding) == "NEW"
+    assert db.get_vulnerability_passport("NEW")["raw_detail"]["howToFix"] == "update"
+
+
+def test_complete_refresh_heals_duplicates_left_by_earlier_refreshes(test_db):
+    # Both rows are already stored: the old one is no longer reported by MP VM.
+    db.upsert_vulnerability_passports([_catalog_passport("OLD"), _catalog_passport("NEW", version="2.0")])
+    finding = _seed_asset_with_finding(None)
+    with db.connect() as conn:
+        db.reconcile_asset_card_vulnerability_passport_links(conn, None, db.now_utc())
+
+    result = db.upsert_vulnerability_passports([_catalog_passport("NEW", version="2.0")], full_catalog=True)
+
+    assert result["replaced"] == 1
+    assert _passport_ids() == ["NEW"]
+    assert _link_of(finding) == "NEW"
+
+
+def test_partial_refresh_keeps_passports_it_cannot_prove_are_gone(test_db):
+    db.upsert_vulnerability_passports([_catalog_passport("OLD")])
+    result = db.upsert_vulnerability_passports([_catalog_passport("NEW", version="2.0")])
+    assert result["replaced"] == 0 and _passport_ids() == ["NEW", "OLD"]
+
+
+def test_complete_refresh_reports_but_keeps_passports_without_successor(test_db):
+    db.upsert_vulnerability_passports([_catalog_passport("GONE", external_id="PT-9"), _catalog_passport("OLD")])
+    result = db.upsert_vulnerability_passports([_catalog_passport("NEW", version="2.0")], full_catalog=True)
+    assert result["replaced"] == 1 and result["stale"] == 1
+    assert _passport_ids() == ["GONE", "NEW"]
