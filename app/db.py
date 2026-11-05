@@ -9,7 +9,6 @@ import re
 import threading
 import time
 import uuid
-from collections import Counter, defaultdict
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -25,6 +24,7 @@ from .diagnostics import (
     log_event,
     log_exception,
 )
+from .mpvm.passport_records import plan_passport_replacements
 
 
 DATABASE_URL = (
@@ -2599,19 +2599,92 @@ def get_summary() -> dict[str, Any]:
     }
 
 
+def _plan_passport_id_replacements(
+    cursor: psycopg.Cursor[dict[str, Any]],
+    values: list[tuple[Any, ...]],
+    known_ids: set[str],
+    *,
+    full_catalog: bool,
+) -> tuple[list[tuple[str, str]], int, int]:
+    """Pair stored passports MP VM re-issued under a new id with their successors.
+
+    Returns ``(replacements, ambiguous, stale)``: ``(old_id, new_id)`` pairs to
+    merge, successors that could not be told apart, and (complete refresh only)
+    passports gone from MP VM that still have no successor.
+    """
+
+    columns = ("internal_id", "external_id", "package_id", "package_version")
+    incoming = [
+        dict(zip(columns, (value[0], value[1], value[6], value[7]), strict=True))
+        for value in values
+        if value[1]
+    ]
+    if not incoming:
+        return [], 0, 0
+    incoming_ids = {value[0] for value in values}
+    if full_catalog:
+        # Anything stored that the complete catalog did not return is gone from
+        # MP VM. This also repairs duplicates left by earlier refreshes.
+        stale_rows = [
+            dict(row)
+            for row in cursor.execute(
+                """
+                SELECT internal_id, external_id, package_id, package_version
+                FROM vulnerability_passports
+                WHERE external_id IS NOT NULL
+                """
+            ).fetchall()
+            if row["internal_id"] not in incoming_ids
+        ]
+        successors = incoming
+    else:
+        # Without the full catalog an unseen passport may still be alive: trust
+        # only exact matches, and only for passports new to the database.
+        successors = [row for row in incoming if row["internal_id"] not in known_ids]
+        stale_rows = []
+        external_ids = sorted({row["external_id"] for row in successors})
+        for offset in range(0, len(external_ids), 5000):
+            stale_rows.extend(
+                dict(row)
+                for row in cursor.execute(
+                    """
+                    SELECT internal_id, external_id, package_id, package_version
+                    FROM vulnerability_passports
+                    WHERE external_id = ANY(%s)
+                    FOR UPDATE
+                    """,
+                    (external_ids[offset : offset + 5000],),
+                ).fetchall()
+                if row["internal_id"] not in incoming_ids
+            )
+    pairs, ambiguous = plan_passport_replacements(successors, stale_rows, loose=full_catalog)
+    paired_old = {old_id for old_id, _ in pairs}
+    stale = (
+        sum(1 for row in stale_rows if row["internal_id"] not in paired_old)
+        if full_catalog
+        else 0
+    )
+    return pairs, ambiguous, stale
+
+
 def upsert_vulnerability_passports(
     passports: list[dict[str, Any]],
     *,
     source_pdql: str | None = None,
     pdql_token: str | None = None,
     progress: Callable[[str, int, int], None] | None = None,
+    full_catalog: bool = False,
 ) -> dict[str, Any]:
-    """Upsert the catalog; ``progress(stage, done, total)`` reports "save" and "link" steps."""
+    """Upsert the catalog; ``progress(stage, done, total)`` reports "save" and "link" steps.
+
+    ``full_catalog`` states that ``passports`` is the complete MP VM catalog, so
+    every stored passport missing from it is gone upstream and may be merged
+    into the passport that replaced it.
+    """
     init_db()
     current = now_utc()
     skipped = 0
     replaced = 0
-    ambiguous = 0
     saved_ids: list[str] = []
     values: list[tuple[Any, ...]] = []
     for passport in passports:
@@ -2656,42 +2729,6 @@ def upsert_vulnerability_passports(
                             (batch,),
                         ).fetchall()
                     )
-
-            incoming_key_counts = Counter(
-                (value[1], value[6], value[7])
-                for value in values
-                if value[1]
-            )
-            changed_ids = [value for value in values if value[0] not in known_ids and value[1]]
-            existing_by_key: dict[tuple[Any, Any, Any], list[dict[str, Any]]] = defaultdict(list)
-            external_ids = sorted({value[1] for value in changed_ids})
-            for offset in range(0, len(external_ids), 5000):
-                batch = external_ids[offset : offset + 5000]
-                rows = cursor.execute(
-                    """
-                    SELECT internal_id, external_id, package_id, package_version,
-                           raw_detail_json, first_seen
-                    FROM vulnerability_passports
-                    WHERE external_id = ANY(%s)
-                    FOR UPDATE
-                    """,
-                    (batch,),
-                ).fetchall()
-                for row in rows:
-                    key = (row["external_id"], row["package_id"], row["package_version"])
-                    existing_by_key[key].append(dict(row))
-
-            id_replacements: list[tuple[str, str]] = []
-            for value in changed_ids:
-                new_id = value[0]
-                key = (value[1], value[6], value[7])
-                candidates = [row for row in existing_by_key.get(key, []) if row["internal_id"] != new_id]
-                if len(candidates) > 1 or (candidates and incoming_key_counts[key] > 1):
-                    ambiguous += 1
-                    continue
-                if len(candidates) == 1:
-                    old = candidates[0]
-                    id_replacements.append((old["internal_id"], new_id))
 
             # Only new or content-changed passports are rewritten (and so fire
             # the CVE/OS-family trigger and need their links rebuilt); a refresh
@@ -2778,6 +2815,9 @@ def upsert_vulnerability_passports(
                 )
                 if progress:
                     progress("save", min(offset + PASSPORT_SAVE_BATCH_SIZE, len(values)), len(values))
+            id_replacements, ambiguous, stale = _plan_passport_id_replacements(
+                cursor, values, known_ids, full_catalog=full_catalog
+            )
             if id_replacements:
                 cursor.execute(
                     """
@@ -2791,6 +2831,8 @@ def upsert_vulnerability_passports(
                     "INSERT INTO passport_id_replacements(old_id, new_id) VALUES (%s, %s)",
                     id_replacements,
                 )
+                # Several old rows can fold into one new row: take the earliest
+                # first_seen and the most recently loaded detail among them.
                 cursor.execute(
                     """
                     UPDATE vulnerability_passports AS target
@@ -2798,10 +2840,18 @@ def upsert_vulnerability_passports(
                         first_seen = LEAST(target.first_seen, previous.first_seen),
                         detail_updated_at = CASE WHEN target.raw_detail_json IS NULL
                             THEN NULL ELSE target.detail_updated_at END
-                    FROM passport_id_replacements AS replacement
-                    JOIN vulnerability_passports AS previous
-                      ON previous.internal_id = replacement.old_id
-                    WHERE target.internal_id = replacement.new_id
+                    FROM (
+                        SELECT replacement.new_id,
+                               MIN(old.first_seen) AS first_seen,
+                               (ARRAY_AGG(old.raw_detail_json
+                                          ORDER BY old.detail_updated_at DESC NULLS LAST)
+                                FILTER (WHERE old.raw_detail_json IS NOT NULL))[1] AS raw_detail_json
+                        FROM passport_id_replacements AS replacement
+                        JOIN vulnerability_passports AS old
+                          ON old.internal_id = replacement.old_id
+                        GROUP BY replacement.new_id
+                    ) AS previous
+                    WHERE target.internal_id = previous.new_id
                     """
                 )
                 cursor.execute(
@@ -2855,9 +2905,14 @@ def upsert_vulnerability_passports(
                         (old_ids,),
                     )
                 replaced = len(id_replacements)
+        # A passport that absorbed older ones can now be the best match for
+        # findings that were linked to none of them, so relink it as well.
+        relink_ids = list(
+            dict.fromkeys([*changed_passport_ids, *(new_id for _, new_id in id_replacements)])
+        )
         links_created = reconcile_asset_card_vulnerability_passport_links(
             conn,
-            changed_passport_ids,
+            relink_ids,
             current,
             progress=(lambda done, total: progress("link", done, total)) if progress else None,
         )
@@ -2867,6 +2922,7 @@ def upsert_vulnerability_passports(
         "skipped": skipped,
         "replaced": replaced,
         "ambiguous": ambiguous,
+        "stale": stale,
         "passport_links": links_created,
     }
 
