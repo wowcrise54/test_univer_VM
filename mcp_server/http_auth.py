@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import json
 from collections.abc import Collection
 
@@ -19,23 +18,20 @@ class McpAuthMiddleware:
     """Let a request through only with a valid MCP access token.
 
     A personal token (``mpvm_mcp_…``) is checked by the application, which also
-    opens the session the tools read with. The deprecated shared token still
-    works when ``legacy_token`` is set. With neither configured every request
-    is refused: the guard fails closed.
+    opens the session the tools read with. Anything else is refused: the guard
+    fails closed.
     """
 
     def __init__(
         self,
         app: ASGIApp,
         *,
-        authenticator: TokenAuthenticator | None = None,
-        legacy_token: str = "",
+        authenticator: TokenAuthenticator,
         allow_x_api_key: bool = False,
         allowed_origins: Collection[str] = (),
     ):
         self.app = app
         self._authenticator = authenticator
-        self._legacy = legacy_token.encode()
         self._allow_x_api_key = allow_x_api_key
         self._origins = frozenset(allowed_origins)
 
@@ -51,22 +47,19 @@ class McpAuthMiddleware:
             await self._reject(send, 403)
             return
         supplied = self._supplied(headers)
-        if supplied.startswith(TOKEN_PREFIX.encode()) and self._authenticator is not None:
-            try:
-                principal = await self._authenticator.authenticate(supplied.decode("latin-1"), scope=scope)
-            except AuthRejected as exc:
-                await self._reject(send, exc.status, retry_after=exc.retry_after)
-                return
-            marker = current_principal.set(principal)
-            try:
-                await self.app(scope, receive, send)
-            finally:
-                current_principal.reset(marker)
+        if not supplied.startswith(TOKEN_PREFIX.encode()):
+            await self._reject(send, 401)
             return
-        if supplied and self._legacy and hmac.compare_digest(supplied, self._legacy):
+        try:
+            principal = await self._authenticator.authenticate(supplied.decode("latin-1"), scope=scope)
+        except AuthRejected as exc:
+            await self._reject(send, exc.status, retry_after=exc.retry_after)
+            return
+        marker = current_principal.set(principal)
+        try:
             await self.app(scope, receive, send)
-            return
-        await self._reject(send, 401)
+        finally:
+            current_principal.reset(marker)
 
     def _supplied(self, headers: dict[str, bytes]) -> bytes:
         authorization = headers.get("authorization", b"")

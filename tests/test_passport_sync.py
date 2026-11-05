@@ -441,12 +441,19 @@ class VulnerabilityPassportWriteLockTests(unittest.TestCase):
 
     def test_lock_uses_transaction_scoped_postgres_advisory_lock(self):
         connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {"statement_timeout": "10min"}
 
         db._lock_vulnerability_passport_writes(connection)
 
-        connection.execute.assert_called_once_with(
-            "SELECT pg_advisory_xact_lock(%s, %s)",
-            db._VULNERABILITY_PASSPORT_WRITE_LOCK,
+        statements = [call.args for call in connection.execute.call_args_list]
+        self.assertEqual(
+            statements,
+            [
+                ("SHOW statement_timeout",),
+                ("SELECT set_config('statement_timeout', %s, true)", (str(db.PASSPORT_LOCK_WAIT_SECONDS * 1000),)),
+                ("SELECT pg_advisory_xact_lock(%s, %s)", db._VULNERABILITY_PASSPORT_WRITE_LOCK),
+                ("SELECT set_config('statement_timeout', %s, true)", ("10min",)),
+            ],
         )
 
     def test_snapshot_and_trend_writers_use_the_same_lock(self):

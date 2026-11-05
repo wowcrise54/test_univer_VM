@@ -1,8 +1,9 @@
 """Integration: the MCP server against the real API, RBAC and PostgreSQL.
 
-The MCP server logs in as a dedicated ``viewer`` account over the application's
-ASGI interface, so these tests pin what that account can see and, just as
-important, that it cannot change anything.
+The MCP server reads the API in the read-capped session the application opens
+for a personal access token, over the application's ASGI interface, so these
+tests pin what such a token can see and, just as important, that it cannot
+change anything.
 """
 
 from __future__ import annotations
@@ -17,16 +18,20 @@ import pytest
 from mcp import Client
 
 from app import auth, db, main
+from app.services import mcp_tokens
+from app.services.mcp_tokens import McpTokenAuthenticator
 from mcp_server.client import ApiError, AppClient
+from mcp_server.principal import Principal, current_principal
 from mcp_server.server import build_server
 from tests.mcp_server.fakes import make_settings
 
 pytestmark = pytest.mark.integration
 
 PASSWORD = "S3cure-Passw0rd!"
+SCOPE = {"type": "http", "client": ("203.0.113.9", 5000), "headers": [], "method": "POST", "path": "/mcp"}
 
 
-def _make_user(username: str, role: str) -> None:
+def _make_user(username: str, role: str) -> int:
     current = db.now_utc()
     with db.connect() as conn:
         row = conn.execute(
@@ -37,6 +42,7 @@ def _make_user(username: str, role: str) -> None:
         role_row = conn.execute("SELECT id FROM app_roles WHERE role_key=%s", (role,)).fetchone()
         assert row is not None and role_row is not None
         conn.execute("INSERT INTO app_user_roles(user_id,role_id) VALUES(%s,%s)", (row["id"], role_row["id"]))
+    return int(row["id"])
 
 
 def _card(conn, asset_id: str, name: str, ip: str, last_seen: datetime) -> None:
@@ -97,17 +103,38 @@ def seeded(test_db):
         _finding(conn, "web-1", "V-1111", "CVE-2024-1111")
         _finding(conn, "db-1", "V-30940", "CVE-2024-30940")
     _make_user("mcp-viewer", "viewer")
-    _make_user("mcp-operator", "operator")
+    _make_user("mcp-admin", "admin")
 
 
-def _client(username: str = "mcp-viewer") -> AppClient:
-    settings = make_settings(username=username, password=PASSWORD)
-    return AppClient(settings, transport=httpx2.ASGITransport(app=main.app))
+def _issue(username: str = "mcp-viewer") -> tuple[Principal, int]:
+    """A personal token of ``username`` with every read scope, and the principal the guard would derive from it."""
+    with db.connect() as conn:
+        owner = conn.execute("SELECT id FROM app_users WHERE username=%s", (username,)).fetchone()
+    assert owner is not None
+    issued = mcp_tokens.create_token(
+        name="integration",
+        owner_user_id=int(owner["id"]),
+        scopes=list(mcp_tokens.MCP_SCOPES),
+        ip_allowlist=[],
+        expires_in_days=1,
+        actor={"id": int(owner["id"]), "username": username},
+    )
+    return mcp_tokens.authenticate(issued["token"], scope=SCOPE), int(issued["id"])
+
+
+def _client() -> AppClient:
+    return AppClient(
+        make_settings(),
+        transport=httpx2.ASGITransport(app=main.app),
+        session_opener=McpTokenAuthenticator().open_session,
+    )
 
 
 def _call(tool: str, arguments: dict[str, Any], username: str = "mcp-viewer") -> dict[str, Any]:
+    principal, _ = _issue(username)
+
     async def run() -> dict[str, Any]:
-        client = _client(username)
+        client = _client()
         server = build_server(make_settings(), client)
         try:
             async with Client(server) as mcp_client:
@@ -117,7 +144,11 @@ def _call(tool: str, arguments: dict[str, Any], username: str = "mcp-viewer") ->
         assert not result.is_error, result.content
         return json.loads(result.content[0].text)
 
-    return asyncio.run(run())
+    marker = current_principal.set(principal)
+    try:
+        return asyncio.run(run())
+    finally:
+        current_principal.reset(marker)
 
 
 def test_find_hosts_by_cve_lists_hosts_with_fix_and_freshness(seeded):
@@ -166,39 +197,36 @@ def test_other_read_tools_work_for_a_viewer(seeded):
         assert _call(tool, {}) is not None, tool
 
 
-def test_the_viewer_account_cannot_change_anything(seeded):
+def test_a_token_cannot_change_anything_even_for_an_administrator_owner(seeded):
+    principal, _ = _issue("mcp-admin")
+    cookie = {"Cookie": f"mpvm_app_session={mcp_tokens.open_session(principal)}"}
+
     async def run() -> list[int]:
-        client = _client()
-        try:
-            await client.get("/api/auth/me")  # logs in and stores the session cookie
-            cookie = {"Cookie": f"mpvm_app_session={client._cookie}"}
-            statuses = []
-            async with httpx2.AsyncClient(
-                transport=httpx2.ASGITransport(app=main.app), base_url="http://testserver", headers=cookie
-            ) as raw:
-                statuses.append(
-                    (
-                        await raw.post(
-                            "/api/remediation/cases/start",
-                            json={"asset_id": "web-1", "vulnerability_selector": "id:V-3094"},
-                        )
-                    ).status_code
-                )
-                statuses.append((await raw.post("/api/asset-cards/web-1/refresh-scan", json={})).status_code)
-                statuses.append((await raw.delete("/api/asset-cards/web-1")).status_code)
-            return statuses
-        finally:
-            await client.aclose()
+        statuses = []
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=main.app), base_url="http://testserver", headers=cookie
+        ) as raw:
+            statuses.append(
+                (
+                    await raw.post(
+                        "/api/remediation/cases/start",
+                        json={"asset_id": "web-1", "vulnerability_selector": "id:V-3094"},
+                    )
+                ).status_code
+            )
+            statuses.append((await raw.post("/api/asset-cards/web-1/refresh-scan", json={})).status_code)
+            statuses.append((await raw.delete("/api/asset-cards/web-1")).status_code)
+        return statuses
 
     assert asyncio.run(run()) == [403, 403, 403]
 
 
-def test_a_wrong_password_is_reported_without_leaking_secrets(seeded):
+def test_a_revoked_token_is_reported_without_leaking_secrets(seeded):
+    principal, token_pk = _issue()
+    mcp_tokens.revoke_token(token_pk, actor={"id": principal.owner_id, "username": principal.owner_username})
+
     async def run() -> ApiError:
-        client = AppClient(
-            make_settings(username="mcp-viewer", password="definitely-wrong-1"),
-            transport=httpx2.ASGITransport(app=main.app),
-        )
+        client = _client()
         try:
             with pytest.raises(ApiError) as caught:
                 await client.get("/api/vulnerabilities")
@@ -206,6 +234,10 @@ def test_a_wrong_password_is_reported_without_leaking_secrets(seeded):
         finally:
             await client.aclose()
 
-    error = asyncio.run(run())
-    assert error.status == 401 and error.code == "INVALID_CREDENTIALS"
-    assert "definitely-wrong-1" not in str(error)
+    marker = current_principal.set(principal)
+    try:
+        error = asyncio.run(run())
+    finally:
+        current_principal.reset(marker)
+    assert error.status == 401 and error.code == "AUTH_REQUIRED"
+    assert PASSWORD not in str(error)

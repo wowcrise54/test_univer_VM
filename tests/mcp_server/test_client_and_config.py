@@ -10,45 +10,46 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from mcp_server import client as client_module
-from mcp_server.client import ApiError, AppClient
+from mcp_server.client import ApiError
 from mcp_server.config import McpSettings
 from mcp_server.http_auth import McpAuthMiddleware
+from mcp_server.principal import AuthRejected, Principal, current_principal
 from mcp_server.shaping import fit_response, render
-from tests.mcp_server.fakes import COOKIE, FakeApi, make_settings
+from tests.mcp_server.fakes import COOKIE, TEST_PRINCIPAL, FakeApi, SessionOpener, make_client
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_client_logs_in_once_and_sends_the_session_cookie():
+def test_client_opens_one_session_per_token_and_sends_its_cookie():
     api = FakeApi()
     api.json("/api/ping", {"ok": True})
+    opener = SessionOpener()
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport(), opener=opener)
         try:
             return [await client.get("/api/ping"), await client.get("/api/ping", limit=5, skip=None, flag=True)]
         finally:
             await client.aclose()
 
     assert _run(run()) == [{"ok": True}, {"ok": True}]
-    assert api.logins == 1
+    assert opener.opened == 1
     last = api.data_requests()[-1]
     assert last.headers["cookie"] == f"mpvm_app_session={COOKIE}"
     assert api.params(last) == {"limit": "5", "flag": "true"}
     assert "mpvm-mcp" in last.headers["user-agent"]
-    login = next(r for r in api.requests if r.url.path == "/api/auth/login")
-    assert b'"auth_type":"local"' in login.content.replace(b" ", b"")
+    assert {request.method for request in api.requests} == {"GET"}  # the client can only read
 
 
-def test_client_relogs_in_after_a_401_and_retries_once():
+def test_client_opens_a_new_session_after_a_401_and_retries_once():
     api = FakeApi()
     api.json("/api/ping", {"ok": True})
+    opener = SessionOpener()
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport(), opener=opener)
         try:
             await client.get("/api/ping")
             api.reject_cookie_once = True
@@ -57,29 +58,47 @@ def test_client_relogs_in_after_a_401_and_retries_once():
             await client.aclose()
 
     assert _run(run()) == {"ok": True}
-    assert api.logins == 2
+    assert opener.opened == 2
 
 
-def test_failed_login_is_not_retried_in_a_loop():
+def test_a_token_whose_session_cannot_be_opened_never_reaches_the_api():
     api = FakeApi()
-    api.login_status = 401
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport(), opener=SessionOpener(reject=True))
         try:
-            errors = []
-            for _ in range(3):
-                with pytest.raises(ApiError) as caught:
-                    await client.get("/api/ping")
-                errors.append(caught.value)
-            return errors
+            with pytest.raises(ApiError) as caught:
+                await client.get("/api/ping")
+            return caught.value
         finally:
             await client.aclose()
 
-    errors = _run(run())
-    assert api.logins == 1  # the application rate-limits failed logins
-    assert errors[0].code == "INVALID_CREDENTIALS"
-    assert "login of the MCP service account failed" in str(errors[0])
+    error = _run(run())
+    assert (error.status, error.code) == (401, "AUTH_REQUIRED")
+    assert "no longer valid" in str(error)
+    assert api.requests == []
+
+
+def test_a_request_without_a_token_principal_is_refused_before_any_call():
+    api = FakeApi()
+    opener = SessionOpener()
+    marker = current_principal.set(None)
+
+    async def run():
+        client = make_client(api.transport(), opener=opener)
+        try:
+            with pytest.raises(ApiError) as caught:
+                await client.get("/api/ping")
+            return caught.value
+        finally:
+            await client.aclose()
+
+    try:
+        error = _run(run())
+    finally:
+        current_principal.reset(marker)
+    assert (error.status, error.code) == (401, "AUTH_REQUIRED")
+    assert api.requests == [] and opener.opened == 0
 
 
 def test_api_errors_carry_code_and_message():
@@ -89,7 +108,7 @@ def test_api_errors_carry_code_and_message():
     api.routes["/api/html"] = lambda _r: httpx2.Response(200, text="<html>")
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             with pytest.raises(ApiError) as denied:
                 await client.get("/api/denied")
@@ -112,7 +131,7 @@ def test_unreachable_api_is_reported_as_a_tool_error():
         raise httpx2.ConnectError("connection refused")
 
     async def run():
-        client = AppClient(make_settings(), transport=httpx2.MockTransport(refuse))
+        client = make_client(httpx2.MockTransport(refuse))
         try:
             with pytest.raises(ApiError) as caught:
                 await client.get("/api/ping")
@@ -124,37 +143,6 @@ def test_unreachable_api_is_reported_as_a_tool_error():
     assert (error.status, error.code) == (503, "API_UNREACHABLE")
 
 
-def test_client_warns_when_the_account_can_write(caplog):
-    api = FakeApi()
-    api.json("/api/ping", {})
-    original = api._handle
-
-    def handle(request: httpx2.Request) -> httpx2.Response:
-        if request.url.path == "/api/auth/me":
-            return httpx2.Response(200, json={"user": {"permissions": ["assets.read", "remediation.manage", "tasks.execute"]}})
-        return original(request)
-
-    async def run():
-        client = AppClient(make_settings(), transport=httpx2.MockTransport(handle))
-        try:
-            await client.get("/api/ping")
-        finally:
-            await client.aclose()
-
-    with caplog.at_level("WARNING", logger=client_module.logger.name):
-        _run(run())
-    assert "remediation.manage" in caplog.text and "tasks.execute" in caplog.text
-
-
-def test_settings_report_what_is_missing():
-    base = {"username": "u", "password": "p"}
-    # personal access tokens need no environment settings; only the deprecated shared token does
-    assert McpSettings().problems() == []
-    assert McpSettings(**base).problems() == []
-    assert "MPVM_MCP_USERNAME" in McpSettings(auth_token="t").problems()[0]
-    assert McpSettings(auth_token="t", **base).problems() == []
-
-
 def test_allowed_origins_are_normalized():
     assert McpSettings().origins == frozenset()
     assert McpSettings(allowed_origins=" https://A.example/ ,,http://b.example:8080").origins == frozenset(
@@ -162,9 +150,11 @@ def test_allowed_origins_are_normalized():
     )
 
 
-def test_settings_validate_fields_and_hide_secrets():
-    base = {"username": "u", "password": "p"}
-    assert "secret-token" not in repr(McpSettings(auth_token="secret-token", **base))
+def test_settings_validate_the_path_and_ignore_retired_credentials(monkeypatch):
+    for retired in ("MPVM_MCP_AUTH_TOKEN", "MPVM_MCP_USERNAME", "MPVM_MCP_PASSWORD"):
+        monkeypatch.setenv(retired, "left-over")
+    settings = McpSettings()
+    assert not hasattr(settings, "auth_token") and "left-over" not in repr(settings)
     assert McpSettings(path=" /mcp/ ").path == "/mcp"
     assert McpSettings(path="/vulnsearch/mcp").path == "/vulnsearch/mcp"
     for bad in ("mcp", "/", "", "/api", "/api/mcp", "/static/x", "/m cp", "/mcp?x=1"):
@@ -172,43 +162,60 @@ def test_settings_validate_fields_and_hide_secrets():
             McpSettings(path=bad)
 
 
-def _guarded(token: str = "s3cret", **options) -> TestClient:
+TOKEN = "mpvm_mcp_aaaaaaaaaaaa_" + "a" * 43
+
+
+class _Authenticator:
+    async def authenticate(self, token: str, *, scope: dict) -> Principal:
+        if token != TOKEN:
+            raise AuthRejected(401)
+        return TEST_PRINCIPAL
+
+    async def open_session(self, principal: Principal) -> str:
+        return COOKIE
+
+    async def record_tool_call(self, *args, **kwargs) -> None:
+        return None
+
+
+def _guarded(**options) -> TestClient:
     async def ok(_request):
         return PlainTextResponse("ok")
 
     app = Starlette(routes=[Route("/mcp", ok, methods=["GET", "POST"]), Route("/healthz", ok)])
-    app.add_middleware(McpAuthMiddleware, legacy_token=token, **options)
+    app.add_middleware(McpAuthMiddleware, authenticator=_Authenticator(), **options)
     return TestClient(app)
 
 
-def test_legacy_token_middleware_guards_every_request():
+def test_token_middleware_guards_every_request():
     client = _guarded()
     assert client.get("/healthz").status_code == 401
     denied = client.post("/mcp")
     assert denied.status_code == 401 and denied.headers["www-authenticate"] == "Bearer"
     assert denied.headers["cache-control"] == "no-store"
     assert client.post("/mcp", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert client.post("/mcp", headers={"Authorization": "Basic s3cret"}).status_code == 401
-    assert client.post("/mcp", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-    assert client.post("/mcp", headers={"Authorization": "bearer s3cret"}).status_code == 200
+    assert client.post("/mcp", headers={"Authorization": f"Bearer mpvm_mcp_bbbbbbbbbbbb_{'b' * 43}"}).status_code == 401
+    assert client.post("/mcp", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
+    assert client.post("/mcp", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+    assert client.post("/mcp", headers={"Authorization": f"bearer {TOKEN}"}).status_code == 200
 
 
 def test_x_api_key_is_refused_unless_enabled():
-    assert _guarded().post("/mcp", headers={"X-API-Key": "s3cret"}).status_code == 401
+    assert _guarded().post("/mcp", headers={"X-API-Key": TOKEN}).status_code == 401
     client = _guarded(allow_x_api_key=True)
-    assert client.post("/mcp", headers={"X-API-Key": "s3cret"}).status_code == 200
+    assert client.post("/mcp", headers={"X-API-Key": TOKEN}).status_code == 200
     assert client.post("/mcp", headers={"X-API-Key": "nope"}).status_code == 401
 
 
-def test_the_guard_fails_closed_without_any_credential():
-    client = _guarded(token="")
+def test_the_guard_fails_closed_without_a_token():
+    client = _guarded()
     assert client.post("/mcp").status_code == 401
     assert client.post("/mcp", headers={"Authorization": "Bearer "}).status_code == 401
     assert client.post("/mcp", headers={"Authorization": "Bearer anything"}).status_code == 401
 
 
 def test_a_browser_origin_is_refused_unless_listed():
-    bearer = {"Authorization": "Bearer s3cret"}
+    bearer = {"Authorization": f"Bearer {TOKEN}"}
     client = _guarded(allowed_origins={"https://ok.example"})
     assert client.post("/mcp", headers={**bearer, "Origin": "https://evil.example"}).status_code == 403
     assert client.post("/mcp", headers={**bearer, "Origin": "https://ok.example/"}).status_code == 200

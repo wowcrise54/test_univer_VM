@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from mcp_server.embed import install_embedded_mcp
@@ -13,7 +13,6 @@ from tests.mcp_server.fakes import host_row, make_settings, vuln_row
 
 ALICE = "mpvm_mcp_aaaaaaaaaaaa_" + "a" * 43
 BOB = "mpvm_mcp_bbbbbbbbbbbb_" + "b" * 43
-LEGACY = "legacy-shared-token"
 
 
 def _principal(key: int, name: str) -> Principal:
@@ -51,15 +50,6 @@ def _host_app(*, fail_with: int | None = None) -> FastAPI:
     app = FastAPI()
     app.state.cookies = []
 
-    @app.post("/api/auth/login")
-    def login(response: Response) -> dict[str, Any]:
-        response.set_cookie("mpvm_app_session", "legacy-session")
-        return {"authenticated": True, "user": {"permissions": ["assets.read"]}}
-
-    @app.get("/api/auth/me")
-    def me() -> dict[str, Any]:
-        return {"authenticated": True, "user": {"permissions": ["assets.read"]}}
-
     def record(request: Request) -> None:
         app.state.cookies.append(request.headers.get("cookie"))
         if fail_with:
@@ -83,8 +73,8 @@ def _host_app(*, fail_with: int | None = None) -> FastAPI:
     return app
 
 
-def _install(app: FastAPI, authenticator: FakeAuthenticator | None, **settings: Any) -> None:
-    values: dict[str, Any] = {"enabled": True, "username": "", "password": ""}
+def _install(app: FastAPI, authenticator: FakeAuthenticator, **settings: Any) -> None:
+    values: dict[str, Any] = {"enabled": True}
     values.update(settings)
     assert install_embedded_mcp(app, settings=make_settings(**values), authenticator=authenticator) is True
 
@@ -99,9 +89,9 @@ def _find(client: TestClient, token: str):
     return _post(client, token, "tools/call", {"name": "find_hosts_by_vulnerability", "arguments": {"query": "CVE-2026-1"}})
 
 
-def test_a_personal_token_needs_no_environment_credentials():
+def test_a_personal_token_is_the_only_way_in_and_needs_no_environment_credentials():
     app, auth = _host_app(), FakeAuthenticator()
-    _install(app, auth)  # no MPVM_MCP_AUTH_TOKEN, no service account
+    _install(app, auth)  # no credentials in the environment
     with TestClient(app) as client:
         assert _post(client, ALICE).status_code == 200
         assert _post(client, "mpvm_mcp_cccccccccccc_" + "c" * 43).status_code == 401
@@ -179,22 +169,3 @@ def test_a_token_whose_session_cannot_be_opened_gives_an_error_not_data():
         result = _find(client, ALICE).json()["result"]
     assert result["isError"] is True and "AUTH_REQUIRED" in result["content"][0]["text"]
     assert app.state.cookies == []
-
-
-def test_the_shared_token_still_works_beside_personal_tokens_and_is_not_audited(caplog):
-    app, auth = _host_app(), FakeAuthenticator()
-    with caplog.at_level("WARNING", logger="mpvm_mcp"):
-        _install(app, auth, auth_token=LEGACY, username="viewer", password="S3cure-Passw0rd!")
-    assert "deprecated" in caplog.text
-    with TestClient(app) as client:
-        assert _find(client, LEGACY).json()["result"]["isError"] is False
-        assert _find(client, ALICE).json()["result"]["isError"] is False
-        assert _post(client, "wrong").status_code == 401
-    assert auth.seen_tokens == [ALICE]  # the shared token never reaches the token store
-    assert [call["owner"] for call in auth.calls] == ["a"]
-    assert "mpvm_app_session=legacy-session" in app.state.cookies
-
-
-def test_the_shared_token_is_refused_without_its_service_account():
-    app = _host_app()
-    assert install_embedded_mcp(app, settings=make_settings(enabled=True, auth_token=LEGACY, username="", password="")) is False

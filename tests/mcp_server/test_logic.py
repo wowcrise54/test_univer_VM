@@ -5,8 +5,7 @@ import asyncio
 import httpx2
 
 from mcp_server import vulnerabilities as vuln
-from mcp_server.client import AppClient
-from tests.mcp_server.fakes import FakeApi, host_row, iso_ago, make_settings, vuln_row
+from tests.mcp_server.fakes import FakeApi, host_row, iso_ago, make_client, vuln_row
 
 
 def test_match_rows_prefers_exact_cve_over_substring_hits():
@@ -62,7 +61,7 @@ def test_host_staleness():
 
 def _find(api: FakeApi, **kwargs):
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             return await vuln.find_hosts_by_vulnerability(client, vuln.CoverageProbe(client), stale_days=14, **kwargs)
         finally:
@@ -171,7 +170,7 @@ def test_find_hosts_fetches_selectors_concurrently():
     state = {"now": 0, "peak": 0}
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         original = client.get
 
         async def tracked(path, **params):
@@ -247,7 +246,7 @@ def test_collect_hosts_follows_pagination():
     api.routes["/api/vulnerabilities/hosts"] = hosts
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             return await vuln.collect_hosts(client, "id:1")
         finally:
@@ -261,7 +260,7 @@ def test_get_fix_info_reports_status_per_vulnerability():
     api = _api_for_cve()
 
     async def run():
-        client = AppClient(make_settings(), transport=api.transport())
+        client = make_client(api.transport())
         try:
             return await vuln.get_fix_info(client, query="CVE-2024-3094")
         finally:
