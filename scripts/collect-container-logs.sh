@@ -15,9 +15,20 @@ Options:
   --from ISO8601        Include application events at/after UTC timestamp
   --to ISO8601          Include application events before UTC timestamp
   --last-hour           Automatically collect only the last 60 minutes
+  --trace-id ID         Keep only application events with this trace_id
+                       (follows one request across API, MP VM and database logs)
+  --exclude-debug       Do not include debug-payloads.jsonl* (request/response
+                       bodies recorded by MPVM_DEBUG_MODE); they may hold
+                       business data even though secrets are redacted
   --output-dir PATH    Directory for the resulting archive
                        (default: ./output/support-bundles)
   -h, --help           Show this help
+
+When the application runs with MPVM_DEBUG_MODE=true the archive also contains
+debug-payloads.jsonl* (inbound API and outbound MP VM requests/responses with
+headers and bodies); logging-config.txt shows the effective logging settings.
+Debug logs grow quickly: combine --last-hour or --from/--to with --trace-id to
+keep the archive small.
 
 The final stdout line is the absolute path to the generated archive.
 EOF
@@ -30,6 +41,8 @@ from_time=
 to_time=
 output_dir=./output/support-bundles
 last_hour=false
+trace_id=
+exclude_debug=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -61,6 +74,15 @@ while [ "$#" -gt 0 ]; do
         --last-hour)
             last_hour=true
             since=1h
+            shift
+            ;;
+        --trace-id)
+            [ "$#" -ge 2 ] || { echo "Missing value for --trace-id" >&2; exit 2; }
+            trace_id=$2
+            shift 2
+            ;;
+        --exclude-debug)
+            exclude_debug=true
             shift
             ;;
         --output-dir)
@@ -98,6 +120,17 @@ case "$since" in
         exit 2
         ;;
 esac
+
+case "$trace_id" in
+    *[!A-Za-z0-9._:-]*)
+        echo "Invalid --trace-id value: only letters, digits and . _ : - are allowed" >&2
+        exit 2
+        ;;
+esac
+[ "${#trace_id}" -le 128 ] || {
+    echo "--trace-id is longer than 128 characters" >&2
+    exit 2
+}
 
 case "${from_time}${to_time}" in
     *[!0-9T:+.Z-]*)
@@ -159,27 +192,85 @@ if [ -n "$container_id" ]; then
         > "$work_dir/container-image.txt" 2>&1 || true
     docker stats --no-stream "$container_id" \
         > "$work_dir/container-stats.txt" 2>&1 || true
-    docker cp "$container_id:/app/output/logs/." "$work_dir/app-logs" \
-        > "$work_dir/docker-cp.txt" 2>&1 || true
+    # Only logging variables are read from the container environment (never the
+    # whole environment: it contains secrets). MPVM_LOG_* and MPVM_DEBUG_* hold
+    # levels, paths and limits only.
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" 2>/dev/null \
+        | grep -E '^MPVM_(LOG|DEBUG)_[A-Z_]+=' > "$work_dir/logging-config.txt" || true
 
-    if [ -n "$from_time" ]; then
-        # JSONL timestamps are ISO8601 UTC, so lexical comparison is stable.
-        for log_file in "$work_dir"/app-logs/*.jsonl*; do
-            [ -f "$log_file" ] || continue
-            filtered="$log_file.filtered"
-            awk -v from="$from_time" -v to="$to_time" '
-                match($0, /"timestamp":"[^"]+"/) {
-                    ts=substr($0, RSTART+13, RLENGTH-14)
-                    if (ts >= from && ts < to) print
-                }
-            ' "$log_file" > "$filtered"
-            mv -- "$filtered" "$log_file"
-        done
-    fi
-else
+    # MPVM_LOG_DIR may be customised; a relative value is resolved against /app.
+    container_log_dir=/app/output/logs
+    configured_log_dir=$(sed -n 's/^MPVM_LOG_DIR=//p' "$work_dir/logging-config.txt" | head -n 1)
+    case "$configured_log_dir" in
+        '') ;;
+        /*) container_log_dir=$configured_log_dir ;;
+        *) container_log_dir=/app/$configured_log_dir ;;
+    esac
+    echo "$container_log_dir" > "$work_dir/log-directory.txt"
+    docker cp "$container_id:$container_log_dir/." "$work_dir/app-logs" \
+        > "$work_dir/docker-cp.txt" 2>&1 || true
+fi
+
+# The logs live on a bind mount (./output:/app/output), so the host copy is a
+# valid fallback when the container is gone or docker cp returned nothing.
+if [ -z "$(ls -A "$work_dir/app-logs" 2>/dev/null)" ] && [ -d "$compose_dir/output/logs" ]; then
+    cp -R -- "$compose_dir/output/logs/." "$work_dir/app-logs/" 2>/dev/null || true
+    echo "Application logs copied from $compose_dir/output/logs" > "$work_dir/host-log-fallback.txt"
+fi
+if [ -z "$container_id" ]; then
     echo "No running or created container found for service '$service'." \
         > "$work_dir/container-not-found.txt"
 fi
+
+debug_files_found=false
+for debug_file in "$work_dir"/app-logs/debug-*; do
+    [ -f "$debug_file" ] || continue
+    debug_files_found=true
+    break
+done
+
+if [ "$exclude_debug" = true ]; then
+    rm -f -- "$work_dir"/app-logs/debug-*
+fi
+
+if [ -n "$from_time" ]; then
+    # JSONL timestamps are ISO8601 UTC. Compare only YYYY-MM-DDTHH:MM:SS: with a
+    # fractional part ("...:00.000+00:00") a plain string compare would sort
+    # before "...:00Z" and drop events that fall exactly on the boundary.
+    for log_file in "$work_dir"/app-logs/*.jsonl*; do
+        [ -f "$log_file" ] || continue
+        filtered="$log_file.filtered"
+        awk -v from="$from_time" -v to="$to_time" '
+            BEGIN { from = substr(from, 1, 19); to = substr(to, 1, 19) }
+            match($0, /"timestamp":"[^"]+"/) {
+                ts=substr($0, RSTART+13, 19)
+                if (ts >= from && ts < to) print
+            }
+        ' "$log_file" > "$filtered"
+        mv -- "$filtered" "$log_file"
+    done
+fi
+
+if [ -n "$trace_id" ]; then
+    # Events are compact JSON, so the correlation field has a fixed spelling.
+    for log_file in "$work_dir"/app-logs/*.jsonl*; do
+        [ -f "$log_file" ] || continue
+        filtered="$log_file.filtered"
+        grep -F -- "\"trace_id\":\"$trace_id\"" "$log_file" > "$filtered" || true
+        mv -- "$filtered" "$log_file"
+    done
+fi
+
+ls -l "$work_dir/app-logs" > "$work_dir/app-logs-inventory.txt" 2>&1 || true
+
+logs_size_kb=$(du -sk "$work_dir/app-logs" 2>/dev/null | cut -f 1)
+if [ "$debug_files_found" = true ] && [ "$exclude_debug" != true ] \
+    && [ -z "$from_time" ] && [ -z "$trace_id" ] && [ "${logs_size_kb:-0}" -gt 204800 ]; then
+    echo "Warning: debug logs are large (${logs_size_kb} KB). Use --last-hour, --from/--to," \
+        "--trace-id or --exclude-debug to keep the archive small." >&2
+fi
+
+debug_mode_setting=$(sed -n 's/^MPVM_DEBUG_MODE=//p' "$work_dir/logging-config.txt" 2>/dev/null | head -n 1)
 
 cat > "$work_dir/manifest.txt" <<EOF
 service=$service
@@ -187,6 +278,10 @@ compose_directory=$compose_dir
 docker_logs_since=$since
 application_logs_from=$from_time
 application_logs_to=$to_time
+application_logs_trace_id=$trace_id
+debug_mode_setting=${debug_mode_setting:-unset}
+debug_log_files_found=$debug_files_found
+debug_logs_excluded=$exclude_debug
 archive_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 

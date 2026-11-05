@@ -163,7 +163,18 @@ Backend, сборка карточек, MP VM HTTP, PostgreSQL и frontend пи�
 
 Файлы журналов: `app.jsonl`, `asset-card-build.jsonl`, `mpvm-http.jsonl`, `database.jsonl`, `frontend.jsonl`, `errors.jsonl`. Ротация задаётся через `MPVM_LOG_MAX_BYTES` и `MPVM_LOG_BACKUP_COUNT`, срок хранения — через `MPVM_LOG_RETENTION_DAYS`.
 
-`MPVM_DEBUG_PAYLOADS=true` включает отдельный `debug-payloads.jsonl`. Тела ограничиваются `MPVM_DEBUG_PAYLOAD_MAX_BYTES` и очищаются от token/password/secret/cookie/Authorization и реквизитов строки подключения. Этот режим предназначен только для кратковременной диагностики.
+`MPVM_DEBUG_PAYLOADS=true` включает отдельный `debug-payloads.jsonl` с телами запросов и ответов MP VM. Тела ограничиваются `MPVM_DEBUG_PAYLOAD_MAX_BYTES` и очищаются от token/password/secret/cookie/Authorization/api-key и реквизитов строки подключения. Этот режим предназначен только для кратковременной диагностики.
+
+### Режим debug (`MPVM_DEBUG_MODE`)
+
+`MPVM_DEBUG_MODE=true` в `.env` включает полный режим отладки (нужен перезапуск приложения; при старте пишется предупреждение `diagnostics.debug_mode.enabled`). Режим принудительно ставит уровень `DEBUG`, включает `MPVM_DEBUG_PAYLOADS` и дополнительно записывает:
+
+* в `debug-payloads.jsonl` — каждый **входящий** запрос и ответ API (`http.inbound.request` / `http.inbound.response`: метод, путь, query, заголовки, тело, статус, длительность, размер) и каждый **исходящий** обмен с MP VM (`payload.captured`: заголовки, параметры, тело, статус, попытки, длительность);
+* в `database.jsonl` — текст SQL-запросов и параметры (`db.query.started`: `statement`, `parameters`).
+
+Все записи связаны `trace_id`/`request_id`. Защита данных: значения по ключам token/password/secret/cookie/authorization/api-key заменяются на `[REDACTED]` в заголовках, JSON, form-urlencoded и query; параметры SQL скрываются целиком, если запрос затрагивает такие поля; multipart-загрузки (CSV и т. п.), HTML/JS и потоковые ответы не записываются; тела обрезаются до `MPVM_DEBUG_PAYLOAD_MAX_BYTES`. Файлы `debug-*.jsonl*` удаляются через `MPVM_DEBUG_PAYLOAD_RETENTION_HOURS` (24 ч по умолчанию). Тела всё равно содержат рабочие данные, поэтому включайте режим только на время диагностики и затем возвращайте `MPVM_DEBUG_MODE=false`. Накладные расходы проверяются тем же `scripts/benchmark_logging_sla.py`.
+
+Сбор логов с Linux-хоста (включая debug-файлы): `scripts/collect-container-logs.sh`, см. [docs/operator-guide.md](docs/operator-guide.md).
 
 Диагностический архив по заданию или трассе:
 

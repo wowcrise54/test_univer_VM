@@ -181,6 +181,37 @@ chmod +x scripts/collect-container-logs.sh
 /opt/mpvm-client/output/support-bundles/mpvm-support-20260831-123000.tar.gz
 ```
 
+## Режим debug и сбор логов
+
+Если в `.env` включён `MPVM_DEBUG_MODE=true`, архив автоматически содержит
+`debug-payloads.jsonl*` (входящие запросы и ответы API и обмен с MP VM:
+заголовки и тела без секретов) и `database.jsonl*` с SQL-параметрами. Скрипт
+дополнительно сохраняет:
+
+- `logging-config.txt` — только переменные `MPVM_LOG_*` и `MPVM_DEBUG_*`
+  контейнера (остальное окружение не читается);
+- `log-directory.txt` — каталог логов внутри контейнера (учитывается
+  `MPVM_LOG_DIR`); если контейнера нет, логи берутся из `<compose-dir>/output/logs`;
+- `app-logs-inventory.txt` — список и размеры файлов;
+- в `manifest.txt` — `debug_mode_setting`, `debug_log_files_found`,
+  `debug_logs_excluded`, `application_logs_trace_id`.
+
+Debug-логи быстро растут, поэтому для проблемного запроса ограничьте выборку:
+
+```sh
+# все события одной трассы (X-Trace-ID из ответа API) за последний час
+./scripts/collect-container-logs.sh --last-hour --trace-id <trace-id>
+
+# окно по времени без тел запросов и ответов
+./scripts/collect-container-logs.sh --from 2026-09-01T04:00:00Z --to 2026-09-01T05:00:00Z --exclude-debug
+```
+
+`--trace-id` фильтрует все JSONL-файлы по полю `trace_id` и комбинируется с
+`--since`, `--from/--to` и `--last-hour`. `--exclude-debug` не включает в архив
+файлы `debug-*`, если тела запросов нельзя передавать дальше. Если debug-логи
+больше 200 МБ и фильтры не заданы, скрипт предупреждает об этом в stderr.
+После диагностики верните `MPVM_DEBUG_MODE=false` и перезапустите приложение.
+
 Архив можно скачать с машины через `scp`, приложить к задаче Codex либо
 положить в общую рабочую папку и попросить проанализировать конкретный путь.
 Для запуска нужны `docker`, Docker Compose plugin, `tar`, `mktemp` и права на
