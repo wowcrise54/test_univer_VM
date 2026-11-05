@@ -563,6 +563,7 @@ def shutdown() -> None:
     if AUTOMATION_SERVICE is not None:
         AUTOMATION_SERVICE.stop_scheduler()
     CONTAINER.shutdown()
+    db.close_connection_pool()
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())
 
 

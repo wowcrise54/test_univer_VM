@@ -7,6 +7,7 @@ import psycopg
 from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .. import auth as app_auth
 from .. import db
@@ -45,7 +46,8 @@ async def application_auth_middleware(request: Request, call_next):
     if not path.startswith("/api/") or path in host.PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     try:
-        user = app_auth.get_session_user(request.cookies.get(app_auth.COOKIE_NAME))
+        # Session lookup is blocking SQL: keep it off the event loop.
+        user = await run_in_threadpool(app_auth.get_session_user, request.cookies.get(app_auth.COOKIE_NAME))
     except psycopg.Error:
         return auth_error(503, "AUTH_DATABASE_UNAVAILABLE", "Авторизация временно недоступна.")
     if not user:
@@ -58,11 +60,29 @@ async def application_auth_middleware(request: Request, call_next):
     permission = request_permission(request)
     effective = app_auth.effective_permissions(user)
     if permission and permission not in effective:
-        app_auth.audit_event(request=request, user=user, event_type="access", decision="deny", permission_key=permission, target_type="api", target_id=path)
+        await run_in_threadpool(
+            app_auth.audit_event,
+            request=request,
+            user=user,
+            event_type="access",
+            decision="deny",
+            permission_key=permission,
+            target_type="api",
+            target_id=path,
+        )
         return auth_error(403, "PERMISSION_DENIED", f"Недостаточно прав: {permission}.")
     response = await call_next(request)
     if permission in host.AUDITED_PERMISSIONS and response.status_code < 400:
-        app_auth.audit_event(request=request, user=user, event_type="critical_action", decision="allow", permission_key=permission, target_type="api", target_id=path)
+        await run_in_threadpool(
+            app_auth.audit_event,
+            request=request,
+            user=user,
+            event_type="critical_action",
+            decision="allow",
+            permission_key=permission,
+            target_type="api",
+            target_id=path,
+        )
     return response
 
 
