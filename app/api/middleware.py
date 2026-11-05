@@ -11,10 +11,14 @@ from fastapi.responses import JSONResponse
 from .. import auth as app_auth
 from .. import db
 from ..diagnostics import (
+    capture_http_traffic,
+    debug_mode_enabled,
     diagnostic_context,
+    diagnostics_payload_limit,
     log_event,
     new_trace_id,
     normalize_correlation_id,
+    parse_http_body,
     redact,
 )
 from ..services.main_host import host
@@ -62,6 +66,102 @@ async def application_auth_middleware(request: Request, call_next):
     return response
 
 
+DEBUG_BODY_READ_CAP = 16 * 1024 * 1024
+
+
+def _is_capturable_body(content_type: str) -> bool:
+    """Only structured text is worth recording; uploads, HTML, JS and streams are not."""
+    kind = content_type.lower()
+    return any(marker in kind for marker in ("json", "xml", "x-www-form-urlencoded")) or kind.startswith("text/plain")
+
+
+def _content_length(headers) -> int | None:
+    value = headers.get("content-length")
+    return int(value) if value and value.isdigit() else None
+
+
+async def _capture_inbound_request(request: Request, trace_id: str, request_id: str) -> None:
+    content_type = request.headers.get("content-type", "")
+    length = _content_length(request.headers)
+    payload = None
+    skipped = None
+    if length == 0 or (length is None and request.method in {"GET", "HEAD", "OPTIONS"}):
+        skipped = "empty"
+    elif not _is_capturable_body(content_type):
+        skipped = "non_text_content_type"
+    elif length is not None and length > DEBUG_BODY_READ_CAP:
+        skipped = "too_large"
+    else:
+        payload = parse_http_body(await request.body(), content_type)
+    capture_http_traffic(
+        "http.inbound.request",
+        payload=payload,
+        headers=request.headers,
+        body_skipped=skipped,
+        trace_id=trace_id,
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        query=redact(dict(request.query_params)),
+        client=request.client.host if request.client else None,
+        content_type=content_type or None,
+        content_length=length,
+    )
+
+
+def _capture_inbound_response(
+    response, request: Request, trace_id: str, request_id: str, started: float
+) -> None:
+    """Record the response; the body is tapped from the stream without buffering it all."""
+    content_type = response.headers.get("content-type", "")
+    base = {
+        "trace_id": trace_id,
+        "request_id": request_id,
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "content_type": content_type or None,
+    }
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None or response.headers.get("content-encoding") or not _is_capturable_body(content_type):
+        capture_http_traffic(
+            "http.inbound.response",
+            headers=response.headers,
+            body_skipped="non_text_content_type",
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            **base,
+        )
+        return
+    limit = diagnostics_payload_limit()
+    buffer = bytearray()
+    state = {"total": 0}
+
+    async def tap():
+        try:
+            async for chunk in iterator:
+                data = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
+                state["total"] += len(data)
+                if len(buffer) <= limit:
+                    buffer.extend(data[: limit + 1 - len(buffer)])
+                yield chunk
+        finally:
+            try:
+                truncated = state["total"] > limit
+                capture_http_traffic(
+                    "http.inbound.response",
+                    payload=parse_http_body(bytes(buffer[:limit]), content_type) if not truncated
+                    else bytes(buffer[:limit]).decode("utf-8", errors="replace"),
+                    headers=response.headers,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    response_bytes=state["total"],
+                    **base,
+                )
+            except Exception:
+                host.log_exception("app", "debug.capture.failed", direction="response")
+
+    response.body_iterator = tap()
+
+
 async def diagnostic_http_middleware(request: Request, call_next):
     trace_id = normalize_correlation_id(request.headers.get("x-trace-id")) or new_trace_id()
     request_id = normalize_correlation_id(request.headers.get("x-request-id")) or new_trace_id()
@@ -77,6 +177,12 @@ async def diagnostic_http_middleware(request: Request, call_next):
             path=request.url.path,
             query=redact(dict(request.query_params)),
         )
+        debug_mode = debug_mode_enabled()
+        if debug_mode:
+            try:
+                await _capture_inbound_request(request, trace_id, request_id)
+            except Exception:  # Debug capture must never break the request itself.
+                host.log_exception("app", "debug.capture.failed", direction="request")
         try:
             response = await call_next(request)
         except Exception:
@@ -101,6 +207,11 @@ async def diagnostic_http_middleware(request: Request, call_next):
         response.headers["X-Trace-ID"] = trace_id
         response.headers["X-Request-ID"] = request_id
         response.headers["Server-Timing"] = f'app;dur={duration_ms:.2f}'
+        if debug_mode:
+            try:
+                _capture_inbound_response(response, request, trace_id, request_id, started)
+            except Exception:
+                host.log_exception("app", "debug.capture.failed", direction="response")
         size_header = response.headers.get("content-length")
         response_size = int(size_header) if size_header and size_header.isdigit() else None
         log_event(

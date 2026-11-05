@@ -45,6 +45,8 @@ SENSITIVE_KEY_PARTS = (
     "access_token",
     "accesstoken",
     "authorization",
+    "api_key",
+    "apikey",
     "client_secret",
     "clientsecret",
     "cookie",
@@ -62,6 +64,9 @@ MAX_LOG_STRING = 16_384
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 URL_CREDENTIAL_PATTERN = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@:]+(?::[^\s/@]*)?@")
+FORM_BODY_PATTERN = re.compile(r"[^\s=&]+=[^\s&]*(?:&[^\s=&]+=[^\s&]*)*")
+SQL_PARAM_PREVIEW_ITEMS = 50
+MAX_SQL_STATEMENT = 8192
 OPAQUE_PATH_SEGMENT = re.compile(r"^(?:[0-9a-fA-F-]{32,}|[A-Za-z0-9._~+=-]{40,})$")
 
 
@@ -75,18 +80,23 @@ class DiagnosticsConfig:
     debug_payloads: bool
     payload_max_bytes: int
     payload_retention_hours: int
+    # Full debug mode (MPVM_DEBUG_MODE): DEBUG level, bodies of every inbound API
+    # and outbound MP VM exchange with headers, and SQL statements with parameters.
+    debug_mode: bool = False
 
     @classmethod
     def from_env(cls) -> "DiagnosticsConfig":
+        debug_mode = _env_bool("MPVM_DEBUG_MODE", False)
         return cls(
-            level=os.getenv("MPVM_LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            level="DEBUG" if debug_mode else os.getenv("MPVM_LOG_LEVEL", "INFO").strip().upper() or "INFO",
             log_dir=Path(os.getenv("MPVM_LOG_DIR", "output/logs")).expanduser().resolve(),
             max_bytes=_env_int("MPVM_LOG_MAX_BYTES", 100 * 1024 * 1024, 1024, 2**31 - 1),
             backup_count=_env_int("MPVM_LOG_BACKUP_COUNT", 10, 1, 100),
             retention_days=_env_int("MPVM_LOG_RETENTION_DAYS", 14, 1, 3650),
-            debug_payloads=_env_bool("MPVM_DEBUG_PAYLOADS", False),
+            debug_payloads=debug_mode or _env_bool("MPVM_DEBUG_PAYLOADS", False),
             payload_max_bytes=_env_int("MPVM_DEBUG_PAYLOAD_MAX_BYTES", 1024 * 1024, 256, 100 * 1024 * 1024),
             payload_retention_hours=_env_int("MPVM_DEBUG_PAYLOAD_RETENTION_HOURS", 24, 1, 8760),
+            debug_mode=debug_mode,
         )
 
 
@@ -218,6 +228,32 @@ def redact(value: Any, *, max_string: int = MAX_LOG_STRING, depth: int = 0) -> A
     return sanitize_text(str(value), max_length=max_string)
 
 
+def parse_http_body(body: bytes | str | None, content_type: str | None = None) -> Any:
+    """Turn a captured HTTP body into a structure that ``redact`` can clean by key.
+
+    JSON and form-encoded bodies become mappings/lists so password/token fields
+    are masked by name; anything else stays text (still passed through
+    ``sanitize_text`` by ``redact``).
+    """
+    if body is None:
+        return None
+    text = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+    if not text.strip():
+        return None
+    kind = (content_type or "").lower()
+    stripped = text.lstrip()
+    if "json" in kind or (not kind and stripped[:1] in {"{", "["}):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+    if "x-www-form-urlencoded" in kind or (not kind and FORM_BODY_PATTERN.fullmatch(text.strip())):
+        pairs = parse_qsl(text, keep_blank_values=True)
+        if pairs:
+            return {key: value for key, value in pairs}
+    return text
+
+
 def sanitize_url(url: str) -> str:
     try:
         parsed = urlsplit(url)
@@ -340,6 +376,17 @@ def configure_diagnostics(
         _OUTPUT_HANDLERS = handlers
         _LISTENER = logging.handlers.QueueListener(_QUEUE, *handlers, respect_handler_level=True)
         _LISTENER.start()
+        if _CONFIG.debug_mode:
+            log_event(
+                "app",
+                "diagnostics.debug_mode.enabled",
+                level=logging.WARNING,
+                log_dir=str(_CONFIG.log_dir),
+                payload_file=CHANNEL_FILES["payloads"],
+                payload_max_bytes=_CONFIG.payload_max_bytes,
+                payload_retention_hours=_CONFIG.payload_retention_hours,
+                hint="Debug mode records request/response bodies; disable MPVM_DEBUG_MODE after diagnosis.",
+            )
         return _CONFIG
 
 
@@ -370,7 +417,7 @@ def _cleanup_old_logs(config: DiagnosticsConfig) -> None:
     for path in config.log_dir.glob("*.jsonl*"):
         try:
             modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-            cutoff = payload_cutoff if path.name.startswith("debug-payloads") else regular_cutoff
+            cutoff = payload_cutoff if path.name.startswith("debug-") else regular_cutoff
             if modified < cutoff:
                 path.unlink()
         except OSError:
@@ -391,16 +438,33 @@ def log_exception(channel: str, event: str, **fields: Any) -> None:
     _LOGGER.error(event, exc_info=True, extra={"channel": channel, "event": event, "fields": merged})
 
 
+def debug_mode_enabled() -> bool:
+    """True when MPVM_DEBUG_MODE captures full HTTP exchanges and SQL details."""
+    return (_CONFIG or configure_diagnostics()).debug_mode
+
+
+def diagnostics_payload_limit() -> int:
+    """Per-body byte limit (MPVM_DEBUG_PAYLOAD_MAX_BYTES) of the active configuration."""
+    return (_CONFIG or configure_diagnostics()).payload_max_bytes
+
+
+def _bounded_payload(payload: Any, max_bytes: int) -> tuple[Any, bool]:
+    """Redact ``payload`` and cut its JSON form to ``max_bytes``."""
+    cleaned = redact(payload, max_string=max_bytes)
+    encoded = json.dumps(cleaned, ensure_ascii=False, default=str)
+    if len(encoded.encode("utf-8")) <= max_bytes:
+        return cleaned, False
+    preview = encoded.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+    return {"truncated": True, "preview": preview}, True
+
+
 def capture_debug_payload(*, direction: str, payload: Any, **fields: Any) -> None:
     config = _CONFIG or configure_diagnostics()
     if not config.debug_payloads:
         return
-    cleaned = redact(payload, max_string=config.payload_max_bytes)
-    encoded = json.dumps(cleaned, ensure_ascii=False, default=str)
-    truncated = len(encoded.encode("utf-8")) > config.payload_max_bytes
-    if truncated:
-        encoded = encoded.encode("utf-8")[: config.payload_max_bytes].decode("utf-8", errors="ignore")
-        cleaned = {"truncated": True, "preview": encoded}
+    if isinstance(payload, (str, bytes, bytearray)):
+        payload = parse_http_body(payload, fields.get("content_type"))
+    cleaned, truncated = _bounded_payload(payload, config.payload_max_bytes)
     log_event(
         "payloads",
         "payload.captured",
@@ -410,6 +474,60 @@ def capture_debug_payload(*, direction: str, payload: Any, **fields: Any) -> Non
         truncated=truncated,
         **fields,
     )
+
+
+def capture_http_traffic(
+    event: str,
+    *,
+    payload: Any = None,
+    headers: Mapping[str, Any] | None = None,
+    body_skipped: str | None = None,
+    **fields: Any,
+) -> None:
+    """Record one HTTP request/response with headers and body (debug mode only).
+
+    Everything is redacted by key name and truncated to
+    ``MPVM_DEBUG_PAYLOAD_MAX_BYTES`` before it reaches ``debug-payloads.jsonl``.
+    """
+    config = _CONFIG or configure_diagnostics()
+    if not config.debug_mode:
+        return
+    cleaned, truncated = _bounded_payload(payload, config.payload_max_bytes)
+    log_event(
+        "payloads",
+        event,
+        level=logging.DEBUG,
+        headers=redact(dict(headers)) if headers else None,
+        body=cleaned,
+        body_truncated=truncated,
+        body_skipped=body_skipped,
+        **fields,
+    )
+
+
+def describe_sql_parameters(query_text: str, params: Any) -> Any:
+    """Bounded, redacted preview of SQL parameters for debug mode.
+
+    Positional values carry no key names, so a statement that touches a
+    sensitive column (password/token/secret/...) hides all of its parameters.
+    """
+    if params is None:
+        return None
+    if _sensitive_key(query_text):
+        return REDACTED
+    if isinstance(params, Mapping):
+        items = list(params.items())[:SQL_PARAM_PREVIEW_ITEMS]
+        preview: Any = redact(dict(items))
+        extra = len(params) - len(items)
+    elif isinstance(params, Sequence) and not isinstance(params, (str, bytes, bytearray)):
+        items = list(params[:SQL_PARAM_PREVIEW_ITEMS])
+        preview = redact(items)
+        extra = len(params) - len(items)
+    else:
+        return redact(params)
+    if extra > 0:
+        return {"items": preview, "omitted": extra}
+    return preview
 
 
 class DiagnosticSession(requests.Session):
@@ -448,12 +566,22 @@ class DiagnosticSession(requests.Session):
             timeout=kwargs.get("timeout"),
             worker=threading.current_thread().name,
         )
+        debug_request_fields: dict[str, Any] = {}
+        if debug_mode_enabled():
+            debug_request_fields = {
+                "headers": redact({**dict(self.headers), **dict(kwargs.get("headers") or {})}),
+                "params": safe_params,
+                "timeout": kwargs.get("timeout"),
+            }
         capture_debug_payload(
             direction="request",
-            payload=kwargs.get("json", kwargs.get("data")),
+            # requests.post() always forwards json=None, so a plain .get default
+            # would hide a form/raw ``data`` body.
+            payload=kwargs["json"] if kwargs.get("json") is not None else kwargs.get("data"),
             remote_request_id=remote_request_id,
             method=method.upper(),
             endpoint=endpoint,
+            **debug_request_fields,
         )
         try:
             response = super().request(method, url, **kwargs)
@@ -507,6 +635,15 @@ class DiagnosticSession(requests.Session):
                     payload = response.json()
                 except ValueError:
                     pass
+            debug_response_fields: dict[str, Any] = {}
+            if debug_mode_enabled():
+                debug_response_fields = {
+                    "headers": redact(dict(response.headers)),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "attempts": len(retry_history) + 1,
+                    "response_bytes": response_bytes,
+                    "content_type": content_type or None,
+                }
             capture_debug_payload(
                 direction="response",
                 payload=payload,
@@ -514,6 +651,7 @@ class DiagnosticSession(requests.Session):
                 method=method.upper(),
                 endpoint=endpoint,
                 status=response.status_code,
+                **debug_response_fields,
             )
         return response
 
@@ -549,7 +687,19 @@ class DiagnosticCursor(psycopg.Cursor[Any]):
     ) -> "DiagnosticCursor":
         details = describe_sql(query)
         started = time.perf_counter()
-        log_event("database", "db.query.started", level=logging.DEBUG, **details)
+        if debug_mode_enabled():
+            statement = " ".join(str(query).split())
+            log_event(
+                "database",
+                "db.query.started",
+                level=logging.DEBUG,
+                statement=statement[:MAX_SQL_STATEMENT],
+                statement_truncated=len(statement) > MAX_SQL_STATEMENT or None,
+                parameters=describe_sql_parameters(statement, params),
+                **details,
+            )
+        else:
+            log_event("database", "db.query.started", level=logging.DEBUG, **details)
         try:
             result = super().execute(query, params, prepare=prepare, binary=binary)
         except Exception:
@@ -693,6 +843,7 @@ def build_diagnostic_archive(
         "event_count": len(events),
         "event_counts": counts,
         "logs_available": bool(events),
+        "debug_mode": config.debug_mode,
         "operation_event_count": len(operation_events),
         "configuration": redact(asdict(config)),
     }
@@ -711,6 +862,9 @@ def build_diagnostic_archive(
         archive.writestr(
             "README.txt",
             "Архив диагностики содержит обезличенные данные.\n"
+            + ("Был включён debug-режим (MPVM_DEBUG_MODE): events.jsonl содержит тела запросов и ответов "
+               "(секреты очищены); передавайте архив только доверенным получателям.\n"
+               if config.debug_mode else "")
             + ("Логи операции включены в events.jsonl.\n" if events else
                "Логи операции отсутствуют: подходящие записи не найдены или срок хранения истёк.\n")
             + ("Снимок операции: operation.json; сохранённые события: operation-events.jsonl.\n"
