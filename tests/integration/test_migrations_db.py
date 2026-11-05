@@ -5,7 +5,7 @@ against a **throwaway** scratch database (so a downgrade never touches the
 shared ``mpvm_test`` schema) and asserts, against the *observed* behaviour of
 the real migrations:
 
-* the migration graph has a single, expected head (``20261105_0034``);
+* the migration graph has a single, expected head (``20261106_0037``);
 * a full ``base -> head`` upgrade materialises the migration-created tables,
   the 0011/0018/0022 columns and the 0023 index, and seeds the SLA policy;
 * ``downgrade base`` empties ``alembic_version`` and drops the 0011/0006/0008
@@ -36,7 +36,7 @@ from app import db, main
 # both in the Docker test stack and on a plain CI checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_HEAD = "20261105_0034"
+EXPECTED_HEAD = "20261106_0037"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -54,6 +54,8 @@ DROPPED_AT_BASE = {
     "scan_task_presets",      # 0028
     "scan_task_preset_roles", # 0028
     "app_mcp_tokens",         # 0034
+    "vulnerability_rollup",   # 0037
+    "vulnerability_host_rollup",  # 0037
 }
 
 # 0002 uses the expand/contract strategy: its downgrade is a no-op that keeps
@@ -70,12 +72,28 @@ ALTERED_COLUMNS = {
     ("scan_tasks", "preset_id"),             # 0028
     ("scan_tasks", "preset_asset_groups"),   # 0028
     ("scan_tasks", "preset_targets"),        # 0029
+    ("asset_card_vulnerabilities", "selector"),  # 0036
 }
 
 INDEX_0023 = "idx_asset_card_vulnerability_passports_finding"
 INDEX_0024 = "idx_remediation_cases_passport_internal_id"
 UNIQUE_0024 = "uq_active_passport_catalog_refresh"
 INDEX_0026 = "idx_scanner_task_folder_assignments_folder"
+INDEX_0036 = "idx_asset_card_vulnerabilities_selector"
+INDEX_0037 = "idx_vulnerability_rollup_default_order"
+INDEX_0037_HOSTS = "idx_vulnerability_host_rollup_top"
+INDEXES_0035 = (
+    "idx_asset_card_vulnerabilities_vulnerability_id_trgm",
+    "idx_asset_card_vulnerabilities_cve_name_trgm",
+    "idx_asset_card_vulnerabilities_name_trgm",
+    "idx_asset_card_vulnerability_groups_name_trgm",
+    "idx_vulnerability_passports_internal_id_trgm",
+    "idx_vulnerability_passports_external_id_trgm",
+    "idx_vulnerability_passports_name_trgm",
+    "idx_vulnerability_passports_package_id_trgm",
+    "idx_vulnerability_passports_package_version_trgm",
+    "idx_vulnerability_passports_cves_json_trgm",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +215,11 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert _has_index(url, INDEX_0024), "0024 FK index missing after upgrade"
         assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after upgrade"
         assert _has_index(url, INDEX_0026), "0026 folder assignment index missing after upgrade"
+        for index_name in INDEXES_0035:
+            assert _has_index(url, index_name), f"0035 {index_name} missing after upgrade"
+        assert _has_index(url, INDEX_0036), "0036 selector index missing after upgrade"
+        assert _has_index(url, INDEX_0037), "0037 rollup index missing after upgrade"
+        assert _has_index(url, INDEX_0037_HOSTS), "0037 host rollup index missing after upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after upgrade"
@@ -218,6 +241,11 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert not _has_index(url, INDEX_0024), "0024 FK index should be dropped at base"
         assert not _has_index(url, UNIQUE_0024), "0024 concurrency index should be dropped at base"
         assert not _has_index(url, INDEX_0026), "0026 folder assignment index should be dropped at base"
+        for index_name in INDEXES_0035:
+            assert not _has_index(url, index_name), f"0035 {index_name} should be dropped at base"
+        assert not _has_index(url, INDEX_0036), "0036 selector index should be dropped at base"
+        assert not _has_index(url, INDEX_0037), "0037 rollup index should be dropped at base"
+        assert not _has_index(url, INDEX_0037_HOSTS), "0037 host rollup index should be dropped at base"
 
         # 3. Re-upgrade to head: everything is restored.
         _run_alembic(url, "upgrade", "head")
@@ -228,6 +256,11 @@ def test_migration_roundtrip_base_to_head_and_back(migrated_db):
         assert _has_index(url, INDEX_0024), "0024 FK index missing after re-upgrade"
         assert _has_index(url, UNIQUE_0024), "0024 concurrency index missing after re-upgrade"
         assert _has_index(url, INDEX_0026), "0026 folder assignment index missing after re-upgrade"
+        for index_name in INDEXES_0035:
+            assert _has_index(url, index_name), f"0035 {index_name} missing after re-upgrade"
+        assert _has_index(url, INDEX_0036), "0036 selector index missing after re-upgrade"
+        assert _has_index(url, INDEX_0037), "0037 rollup index missing after re-upgrade"
+        assert _has_index(url, INDEX_0037_HOSTS), "0037 host rollup index missing after re-upgrade"
         for table, column in ALTERED_COLUMNS:
             assert _has_column(url, table, column), f"{table}.{column} missing after re-upgrade"
         assert _sla_seed_present(url), "remediation_sla_policy seed missing after re-upgrade"
