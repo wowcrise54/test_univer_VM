@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import builtins
+import os
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -27,7 +30,13 @@ def _severity_rank(expression: str) -> str:
     )
 
 
-VULNERABILITY_SELECTOR_SQL = """
+# The selector is stored on each finding (migration 0036, filled by a trigger
+# from vulnerability_selector()); every query here aliases the findings table as
+# ``finding``. The reference expression below is the formula the SQL function
+# implements and is only used to prove the two stay identical.
+VULNERABILITY_SELECTOR_SQL = "finding.selector"
+
+VULNERABILITY_SELECTOR_REFERENCE_SQL = """
 CASE
     WHEN NULLIF(TRIM(finding.vulnerability_id), '') IS NOT NULL
         THEN 'id:' || TRIM(finding.vulnerability_id)
@@ -250,12 +259,13 @@ def _fix_rollup_cte(
     if selector_params is not None:
         placeholders = ", ".join(["%s"] * len(selector_params))
         if placeholders:
-            selector_filter = f"\n        AND fix_findings.selector IN ({placeholders})"
+            selector_filter = f"\n        AND {VULNERABILITY_SELECTOR_SQL} IN ({placeholders})"
         else:
             selector_filter = "\n        AND 1 = 0"
     elif restrict_to_filtered:
+        # The filter sits in the inner query, where only ``finding`` is in scope.
         selector_filter = (
-            "\n        AND fix_findings.selector IN "
+            f"\n        AND {VULNERABILITY_SELECTOR_SQL} IN "
             "(SELECT DISTINCT selector FROM filtered_findings)"
         )
     return (
@@ -366,9 +376,17 @@ def _filtered_findings_cte(
     params: list[Any] = []
     if q:
         like = f"%{q.strip()}%"
+        # One UNION branch per searched column: an OR that spans finding and
+        # group columns cannot use any index, while each branch can use its own
+        # trigram index (migration 0035). Matches exactly the same findings.
         filters.append(
-            "(finding.vulnerability_id ILIKE %s OR finding.cve_name ILIKE %s "
-            "OR finding.name ILIKE %s OR vulnerability_group.name ILIKE %s)"
+            "finding.id IN ("
+            "SELECT id FROM asset_card_vulnerabilities WHERE vulnerability_id ILIKE %s "
+            "UNION SELECT id FROM asset_card_vulnerabilities WHERE cve_name ILIKE %s "
+            "UNION SELECT id FROM asset_card_vulnerabilities WHERE name ILIKE %s "
+            "UNION SELECT matched.id FROM asset_card_vulnerability_groups AS matched_group "
+            "JOIN asset_card_vulnerabilities AS matched ON matched.group_id = matched_group.id "
+            "WHERE matched_group.name ILIKE %s)"
         )
         params.extend([like, like, like, like])
     if host_q:
@@ -670,6 +688,100 @@ def _decode_snapshot_rows(rows: list[Any]) -> list[dict[str, Any]]:
     return list(snapshots.values())
 
 
+_VALID_FINDING_SQL = """COALESCE(
+    NULLIF(TRIM(finding.vulnerability_id), ''),
+    NULLIF(TRIM(finding.cve_name), ''),
+    NULLIF(TRIM(finding.name), ''),
+    NULLIF(TRIM(finding.vulnerability_instance_id), '')
+) IS NOT NULL"""
+
+# Shared by the live aggregate and the rollup fast path: both provide ``paged``
+# (one row per selector of the page) and ``filtered_findings`` (selector,
+# finding_id of the findings behind those selectors).
+_PASSPORT_PAGE_CTES = """, mapped_passports AS (
+                SELECT
+                    paged.selector,
+                    passport.internal_id,
+                    passport.external_id,
+                    passport.name,
+                    passport.severity,
+                    passport.score,
+                    passport.issue_time,
+                    passport.package_id,
+                    passport.package_version,
+                    COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb AS cves,
+                    COALESCE(
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'description') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'description'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,text}', ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,description}', ''),
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'vulnerabilityDescription') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'vulnerabilityDescription'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{vulnerabilityDescription,text}', ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{details,description}', ''),
+                        NULLIF(CASE
+                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'localizedDescription') = 'string'
+                            THEN passport.raw_detail_json::jsonb ->> 'localizedDescription'
+                        END, ''),
+                        NULLIF(passport.raw_detail_json::jsonb #>> '{localizedDescription,text}', '')
+                    ) AS short_description,
+                    BOOL_OR(passport.raw_detail_json IS NOT NULL) AS has_detail,
+                    MIN(
+                        CASE link.match_method WHEN 'vulner_id' THEN 0 ELSE 1 END
+                    ) AS match_priority
+                FROM paged
+                JOIN filtered_findings
+                    ON filtered_findings.selector = paged.selector
+                JOIN asset_card_vulnerability_passports AS link
+                    ON link.asset_vulnerability_id = filtered_findings.finding_id
+                JOIN vulnerability_passports AS passport
+                    ON passport.internal_id = link.passport_internal_id
+                GROUP BY
+                    paged.selector,
+                    passport.internal_id,
+                    passport.external_id,
+                    passport.name,
+                    passport.severity,
+                    passport.score,
+                    passport.issue_time,
+                    passport.package_id,
+                    passport.package_version,
+                    passport.cves_json,
+                    passport.raw_detail_json
+            ), passport_rollup AS (
+                SELECT
+                    selector,
+                    JSONB_AGG(
+                        JSONB_BUILD_OBJECT(
+                            'internal_id', internal_id,
+                            'external_id', external_id,
+                            'name', name,
+                            'severity', severity,
+                            'score', score,
+                            'issue_time', issue_time,
+                            'package_id', package_id,
+                            'package_version', package_version,
+                            'cves', cves,
+                            'short_description', short_description,
+                            'has_detail', has_detail
+                        ) ORDER BY match_priority, internal_id
+                    ) AS passports
+                FROM mapped_passports
+                GROUP BY selector
+            )
+"""
+
+# The unfiltered list is served from the exact, trigger-maintained rollup table
+# (migration 0037). The switch exists to fall back to the live aggregate.
+ROLLUP_ENABLED = os.getenv("MPVM_VULNERABILITY_ROLLUP_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+# Sorts that need data the rollup does not hold go through the live aggregate.
+_ROLLUP_SORTS = {None, "", "affected_hosts", "findings", "severity", "cvss_score", "max_cvss", "name", "cve"}
+
+
 class VulnerabilityAnalyticsRepository:
     """Analytics over the latest asset cards and their retained aggregates."""
 
@@ -853,6 +965,9 @@ class VulnerabilityAnalyticsRepository:
         fix_q: str | None = None,
     ) -> dict[str, Any]:
         db.init_db()
+        use_rollup = ROLLUP_ENABLED and not any(
+            (q, host_q, os, asset_type, asset_id, severity, source, has_fix, fix_q)
+        )
         cte, params = _filtered_findings_cte(
             q=q,
             host_q=host_q,
@@ -898,140 +1013,144 @@ class VulnerabilityAnalyticsRepository:
                 ).fetchone()
                 or {}
             )
-            # The filtered join is the expensive part: run it once and aggregate the snapshot.
-            conn.execute(
-                f"CREATE TEMP TABLE {SUMMARY_FINDINGS_TABLE} ON COMMIT DROP AS "
-                + cte
-                + " SELECT * FROM filtered_findings",
-                params,
-            )
-            totals_row = dict(
+            if use_rollup:
+                (
+                    totals_row,
+                    severity_rows,
+                    top_vulnerability_rows,
+                    top_host_rows,
+                ) = self._rollup_summary_rows(conn)
+                fix_map = self._top_fix_map(conn, top_vulnerability_rows)
+            else:
+                # The filtered join is the expensive part: run it once and aggregate the snapshot.
                 conn.execute(
+                    f"CREATE TEMP TABLE {SUMMARY_FINDINGS_TABLE} ON COMMIT DROP AS "
+                    + cte
+                    + " SELECT * FROM filtered_findings",
+                    params,
+                )
+                totals_row = dict(
+                    conn.execute(
+                        findings_cte
+                        + """
+                        , vulnerability_rollup AS (
+                            SELECT selector, MIN(severity_rank) AS severity_rank
+                            FROM filtered_findings
+                            GROUP BY selector
+                        )
+                        SELECT
+                            COUNT(DISTINCT asset_id) AS affected_hosts,
+                            COUNT(*) AS findings,
+                            COUNT(DISTINCT selector) AS unique_vulnerabilities,
+                            COUNT(DISTINCT UPPER(TRIM(cve)))
+                                FILTER (WHERE NULLIF(TRIM(cve), '') IS NOT NULL) AS unique_cves,
+                            COUNT(DISTINCT asset_id) FILTER (WHERE severity_rank <= 2) AS high_risk_hosts,
+                            (SELECT COUNT(*) FROM vulnerability_rollup WHERE severity_rank = 5)
+                                AS unrated_vulnerabilities
+                        FROM filtered_findings
+                        """,
+                    ).fetchone()
+                    or {}
+                )
+                severity_rows = conn.execute(
                     findings_cte
                     + """
-                    , vulnerability_rollup AS (
-                        SELECT selector, MIN(severity_rank) AS severity_rank
+                    SELECT
+                        severity,
+                        MIN(severity_rank) AS severity_rank,
+                        COUNT(*) AS findings,
+                        COUNT(DISTINCT asset_id) AS affected_hosts,
+                        COUNT(DISTINCT selector) AS unique_vulnerabilities
+                    FROM filtered_findings
+                    GROUP BY severity
+                    ORDER BY severity_rank
+                    """,
+                ).fetchall()
+                top_vulnerability_rows = conn.execute(
+                    findings_cte
+                    + """
+                    SELECT
+                        aggregated.selector,
+                        aggregated.vulnerability_id,
+                        aggregated.cve,
+                        aggregated.name,
+                        aggregated.severity,
+                        aggregated.severity_rank,
+                        aggregated.cvss_score,
+                        aggregated.affected_hosts,
+                        aggregated.findings,
+                        aggregated.affected_objects,
+                        aggregated.components,
+                        aggregated.sources,
+                        aggregated.docker_containers,
+                        aggregated.docker_images,
+                        aggregated.passports,
+                        aggregated.last_seen
+                    FROM (
+                        SELECT
+                            selector,
+                            MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
+                            MAX(NULLIF(cve, '')) AS cve,
+                            MAX(NULLIF(name, '')) AS name,
+                            CASE MIN(severity_rank)
+                                WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                                WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                            MIN(severity_rank) AS severity_rank,
+                            MAX(cvss_score) AS cvss_score,
+                            COUNT(DISTINCT asset_id) AS affected_hosts,
+                            COUNT(*) AS findings,
+                            COUNT(DISTINCT group_id) AS affected_objects,
+                            ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
+                                FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
+                                AS components,
+                            ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
+                            ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
+                                FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
+                                AS docker_containers,
+                            ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
+                                FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
+                                AS docker_images,
+                            '[]'::jsonb AS passports,
+                            MAX(last_seen) AS last_seen
                         FROM filtered_findings
                         GROUP BY selector
-                    )
-                    SELECT
-                        COUNT(DISTINCT asset_id) AS affected_hosts,
-                        COUNT(*) AS findings,
-                        COUNT(DISTINCT selector) AS unique_vulnerabilities,
-                        COUNT(DISTINCT UPPER(TRIM(cve)))
-                            FILTER (WHERE NULLIF(TRIM(cve), '') IS NOT NULL) AS unique_cves,
-                        COUNT(DISTINCT asset_id) FILTER (WHERE severity_rank <= 2) AS high_risk_hosts,
-                        (SELECT COUNT(*) FROM vulnerability_rollup WHERE severity_rank = 5)
-                            AS unrated_vulnerabilities
-                    FROM filtered_findings
+                        ORDER BY affected_hosts DESC, findings DESC, selector ASC
+                        LIMIT 8
+                    ) AS aggregated
+                    ORDER BY aggregated.affected_hosts DESC, aggregated.findings DESC,
+                        aggregated.selector ASC
                     """,
-                ).fetchone()
-                or {}
-            )
-            severity_rows = conn.execute(
-                findings_cte
-                + """
-                SELECT
-                    severity,
-                    MIN(severity_rank) AS severity_rank,
-                    COUNT(*) AS findings,
-                    COUNT(DISTINCT asset_id) AS affected_hosts,
-                    COUNT(DISTINCT selector) AS unique_vulnerabilities
-                FROM filtered_findings
-                GROUP BY severity
-                ORDER BY severity_rank
-                """,
-            ).fetchall()
-            top_vulnerability_rows = conn.execute(
-                findings_cte
-                + """
-                SELECT
-                    aggregated.selector,
-                    aggregated.vulnerability_id,
-                    aggregated.cve,
-                    aggregated.name,
-                    aggregated.severity,
-                    aggregated.severity_rank,
-                    aggregated.cvss_score,
-                    aggregated.affected_hosts,
-                    aggregated.findings,
-                    aggregated.affected_objects,
-                    aggregated.components,
-                    aggregated.sources,
-                    aggregated.docker_containers,
-                    aggregated.docker_images,
-                    aggregated.passports,
-                    aggregated.last_seen
-                FROM (
+                ).fetchall()
+                fix_map = self._top_fix_map(conn, top_vulnerability_rows)
+                top_host_rows = conn.execute(
+                    findings_cte
+                    + """
                     SELECT
-                        selector,
-                        MAX(NULLIF(vulnerability_id, '')) AS vulnerability_id,
-                        MAX(NULLIF(cve, '')) AS cve,
-                        MAX(NULLIF(name, '')) AS name,
+                        asset_id,
+                        MAX(display_name) AS display_name,
+                        MAX(hostname) AS hostname,
+                        MAX(fqdn) AS fqdn,
+                        MAX(ip_address) AS ip_address,
+                        MAX(os_name) AS os_name,
+                        MAX(os_version) AS os_version,
+                        MAX(asset_type) AS asset_type,
                         CASE MIN(severity_rank)
                             WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
                             WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
-                        MIN(severity_rank) AS severity_rank,
                         MAX(cvss_score) AS cvss_score,
-                        COUNT(DISTINCT asset_id) AS affected_hosts,
-                        COUNT(*) AS findings,
-                        COUNT(DISTINCT group_id) AS affected_objects,
-                        ARRAY_AGG(DISTINCT object_name ORDER BY object_name)
-                            FILTER (WHERE NULLIF(object_name, '') IS NOT NULL)
-                            AS components,
+                        COUNT(*) AS finding_count,
+                        COUNT(DISTINCT selector) AS unique_vulnerabilities,
+                        COUNT(DISTINCT selector) FILTER (WHERE severity_rank <= 2)
+                            AS high_risk_vulnerabilities,
                         ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
-                        ARRAY_AGG(DISTINCT container_name ORDER BY container_name)
-                            FILTER (WHERE NULLIF(container_name, '') IS NOT NULL)
-                            AS docker_containers,
-                        ARRAY_AGG(DISTINCT image_name ORDER BY image_name)
-                            FILTER (WHERE NULLIF(image_name, '') IS NOT NULL)
-                            AS docker_images,
-                        '[]'::jsonb AS passports,
                         MAX(last_seen) AS last_seen
                     FROM filtered_findings
-                    GROUP BY selector
-                    ORDER BY affected_hosts DESC, findings DESC, selector ASC
+                    GROUP BY asset_id
+                    ORDER BY finding_count DESC, high_risk_vulnerabilities DESC,
+                        unique_vulnerabilities DESC, asset_id
                     LIMIT 8
-                ) AS aggregated
-                ORDER BY aggregated.affected_hosts DESC, aggregated.findings DESC,
-                    aggregated.selector ASC
-                """,
-            ).fetchall()
-            fix_map: dict[Any, Any] = {}
-            top_selectors = [row["selector"] for row in top_vulnerability_rows if row.get("selector")]
-            if top_selectors:
-                fix_sql, fix_params = _fix_text_query(top_selectors)
-                fix_rows = conn.execute(fix_sql, fix_params).fetchall()
-                fix_map = {row["selector"]: row.get("how_to_fix") for row in fix_rows}
-            top_host_rows = conn.execute(
-                findings_cte
-                + """
-                SELECT
-                    asset_id,
-                    MAX(display_name) AS display_name,
-                    MAX(hostname) AS hostname,
-                    MAX(fqdn) AS fqdn,
-                    MAX(ip_address) AS ip_address,
-                    MAX(os_name) AS os_name,
-                    MAX(os_version) AS os_version,
-                    MAX(asset_type) AS asset_type,
-                    CASE MIN(severity_rank)
-                        WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
-                        WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
-                    MAX(cvss_score) AS cvss_score,
-                    COUNT(*) AS finding_count,
-                    COUNT(DISTINCT selector) AS unique_vulnerabilities,
-                    COUNT(DISTINCT selector) FILTER (WHERE severity_rank <= 2)
-                        AS high_risk_vulnerabilities,
-                    ARRAY_AGG(DISTINCT source_type ORDER BY source_type) AS sources,
-                    MAX(last_seen) AS last_seen
-                FROM filtered_findings
-                GROUP BY asset_id
-                ORDER BY finding_count DESC, high_risk_vulnerabilities DESC,
-                    unique_vulnerabilities DESC, asset_id
-                LIMIT 8
-                """,
-            ).fetchall()
+                    """,
+                ).fetchall()
 
         coverage = {
             "cards_total": int(coverage_row.get("cards_total") or 0),
@@ -1268,6 +1387,11 @@ class VulnerabilityAnalyticsRepository:
         )
         sort_by_fix_columns = sort_by in {"how_to_fix", "has_fix"}
         db.init_db()
+        use_rollup = (
+            ROLLUP_ENABLED
+            and not any((q, host_q, os, asset_type, asset_id, severity, source, has_fix, fix_q))
+            and sort_by in _ROLLUP_SORTS
+        )
         cte, params = _filtered_findings_cte(
             q=q,
             host_q=host_q,
@@ -1320,129 +1444,68 @@ class VulnerabilityAnalyticsRepository:
                 FROM fix_joined
                 ORDER BY {expression} {direction} NULLS LAST, fix_joined.selector ASC
                 LIMIT %s OFFSET %s
-            ), mapped_passports AS (
-                SELECT
-                    paged.selector,
-                    passport.internal_id,
-                    passport.external_id,
-                    passport.name,
-                    passport.severity,
-                    passport.score,
-                    passport.issue_time,
-                    passport.package_id,
-                    passport.package_version,
-                    COALESCE(NULLIF(passport.cves_json, ''), '[]')::jsonb AS cves,
-                    COALESCE(
-                        NULLIF(CASE
-                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'description') = 'string'
-                            THEN passport.raw_detail_json::jsonb ->> 'description'
-                        END, ''),
-                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,text}', ''),
-                        NULLIF(passport.raw_detail_json::jsonb #>> '{description,description}', ''),
-                        NULLIF(CASE
-                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'vulnerabilityDescription') = 'string'
-                            THEN passport.raw_detail_json::jsonb ->> 'vulnerabilityDescription'
-                        END, ''),
-                        NULLIF(passport.raw_detail_json::jsonb #>> '{vulnerabilityDescription,text}', ''),
-                        NULLIF(passport.raw_detail_json::jsonb #>> '{details,description}', ''),
-                        NULLIF(CASE
-                            WHEN jsonb_typeof(passport.raw_detail_json::jsonb -> 'localizedDescription') = 'string'
-                            THEN passport.raw_detail_json::jsonb ->> 'localizedDescription'
-                        END, ''),
-                        NULLIF(passport.raw_detail_json::jsonb #>> '{localizedDescription,text}', '')
-                    ) AS short_description,
-                    BOOL_OR(passport.raw_detail_json IS NOT NULL) AS has_detail,
-                    MIN(
-                        CASE link.match_method WHEN 'vulner_id' THEN 0 ELSE 1 END
-                    ) AS match_priority
-                FROM paged
-                JOIN filtered_findings
-                    ON filtered_findings.selector = paged.selector
-                JOIN asset_card_vulnerability_passports AS link
-                    ON link.asset_vulnerability_id = filtered_findings.finding_id
-                JOIN vulnerability_passports AS passport
-                    ON passport.internal_id = link.passport_internal_id
-                GROUP BY
-                    paged.selector,
-                    passport.internal_id,
-                    passport.external_id,
-                    passport.name,
-                    passport.severity,
-                    passport.score,
-                    passport.issue_time,
-                    passport.package_id,
-                    passport.package_version,
-                    passport.cves_json,
-                    passport.raw_detail_json
-            ), passport_rollup AS (
-                SELECT
-                    selector,
-                    JSONB_AGG(
-                        JSONB_BUILD_OBJECT(
-                            'internal_id', internal_id,
-                            'external_id', external_id,
-                            'name', name,
-                            'severity', severity,
-                            'score', score,
-                            'issue_time', issue_time,
-                            'package_id', package_id,
-                            'package_version', package_version,
-                            'cves', cves,
-                            'short_description', short_description,
-                            'has_detail', has_detail
-                        ) ORDER BY match_priority, internal_id
-                    ) AS passports
-                FROM mapped_passports
-                GROUP BY selector
             )
-        """
+        """ + _PASSPORT_PAGE_CTES
         with db.connect() as conn:
             total = 0
-            if include_total:
-                count_cte, count_params = _filtered_findings_cte(
-                    q=q,
-                    host_q=host_q,
-                    os=os,
-                    asset_type=asset_type,
-                    asset_id=asset_id,
-                    severity=severity,
-                    source=source,
-                    has_fix=has_fix,
-                    fix_q=fix_q,
-                    include_details=False,
-                )
-                count_row = conn.execute(
-                    count_cte
-                    + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
-                    count_params,
-                ).fetchone()
-                total = int((count_row or {}).get("count") or 0)
-            if sort_by_fix_columns:
-                aggregate_sql = aggregate.replace(
-                    "{fix_select}", ", fix_rollup.how_to_fix"
-                ).replace(
-                    "{fix_join}",
-                    "LEFT JOIN fix_rollup\n"
-                    "                    ON fix_rollup.selector = aggregated.selector",
+            if use_rollup:
+                total, rows = self._rollup_page(
+                    conn,
+                    expression=expression,
+                    direction=direction,
+                    limit=limit,
+                    offset=offset,
+                    include_total=include_total,
                 )
             else:
-                aggregate_sql = aggregate.replace(
-                    "{fix_select}", ""
-                ).replace("{fix_join}", "")
-            rows = conn.execute(
-                cte
-                + aggregate_sql.replace("{expression}", expression).replace("{direction}", direction)
-                + f"""
-                SELECT
-                    aggregated.*,
-                    COALESCE(passport_rollup.passports, '[]'::jsonb) AS passports
-                FROM paged AS aggregated
-                LEFT JOIN passport_rollup
-                    ON passport_rollup.selector = aggregated.selector
-                ORDER BY {expression} {direction} NULLS LAST, aggregated.selector ASC
-                """,
-                [*params, limit, offset],
-            ).fetchall()
+                if include_total:
+                    count_cte, count_params = _filtered_findings_cte(
+                        q=q,
+                        host_q=host_q,
+                        os=os,
+                        asset_type=asset_type,
+                        asset_id=asset_id,
+                        severity=severity,
+                        source=source,
+                        has_fix=has_fix,
+                        fix_q=fix_q,
+                        include_details=False,
+                    )
+                    count_row = conn.execute(
+                        count_cte
+                        + "SELECT COUNT(DISTINCT selector) AS count FROM filtered_findings",
+                        count_params,
+                    ).fetchone()
+                    total = int((count_row or {}).get("count") or 0)
+                if sort_by_fix_columns:
+                    aggregate_sql = aggregate.replace(
+                        "{fix_select}", ", fix_rollup.how_to_fix"
+                    ).replace(
+                        "{fix_join}",
+                        "LEFT JOIN fix_rollup\n"
+                        "                    ON fix_rollup.selector = aggregated.selector",
+                    )
+                else:
+                    aggregate_sql = aggregate.replace(
+                        "{fix_select}", ""
+                    ).replace("{fix_join}", "")
+                rows = conn.execute(
+                    cte
+                    + aggregate_sql.replace("{expression}", expression).replace("{direction}", direction)
+                    + f"""
+                    SELECT page.*
+                    FROM (
+                        SELECT
+                            aggregated.*,
+                            COALESCE(passport_rollup.passports, '[]'::jsonb) AS passports
+                        FROM paged AS aggregated
+                        LEFT JOIN passport_rollup
+                            ON passport_rollup.selector = aggregated.selector
+                    ) AS page
+                    ORDER BY {expression} {direction} NULLS LAST, page.selector ASC
+                    """,
+                    [*params, limit, offset],
+                ).fetchall()
             decoded_rows = [_decode_vulnerability(dict(row)) for row in rows]
             fix_map: dict[Any, Any] = {}
             if not sort_by_fix_columns:
@@ -1458,6 +1521,218 @@ class VulnerabilityAnalyticsRepository:
                 "limit": limit,
                 "offset": offset,
             }
+
+    @staticmethod
+    def _top_fix_map(conn: Any, top_vulnerability_rows: Any) -> dict[Any, Any]:
+        """Fix text for the few selectors shown in the top list (bounded follow-up lookup)."""
+        top_selectors = [row["selector"] for row in top_vulnerability_rows if row.get("selector")]
+        if not top_selectors:
+            return {}
+        fix_sql, fix_params = _fix_text_query(top_selectors)
+        fix_rows = conn.execute(fix_sql, fix_params).fetchall()
+        return {row["selector"]: row.get("how_to_fix") for row in fix_rows}
+
+    def _rollup_summary_rows(
+        self, conn: Any
+    ) -> tuple[dict[str, Any], builtins.list[dict[str, Any]], builtins.list[dict[str, Any]], builtins.list[dict[str, Any]]]:
+        """Unfiltered summary pieces, read from the exact selector and host rollups."""
+        totals_row = dict(
+            conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM vulnerability_host_rollup) AS affected_hosts,
+                    (SELECT COALESCE(SUM(findings), 0) FROM vulnerability_host_rollup) AS findings,
+                    (SELECT COUNT(*) FROM vulnerability_rollup) AS unique_vulnerabilities,
+                    (SELECT COUNT(*) FROM (SELECT cve_name FROM vulnerability_rollup, UNNEST(cves) AS cve_name GROUP BY cve_name) AS distinct_cves) AS unique_cves,
+                    (SELECT COUNT(*) FROM vulnerability_host_rollup WHERE severity_rank <= 2) AS high_risk_hosts,
+                    (SELECT COUNT(*) FROM vulnerability_rollup WHERE severity_rank = 5)
+                        AS unrated_vulnerabilities
+                """
+            ).fetchone()
+            or {}
+        )
+        by_host = dict(
+            conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(findings_critical), 0) AS findings_1,
+                    COUNT(*) FILTER (WHERE findings_critical > 0) AS hosts_1,
+                    COALESCE(SUM(findings_high), 0) AS findings_2,
+                    COUNT(*) FILTER (WHERE findings_high > 0) AS hosts_2,
+                    COALESCE(SUM(findings_medium), 0) AS findings_3,
+                    COUNT(*) FILTER (WHERE findings_medium > 0) AS hosts_3,
+                    COALESCE(SUM(findings_low), 0) AS findings_4,
+                    COUNT(*) FILTER (WHERE findings_low > 0) AS hosts_4,
+                    COALESCE(SUM(findings_unknown), 0) AS findings_5,
+                    COUNT(*) FILTER (WHERE findings_unknown > 0) AS hosts_5
+                FROM vulnerability_host_rollup
+                """
+            ).fetchone()
+            or {}
+        )
+        by_selector = dict(
+            conn.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE 1 = ANY(severity_ranks)) AS vulns_1,
+                    COUNT(*) FILTER (WHERE 2 = ANY(severity_ranks)) AS vulns_2,
+                    COUNT(*) FILTER (WHERE 3 = ANY(severity_ranks)) AS vulns_3,
+                    COUNT(*) FILTER (WHERE 4 = ANY(severity_ranks)) AS vulns_4,
+                    COUNT(*) FILTER (WHERE 5 = ANY(severity_ranks)) AS vulns_5
+                FROM vulnerability_rollup
+                """
+            ).fetchone()
+            or {}
+        )
+        severity_rows = [
+            {
+                "severity": label,
+                "severity_rank": rank,
+                "findings": int(by_host.get(f"findings_{rank}") or 0),
+                "affected_hosts": int(by_host.get(f"hosts_{rank}") or 0),
+                "unique_vulnerabilities": int(by_selector.get(f"vulns_{rank}") or 0),
+            }
+            for rank, label in enumerate(VULNERABILITY_SEVERITIES, start=1)
+            if int(by_host.get(f"findings_{rank}") or 0) > 0
+        ]
+        top_vulnerability_rows = conn.execute(
+            f"""
+            SELECT
+                top.*,
+                '[]'::jsonb AS passports,
+                (
+                    SELECT MAX(card.last_seen)
+                    FROM asset_card_vulnerabilities AS finding
+                    JOIN asset_cards AS card ON card.asset_id = finding.asset_id
+                    WHERE finding.selector = top.selector AND {_VALID_FINDING_SQL}
+                ) AS last_seen
+            FROM (
+                SELECT
+                    rollup.selector,
+                    rollup.vulnerability_id,
+                    rollup.cve,
+                    rollup.name,
+                    CASE rollup.severity_rank
+                        WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                        WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                    rollup.severity_rank,
+                    rollup.cvss_score,
+                    rollup.affected_hosts,
+                    rollup.findings,
+                    rollup.affected_objects,
+                    rollup.components,
+                    rollup.sources,
+                    rollup.docker_containers,
+                    rollup.docker_images
+                FROM vulnerability_rollup AS rollup
+                ORDER BY rollup.affected_hosts DESC, rollup.findings DESC, rollup.selector ASC
+                LIMIT 8
+            ) AS top
+            ORDER BY top.affected_hosts DESC, top.findings DESC, top.selector ASC
+            """
+        ).fetchall()
+        top_host_rows = conn.execute(
+            """
+            SELECT
+                top.asset_id,
+                card.display_name,
+                card.hostname,
+                card.fqdn,
+                card.ip_address,
+                card.os_name,
+                card.os_version,
+                card.asset_type,
+                CASE top.severity_rank
+                    WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                    WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                top.cvss_score,
+                top.findings AS finding_count,
+                top.unique_vulnerabilities,
+                top.high_risk_vulnerabilities,
+                top.sources,
+                card.last_seen
+            FROM (
+                SELECT * FROM vulnerability_host_rollup
+                ORDER BY findings DESC, high_risk_vulnerabilities DESC, unique_vulnerabilities DESC, asset_id
+                LIMIT 8
+            ) AS top
+            JOIN asset_cards AS card ON card.asset_id = top.asset_id
+            ORDER BY top.findings DESC, top.high_risk_vulnerabilities DESC,
+                top.unique_vulnerabilities DESC, top.asset_id
+            """
+        ).fetchall()
+        return totals_row, severity_rows, list(top_vulnerability_rows), list(top_host_rows)
+
+    def _rollup_page(
+        self,
+        conn: Any,
+        *,
+        expression: str,
+        direction: str,
+        limit: int,
+        offset: int,
+        include_total: bool,
+    ) -> tuple[int, Sequence[dict[str, Any]]]:
+        """One page of the unfiltered list, read from the exact rollup table."""
+        total = 0
+        if include_total:
+            count_row = conn.execute("SELECT COUNT(*) AS count FROM vulnerability_rollup").fetchone()
+            total = int((count_row or {}).get("count") or 0)
+        rows = conn.execute(
+            f"""
+            WITH paged AS (
+                SELECT
+                    page_rows.*,
+                    -- Host-level and changes on its own, so it is read live, and only for
+                    -- the page: computing it before LIMIT/OFFSET would cover every skipped row.
+                    (
+                        SELECT MAX(card.last_seen)
+                        FROM asset_card_vulnerabilities AS finding
+                        JOIN asset_cards AS card ON card.asset_id = finding.asset_id
+                        WHERE finding.selector = page_rows.selector AND {_VALID_FINDING_SQL}
+                    ) AS last_seen
+                FROM (
+                    SELECT
+                        rollup.selector,
+                        rollup.vulnerability_id,
+                        rollup.cve,
+                        rollup.name,
+                        CASE rollup.severity_rank
+                            WHEN 1 THEN 'critical' WHEN 2 THEN 'high' WHEN 3 THEN 'medium'
+                            WHEN 4 THEN 'low' ELSE 'unknown' END AS severity,
+                        rollup.severity_rank,
+                        rollup.cvss_score,
+                        rollup.affected_hosts,
+                        rollup.findings,
+                        rollup.affected_objects,
+                        rollup.components,
+                        rollup.sources,
+                        rollup.docker_containers,
+                        rollup.docker_images
+                    FROM vulnerability_rollup AS rollup
+                    ORDER BY {expression} {direction} NULLS LAST, rollup.selector ASC
+                    LIMIT %s OFFSET %s
+                ) AS page_rows
+            ), filtered_findings AS (
+                SELECT finding.selector AS selector, finding.id AS finding_id
+                FROM asset_card_vulnerabilities AS finding
+                WHERE finding.selector IN (SELECT selector FROM paged) AND {_VALID_FINDING_SQL}
+            )
+            {_PASSPORT_PAGE_CTES}
+            SELECT page.*
+            FROM (
+                SELECT
+                    aggregated.*,
+                    COALESCE(passport_rollup.passports, '[]'::jsonb) AS passports
+                FROM paged AS aggregated
+                LEFT JOIN passport_rollup
+                    ON passport_rollup.selector = aggregated.selector
+            ) AS page
+            ORDER BY {expression} {direction} NULLS LAST, page.selector ASC
+            """,
+            [limit, offset],
+        ).fetchall()
+        return total, rows
 
     def hosts(
         self,

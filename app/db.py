@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import csv
 import io
 import ipaddress
@@ -17,6 +18,7 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from .diagnostics import (
     DiagnosticConnection,
@@ -35,6 +37,14 @@ DATABASE_URL = (
 _DB_INITIALIZED = False
 _DB_INIT_LOCK = threading.Lock()
 DATABASE_CONNECT_TIMEOUT_SECONDS = max(1, min(10, int(os.getenv("MPVM_DATABASE_CONNECT_TIMEOUT_SECONDS", "2"))))
+# Connection pool: 0 disables pooling (a new connection per ``connect()`` call).
+# Keep max_size below the server's max_connections minus background clients.
+DATABASE_POOL_MAX_SIZE = max(0, min(200, int(os.getenv("MPVM_DATABASE_POOL_MAX_SIZE", "32"))))
+DATABASE_POOL_MIN_SIZE = max(0, int(os.getenv("MPVM_DATABASE_POOL_MIN_SIZE", "2")))
+DATABASE_POOL_TIMEOUT_SECONDS = max(1.0, float(os.getenv("MPVM_DATABASE_POOL_TIMEOUT_SECONDS", "10")))
+_DB_POOL: ConnectionPool | None = None
+_DB_POOL_URL: str | None = None
+_DB_POOL_LOCK = threading.Lock()
 DATABASE_CIRCUIT_BREAKER_SECONDS = max(1, min(60, int(os.getenv("MPVM_DATABASE_CIRCUIT_BREAKER_SECONDS", "10"))))
 _DB_CIRCUIT_LOCK = threading.Lock()
 _DB_CIRCUIT_OPEN_UNTIL = 0.0
@@ -108,8 +118,118 @@ def _raise_if_database_circuit_open() -> None:
     )
 
 
+def _pool_connection_kwargs() -> dict[str, Any]:
+    return {
+        "row_factory": dict_row,
+        "cursor_factory": DiagnosticCursor,
+        "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+    }
+
+
+def _get_connection_pool() -> ConnectionPool | None:
+    """Return the shared pool for the current DATABASE_URL (None when disabled)."""
+    global _DB_POOL, _DB_POOL_URL
+    if DATABASE_POOL_MAX_SIZE <= 0:
+        return None
+    with _DB_POOL_LOCK:
+        if _DB_POOL is not None and _DB_POOL_URL == DATABASE_URL:
+            return _DB_POOL
+        previous = _DB_POOL
+        _DB_POOL = ConnectionPool(
+            DATABASE_URL,
+            connection_class=PooledConnection,
+            kwargs=_pool_connection_kwargs(),
+            min_size=max(0, min(DATABASE_POOL_MIN_SIZE, DATABASE_POOL_MAX_SIZE)),
+            max_size=DATABASE_POOL_MAX_SIZE,
+            timeout=DATABASE_POOL_TIMEOUT_SECONDS,
+            check=ConnectionPool.check_connection,
+            open=False,
+            name="mpvm-db",
+        )
+        _DB_POOL.open(wait=False)
+        _DB_POOL_URL = DATABASE_URL
+        pool = _DB_POOL
+    if previous is not None:
+        previous.close(timeout=1)
+    return pool
+
+
+def close_connection_pool() -> None:
+    """Close the shared pool (application shutdown, tests)."""
+    global _DB_POOL, _DB_POOL_URL
+    with _DB_POOL_LOCK:
+        pool, _DB_POOL, _DB_POOL_URL = _DB_POOL, None, None
+    if pool is not None:
+        pool.close(timeout=2)
+
+
+atexit.register(close_connection_pool)
+
+
+class PooledConnection(DiagnosticConnection):
+    """Pool member with ``with connect() as conn`` semantics.
+
+    Leaving the ``with`` block commits (or rolls back on error) and returns the
+    connection to the pool instead of closing it. Outside a checkout it behaves
+    like any other connection, so the pool can still close it normally.
+    """
+
+    _mpvm_checkout_pool: ConnectionPool | None = None
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback_value: Any) -> None:
+        pool = self._mpvm_checkout_pool
+        if pool is None:
+            return super().__exit__(exc_type, exc_value, traceback_value)
+        self._mpvm_checkout_pool = None
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            # putconn() discards a connection that is broken or still in a transaction.
+            pool.putconn(self)
+        return None
+
+
+def _checkout_pooled_connection(pool: ConnectionPool) -> psycopg.Connection[dict[str, Any]]:
+    started = time.perf_counter()
+    errors_before = pool.get_stats().get("connections_errors", 0)
+    try:
+        connection = pool.getconn()
+    except PoolTimeout as exc:
+        # New connection errors while waiting mean the database is unreachable
+        # (the pool's workers cannot connect); a plain timeout is only
+        # saturation and must not trip the circuit breaker.
+        if pool.get_stats().get("connections_errors", 0) > errors_before:
+            _open_database_circuit(exc)
+        log_exception("database", "db.connection.failed", database=database_label())
+        raise psycopg.OperationalError(f"Database connection pool timeout: {exc}") from exc
+    except Exception as exc:
+        _open_database_circuit(exc)
+        log_exception("database", "db.connection.failed", database=database_label())
+        raise
+    _close_database_circuit()
+    connection._mpvm_checkout_pool = pool  # type: ignore[attr-defined]
+    log_event(
+        "database",
+        "db.connection.checked_out",
+        level=10,
+        database=database_label(),
+        duration_ms=round((time.perf_counter() - started) * 1000, 2),
+    )
+    return connection
+
+
 def connect() -> psycopg.Connection[dict[str, Any]]:
     _raise_if_database_circuit_open()
+    pool = _get_connection_pool()
+    if pool is not None:
+        return _checkout_pooled_connection(pool)
+    return _connect_direct()
+
+
+def _connect_direct() -> psycopg.Connection[dict[str, Any]]:
     started = time.perf_counter()
     try:
         connection = DiagnosticConnection.connect(

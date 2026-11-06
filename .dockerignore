@@ -7,3 +7,11 @@ exports
 node_modules
 dist
 npm-debug.log
+output
+docs
+graphify-out
+.claude
+*.pdf
+*.log
+.env
+.env.*

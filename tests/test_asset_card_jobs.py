@@ -1541,7 +1541,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
     def test_database_circuit_breaker_skips_repeated_connect_attempts(self):
         db._close_database_circuit()
         try:
-            with patch.object(
+            with patch.object(db, "DATABASE_POOL_MAX_SIZE", 0), patch.object(
                 db.DiagnosticConnection,
                 "connect",
                 side_effect=psycopg.OperationalError("connect failed"),
