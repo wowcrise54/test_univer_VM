@@ -1037,7 +1037,7 @@ def register_operation(
     started_at: str | None = None,
     finished_at: str | None = None,
     updated_at: str | None = None,
-    _conn: psycopg.Connection | None = None,
+    _conn: psycopg.Connection[Any] | None = None,
 ) -> dict[str, Any]:
     """Create or refresh the normalized operation registry without replacing richer request data."""
     if _conn is None:
@@ -2794,6 +2794,7 @@ def upsert_vulnerability_passports(
     pdql_token: str | None = None,
     progress: Callable[[str, int, int], None] | None = None,
     full_catalog: bool = False,
+    allow_replacements: bool = True,
 ) -> dict[str, Any]:
     """Upsert the catalog; ``progress(stage, done, total)`` reports "save" and "link" steps.
 
@@ -2935,10 +2936,13 @@ def upsert_vulnerability_passports(
                 )
                 if progress:
                     progress("save", min(offset + PASSPORT_SAVE_BATCH_SIZE, len(values)), len(values))
-            id_replacements, ambiguous, stale = _plan_passport_id_replacements(
-                cursor, values, known_ids, full_catalog=full_catalog
+            id_replacements, ambiguous, stale = (
+                _plan_passport_id_replacements(cursor, values, known_ids, full_catalog=full_catalog)
+                if allow_replacements else ([], 0, 0)
             )
             if id_replacements:
+                from .repositories.passport_replacements import rebind_reissued_findings
+
                 cursor.execute(
                     """
                     CREATE TEMP TABLE passport_id_replacements (
@@ -3016,6 +3020,9 @@ def upsert_vulnerability_passports(
                     ON CONFLICT (passport_internal_id) DO NOTHING
                     """
                 )
+                # A later detail relink must still resolve findings with no CVE.
+                # Only normalized IDs change; scan evidence/timestamps stay intact.
+                rebind_reissued_findings(conn)
                 # A single large DELETE pays for all FK checks in one statement
                 # and can exceed PostgreSQL statement_timeout on large catalogs.
                 for offset in range(0, len(id_replacements), 1000):
@@ -3232,16 +3239,20 @@ def _upsert_vulnerability_passport_details(
     *,
     reconcile_links: bool = True,
 ) -> int:
-    values = [vulnerability_passport_detail_values(internal_id, raw_detail, current) for internal_id, raw_detail in details]
-    if not values:
+    if not details:
         return 0
-    values.sort(key=lambda value: value[0])
+    from .repositories.passport_content import partition_details
+
     _lock_vulnerability_passport_writes(conn)
-    with conn.cursor() as cursor:
-        cursor.executemany(VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL, values)
-    if reconcile_links:
+    changed = partition_details(conn, details, current)
+    values = [vulnerability_passport_detail_values(internal_id, raw_detail, current) for internal_id, raw_detail in changed]
+    values.sort(key=lambda value: value[0])
+    if values:
+        with conn.cursor() as cursor:
+            cursor.executemany(VULNERABILITY_PASSPORT_DETAIL_UPSERT_SQL, values)
+    if reconcile_links and values:
         reconcile_asset_card_vulnerability_passport_links(conn, [value[0] for value in values], current)
-    return len(values)
+    return len(details)
 
 
 def upsert_vulnerability_passport_detail(internal_id: str, raw_detail: dict[str, Any]) -> dict[str, Any] | None:
@@ -3374,11 +3385,14 @@ def vulnerability_passport_detail_refresh_candidates(
     internal_ids: list[Any],
     *,
     ttl_hours: int,
+    force: bool = False,
 ) -> dict[str, Any]:
     init_db()
     ordered_ids = list(dict.fromkeys(clean_value(value) for value in internal_ids if clean_value(value)))
     if not ordered_ids:
         return {"requested": [], "eligible": [], "skipped_fresh": []}
+    if force:
+        return {"requested": ordered_ids, "eligible": ordered_ids, "skipped_fresh": []}
     with connect() as conn:
         rows = conn.execute(
             """

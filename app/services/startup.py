@@ -40,4 +40,5 @@ def database_startup_steps(runtime: Any) -> list[tuple[str, Callable[[], Any]]]:
             "maintenance", runtime.app_auth.cleanup_audit_events, 365,
         )),
         ("scheduler", lambda: runtime.get_automation_service().start_scheduler()),
+        ("passport_sync_scheduler", lambda: runtime.PASSPORT_SYNC_SCHEDULER.start()),
     ]

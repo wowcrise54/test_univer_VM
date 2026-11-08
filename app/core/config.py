@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     reconciliation_workers: int = 3
     passport_detail_workers: int = 10
     passport_detail_ttl_hours: int = 24
+    passport_sync_enabled: bool = False
+    passport_sync_interval_seconds: int = Field(default=3600, ge=60)
     asset_metadata_ttl_seconds: int = 3600
     scan_asset_resolution_timeout_seconds: int = 600
     scan_asset_resolution_poll_seconds: int = 15
