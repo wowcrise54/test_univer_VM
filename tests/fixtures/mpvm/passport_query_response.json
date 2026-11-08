@@ -1,0 +1,64 @@
+{
+  "fixture_kind": "anonymized response rows extracted from assets_temporal_readmodel/v1/assets_grid/data",
+  "status": 200,
+  "records": [
+    {
+      "@VulnerPassport": {
+        "name": "Demo vulnerability 01",
+        "id": "demo-external-001",
+        "internalId": "demo-passport-001",
+        "severityRating": "High"
+      },
+      "compact(VulnerPassport.CVEs)": {
+        "data": [
+          {
+            "displayName": "CVE-2026-113214",
+            "url": null
+          }
+        ],
+        "totalCount": 1
+      },
+      "VulnerPassport.SeverityRating": "High",
+      "VulnerPassport.Score": "7,7",
+      "VulnerPassport.IssueTime": "2026-01-01T00:00:00Z",
+      "VulnerPassport.PackageId": "demo-package-01",
+      "VulnerPassport.PackageVersion": "1.0.0",
+      "VulnerPassport.Metrics": {
+        "displayName": "Exploitable: false, HasNetworkAttackVector: true, HasFix: true",
+        "exploitable": "False",
+        "hasFix": "True",
+        "hasNetworkAttackVector": "True"
+      },
+      "$assetGridGroupKey": "demo-passport-group-01"
+    },
+    {
+      "@VulnerPassport": {
+        "name": "Demo vulnerability 02",
+        "id": "demo-external-002",
+        "internalId": "demo-passport-002",
+        "severityRating": "High"
+      },
+      "compact(VulnerPassport.CVEs)": {
+        "data": [
+          {
+            "displayName": "CVE-2026-113215",
+            "url": null
+          }
+        ],
+        "totalCount": 1
+      },
+      "VulnerPassport.SeverityRating": "High",
+      "VulnerPassport.Score": "7,7",
+      "VulnerPassport.IssueTime": "2026-01-01T00:00:00Z",
+      "VulnerPassport.PackageId": "demo-package-02",
+      "VulnerPassport.PackageVersion": "2.0.0",
+      "VulnerPassport.Metrics": {
+        "displayName": "Exploitable: false, HasNetworkAttackVector: true, HasFix: true",
+        "exploitable": "False",
+        "hasFix": "True",
+        "hasNetworkAttackVector": "True"
+      },
+      "$assetGridGroupKey": "demo-passport-group-02"
+    }
+  ]
+}

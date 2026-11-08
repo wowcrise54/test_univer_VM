@@ -217,3 +217,53 @@ def test_each_completed_startup_step_logs_its_duration():
     steps = [call.kwargs["step"] for call in log_event.call_args_list]
     assert steps == ["first", "second"]
     assert all(call.kwargs["duration_ms"] >= 0 for call in log_event.call_args_list)
+
+
+def test_passport_scheduler_starts_only_after_database_and_job_recovery():
+    from unittest.mock import Mock
+
+    from app import main
+    from app.services.startup import database_startup_steps
+
+    stages = database_startup_steps(main)
+    names = [name for name, _ in stages]
+    assert names[-1] == "passport_sync_scheduler"
+    assert names.index("passport_jobs") < names.index("passport_sync_scheduler")
+    assert names.index("passport_refresh") < names.index("passport_sync_scheduler")
+    assert names.index("automation_resume") < names.index("passport_sync_scheduler")
+    selected = [(name, callback) for name, callback in stages if name == "passport_sync_scheduler"]
+    from unittest.mock import patch
+
+    with patch.object(main.PASSPORT_SYNC_SCHEDULER, "start", Mock()) as start:
+        available = False
+
+        def probe():
+            if not available:
+                raise ConnectionError("test database unavailable")
+            return True
+
+        recovery = coordinator(probe, selected)
+        assert recovery.check()["ready"] is False
+        start.assert_not_called()
+        available = True
+        assert recovery.check()["ready"] is True
+        assert recovery.check()["ready"] is True
+        start.assert_called_once_with()
+
+
+def test_shutdown_stops_passport_scheduler_before_operation_runner(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app import main
+
+    calls = []
+    monkeypatch.setattr(main.PASSPORT_SYNC_SCHEDULER, "stop", lambda: calls.append("scheduler"))
+    monkeypatch.setattr(main, "AUTOMATION_SERVICE", None)
+    monkeypatch.setattr(main, "CONTAINER", SimpleNamespace(
+        database_recovery=SimpleNamespace(stop=Mock()),
+        shutdown=lambda: calls.append("runner"),
+        operation_runner=SimpleNamespace(active_count=lambda: 0),
+    ))
+    main.shutdown()
+    assert calls == ["scheduler", "runner"]

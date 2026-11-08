@@ -1,0 +1,13 @@
+{
+  "displayName": "demo-windows-01",
+  "objectId": "demo-asset-windows-01",
+  "type": "OperatingSystem.Windows.Server",
+  "vulnerabilityLevel": "Medium",
+  "data": {
+    "hostname": "demo-windows-01",
+    "fqdn": "demo-windows-01.example.test",
+    "ipAddress": "192.0.2.21",
+    "osName": "Windows Server 2022",
+    "osVersion": "10.0.20348"
+  }
+}

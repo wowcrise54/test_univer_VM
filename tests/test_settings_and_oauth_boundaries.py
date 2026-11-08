@@ -10,6 +10,25 @@ from app.domain.errors import DomainError
 from app.mpvm.auth import resolve_access_token
 
 
+@pytest.mark.parametrize("value", [0, -1, 59])
+def test_passport_sync_interval_rejects_too_small_values(value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, passport_sync_interval_seconds=value)
+
+
+def test_passport_sync_is_opt_in_and_has_a_configurable_interval(monkeypatch):
+    monkeypatch.delenv("MPVM_PASSPORT_SYNC_ENABLED", raising=False)
+    monkeypatch.delenv("MPVM_PASSPORT_SYNC_INTERVAL_SECONDS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.passport_sync_enabled is False
+    assert settings.passport_sync_interval_seconds == 3600
+    monkeypatch.setenv("MPVM_PASSPORT_SYNC_ENABLED", "true")
+    monkeypatch.setenv("MPVM_PASSPORT_SYNC_INTERVAL_SECONDS", "60")
+    settings = Settings(_env_file=None)
+    assert settings.passport_sync_enabled is True
+    assert settings.passport_sync_interval_seconds == 60
+
+
 @pytest.mark.parametrize("field", [
     "timeout", "background_request_limit", "asset_card_request_workers",
     "asset_card_refresh_workers", "scan_postprocess_workers", "scan_asset_process_workers",

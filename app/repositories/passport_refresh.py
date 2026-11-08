@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
+
+import psycopg
 
 from .. import db
 
@@ -34,6 +38,54 @@ def latest() -> dict[str, Any] | None:
             (KIND, list(ACTIVE)),
         ).fetchone()
     return db.decode_operation(dict(row)) if row else None
+
+
+def reserve_periodic(
+    request: dict[str, Any], *, now: datetime, interval_seconds: int,
+) -> dict[str, Any] | None:
+    """Reserve one due periodic refresh in a short transaction."""
+    db.init_db()
+    try:
+        with db.connect() as conn:
+            lock = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS acquired",
+                ("mpvm.passport-periodic-reservation",),
+            ).fetchone()
+            if not lock or not lock["acquired"]:
+                return None
+            if conn.execute(
+                "SELECT 1 FROM operations WHERE kind = %s AND status = ANY(%s) LIMIT 1",
+                (KIND, list(ACTIVE)),
+            ).fetchone():
+                return None
+            if conn.execute(
+                "SELECT 1 FROM vulnerability_passport_detail_jobs WHERE status = ANY(%s) LIMIT 1",
+                (list(ACTIVE),),
+            ).fetchone():
+                return None
+            previous = conn.execute(
+                "SELECT status, finished_at, created_at FROM operations "
+                "WHERE kind = %s AND request_json::jsonb ->> 'trigger' = %s "
+                "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+                (KIND, "periodic"),
+            ).fetchone()
+            if previous and previous["status"] != "interrupted":
+                anchor = datetime.fromisoformat(str(previous["finished_at"] or previous["created_at"]))
+                if now < anchor + timedelta(seconds=interval_seconds):
+                    return None
+            operation_id = str(uuid4())
+            stamp = now.isoformat(timespec="seconds")
+            return db.register_operation(
+                operation_id, kind=KIND, source_id=operation_id,
+                status="queued", stage="queued", progress_percent=0,
+                subject_type="vulnerability_passports",
+                subject_label="Паспорта уязвимостей",
+                message="Плановая проверка паспортов поставлена в очередь.",
+                request={**request, "trigger": "periodic"},
+                created_at=stamp, updated_at=stamp, _conn=conn,
+            )
+    except psycopg.errors.UniqueViolation:
+        return None
 
 
 def update(operation_id: str, *, status: str, stage: str, percent: int,

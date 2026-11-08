@@ -270,11 +270,13 @@ from .services.asset_card_build_jobs import (
 from .services.vulnerability_passport_jobs import (
     _execute_vulnerability_passport_query,
     register_vulnerability_passport_detail_job,
+    run_periodic_vulnerability_passport_refresh_job,
     run_vulnerability_passport_detail_job,
     run_vulnerability_passport_refresh_job,
     sync_trending_vulnerability_passports,
     unregister_vulnerability_passport_detail_job,
 )
+from .services.passport_scheduler import PassportSyncScheduler
 from .services.scanner_task_launch import (
     _start_scanner_task_request,
     chunks,
@@ -558,10 +560,19 @@ def get_automation_service() -> AutomationService:
     return AUTOMATION_SERVICE
 
 
+PASSPORT_SYNC_SCHEDULER = PassportSyncScheduler(
+    settings=SETTINGS,
+    runner=CONTAINER.operation_runner,
+    ready=mpvm_session_connected,
+    execute=run_periodic_vulnerability_passport_refresh_job,
+)
+
+
 def shutdown() -> None:
     CONTAINER.database_recovery.stop()
     if AUTOMATION_SERVICE is not None:
         AUTOMATION_SERVICE.stop_scheduler()
+    PASSPORT_SYNC_SCHEDULER.stop()
     CONTAINER.shutdown()
     db.close_connection_pool()
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())

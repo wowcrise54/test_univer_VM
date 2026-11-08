@@ -1,0 +1,6 @@
+{
+  "name": "MP VM synthetic demo dataset",
+  "source": "Sanitized schema examples based on support archive endpoint shapes",
+  "assets": ["demo-asset-linux-01", "demo-asset-windows-01"],
+  "privacy": "All names, addresses, identifiers, timestamps, and CVE references are synthetic placeholders. No request headers or environment URLs are included."
+}

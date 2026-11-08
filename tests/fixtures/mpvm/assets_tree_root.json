@@ -1,0 +1,13 @@
+{
+  "displayName": "demo-linux-01",
+  "objectId": "demo-asset-linux-01",
+  "type": "OperatingSystem.UNIX.Linux",
+  "vulnerabilityLevel": "High",
+  "data": {
+    "hostname": "demo-linux-01",
+    "fqdn": "demo-linux-01.example.test",
+    "ipAddress": "192.0.2.11",
+    "osName": "Ubuntu Server",
+    "osVersion": "22.04 LTS"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "level": "Critical",
+  "vulnerabilitiesCount": 2,
+  "cvssScore": 9.8,
+  "items": [
+    {
+      "id": "demo-vuln-001",
+      "name": "OpenSSL security update available",
+      "cve": "CVE-2026-113214",
+      "severity": "Critical",
+      "cvssScore": 9.8,
+      "software": "OpenSSL",
+      "version": "3.0.2",
+      "status": "fixed",
+      "fixedVersion": "3.0.3"
+    },
+    {
+      "id": "demo-vuln-002",
+      "name": "Kernel package security update available",
+      "cve": "CVE-2026-113215",
+      "severity": "High",
+      "cvssScore": 8.1,
+      "software": "Linux kernel",
+      "version": "5.15",
+      "status": "new",
+      "fixedVersion": null
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "completed": {
+    "status": 201,
+    "body": {"operationId": "demo-remove-completed-001"}
+  },
+  "pending": {
+    "status": 202,
+    "body": null
+  },
+  "empty": {
+    "status": 204,
+    "body": null
+  }
+}
