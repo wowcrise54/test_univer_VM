@@ -1,0 +1,438 @@
+{
+  "tree_root": {
+    "status": 200,
+    "body": {
+      "displayName": "demo-linux-01",
+      "objectId": "demo-objectid",
+      "type": "OperatingSystem.UNIX.Linux.Debian.UbuntuHost",
+      "vulnerabilityLevel": 5,
+      "data": {
+        "appliedACL": {
+          "hasItems": false
+        },
+        "fqdn": "demo-linux-01.example.test",
+        "hostType": "Server",
+        "hostname": "demo-linux-01",
+        "hostsFile": {
+          "hasItems": true
+        },
+        "ipAddress": "192.0.2.11",
+        "isVirtual": true,
+        "macAddress": "02:00:00:00:00:11",
+        "osFingerprints": {
+          "hasItems": false
+        },
+        "osName": "Ubuntu",
+        "osVersion": "24.04.5",
+        "systemID": "demo-systemid",
+        "traceroutes": {
+          "hasItems": false
+        },
+        "vmId": "demo-vmid",
+        "timezone": null,
+        "nodeId": "demo-nodeid",
+        "batteryUse": null,
+        "computerDescription": "Synthetic demonstration host",
+        "ramSize": 4,
+        "swapSize": 4,
+        "directoryServicePath": null,
+        "architecture": "x86-64",
+        "configuredRunlevel": "graphical.target",
+        "currentRunlevel": "5",
+        "osFamily": "Linux",
+        "unameMachineClass": "x86_64",
+        "unameNodeName": "demo-linux-01",
+        "unameOsName": "Linux",
+        "unameOsRelease": "6.8.0-142-generic",
+        "unameOsVersion": "Ubuntu 24.04.5 LTS",
+        "unameProcessorType": "x86_64 x86_64 x86_64",
+        "unixSystemID": "demo-unixsystemid",
+        "uuid": null,
+        "su": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Su.Su"
+        },
+        "securitySettings": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Linux.SecuritySettings"
+        },
+        "appliedChains": {
+          "hasItems": false
+        },
+        "netfilterTools": {
+          "hasItems": false
+        },
+        "arpTable": {
+          "hasItems": true
+        },
+        "accessLists": {
+          "hasItems": false
+        },
+        "cpu": {
+          "hasItems": true
+        },
+        "dynamicRouting": {
+          "hasItems": false
+        },
+        "endpoints": {
+          "hasItems": true
+        },
+        "hdds": {
+          "hasItems": true
+        },
+        "hostRoles": {
+          "hasItems": false
+        },
+        "hypervisors": {
+          "hasItems": false
+        },
+        "interfaces": {
+          "hasItems": true
+        },
+        "natTable": {
+          "hasItems": false
+        },
+        "neighbors": {
+          "hasItems": false
+        },
+        "networkConections": {
+          "hasItems": false
+        },
+        "osCandidates": {
+          "hasItems": false
+        },
+        "routingSettings": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "Network.RoutingSettings"
+        },
+        "routingTables": {
+          "hasItems": true
+        },
+        "softs": {
+          "hasItems": true
+        },
+        "user": {
+          "hasItems": true
+        },
+        "certificates": {
+          "hasItems": false
+        },
+        "extendedProperties": {
+          "hasItems": false
+        },
+        "clusters": {
+          "hasItems": false
+        },
+        "bios": {
+          "hasItems": false
+        },
+        "logicalDrives": {
+          "hasItems": true
+        },
+        "motherBoard": {
+          "hasItems": false
+        },
+        "networkCard": {
+          "hasItems": true
+        },
+        "pciDevices": {
+          "hasItems": true
+        },
+        "peripherals": {
+          "hasItems": false
+        },
+        "processes": {
+          "hasItems": true
+        },
+        "usbDevices": {
+          "hasItems": false
+        },
+        "daemons": {
+          "hasItems": true
+        },
+        "fileContents": {
+          "hasItems": true
+        },
+        "fileObjects": {
+          "hasItems": true
+        },
+        "filesystems": {
+          "hasItems": true
+        },
+        "groups": {
+          "hasItems": true
+        },
+        "logicalVolumes": {
+          "hasItems": true
+        },
+        "packages": {
+          "hasItems": true
+        },
+        "patches": {
+          "hasItems": false
+        },
+        "physicalVolumes": {
+          "hasItems": true
+        },
+        "sudo": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Sudo.Sudo"
+        },
+        "systemInfo": null,
+        "volumeGroups": {
+          "hasItems": true
+        },
+        "bootloader": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Grub"
+        },
+        "passwordPolicy": "[REDACTED]",
+        "authenticationSettings": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.AuthenticationSettings"
+        },
+        "memoryController": null,
+        "memoryModules": {
+          "hasItems": false
+        },
+        "linuxKernel": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Linux.Debian.UbuntuKernel"
+        },
+        "shellSettings": {
+          "hasItems": true
+        },
+        "nftables": {
+          "hasItems": false
+        },
+        "accountPolicy": {
+          "vulnerabilityLevel": 0,
+          "displayName": "demo-linux-01",
+          "objectId": "demo-objectid",
+          "type": "OperatingSystem.UNIX.Linux.AccountPolicySettings"
+        },
+        "ipSets": {
+          "hasItems": false
+        }
+      }
+    }
+  },
+  "host_soft_vulnerabilities": {
+    "status": 200,
+    "body": {
+      "level": "high",
+      "vulnerabilitiesCount": 3535,
+      "cvssScore": 20485.0,
+      "items": [
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 1748,
+          "cvssScore": 9991.4,
+          "name": "linux-image-6.8.0-107-generic (6.8.0-107.107)",
+          "vulnerabilities": {
+            "key": "demo-uuid-001"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 1574,
+          "cvssScore": 9158.6,
+          "name": "linux-image-6.8.0-110-generic (6.8.0-110.110)",
+          "vulnerabilities": {
+            "key": "demo-uuid-002"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 138,
+          "cvssScore": 939.4,
+          "name": "linux-image-6.8.0-136-generic (6.8.0-136.136)",
+          "vulnerabilities": {
+            "key": "demo-uuid-003"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 32,
+          "cvssScore": 183.4,
+          "name": "OpenSSL 3.0.13",
+          "vulnerabilities": {
+            "key": "demo-uuid-004"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 11,
+          "cvssScore": 51.3,
+          "name": "libssl3t64 (3.0.13-0ubuntu3.15)",
+          "vulnerabilities": {
+            "key": "demo-uuid-005"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "high",
+          "vulnerabilitiesCount": 11,
+          "cvssScore": 51.3,
+          "name": "openssl (3.0.13-0ubuntu3.15)",
+          "vulnerabilities": {
+            "key": "demo-uuid-006"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "medium",
+          "vulnerabilitiesCount": 5,
+          "cvssScore": 26.2,
+          "name": "libheif-plugin-aomdec (1.17.6-1ubuntu4.8)",
+          "vulnerabilities": {
+            "key": "demo-uuid-007"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "medium",
+          "vulnerabilitiesCount": 5,
+          "cvssScore": 26.2,
+          "name": "libheif-plugin-aomenc (1.17.6-1ubuntu4.8)",
+          "vulnerabilities": {
+            "key": "demo-uuid-008"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "medium",
+          "vulnerabilitiesCount": 5,
+          "cvssScore": 26.2,
+          "name": "libheif-plugin-libde265 (1.17.6-1ubuntu4.8)",
+          "vulnerabilities": {
+            "key": "demo-uuid-009"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "medium",
+          "vulnerabilitiesCount": 5,
+          "cvssScore": 26.2,
+          "name": "libheif1 (1.17.6-1ubuntu4.8)",
+          "vulnerabilities": {
+            "key": "demo-uuid-010"
+          }
+        },
+        {
+          "id": "demo-id",
+          "level": "medium",
+          "vulnerabilitiesCount": 1,
+          "cvssScore": 4.8,
+          "name": "libxpm4 (1:3.5.17-1ubuntu0.24.04.1)",
+          "vulnerabilities": {
+            "key": "demo-uuid-011"
+          }
+        }
+      ]
+    }
+  },
+  "group_hierarchy": {
+    "status": 200,
+    "body": [
+      {
+        "id": "demo-group-01",
+        "name": "Demo group",
+        "groupType": "static",
+        "isReadOnly": true,
+        "isRemovable": false,
+        "isRoot": true,
+        "isInvalidPredicate": false,
+        "isSlow": false,
+        "treePath": "Root",
+        "children": [
+          {
+            "id": "demo-group-02",
+            "name": "Demo group 02",
+            "groupType": "dynamic",
+            "isReadOnly": false,
+            "isRemovable": true,
+            "isRoot": false,
+            "isInvalidPredicate": false,
+            "isSlow": false,
+            "treePath": "Root/Demo group 02",
+            "children": []
+          },
+          {
+            "id": "demo-group-03",
+            "name": "Demo group 03",
+            "groupType": "dynamic",
+            "isReadOnly": false,
+            "isRemovable": true,
+            "isRoot": false,
+            "isInvalidPredicate": false,
+            "isSlow": false,
+            "treePath": "Root/Demo group 03",
+            "children": []
+          },
+          {
+            "id": "demo-group-04",
+            "name": "Demo group 04",
+            "groupType": "dynamic",
+            "isReadOnly": false,
+            "isRemovable": true,
+            "isRoot": false,
+            "isInvalidPredicate": false,
+            "isSlow": false,
+            "treePath": "Root/Demo group 04",
+            "children": []
+          },
+          {
+            "id": "demo-group-05",
+            "name": "Demo group 05",
+            "groupType": "dynamic",
+            "isReadOnly": false,
+            "isRemovable": true,
+            "isRoot": false,
+            "isInvalidPredicate": false,
+            "isSlow": false,
+            "treePath": "Root/Demo group 05",
+            "children": []
+          },
+          {
+            "id": "demo-group-06",
+            "name": "Demo group 06",
+            "groupType": "dynamic",
+            "isReadOnly": true,
+            "isRemovable": false,
+            "isRoot": false,
+            "isInvalidPredicate": false,
+            "isSlow": false,
+            "treePath": "Root/Demo group 06",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "asset_removal": {
+    "status": 201,
+    "body": {
+      "operationId": "demo-operationid"
+    }
+  }
+}

@@ -17,6 +17,126 @@ services:
       test-postgres:
         condition: service_healthy
 
+  seed-demo:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    command: ["python", "scripts/seed_demo.py"]
+    environment:
+      MPVM_DATABASE_URL: postgresql://test:test@test-postgres:5432/mpvm_test
+    volumes:
+      - .:/workspace:ro
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+
+  demo-app:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    environment:
+      MPVM_DATABASE_URL: postgresql://test:test@test-postgres:5432/mpvm_test
+      MPVM_BOOTSTRAP_ADMIN_USERNAME: demo-admin
+      MPVM_BOOTSTRAP_ADMIN_PASSWORD: demo-only-pass
+      MPVM_BOOTSTRAP_ADMIN_DISPLAY_NAME: Demo Administrator
+    ports:
+      - "127.0.0.1:18000:8000"
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+
+  demo-ui-smoke:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.test
+      target: e2e
+    command: ["node", "scripts/demo_ui_smoke.mjs"]
+    environment:
+      DEMO_APP_URL: http://demo-app:8000
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
+    volumes:
+      - ./output:/workspace/output
+      - ./scripts:/workspace/scripts:ro
+    depends_on:
+      demo-app:
+        condition: service_started
+
+  scale-postgres:
+    profiles: [scale]
+    image: postgres:16-alpine
+    shm_size: 1gb
+    environment:
+      POSTGRES_DB: mpvm_scale
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    volumes:
+      - mpvmtest_scale_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d mpvm_scale"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  scale-seed:
+    profiles: [scale]
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    command: ["python", "scripts/seed_scale.py"]
+    environment:
+      MPVM_DATABASE_URL: postgresql://test:test@scale-postgres:5432/mpvm_scale
+    volumes:
+      - .:/workspace:ro
+    depends_on:
+      scale-postgres:
+        condition: service_healthy
+
+  scale-app:
+    profiles: [scale]
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    environment:
+      MPVM_DATABASE_URL: postgresql://test:test@scale-postgres:5432/mpvm_scale
+      MPVM_BOOTSTRAP_ADMIN_USERNAME: scale-admin
+      MPVM_BOOTSTRAP_ADMIN_PASSWORD: scale-only-pass
+      MPVM_BOOTSTRAP_ADMIN_DISPLAY_NAME: Scale Test Administrator
+    ports:
+      - "127.0.0.1:18001:8000"
+    depends_on:
+      scale-postgres:
+        condition: service_healthy
+
+  scale-ui-smoke:
+    profiles: [scale]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.test
+      target: e2e
+    command: ["node", "scripts/demo_ui_smoke.mjs"]
+    environment:
+      DEMO_APP_URL: http://scale-app:8000
+      DEMO_USERNAME: scale-admin
+      DEMO_PASSWORD: scale-only-pass
+      SMOKE_ASSET_NAME: scale-linux-0001
+      SMOKE_CVE: CVE-2026-1000000
+      SMOKE_PASSPORT: Synthetic package vulnerability 000001
+      SMOKE_OPERATION: Synthetic scale removal
+      SMOKE_GROUP: Scale test assets
+      SMOKE_VULNERABILITY_GROUP: Operating-system packages
+      SMOKE_FINDING: Synthetic vulnerability 000001
+      SMOKE_OUTPUT_DIR: /workspace/output/scale-ui
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
+    volumes:
+      - ./output:/workspace/output
+      - ./scripts:/workspace/scripts:ro
+    depends_on:
+      scale-app:
+        condition: service_started
+
   frontend-tests:
     profiles: [frontend]
     build:
@@ -52,3 +172,6 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+volumes:
+  mpvmtest_scale_postgres:

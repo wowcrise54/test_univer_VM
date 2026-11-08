@@ -1,0 +1,9 @@
+[
+  {
+    "id": "demo-group-linux",
+    "name": "Linux servers",
+    "children": [
+      {"id": "demo-group-linux-critical", "name": "Critical Linux findings", "children": []}
+    ]
+  }
+]
