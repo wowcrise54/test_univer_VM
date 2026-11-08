@@ -98,10 +98,40 @@ def test_empty_partition_and_json_boolean_are_not_confused_with_numbers(test_db)
 
 
 def test_equivalent_numbers_do_not_rewrite_detail_content(test_db):
-    _insert_passport("p", '{"score": 1, "nested": [2, {"value": 3.0}]}')
+    detail = {"score": 1, "nested": [2, {"value": 3.0}]}
+    db.upsert_vulnerability_passports([{"internal_id": "p", "score": "1"}])
+    db.upsert_vulnerability_passport_detail("p", detail)
     with db.connect() as conn:
         assert partition_details(conn, [("p", {"score": 1.0, "nested": [2.0, {"value": 3}]})],
                                  "2026-02-01T00:00:00+00:00") == []
+
+
+def test_equal_detail_repair_overwritten_normalized_catalog_fields(test_db):
+    detail = {
+        "name": "Detailed OpenSSL vulnerability",
+        "severityRating": "Critical",
+        "score": "9.8",
+        "issueTime": "2026-01-02T00:00:00Z",
+        "packageId": "openssl",
+        "packageVersion": "3.0.2",
+    }
+    db.upsert_vulnerability_passports([{"internal_id": "grid-row", "name": "Grid name"}])
+    db.upsert_vulnerability_passport_detail("grid-row", detail)
+    db.upsert_vulnerability_passports([{"internal_id": "grid-row", "name": "Grid name changed"}])
+
+    with db.connect() as conn:
+        changed = partition_details(conn, [("grid-row", detail)], "2026-02-01T00:00:00+00:00")
+    assert changed == [("grid-row", detail)]
+    assert db.upsert_vulnerability_passport_details(changed) == 1
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT name, severity, score, package_id, package_version FROM vulnerability_passports WHERE internal_id = %s",
+            ("grid-row",),
+        ).fetchone()
+    assert row == {
+        "name": "Detailed OpenSSL vulnerability", "severity": "Critical", "score": "9.8",
+        "package_id": "openssl", "package_version": "3.0.2",
+    }
 
 
 def test_reissued_detail_is_preserved_but_not_marked_fresh_for_new_id(test_db):
