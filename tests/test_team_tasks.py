@@ -74,6 +74,23 @@ def test_payload_builder_keeps_contract_without_groups():
     assert payload["include"] == {"assets": [], "targets": ["10.0.0.1"], "assetsGroups": []}
 
 
+def test_create_and_manual_start_preserve_task_schedule_override(service, repository):
+    schedule = {"type": "Weekly", "at_time": "19:30", "days_of_week": ["monday", "friday"]}
+    service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1"],
+                   name=None, description=None, unrestricted=False, schedule=schedule)
+    trigger = service.create_remote.call_args.args[0]["triggerParameters"]
+    assert trigger["isEnabled"] is True
+    assert trigger["type"] == "Weekly" and trigger["atTime"] == "19:30:00"
+    assert trigger["timeZone"] == "+05:00" and trigger["daysOfWeek"] == ["monday", "friday"]
+    assert repository.attach_task.call_args.kwargs["schedule_override"] == trigger
+
+    repository.get_team_task.return_value = _task(
+        preset_asset_groups=[], preset_targets=["10.0.0.1"], team_schedule_override=trigger,
+    )
+    service.start("task-1", ENGINEER, idempotency_key=None, unrestricted=False)
+    assert repository.record_task.call_args.args[1]["triggerParameters"] == trigger
+
+
 def test_create_builds_payload_only_from_preset_and_typed_targets(service, repository):
     result = service.create(ENGINEER, preset_id=PRESET_ID, asset_group_ids=[], targets=["10.0.0.1", "10.0.0.2"],
                             name="Nightly", description="desc", unrestricted=False, idempotency_key="key-1")
@@ -385,7 +402,7 @@ def test_list_and_replayed_create_are_not_audited_twice(http, service, repositor
     client, audit = http
     repository.list_team_tasks.return_value = [_task()]
     assert client.get("/api/team-tasks").json()["rows"][0]["mp_task_id"] == "task-1"
-    assert repository.list_team_tasks.call_args.kwargs == {"role_ids": [WINDOWS_ROLE]}
+    assert repository.list_team_tasks.call_args.kwargs == {"role_ids": [WINDOWS_ROLE], "owner_id": ENGINEER["id"]}
     repository.operation_by_key.return_value = {"kind": "team_task_create", "status": "completed",
                                                 "operation_id": "op-1", "result": {"mp_task_id": "task-1"}}
     response = client.post("/api/team-tasks", headers={"X-Idempotency-Key": "abc"},

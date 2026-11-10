@@ -1355,6 +1355,7 @@ function engineerApiOverrides(created) {
       }),
     "/api/task-presets": (route) =>
       route.fulfill({ json: { rows: [ENGINEER_PRESET] } }),
+    "/api/team-tasks/folders": (route) => route.fulfill({ json: { rows: [] } }),
     "GET /api/team-tasks": (route) =>
       route.fulfill({ json: { rows: created.rows } }),
     "POST /api/team-tasks": async (route) => {
@@ -1424,6 +1425,8 @@ for (const width of [1440, 768, 390]) {
     await dialog
       .getByLabel("IP-адреса, подсети и FQDN для сканирования")
       .fill("10.0.0.0/24, srv-01.corp.local");
+    await dialog.getByLabel("Расписание").selectOption("Daily");
+    await dialog.getByLabel(/Время запуска/).fill("18:30");
     await dialog.getByRole("button", { name: "Создать и запустить" }).click();
 
     await expect(dialog).toHaveCount(0);
@@ -1440,6 +1443,7 @@ for (const width of [1440, 768, 390]) {
       name: null,
       description: null,
       start_now: false,
+      schedule: { type: "Daily", at_time: "18:30" },
     });
     expect(created.startRequests).toBe(1);
     const overflow = await page.evaluate(

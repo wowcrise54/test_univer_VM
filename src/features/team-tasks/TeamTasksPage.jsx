@@ -23,6 +23,15 @@ const ACTIVE_POSTPROCESS = new Set([
   "waiting",
   "cancelling",
 ]);
+const WEEKDAYS = [
+  ["monday", "Пн"],
+  ["tuesday", "Вт"],
+  ["wednesday", "Ср"],
+  ["thursday", "Чт"],
+  ["friday", "Пт"],
+  ["saturday", "Сб"],
+  ["sunday", "Вс"],
+];
 
 // A task that was just started is "Запущена" here; the shared label says "Выполняется".
 const STATUS_LABELS = { started: "Запущена" };
@@ -116,13 +125,23 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const [details, setDetails] = useState(null);
   const [osFilter, setOsFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [folderFilter, setFolderFilter] = useState("");
+  const [folderName, setFolderName] = useState("");
+  const hasWorkspace = currentUser?.id != null;
 
+  const folderQueryKey = ["team-task-folders", currentUser?.id];
+  const foldersQuery = useQuery({
+    queryKey: folderQueryKey,
+    queryFn: () => api("/api/team-tasks/folders"),
+    enabled: hasWorkspace,
+  });
+  const folders = foldersQuery.data?.rows || [];
   const presetsQuery = useQuery({
     queryKey: ["task-presets", { archived: false }],
     queryFn: () => api("/api/task-presets"),
   });
   const tasksQuery = useQuery({
-    queryKey: ["team-tasks"],
+    queryKey: ["team-tasks", currentUser?.id],
     queryFn: () => api("/api/team-tasks"),
     refetchInterval: (query) =>
       (query.state.data?.rows || []).some(isTeamTaskRunning) ? 5000 : 30000,
@@ -143,6 +162,9 @@ export function TeamTasksPage({ currentUser, showAlert }) {
     tasksQuery.dataUpdatedAt,
   );
   const visibleRows = progressRows.filter((progress) => {
+    if (folderFilter === "unassigned" && progress.task.folder_id) return false;
+    if (folderFilter && folderFilter !== "unassigned" && progress.task.folder_id !== folderFilter)
+      return false;
     if (statusFilter === "active") return progress.active;
     if (statusFilter === "attention") return progress.reasons.length > 0;
     if (statusFilter === "completed") return progress.completed;
@@ -160,6 +182,27 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           queryKey[0],
         ),
     });
+
+  const createFolder = useMutation({
+    mutationFn: () => api("/api/team-tasks/folders", {
+      method: "POST",
+      body: JSON.stringify({ name: folderName.trim() }),
+    }),
+    onSuccess: async () => {
+      setFolderName("");
+      await queryClient.invalidateQueries({ queryKey: folderQueryKey });
+    },
+    onError: (error) => showAlert(errorText(error), "error"),
+  });
+  const moveTask = useMutation({
+    mutationFn: ({ taskId, folderId }) =>
+      api(`/api/team-tasks/${encodeURIComponent(taskId)}/folder`, {
+        method: "PUT",
+        body: JSON.stringify({ folder_id: folderId || null }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-tasks", currentUser?.id] }),
+    onError: (error) => showAlert(errorText(error), "error"),
+  });
 
   const actionMutation = useMutation({
     mutationFn: ({ task, action }) =>
@@ -264,6 +307,31 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           </Button>
         }
       >
+        {hasWorkspace ? (
+          <div className="team-folder-controls">
+            <Field label="Личная папка">
+              <select value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)}>
+                <option value="">Все задачи</option>
+                <option value="unassigned">Без папки</option>
+                {folders.map((folder) => (
+                  <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
+                ))}
+              </select>
+            </Field>
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              if (folderName.trim() && !createFolder.isPending) createFolder.mutate();
+            }}>
+              <Field label="Название новой папки">
+                <input maxLength={120} value={folderName} onChange={(event) => setFolderName(event.target.value)} />
+              </Field>
+              <Button type="submit" variant="secondary" disabled={!folderName.trim()} busy={createFolder.isPending}>
+                Создать папку
+              </Button>
+            </form>
+          </div>
+        ) : null}
+        {foldersQuery.error ? <p className="preset-error" role="alert">{errorText(foldersQuery.error)}</p> : null}
         <Field label="Статус задач">
           <select
             value={statusFilter}
@@ -304,6 +372,9 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                     key={task.mp_task_id}
                     task={task}
                     progress={progress}
+                    folders={folders}
+                    moving={moveTask.isPending}
+                    onMove={(folderId) => moveTask.mutate({ taskId: task.mp_task_id, folderId })}
                     running={active}
                     busy={busy}
                     historyOpen={historyTaskId === task.mp_task_id}
@@ -328,7 +399,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
               {!tasksQuery.isLoading && !visibleRows.length ? (
                 <tr>
                   <td colSpan={7} className="empty-cell">
-                    {statusFilter
+                    {statusFilter || folderFilter
                       ? "Нет задач по выбранному статусу."
                       : "Задач пока нет."}
                   </td>
@@ -380,6 +451,9 @@ export function TeamTasksPage({ currentUser, showAlert }) {
 function TeamTaskRow({
   task,
   progress,
+  folders,
+  moving,
+  onMove,
   running,
   busy,
   historyOpen,
@@ -394,6 +468,7 @@ function TeamTaskRow({
   const scope = [...groups.map((group) => group.name || group.id), ...targets];
   const { run, postprocess, counts, reasons, loading, updatedAt, scanActive } =
     progress;
+  const trigger = task.payload?.triggerParameters;
   return (
     <>
       <tr
@@ -409,6 +484,13 @@ function TeamTaskRow({
           <small className="preset-muted">
             Обновлена {formatDate(task.updated_at)}
           </small>
+          {trigger?.isEnabled ? (
+            <small className="preset-muted">
+              {trigger.type === "Daily" ? "Ежедневно" : trigger.type === "Weekly" ? "Еженедельно" : "По расписанию"}
+              {trigger.atTime ? ` · ${trigger.atTime.slice(0, 5)}` : ""}
+              {trigger.timeZone ? ` · ${trigger.timeZone}` : ""}
+            </small>
+          ) : null}
         </td>
         <td>
           {task.preset_name}
@@ -508,6 +590,19 @@ function TeamTaskRow({
           {reasons.length ? (
             <small className="preset-muted">{reasons.join(" · ")}</small>
           ) : null}
+          {folders.length ? (
+            <select
+              aria-label={`Папка для задачи ${task.name}`}
+              value={task.folder_id || ""}
+              disabled={moving}
+              onChange={(event) => onMove(event.target.value)}
+            >
+              <option value="">Без папки</option>
+              {folders.map((folder) => (
+                <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
+              ))}
+            </select>
+          ) : null}
         </td>
       </tr>
       {historyOpen ? (
@@ -557,6 +652,9 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
   const [targetsText, setTargetsText] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [scheduleType, setScheduleType] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [scheduleDays, setScheduleDays] = useState([]);
   const [idempotencyKey, setIdempotencyKey] = useState(() =>
     createIdempotencyKey("team-task"),
   );
@@ -574,6 +672,11 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
           name: name.trim() || null,
           description: description.trim() || null,
           start_now: false,
+          ...(scheduleType ? { schedule: {
+            type: scheduleType,
+            at_time: scheduleTime,
+            ...(scheduleType === "Weekly" ? { days_of_week: scheduleDays } : {}),
+          } } : {}),
         }),
       }),
     onSuccess: async (result, startNow) => {
@@ -600,7 +703,8 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
   );
 
   const targets = parseTargets(targetsText);
-  const blocked = !targets.length;
+  const blocked = !targets.length || (scheduleType && !scheduleTime) ||
+    (scheduleType === "Weekly" && !scheduleDays.length);
 
   const dialog = (
     <div
@@ -649,6 +753,34 @@ function CreateTeamTaskDialog({ preset, showAlert, onClose, onCreated }) {
             onChange={(event) => setDescription(event.target.value)}
           />
         </Field>
+        <Field label="Расписание">
+          <select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}>
+            <option value="">Как в пресете</option>
+            <option value="Daily">Ежедневно</option>
+            <option value="Weekly">Еженедельно</option>
+          </select>
+        </Field>
+        {scheduleType ? (
+          <>
+            <Field label={`Время запуска (${preset.time_zone || "+05:00"})`}>
+              <input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} />
+            </Field>
+            {scheduleType === "Weekly" ? (
+              <fieldset className="task-weekday-picker">
+                <legend>Дни недели</legend>
+                {WEEKDAYS.map(([day, label]) => (
+                  <label key={day}>
+                    <input type="checkbox" checked={scheduleDays.includes(day)} onChange={(event) => {
+                      setScheduleDays((days) => event.target.checked
+                        ? [...days, day]
+                        : days.filter((value) => value !== day));
+                    }} /> {label}
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
+          </>
+        ) : null}
         <div className="confirm-dialog__actions">
           <Button
             variant="secondary"

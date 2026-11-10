@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 import pytest
 
-from app import db
+from app import auth, db
 from app.domain.errors import DomainError
 from app.mpvm_client import build_scanner_task_payload
 from app.repositories.task_presets import TaskPresetRepository
@@ -188,6 +188,38 @@ def test_ip_and_fqdn_targets_round_trip(test_db):
     listed = service.list(user, unrestricted=False)["rows"]
     assert listed[0]["preset_targets"] == ["srv01.corp.local", "10.0.1.0/24"]
     assert service.start("task-targets", user, idempotency_key=None, unrestricted=False) == {"status": "started"}
+
+
+def test_team_workspace_folders_and_assignments_are_personal(test_db):
+    repository = TaskPresetRepository()
+    role = _role_id("engineer_windows")
+    preset = TaskPresetService(repository).create(_values("Windows"), [role], actor="admin")
+    service = TeamTasksService(repository)
+    users = [
+        auth.create_user(auth.UserCreateRequest(
+            username=name, display_name=name, password="test-folder-pass", role_ids=[role],
+        ))
+        for name in ("win.one", "win.two")
+    ]
+    first, second = users
+    db.record_scan_task(mp_task_id="task-win", payload={"name": "Windows"}, status="created")
+    repository.attach_task("task-win", preset_id=preset["preset_id"], preset_version=1,
+                           asset_groups=[], targets=["10.0.0.1"], actor=first["username"])
+    first_folder = service.create_folder(first, "Серверы")
+    second_folder = service.create_folder(second, "Серверы")
+    assert service.list_folders(first) == [first_folder]
+    assert service.list_folders(second) == [second_folder]
+    with pytest.raises(LookupError):
+        service.move_task("task-win", first, second_folder["folder_id"], unrestricted=False)
+    with pytest.raises(LookupError):
+        service.move_task("task-win", _engineer("engineer_linux"), None, unrestricted=False)
+
+    for user, folder in zip(users, (first_folder, second_folder), strict=True):
+        service.move_task("task-win", user, folder["folder_id"], unrestricted=False)
+        assert service.list(user, unrestricted=False)["rows"][0]["folder_id"] == folder["folder_id"]
+    service.move_task("task-win", first, None, unrestricted=False)
+    assert service.list(first, unrestricted=False)["rows"][0]["folder_id"] is None
+    assert service.list(second, unrestricted=False)["rows"][0]["folder_id"] == second_folder["folder_id"]
 
 
 def test_active_task_count_uses_running_postprocess(test_db):

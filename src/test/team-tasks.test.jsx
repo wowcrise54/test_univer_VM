@@ -153,6 +153,55 @@ describe("engineer scans page", () => {
     expect(request.headers["X-Idempotency-Key"]).toBe("key-1:run");
   });
 
+  it("creates a task with a weekly schedule and organizes it in a personal folder", async () => {
+    const fallback = api.getMockImplementation();
+    const folder = { folder_id: "folder-1", name: "Серверы" };
+    let folders = [];
+    let task = TASK;
+    api.mockImplementation(async (path, options = {}) => {
+      if (path === "/api/team-tasks/folders") {
+        if (options.method === "POST") {
+          folders = [folder];
+          return folder;
+        }
+        return { rows: folders };
+      }
+      if (path === "/api/team-tasks/task-1/folder") {
+        task = { ...task, ...JSON.parse(options.body) };
+        return { folder_id: task.folder_id };
+      }
+      if (path === "/api/team-tasks" && !options.method) return { rows: [task] };
+      if (path.endsWith("/runs?limit=1")) return { items: [] };
+      return fallback(path, options);
+    });
+    renderWithClient(
+      <TeamTasksPage currentUser={{ id: 7, permissions: ["tasks.team"] }} showAlert={vi.fn()} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Создать задачу" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/IP-адреса, подсети и FQDN для/), {
+      target: { value: "10.0.0.15" },
+    });
+    fireEvent.change(dialog.getByLabelText("Расписание"), { target: { value: "Weekly" } });
+    expect(dialog.getByRole("button", { name: "Создать", exact: true })).toBeDisabled();
+    fireEvent.click(dialog.getByRole("checkbox", { name: "Пн" }));
+    fireEvent.click(dialog.getByRole("button", { name: "Создать", exact: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const [, request] = api.mock.calls.find(([path, options]) =>
+      path === "/api/team-tasks" && options?.method === "POST");
+    expect(JSON.parse(request.body).schedule).toEqual({
+      type: "Weekly", at_time: "09:00", days_of_week: ["monday"],
+    });
+
+    fireEvent.change(screen.getByLabelText("Название новой папки"), { target: { value: folder.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать папку" }));
+    const move = await screen.findByLabelText("Папка для задачи [WIN] Servers");
+    fireEvent.change(move, { target: { value: folder.folder_id } });
+    await waitFor(() => expect(move).toHaveValue(folder.folder_id));
+    fireEvent.change(screen.getByLabelText("Личная папка"), { target: { value: "unassigned" } });
+    expect(screen.queryByText("[WIN] Servers")).toBeNull();
+  });
+
   it("creates a task for IP addresses, subnets and FQDNs typed by the engineer", async () => {
     const showAlert = vi.fn();
     renderWithClient(

@@ -30,7 +30,11 @@ def test_precheck_persists_requested_successful_and_false_targets() -> None:
     client.start_connection_check_with_retry.return_value = {"started": True}
     client.wait_for_connection_check_targets.return_value = (["10.0.0.1"], "completed")
     options = main.StartScannerTaskRequest(precheck_enabled=True, skip_validation=True)
-    payload = {"name": "Audit", "include": {"targets": ["10.0.0.1", "10.0.0.2"]}}
+    trigger = {"isEnabled": True, "type": "Daily", "atTime": "18:00:00", "timeZone": "+05:00"}
+    payload = {
+        "name": "Audit", "include": {"targets": ["10.0.0.1", "10.0.0.2"]},
+        "triggerParameters": trigger,
+    }
 
     with (
         patch.object(main.db, "get_scan_task", return_value={"payload": payload}),
@@ -49,6 +53,8 @@ def test_precheck_persists_requested_successful_and_false_targets() -> None:
     assert result["false_target_count"] == 1
     assert result["false_targets"] == ["10.0.0.2"]
     assert result["audit_task_id"] == "audit-1"
+    assert client.create_scanner_task.call_args.args[1]["triggerParameters"]["isEnabled"] is False
+    assert client.update_scanner_task.call_args.args[2]["triggerParameters"] == trigger
     assert update_status.call_args_list[-1].args == ("precheck-1", "precheck_finished", result)
 
 

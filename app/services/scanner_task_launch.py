@@ -18,6 +18,7 @@ from ..mpvm.scanner_task_rows import build_precheck_task_name, remote_scanner_ta
 from ..mpvm_client import (
     MpVmApiError,
     build_asset_id_pdql_for_ips,
+    build_disabled_daily_trigger,
     build_scanner_task_payload,
     extract_asset_ids_from_csv,
     extract_ips_from_csv,
@@ -414,6 +415,9 @@ def run_precheck_for_scanner_task(
 
     audit_payload = copy.deepcopy(local_task["payload"])
     precheck_payload = copy.deepcopy(audit_payload)
+    trigger = as_dict(precheck_payload.get("triggerParameters"))
+    if trigger.get("isEnabled"):
+        precheck_payload["triggerParameters"] = build_disabled_daily_trigger(trigger.get("timeZone") or "+05:00")
     precheck_payload["name"] = build_precheck_task_name(options.precheck_task_prefix, str(audit_payload.get("name") or task_id))
     if options.precheck_profile_id:
         precheck_payload["profile"] = options.precheck_profile_id
@@ -514,6 +518,9 @@ def run_false_targets_precheck(
         raise HTTPException(status_code=422, detail="The source audit task is unavailable for this precheck run.")
 
     retry_payload = copy.deepcopy(source.get("payload") or {})
+    trigger = as_dict(retry_payload.get("triggerParameters"))
+    if trigger.get("isEnabled"):
+        retry_payload["triggerParameters"] = build_disabled_daily_trigger(trigger.get("timeZone") or "+05:00")
     include = as_dict(retry_payload.get("include"))
     include["targets"] = [str(value).strip() for value in false_targets if str(value).strip()]
     retry_payload["include"] = include

@@ -11,7 +11,7 @@ from typing import Any
 from ..diagnostics import log_event
 from ..domain.errors import DomainError
 from ..domain.scan_targets import is_individual_scan_target, normalize_scan_targets
-from ..mpvm_client import build_scanner_task_payload
+from ..mpvm_client import build_scanner_task_payload, utc_now_iso_millis
 from ..repositories.task_presets import TaskPresetRepository
 from .task_presets import user_role_ids
 
@@ -85,7 +85,7 @@ class TeamTasksService:
         return None if unrestricted else user_role_ids(user)
 
     def list(self, user: dict[str, Any], *, unrestricted: bool) -> dict[str, Any]:
-        rows = self._presets.list_team_tasks(role_ids=self._scope(user, unrestricted))
+        rows = self._presets.list_team_tasks(role_ids=self._scope(user, unrestricted), owner_id=user.get("id"))
         for task in rows:
             precheck = task.get("latest_precheck")
             if precheck is None:
@@ -100,6 +100,25 @@ class TeamTasksService:
             task["latest_precheck"] = {"updated_at": precheck["updated_at"], "hosts": list(hosts)}
         return {"rows": rows}
 
+    @staticmethod
+    def _workspace_owner(user: dict[str, Any]) -> int:
+        owner_id = user.get("id")
+        if not isinstance(owner_id, int):
+            raise DomainError("TEAM_TASK_WORKSPACE_UNAVAILABLE", "Личное рабочее пространство недоступно.",
+                              status_code=403)
+        return owner_id
+
+    def list_folders(self, user: dict[str, Any]) -> builtins.list[dict[str, Any]]:
+        return self._presets.list_team_folders(self._workspace_owner(user))
+
+    def create_folder(self, user: dict[str, Any], name: str) -> dict[str, Any]:
+        return self._presets.create_team_folder(self._workspace_owner(user), name)
+
+    def move_task(self, task_id: str, user: dict[str, Any], folder_id: str | None, *, unrestricted: bool) -> None:
+        self.get(task_id, user, unrestricted=unrestricted)
+        if not self._presets.move_team_task(self._workspace_owner(user), task_id, folder_id):
+            raise LookupError("Папка не найдена в вашем рабочем пространстве.")
+
     def get(self, task_id: str, user: dict[str, Any], *, unrestricted: bool) -> dict[str, Any]:
         task = self._presets.get_team_task(task_id, role_ids=self._scope(user, unrestricted))
         if not task:
@@ -110,6 +129,7 @@ class TeamTasksService:
         self, user: dict[str, Any], *, preset_id: str, asset_group_ids: builtins.list[str],
         name: str | None, description: str | None, unrestricted: bool, idempotency_key: str | None = None,
         targets: builtins.list[str] | None = None,
+        schedule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create the MP VM task; returns ``{"task", "operation_id", "idempotent_replay"}``."""
         if idempotency_key:
@@ -119,8 +139,19 @@ class TeamTasksService:
         preset = self._active_preset(preset_id, user, unrestricted=unrestricted)
         groups, selected_targets = self._selection(preset, asset_group_ids, targets or [])
         task_name = self._task_name(preset, name, groups, selected_targets)
+        schedule_override: dict[str, Any] | None = None
+        if schedule is not None:
+            schedule_override = {
+                "isEnabled": True,
+                "fromDate": utc_now_iso_millis(),
+                "timeZone": preset.get("time_zone") or "+05:00",
+                "type": schedule["type"],
+                "atTime": f"{schedule['at_time']}:00",
+            }
+            if schedule["type"] == "Weekly":
+                schedule_override["daysOfWeek"] = list(dict.fromkeys(schedule["days_of_week"]))
         payload = self._payload(preset, name=task_name, description=description or "", groups=groups,
-                                targets=selected_targets)
+                                targets=selected_targets, schedule_override=schedule_override)
         operation_id = str(uuid.uuid4())
         operation = {
             "kind": "team_task_create", "source_id": operation_id, "subject_type": "scan_task_preset",
@@ -148,6 +179,7 @@ class TeamTasksService:
             self._presets.attach_task(
                 mp_task_id, preset_id=preset["preset_id"], preset_version=int(preset["version"]),
                 asset_groups=groups, targets=selected_targets, actor=user.get("username"),
+                schedule_override=schedule_override,
             )
         except Exception as exc:
             # Never delete the remote task here: it stays for manual reconciliation.
@@ -191,7 +223,7 @@ class TeamTasksService:
                      else str(task.get("name") or task_id))
         payload_description = description if description is not None else str((task.get("payload") or {}).get("description") or "")
         payload = self._payload(preset, name=task_name, description=payload_description, groups=groups,
-                                targets=selected_targets)
+                                targets=selected_targets, schedule_override=task.get("team_schedule_override"))
         assert self.update_remote is not None
         response = self.update_remote(task_id, payload)
         self._presets.record_task(task_id, payload, status="updated", remote_response=response)
@@ -211,7 +243,7 @@ class TeamTasksService:
         payload = self._payload(
             preset, name=str(task.get("name") or task_id),
             description=str((task.get("payload") or {}).get("description") or ""), groups=groups,
-            targets=task_targets,
+            targets=task_targets, schedule_override=task.get("team_schedule_override"),
         )
         self._presets.record_task(task_id, payload, status="preset_synced", remote_response=task.get("last_remote_response"))
         self._presets.attach_task(
@@ -292,7 +324,7 @@ class TeamTasksService:
     @staticmethod
     def _payload(
         preset: dict[str, Any], *, name: str, description: str, groups: builtins.list[dict[str, Any]],
-        targets: builtins.list[str],
+        targets: builtins.list[str], schedule_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if preset.get("host_discovery_enabled") and not preset.get("host_discovery_profile_id"):
             # Presets saved before the profile became required; MP VM would answer "Value cannot be null".
@@ -314,7 +346,7 @@ class TeamTasksService:
             host_discovery_profile_id=preset.get("host_discovery_profile_id"),
             time_zone=preset.get("time_zone") or "+05:00",
             is_fqdn_priority=bool(preset.get("is_fqdn_priority", True)),
-            trigger_parameters=_json_object(preset.get("trigger_parameters")),
+            trigger_parameters=schedule_override or _json_object(preset.get("trigger_parameters")),
             denied_scan_settings=_json_object(preset.get("denied_scan_settings")),
             include_asset_group_ids=[str(group["id"]) for group in groups],
         )

@@ -84,6 +84,18 @@
   overflow-x: auto;
 }
 
+.team-folder-controls,
+.team-folder-controls form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.team-folder-controls {
+  margin-bottom: 12px;
+}
+
 .team-table-scroll td small,
 .preset-table-scroll td small,
 .preset-muted {
