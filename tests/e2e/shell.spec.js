@@ -1368,7 +1368,13 @@ function engineerApiOverrides(created) {
         status: "created",
         created_by: "win.eng",
         preset_targets: created.request.targets,
-        postprocess: { status: "monitoring" },
+        postprocess: {
+          mp_run_id: "run-new",
+          status: "processing",
+          asset_count: 2,
+          completed_count: 1,
+          failed_count: 0,
+        },
       };
       created.rows = [task];
       await route.fulfill({
@@ -1384,6 +1390,19 @@ function engineerApiOverrides(created) {
       }));
       await route.fulfill({ json: { status: "started" } });
     },
+    "/api/team-tasks/task-new/runs": (route) =>
+      route.fulfill({
+        json: { items: [{ id: "run-new", status: "running" }] },
+      }),
+    "/api/team-tasks/task-new/runs/run-new/jobs": (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            { id: "job-1", status: "finished", errorStatus: "success" },
+            { id: "job-2", status: "running" },
+          ],
+        },
+      }),
   };
 }
 
@@ -1411,7 +1430,10 @@ for (const width of [1440, 768, 390]) {
     await expect(
       page.getByRole("cell", { name: /Servers 2026-10-24/ }),
     ).toBeVisible();
-    await expect(page.getByText("Сканирование идёт")).toBeVisible();
+    await expect(page.getByText("1 из 2 заданий · 0 с ошибкой")).toBeVisible();
+    await expect(
+      page.getByText("Карточки обработаны 1 из 2 · ошибок 0"),
+    ).toBeVisible();
     expect(created.request).toEqual({
       preset_id: "preset-win",
       targets: ["10.0.0.0/24", "srv-01.corp.local"],

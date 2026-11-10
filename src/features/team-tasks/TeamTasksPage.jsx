@@ -12,7 +12,9 @@ import {
 } from "../../shared/ui.jsx";
 import { taskStatusLabel } from "../../shared/labels.js";
 import { OS_LABELS } from "../task-presets/presetForm.js";
+import { displayText } from "../tasks/taskFormat.jsx";
 import { TeamTaskDetails } from "./TeamTaskDetails.jsx";
+import { remoteStatus, useTeamTaskProgress } from "./teamTaskProgress.js";
 
 const ACTIVE_POSTPROCESS = new Set([
   "monitoring",
@@ -26,19 +28,27 @@ const ACTIVE_POSTPROCESS = new Set([
 const STATUS_LABELS = { started: "Запущена" };
 
 function runStatusLabel(value) {
+  value = displayText(value);
   if (!value) return "—";
   return (
     {
       finished: "Завершён",
       completed: "Завершён",
       running: "Выполняется",
+      inprogress: "Выполняется",
       started: "Выполняется",
       queued: "В очереди",
+      pending: "В очереди",
+      assigned: "Назначен",
+      scheduled: "Запланирован",
       stopped: "Остановлен",
+      suspended: "Приостановлен",
       cancelled: "Остановлен",
+      canceled: "Остановлен",
       failed: "Ошибка",
       error: "Ошибка",
-    }[String(value).toLowerCase()] || value
+      completedwitherrors: "Завершён с ошибками",
+    }[remoteStatus({ status: value })] || value
   );
 }
 
@@ -103,8 +113,9 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const [createPreset, setCreatePreset] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [historyTaskId, setHistoryTaskId] = useState(null);
-  const [detailsTaskId, setDetailsTaskId] = useState(null);
+  const [details, setDetails] = useState(null);
   const [osFilter, setOsFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
   const presetsQuery = useQuery({
     queryKey: ["task-presets", { archived: false }],
@@ -126,11 +137,29 @@ export function TeamTasksPage({ currentUser, showAlert }) {
   const tasks = (tasksQuery.data?.rows || []).filter(
     (task) => !osFilter || task.os_family === osFilter,
   );
+  const progressRows = useTeamTaskProgress(
+    tasks,
+    isTeamTaskRunning,
+    tasksQuery.dataUpdatedAt,
+  );
+  const visibleRows = progressRows.filter((progress) => {
+    if (statusFilter === "active") return progress.active;
+    if (statusFilter === "attention") return progress.reasons.length > 0;
+    if (statusFilter === "completed") return progress.completed;
+    return true;
+  });
 
-  const detailsTask = tasks.find((task) => task.mp_task_id === detailsTaskId);
+  const detailsRow = progressRows.find(
+    ({ task }) => task.mp_task_id === details?.taskId,
+  );
 
   const refreshTasks = () =>
-    queryClient.invalidateQueries({ queryKey: ["team-tasks"] });
+    queryClient.invalidateQueries({
+      predicate: ({ queryKey }) =>
+        ["team-tasks", "team-task-latest", "team-task-progress-jobs"].includes(
+          queryKey[0],
+        ),
+    });
 
   const actionMutation = useMutation({
     mutationFn: ({ task, action }) =>
@@ -229,12 +258,23 @@ export function TeamTasksPage({ currentUser, showAlert }) {
           <Button
             variant="secondary"
             busy={tasksQuery.isFetching}
-            onClick={() => tasksQuery.refetch()}
+            onClick={refreshTasks}
           >
             Обновить
           </Button>
         }
       >
+        <Field label="Статус задач">
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="">Все</option>
+            <option value="active">В работе</option>
+            <option value="attention">Требуют внимания</option>
+            <option value="completed">Завершены</option>
+          </select>
+        </Field>
         {tasksQuery.error ? (
           <p className="preset-error" role="alert">
             {errorText(tasksQuery.error)}
@@ -248,21 +288,23 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                 <th scope="col">Пресет</th>
                 <th scope="col">Цели</th>
                 <th scope="col">Автор</th>
-                <th scope="col">Состояние</th>
+                <th scope="col">Сканирование</th>
+                <th scope="col">Обработка результатов</th>
                 <th scope="col">
                   <span className="team-sr-only">Действия</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              {tasks.map((task) => {
-                const running = isTeamTaskRunning(task);
+              {visibleRows.map((progress) => {
+                const { task, active, run } = progress;
                 const busy = pendingTaskId === task.mp_task_id;
                 return (
                   <TeamTaskRow
                     key={task.mp_task_id}
                     task={task}
-                    running={running}
+                    progress={progress}
+                    running={active}
                     busy={busy}
                     historyOpen={historyTaskId === task.mp_task_id}
                     onStart={() =>
@@ -272,7 +314,9 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                       actionMutation.mutate({ task, action: "stop" })
                     }
                     onDelete={() => setDeleteTarget(task)}
-                    onOpenDetails={() => setDetailsTaskId(task.mp_task_id)}
+                    onOpenDetails={() =>
+                      setDetails({ taskId: task.mp_task_id, runId: run?.id })
+                    }
                     onToggleHistory={() =>
                       setHistoryTaskId((current) =>
                         current === task.mp_task_id ? null : task.mp_task_id,
@@ -281,10 +325,12 @@ export function TeamTasksPage({ currentUser, showAlert }) {
                   />
                 );
               })}
-              {!tasksQuery.isLoading && !tasks.length ? (
+              {!tasksQuery.isLoading && !visibleRows.length ? (
                 <tr>
-                  <td colSpan={6} className="empty-cell">
-                    Задач пока нет.
+                  <td colSpan={7} className="empty-cell">
+                    {statusFilter
+                      ? "Нет задач по выбранному статусу."
+                      : "Задач пока нет."}
                   </td>
                 </tr>
               ) : null}
@@ -293,11 +339,12 @@ export function TeamTasksPage({ currentUser, showAlert }) {
         </div>
       </Panel>
 
-      {detailsTask ? (
+      {detailsRow ? (
         <TeamTaskDetails
-          task={detailsTask}
-          running={isTeamTaskRunning(detailsTask)}
-          onClose={() => setDetailsTaskId(null)}
+          task={detailsRow.task}
+          initialRunId={details.runId}
+          running={detailsRow.active}
+          onClose={() => setDetails(null)}
         />
       ) : null}
 
@@ -332,6 +379,7 @@ export function TeamTasksPage({ currentUser, showAlert }) {
 
 function TeamTaskRow({
   task,
+  progress,
   running,
   busy,
   historyOpen,
@@ -344,6 +392,8 @@ function TeamTaskRow({
   const groups = task.preset_asset_groups || [];
   const targets = task.preset_targets || [];
   const scope = [...groups.map((group) => group.name || group.id), ...targets];
+  const { run, postprocess, counts, reasons, loading, updatedAt, scanActive } =
+    progress;
   return (
     <>
       <tr
@@ -376,10 +426,48 @@ function TeamTaskRow({
         </td>
         <td>{task.created_by || "—"}</td>
         <td>
-          <span className={`task-status ${running ? "is-running" : ""}`}>
+          <span className={`task-status ${scanActive || (!run && running) ? "is-running" : ""}`}>
             <i aria-hidden="true" />
-            {teamTaskStatus(task)}
+            {run
+              ? runStatusLabel(run.status || run.state)
+              : teamTaskStatus(task)}
           </span>
+          {counts ? (
+            <small className="preset-muted">
+              {`${counts.finished} из ${counts.total} заданий · ${counts.failed} с ошибкой`}
+            </small>
+          ) : null}
+          <small className="preset-muted">
+            {loading
+              ? "Проверяем запуски MP VM…"
+              : updatedAt
+                ? `Проверено ${formatDate(updatedAt)}`
+                : "Нет данных MP VM"}
+          </small>
+        </td>
+        <td>
+          {postprocess ? (
+            <>
+              <span>
+                {postprocess.status === "monitoring"
+                  ? "Ожидание результатов"
+                  : POSTPROCESS_LABELS[postprocess.status] || postprocess.status}
+              </span>
+              {postprocess.asset_count > 0 ? (
+                <small className="preset-muted">
+                  Карточки обработаны {postprocess.completed_count} из{" "}
+                  {postprocess.asset_count} · ошибок {postprocess.failed_count}
+                </small>
+              ) : null}
+              {postprocess.updated_at ? (
+                <small className="preset-muted">
+                  Прогресс {formatDate(postprocess.updated_at)}
+                </small>
+              ) : null}
+            </>
+          ) : (
+            <span>Карточки — данных по запуску нет</span>
+          )}
         </td>
         <td>
           <div className="row-actions">
@@ -417,11 +505,14 @@ function TeamTaskRow({
               </Button>
             </ActionMenu>
           </div>
+          {reasons.length ? (
+            <small className="preset-muted">{reasons.join(" · ")}</small>
+          ) : null}
         </td>
       </tr>
       {historyOpen ? (
         <tr className="team-history-row">
-          <td colSpan={6}>
+          <td colSpan={7}>
             <TeamTaskHistory taskId={task.mp_task_id} />
           </td>
         </tr>

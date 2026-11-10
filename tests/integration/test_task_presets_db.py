@@ -181,7 +181,14 @@ def test_active_task_count_uses_running_postprocess(test_db):
         repository.attach_task(task_id, preset_id=preset["preset_id"], preset_version=1,
                                asset_groups=[{"id": "g"}], actor="a")
     db.create_scan_postprocess_run("run-1", mp_task_id="t-1", started_from=db.now_utc(), options={})
-    with db.connect() as conn:
-        conn.execute("UPDATE scan_postprocess_runs SET status='monitoring' WHERE run_id='run-1'")
+    db.update_scan_postprocess_run(
+        "run-1", mp_run_id="mp-run-1", status="processing", asset_count=3, completed_count=1, failed_count=1,
+    )
     assert repository.count_active_tasks(preset["preset_id"]) == 1
     assert repository.count_active_tasks(preset["preset_id"], exclude_task_id="t-1") == 0
+    postprocess = next(
+        task["postprocess"] for task in repository.list_team_tasks(role_ids=None) if task["mp_task_id"] == "t-1"
+    )
+    assert postprocess["mp_run_id"] == "mp-run-1"
+    assert (postprocess["asset_count"], postprocess["completed_count"], postprocess["failed_count"]) == (3, 1, 1)
+    assert postprocess["updated_at"]

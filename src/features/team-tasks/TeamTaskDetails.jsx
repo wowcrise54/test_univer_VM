@@ -27,12 +27,12 @@ function errorText(error) {
  * Run history and per-target progress of a team task: the same view the main
  * task workspace opens for a task, backed by the RBAC-scoped team endpoints.
  */
-export function TeamTaskDetails({ task, running, onClose }) {
+export function TeamTaskDetails({ task, initialRunId, running, onClose }) {
   const titleId = useId();
   const dialogRef = useDialogAccessibility(true, onClose);
   const taskId = task.mp_task_id;
   const [limit, setLimit] = useState(RUNS_PAGE);
-  const [pickedRunId, setPickedRunId] = useState(null);
+  const [pickedRunId, setPickedRunId] = useState(initialRunId);
 
   const runsQuery = useQuery({
     queryKey: ["team-task-details-runs", taskId, limit],

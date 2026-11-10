@@ -189,10 +189,10 @@ class TaskPresetRepository:
             ).fetchall()
             task_ids = [str(row["mp_task_id"]) for row in rows]
             runs = conn.execute(
-                """SELECT DISTINCT ON (mp_task_id) mp_task_id, run_id, status, stage, message, error,
-                          created_at, finished_at
+                """SELECT DISTINCT ON (mp_task_id) mp_task_id, run_id, mp_run_id, status, stage, message, error,
+                          asset_count, completed_count, failed_count, created_at, finished_at, updated_at
                    FROM scan_postprocess_runs WHERE mp_task_id = ANY(%s)
-                   ORDER BY mp_task_id, created_at DESC""",
+                   ORDER BY mp_task_id, created_at DESC, run_id DESC""",
                 (task_ids,),
             ).fetchall() if task_ids else []
         latest = {str(run["mp_task_id"]): dict(run) for run in runs}

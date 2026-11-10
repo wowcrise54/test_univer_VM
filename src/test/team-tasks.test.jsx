@@ -679,6 +679,73 @@ describe("team task progress", () => {
     );
   }
 
+  it("shows a scheduled run separately from older local results and filters partial failures", async () => {
+    const fallback = api.getMockImplementation();
+    api.mockImplementation(async (path, options) => {
+      if (path === "/api/team-tasks")
+        return {
+          rows: [
+            { ...TASK, postprocess: { mp_run_id: "run-1", status: "completed" } },
+            { ...TASK, mp_task_id: "task-2", name: "Новая задача", status: "created", postprocess: null },
+            {
+              ...TASK,
+              mp_task_id: "task-3",
+              name: "Ручной запуск",
+              postprocess: {
+                mp_run_id: "run-3",
+                status: "processing",
+                asset_count: 3,
+                completed_count: 1,
+                failed_count: 0,
+              },
+            },
+          ],
+        };
+      if (path === "/api/team-tasks/task-1/runs?limit=1")
+        return { items: [{ id: "run-2", status: "finished" }] };
+      if (path === "/api/team-tasks/task-2/runs?limit=1")
+        return { items: [] };
+      if (path === "/api/team-tasks/task-3/runs?limit=1")
+        return { items: [{ id: "run-3", status: "running" }] };
+      if (path === "/api/team-tasks/task-3/runs/run-3/jobs")
+        return {
+          items: [
+            { ...JOB, connectionCheckResults: [] },
+            { ...JOB, id: "job-2", status: "running", finishedAt: null, connectionCheckResults: [] },
+          ],
+        };
+      if (path === "/api/team-tasks/task-1/runs?limit=20")
+        return { items: [{ id: "run-4", status: "running" }, { id: "run-2", status: "finished" }] };
+      if (path === "/api/team-tasks/task-1/runs/run-2/jobs")
+        return { items: [JOB, { ...JOB, id: "job-2", errorStatus: "failed" }] };
+      return fallback(path, options);
+    });
+    renderPage();
+    expect(await screen.findByText("2 из 2 заданий · 1 с ошибкой")).toBeInTheDocument();
+    const scheduled = within(screen.getByText("[WIN] Servers").closest("tr"));
+    expect(scheduled.getByText("Карточки — данных по запуску нет")).toBeInTheDocument();
+    expect(await screen.findByText("Карточки обработаны 1 из 3 · ошибок 0")).toBeInTheDocument();
+    expect(await screen.findByText("1 из 2 заданий · 0 с ошибкой")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "active" },
+    });
+    expect(screen.getByText("Ручной запуск")).toBeInTheDocument();
+    expect(screen.queryByText("[WIN] Servers")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "completed" },
+    });
+    expect(screen.getByText("[WIN] Servers")).toBeInTheDocument();
+    expect(screen.queryByText("Ручной запуск")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "attention" },
+    });
+    expect(screen.queryByText("Новая задача")).toBeNull();
+    expect(screen.queryByText("Ручной запуск")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Ход выполнения" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findAllByText("10.0.0.5")).toHaveLength(2);
+  });
+
   it("opens run progress on double click and switches between runs", async () => {
     renderPage();
     fireEvent.doubleClick((await screen.findByText("[WIN] Servers")).closest("tr"));
