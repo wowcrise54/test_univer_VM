@@ -746,6 +746,31 @@ describe("team task progress", () => {
     expect(await within(dialog).findAllByText("10.0.0.5")).toHaveLength(2);
   });
 
+  it("shows hosts from the latest precheck even without a main scan", async () => {
+    const fallback = api.getMockImplementation();
+    api.mockImplementation(async (path, options) => {
+      if (path === "/api/team-tasks")
+        return {
+          rows: [{
+            ...TASK,
+            status: "precheck_failed",
+            postprocess: null,
+            latest_precheck: { hosts: ["10.0.0.7", "srv-01.example.local"] },
+          }],
+        };
+      if (path.startsWith("/api/team-tasks/task-1/runs?")) return { items: [] };
+      return fallback(path, options);
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Ход выполнения" }));
+    const dialog = await screen.findByRole("dialog");
+    const precheck = within(dialog).getByRole("region", {
+      name: "Хосты, не прошедшие последнюю предварительную проверку",
+    });
+    expect(within(precheck).getByText("10.0.0.7")).toBeInTheDocument();
+    expect(within(precheck).getByText("srv-01.example.local")).toBeInTheDocument();
+  });
+
   it("opens run progress on double click and switches between runs", async () => {
     renderPage();
     fireEvent.doubleClick((await screen.findByText("[WIN] Servers")).closest("tr"));

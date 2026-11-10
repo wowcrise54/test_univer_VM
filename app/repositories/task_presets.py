@@ -180,9 +180,22 @@ class TaskPresetRepository:
         with connection.connect() as conn:
             rows = conn.execute(
                 f"""SELECT t.*, t.preset_id::text AS preset_id, p.name AS preset_name, p.os_family,
-                           p.is_active AS preset_is_active, p.allowed_asset_groups
+                           p.is_active AS preset_is_active, p.allowed_asset_groups,
+                           precheck.latest_precheck
                     FROM scan_tasks t
                     JOIN scan_task_presets p ON p.preset_id = t.preset_id
+                    LEFT JOIN LATERAL (
+                        SELECT jsonb_build_object(
+                            'updated_at', child.updated_at,
+                            'false_targets', child.last_remote_response_json::jsonb -> 'false_targets'
+                        ) AS latest_precheck
+                        FROM scan_tasks child
+                        WHERE child.parent_task_id = t.mp_task_id AND child.deleted_at IS NULL
+                          AND child.status IN ('precheck_finished', 'precheck_failed')
+                          AND NOT (child.last_remote_response_json::jsonb ? 'parent_precheck_task_id')
+                        ORDER BY child.created_at DESC, child.id DESC
+                        LIMIT 1
+                    ) precheck ON true
                     WHERE t.deleted_at IS NULL{access}
                     ORDER BY t.updated_at DESC, t.id DESC""",
                 params,

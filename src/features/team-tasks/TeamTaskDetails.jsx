@@ -58,6 +58,7 @@ export function TeamTaskDetails({ task, initialRunId, running, onClose }) {
     (group) => group.name || group.id,
   );
   const scope = [...groups, ...(task.preset_targets || [])].join(", ");
+  const precheck = task.latest_precheck;
 
   const dialog = (
     <div
@@ -79,6 +80,24 @@ export function TeamTaskDetails({ task, initialRunId, running, onClose }) {
         <p className="preset-muted">
           {task.preset_name} · {scope || "цели не указаны"}
         </p>
+        {precheck?.hosts?.length ? (
+          <section
+            className="task-connection-checks"
+            aria-labelledby={`${titleId}-precheck`}
+          >
+            <h3 id={`${titleId}-precheck`}>
+              Хосты, не прошедшие последнюю предварительную проверку
+            </h3>
+            {precheck.updated_at ? (
+              <p className="preset-muted">{formatDate(precheck.updated_at)}</p>
+            ) : null}
+            <ul>
+              {precheck.hosts.map((host) => (
+                <li key={host}>{host}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <div className="team-details-grid">
           <section aria-labelledby={`${titleId}-runs`}>

@@ -10,7 +10,7 @@ from typing import Any
 
 from ..diagnostics import log_event
 from ..domain.errors import DomainError
-from ..domain.scan_targets import normalize_scan_targets
+from ..domain.scan_targets import is_individual_scan_target, normalize_scan_targets
 from ..mpvm_client import build_scanner_task_payload
 from ..repositories.task_presets import TaskPresetRepository
 from .task_presets import user_role_ids
@@ -85,7 +85,20 @@ class TeamTasksService:
         return None if unrestricted else user_role_ids(user)
 
     def list(self, user: dict[str, Any], *, unrestricted: bool) -> dict[str, Any]:
-        return {"rows": self._presets.list_team_tasks(role_ids=self._scope(user, unrestricted))}
+        rows = self._presets.list_team_tasks(role_ids=self._scope(user, unrestricted))
+        for task in rows:
+            precheck = task.get("latest_precheck")
+            if precheck is None:
+                continue
+            targets = precheck.get("false_targets")
+            if not isinstance(targets, list):
+                targets = []
+            hosts = dict.fromkeys(
+                target for target in targets
+                if isinstance(target, str) and target and is_individual_scan_target(target)
+            )
+            task["latest_precheck"] = {"updated_at": precheck["updated_at"], "hosts": list(hosts)}
+        return {"rows": rows}
 
     def get(self, task_id: str, user: dict[str, Any], *, unrestricted: bool) -> dict[str, Any]:
         task = self._presets.get_team_task(task_id, role_ids=self._scope(user, unrestricted))

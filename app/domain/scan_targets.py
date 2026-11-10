@@ -45,6 +45,12 @@ def _ip_or_none(value: str) -> IPv4Address | IPv6Address | None:
         return None
 
 
+def is_individual_scan_target(target: str) -> bool:
+    """Distinguish a canonical host target from a CIDR or an IP range."""
+    start, separator, end = target.partition("-")
+    return "/" not in target and not (separator and _ip_or_none(start) and _ip_or_none(end))
+
+
 def normalize_scan_targets(values: Iterable[str]) -> list[str]:
     """Normalize targets, keeping the first occurrence of each one."""
     return list(dict.fromkeys(normalize_scan_target(value) for value in values))

@@ -134,7 +134,24 @@ def test_team_tasks_are_scoped_by_preset_roles(test_db):
     assert task["payload"]["include"] == {"assets": [], "targets": ["10.0.0.1"], "assetsGroups": []}
     assert task["preset_asset_groups"] == [] and task["preset_targets"] == ["10.0.0.1"]
 
+    db.record_scan_task(
+        mp_task_id="precheck-win", payload={"name": "Windows precheck"}, status="precheck_failed",
+        parent_task_id="task-win", remote_response={
+            "false_targets": ["10.0.0.7", "srv-01.example.local", "10.0.1.0/24", "10.0.2.1-10.0.2.10"],
+        },
+    )
+    db.record_scan_task(
+        mp_task_id="precheck-retry", payload={"name": "Precheck retry"}, status="precheck_finished",
+        parent_task_id="task-win", remote_response={
+            "parent_precheck_task_id": "precheck-win", "false_targets": [],
+        },
+    )
+
     assert [row["mp_task_id"] for row in service.list(win_user, unrestricted=False)["rows"]] == ["task-win"]
+    assert service.list(win_user, unrestricted=False)["rows"][0]["latest_precheck"]["hosts"] == [
+        "10.0.0.7", "srv-01.example.local",
+    ]
+    assert service.list(lin_user, unrestricted=False)["rows"][0]["latest_precheck"] is None
     assert {row["mp_task_id"] for row in service.list(win_user, unrestricted=True)["rows"]} == {"task-win", "task-lin"}
     with pytest.raises(LookupError):
         service.get("task-lin", win_user, unrestricted=False)
