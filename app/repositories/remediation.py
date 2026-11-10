@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .. import db
+from ..persistence import codecs, connection
 from .vulnerabilities import VULNERABILITY_SELECTOR_SQL
 
 STATUSES = {"open", "in_progress", "risk_accepted", "false_positive", "resolved"}
@@ -46,7 +46,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
 
 class RemediationRepository:
     def asset_ids(self) -> list[str]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute("SELECT asset_id FROM asset_cards ORDER BY asset_id").fetchall()
         return [str(row["asset_id"]) for row in rows]
 
@@ -57,7 +57,7 @@ class RemediationRepository:
         day = datetime.now(UTC).date().isoformat()
         notification_id = f"remediation-digest:{day}"
         details = {key: summary.get(key) for key in ("open", "overdue", "near_due")}
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO notifications(notification_id,level,title,message,event_type,details_json,created_at)
                    VALUES (%s,'warning','Контроль сроков устранения',%s,'remediation.daily_digest',%s,NOW())
@@ -72,12 +72,12 @@ class RemediationRepository:
                 conn.execute(
                     """INSERT INTO webhook_deliveries(delivery_id,notification_id,attempt,status,next_attempt_at,created_at,updated_at)
                        VALUES (%s,%s,0,'pending',%s,%s,%s)""",
-                    (str(uuid.uuid4()), notification_id, db.now_utc(), db.now_utc(), db.now_utc()),
+                    (str(uuid.uuid4()), notification_id, codecs.now_utc(), codecs.now_utc(), codecs.now_utc()),
                 )
         return row is not None
 
     def policy(self) -> dict[str, Any]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM remediation_sla_policy WHERE policy_id=1").fetchone()
         assert row is not None
         result = dict(row)
@@ -86,7 +86,7 @@ class RemediationRepository:
 
     def update_policy(self, values: dict[str, int], *, apply_to_open: bool) -> dict[str, Any]:
         columns = ("critical_days", "high_days", "medium_days", "low_days", "near_due_days")
-        with db.connect() as conn:
+        with connection.connect() as conn:
             current = conn.execute("SELECT * FROM remediation_sla_policy WHERE policy_id=1 FOR UPDATE").fetchone()
             assert current is not None
             merged = {key: int(values.get(key, current[key])) for key in columns}
@@ -115,7 +115,7 @@ class RemediationRepository:
         return result
 
     def expire_risk_acceptances(self) -> int:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 """UPDATE remediation_cases c SET status='open', risk_reason=NULL, risk_expires_at=NULL,
                    exception_reason=NULL, exception_expires_at=NULL,
@@ -162,7 +162,7 @@ class RemediationRepository:
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         limit = max(1, min(int(filters.get("limit", 50)), 500))
         offset = max(0, int(filters.get("offset", 0)))
-        with db.connect() as conn:
+        with connection.connect() as conn:
             total_row = conn.execute(f"SELECT COUNT(*) AS count FROM remediation_cases c {where}", params).fetchone()
             rows = conn.execute(
                 f"""SELECT c.*, card.display_name, card.ip_address, card.fqdn,
@@ -181,7 +181,7 @@ class RemediationRepository:
 
     def get(self, case_id: str) -> dict[str, Any] | None:
         self.expire_risk_acceptances()
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """SELECT c.*, card.display_name, card.ip_address, card.fqdn,
                    (c.status IN ('open','in_progress') AND c.due_at < NOW()) AS overdue,
@@ -214,7 +214,7 @@ class RemediationRepository:
     ) -> dict[str, Any]:
         selector = VULNERABILITY_SELECTOR_SQL
         case_id: str | None = None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             finding = conn.execute(
                 f"""
                 SELECT DISTINCT ON ({selector})
@@ -472,7 +472,7 @@ class RemediationRepository:
             assignments.append("manual_due=TRUE")
         if not assignments and not comment:
             return self.get(case_id)
-        with db.connect() as conn:
+        with connection.connect() as conn:
             old = conn.execute("SELECT * FROM remediation_cases WHERE case_id=%s FOR UPDATE", (case_id,)).fetchone()
             if not old:
                 return None
@@ -496,7 +496,7 @@ class RemediationRepository:
 
     def summary(self) -> dict[str, Any]:
         self.expire_risk_acceptances()
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """SELECT COUNT(*) FILTER (WHERE status IN ('open','in_progress')) AS open,
                    COUNT(*) FILTER (WHERE status IN ('open','in_progress') AND due_at < NOW()) AS overdue,
@@ -531,7 +531,7 @@ class RemediationRepository:
             second=0,
             microsecond=0,
         )
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             summary = dict(
                 conn.execute(
@@ -706,7 +706,7 @@ class RemediationRepository:
     def reconcile_asset(self, asset_id: str, *, stale_days: int) -> dict[str, int]:
         now = datetime.now(UTC)
         selector = VULNERABILITY_SELECTOR_SQL
-        with db.connect() as conn:
+        with connection.connect() as conn:
             policy = conn.execute("SELECT * FROM remediation_sla_policy WHERE policy_id=1").fetchone()
             card = conn.execute("SELECT * FROM asset_cards WHERE asset_id=%s", (asset_id,)).fetchone()
             if not card or not policy:
@@ -897,7 +897,7 @@ class CoverageRepository:
         base_sql = self.BASE_SQL
         sql = f"""{base_sql} SELECT *, COUNT(*) OVER() total FROM base {where}
           ORDER BY (missing_card OR stale OR truncated OR last_refresh_failed) DESC,display_name,asset_id LIMIT %s OFFSET %s"""
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(sql, (*params, limit, offset)).fetchall()
             if rows:
                 total = int(rows[0]["total"])
@@ -907,7 +907,7 @@ class CoverageRepository:
         return {"rows": [dict(row) for row in rows], "total": total, "stale_days": stale_days}
 
     def summary(self, *, stale_days: int) -> dict[str, Any]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 f"""{self.BASE_SQL} SELECT
                   COUNT(*) AS total_assets,

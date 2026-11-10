@@ -13,6 +13,8 @@ from fastapi import BackgroundTasks
 from app import diagnostics
 from app.core.config import Settings
 from app.core.runtime import CancellationRegistry
+from app.persistence import connection as _pconn
+from app.persistence import schema as _schema
 from app.repositories import passport_refresh as repository
 from app.services import passport_refresh as refresh
 from app.services import passport_scheduler as scheduling
@@ -114,8 +116,8 @@ def test_completed_scheduler_future_can_restart():
 def test_missing_advisory_lock_result_fails_closed(monkeypatch):
     connection = MagicMock()
     connection.execute.return_value.fetchone.return_value = None
-    monkeypatch.setattr(repository.db, "init_db", Mock())
-    monkeypatch.setattr(repository.db, "connect", lambda: nullcontext(connection))
+    monkeypatch.setattr(_schema, "init_db", Mock())
+    monkeypatch.setattr(_pconn, "connect", lambda: nullcontext(connection))
     assert repository.reserve_periodic({}, now=datetime(2026, 11, 8, tzinfo=UTC), interval_seconds=60) is None
 
 

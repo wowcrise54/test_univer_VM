@@ -7,6 +7,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import auth, ldap, main
+from app.persistence import codecs as _pcodecs
+
 from app.ldap import LdapError
 
 ADMIN = {"id": 1, "username": "admin", "display_name": "Admin", "role": "admin", "is_active": True,
@@ -68,7 +70,7 @@ def test_ldap_login_provisions_regular_user_when_local_missing(monkeypatch):
          patch.object(auth, "_provision_ldap_user", side_effect=lambda i: dict(VIEWER)), \
          patch.object(auth, "create_session", return_value="tok") as create_session, \
          patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+         patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login", json={"username": "ivan.petrov", "password": "secret"})
 
@@ -86,7 +88,7 @@ def test_local_login_mode_does_not_try_ldap(monkeypatch):
         raise AssertionError("LDAP should not be called for local login mode")
     monkeypatch.setattr(auth, "resolve_ldap_identity", _should_not_run)
 
-    with patch.object(auth, "audit_event"), patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+    with patch.object(auth, "audit_event"), patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login",
             json={"username": "ivan.petrov", "password": "secret", "auth_type": "local"},
@@ -107,7 +109,7 @@ def test_ldap_login_mode_uses_ldap_without_local_password_check(monkeypatch):
          patch.object(auth, "_provision_ldap_user", side_effect=lambda i: dict(VIEWER)), \
          patch.object(auth, "create_session", return_value="tok"), \
          patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+         patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login",
             json={"username": "ivan.petrov", "password": "secret", "auth_type": "ldap"},
@@ -126,7 +128,7 @@ def test_ldap_login_maps_admin_group_to_admin_role(monkeypatch):
          patch.object(auth, "_provision_ldap_user", return_value=dict(ADMIN)), \
          patch.object(auth, "create_session", return_value="tok"), \
          patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+         patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login", json={"username": "ivan.petrov", "password": "secret"})
 
@@ -143,7 +145,7 @@ def test_ldap_error_falls_back_to_401(monkeypatch):
     with patch.object(auth, "_local_user_record", return_value=None), \
          patch.object(auth, "_provision_ldap_user", return_value=None), \
          patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+         patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login", json={"username": "ivan.petrov", "password": "wrong"})
     assert response.status_code == 401
@@ -158,7 +160,7 @@ def test_existing_local_user_wins_over_ldap(monkeypatch):
     monkeypatch.setattr(auth, "resolve_ldap_identity", _should_not_run)
     with patch.object(auth, "create_session", return_value="tok"), \
          patch.object(auth, "audit_event"), \
-         patch.object(auth.db, "now_utc", return_value=_fake_now_utc()):
+         patch.object(_pcodecs, "now_utc", return_value=_fake_now_utc()):
         response = TestClient(main.app).post(
             "/api/auth/login", json={"username": "ivan.petrov", "password": "secret"})
     assert response.status_code == 200

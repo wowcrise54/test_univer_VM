@@ -8,14 +8,15 @@ from uuid import uuid4
 
 import psycopg
 
-from .. import db
+from ..persistence import codecs, connection, schema
+from .operations import decode_operation, get_operation, register_operation
 
 KIND = "passport_catalog_refresh"
 ACTIVE = ("queued", "running", "cancelling")
 
 
 def create(operation_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    return db.register_operation(
+    return register_operation(
         operation_id, kind=KIND, source_id=operation_id,
         status="queued", stage="queued", progress_percent=0,
         subject_type="vulnerability_passports", subject_label="Паспорта уязвимостей",
@@ -24,29 +25,29 @@ def create(operation_id: str, request: dict[str, Any]) -> dict[str, Any]:
 
 
 def get(operation_id: str) -> dict[str, Any] | None:
-    operation = db.get_operation(operation_id, include_events=False)
+    operation = get_operation(operation_id, include_events=False)
     return operation if operation and operation["kind"] == KIND else None
 
 
 def latest() -> dict[str, Any] | None:
-    db.init_db()
-    with db.connect() as conn:
+    schema.init_db()
+    with connection.connect() as conn:
         row = conn.execute(
             """SELECT * FROM operations WHERE kind = %s
                ORDER BY CASE WHEN status = ANY(%s) THEN 0 ELSE 1 END,
                         created_at DESC, operation_id DESC LIMIT 1""",
             (KIND, list(ACTIVE)),
         ).fetchone()
-    return db.decode_operation(dict(row)) if row else None
+    return decode_operation(dict(row)) if row else None
 
 
 def reserve_periodic(
     request: dict[str, Any], *, now: datetime, interval_seconds: int,
 ) -> dict[str, Any] | None:
     """Reserve one due periodic refresh in a short transaction."""
-    db.init_db()
+    schema.init_db()
     try:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             lock = conn.execute(
                 "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS acquired",
                 ("mpvm.passport-periodic-reservation",),
@@ -75,7 +76,7 @@ def reserve_periodic(
                     return None
             operation_id = str(uuid4())
             stamp = now.isoformat(timespec="seconds")
-            return db.register_operation(
+            return register_operation(
                 operation_id, kind=KIND, source_id=operation_id,
                 status="queued", stage="queued", progress_percent=0,
                 subject_type="vulnerability_passports",
@@ -95,18 +96,18 @@ def update(operation_id: str, *, status: str, stage: str, percent: int,
         raise ValueError("Passport refresh operation is missing")
     if current["status"] in {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}:
         return current
-    return db.register_operation(
+    return register_operation(
         operation_id, kind=KIND, source_id=operation_id,
         status=status, stage=stage, progress_percent=percent, message=message,
-        result=result, started_at=db.now_utc() if status == "running" else None,
-        finished_at=db.now_utc() if status in {"completed", "completed_with_errors", "failed", "cancelled"} else None,
+        result=result, started_at=codecs.now_utc() if status == "running" else None,
+        finished_at=codecs.now_utc() if status in {"completed", "completed_with_errors", "failed", "cancelled"} else None,
     )
 
 
 def interrupt_active() -> int:
-    db.init_db()
-    current = db.now_utc()
-    with db.connect() as conn:
+    schema.init_db()
+    current = codecs.now_utc()
+    with connection.connect() as conn:
         rows = conn.execute(
             """UPDATE operations SET status = 'interrupted', stage = 'interrupted',
                message = 'Обновление прервано перезапуском приложения.',

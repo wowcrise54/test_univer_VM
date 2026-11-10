@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from .. import db
+from ..persistence import connection, schema
+from ..persistence.codecs import decimal_to_number, json_loads
 
 VulnerabilitySource = Literal["os", "software", "docker"]
 VULNERABILITY_SEVERITIES = ("critical", "high", "medium", "low", "unknown")
@@ -491,7 +492,7 @@ def _filtered_findings_cte(
 
 
 def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
-    cvss_score = db.decimal_to_number(row.get("cvss_score"))
+    cvss_score = decimal_to_number(row.get("cvss_score"))
     passports = list(row.get("passports") or [])
     short_description = next(
         (
@@ -525,7 +526,7 @@ def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
-    cves = db.json_loads(row.get("cves_json"), [])
+    cves = json_loads(row.get("cves_json"), [])
     cves = cves if isinstance(cves, list) else []
     cve = None
     for item in cves:
@@ -547,12 +548,12 @@ def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
     if not cve and str(external_id or "").upper().startswith("CVE-"):
         cve = str(external_id)
 
-    score = db.decimal_to_number(row.get("score_numeric"))
+    score = decimal_to_number(row.get("score_numeric"))
     if score is None:
         score = row.get("score")
     severity = str(row.get("severity") or "").strip().lower()
     if severity not in {"critical", "high", "medium", "low"}:
-        numeric_score = db.decimal_to_number(row.get("score_numeric"))
+        numeric_score = decimal_to_number(row.get("score_numeric"))
         if numeric_score is None:
             severity = "unknown"
         elif numeric_score >= 9:
@@ -564,8 +565,8 @@ def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
         else:
             severity = "low"
 
-    vendors = db.json_loads(row.get("vendors_json"), [])
-    components = db.json_loads(row.get("affected_components_json"), [])
+    vendors = json_loads(row.get("vendors_json"), [])
+    components = json_loads(row.get("affected_components_json"), [])
     sources = list(row.get("sources") or [])
     contexts = []
     if "docker" in sources:
@@ -601,7 +602,7 @@ def _decode_trending_passport(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decode_host(row: dict[str, Any]) -> dict[str, Any]:
-    cvss_score = db.decimal_to_number(row.get("cvss_score"))
+    cvss_score = decimal_to_number(row.get("cvss_score"))
     remediation = None
     if row.get("remediation_case_id"):
         remediation = {
@@ -810,8 +811,8 @@ class VulnerabilityAnalyticsRepository:
         else:
             capture_time = capture_time.astimezone(UTC)
 
-        db.init_db()
-        with db.connect() as conn:
+        schema.init_db()
+        with connection.connect() as conn:
             inserted = conn.execute(
                 CAPTURE_SNAPSHOT_SQL,
                 (clean_scope, clean_kind, clean_id, capture_time),
@@ -850,8 +851,8 @@ class VulnerabilityAnalyticsRepository:
         to_at: datetime,
         scope: str = VULNERABILITY_TRENDS_SCOPE,
     ) -> list[dict[str, Any]]:
-        db.init_db()
-        with db.connect() as conn:
+        schema.init_db()
+        with connection.connect() as conn:
             rows = conn.execute(
                 f"""
                 WITH range_snapshots AS (
@@ -964,7 +965,7 @@ class VulnerabilityAnalyticsRepository:
         has_fix: str | None = None,
         fix_q: str | None = None,
     ) -> dict[str, Any]:
-        db.init_db()
+        schema.init_db()
         use_rollup = ROLLUP_ENABLED and not any(
             (q, host_q, os, asset_type, asset_id, severity, source, has_fix, fix_q)
         )
@@ -980,7 +981,7 @@ class VulnerabilityAnalyticsRepository:
             fix_q=fix_q,
         )
         findings_cte = f"WITH filtered_findings AS (SELECT * FROM {SUMMARY_FINDINGS_TABLE})"
-        with db.connect() as conn:
+        with connection.connect() as conn:
             # Per-card EXISTS stops at the first finding instead of joining every finding row.
             coverage_row = dict(
                 conn.execute(
@@ -1225,8 +1226,8 @@ class VulnerabilityAnalyticsRepository:
             "docker": "COALESCE(host_counts.docker_findings, 0)",
             "host": "COALESCE(host_counts.software_os_findings, 0)",
         }[context]
-        db.init_db()
-        with db.connect() as conn:
+        schema.init_db()
+        with connection.connect() as conn:
             rows = conn.execute(
                 f"""
                 WITH trend_passports AS (
@@ -1386,7 +1387,7 @@ class VulnerabilityAnalyticsRepository:
             default_direction="desc",
         )
         sort_by_fix_columns = sort_by in {"how_to_fix", "has_fix"}
-        db.init_db()
+        schema.init_db()
         use_rollup = (
             ROLLUP_ENABLED
             and not any((q, host_q, os, asset_type, asset_id, severity, source, has_fix, fix_q))
@@ -1446,7 +1447,7 @@ class VulnerabilityAnalyticsRepository:
                 LIMIT %s OFFSET %s
             )
         """ + _PASSPORT_PAGE_CTES
-        with db.connect() as conn:
+        with connection.connect() as conn:
             total = 0
             if use_rollup:
                 total, rows = self._rollup_page(
@@ -1767,7 +1768,7 @@ class VulnerabilityAnalyticsRepository:
             default="severity",
             default_direction="asc",
         )
-        db.init_db()
+        schema.init_db()
         cte, params = _filtered_findings_cte(
             host_q=host_q,
             os=os,
@@ -1816,7 +1817,7 @@ class VulnerabilityAnalyticsRepository:
                 LIMIT %s OFFSET %s
             )
         """
-        with db.connect() as conn:
+        with connection.connect() as conn:
             selection_row = conn.execute(
                 cte
                 + """

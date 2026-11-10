@@ -4,6 +4,9 @@ import json
 
 import pytest
 
+from app.persistence import codecs
+from app.repositories.passports import catalog as passport_catalog
+
 from app import db
 
 pytestmark = pytest.mark.integration
@@ -203,7 +206,7 @@ def test_reconcile_without_scope_relinks_every_asset_in_chunks(test_db, monkeypa
 
 
 def test_upsert_passports_saves_in_batches_and_reports_progress(test_db, monkeypatch):
-    monkeypatch.setattr(db, "PASSPORT_SAVE_BATCH_SIZE", 2)
+    monkeypatch.setattr(passport_catalog, "PASSPORT_SAVE_BATCH_SIZE", 2)
     events = []
     result = db.upsert_vulnerability_passports(
         [{"internal_id": f"P{i}", "name": f"n{i}"} for i in range(5)],
@@ -233,7 +236,7 @@ def _cve_rows():
 
 def test_upsert_rewrites_only_changed_passports(test_db, monkeypatch):
     ticks = itertools.count()
-    monkeypatch.setattr(db, "now_utc", lambda: f"2026-11-04T10:00:00.{next(ticks):06d}+00:00")
+    monkeypatch.setattr(codecs, "now_utc", lambda: f"2026-11-04T10:00:00.{next(ticks):06d}+00:00")
     passports = [
         {"internal_id": "P1", "name": "one", "cves": [{"displayName": "CVE-1-1"}]},
         {"internal_id": "P2", "name": "two", "cves": [{"displayName": "CVE-2-2"}]},

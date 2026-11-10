@@ -36,7 +36,7 @@ from app import db, main
 # both in the Docker test stack and on a plain CI checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_HEAD = "20261106_0037"
+EXPECTED_HEAD = "20261110_0038"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a

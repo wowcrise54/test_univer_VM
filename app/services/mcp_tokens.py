@@ -24,7 +24,7 @@ from starlette.types import Scope
 from mcp_server.principal import TOKEN_PREFIX, AuthRejected, Principal
 
 from .. import auth as app_auth
-from .. import db
+from ..persistence import connection
 from ..repositories import mcp_tokens as repository
 
 SESSION_MINUTES = 60
@@ -182,7 +182,7 @@ def create_token(
     actor: dict[str, Any],
 ) -> dict[str, Any]:
     scopes, ip_allowlist = validate_scopes(scopes), validate_ip_allowlist(ip_allowlist)
-    with db.connect() as conn:
+    with connection.connect() as conn:
         token_pk, plaintext = _issue(
             conn, name=name.strip(), owner_user_id=owner_user_id, scopes=scopes,
             ip_allowlist=ip_allowlist, expires_in_days=expires_in_days, actor=actor,
@@ -194,7 +194,7 @@ def create_token(
 
 
 def revoke_token(token_id: int, *, actor: dict[str, Any]) -> dict[str, Any]:
-    with db.connect() as conn:
+    with connection.connect() as conn:
         row = repository.get_token(token_id, conn=conn, lock=True)
         if not row:
             raise HTTPException(404, detail={"code": "TOKEN_NOT_FOUND", "message": "Токен не найден."})
@@ -208,7 +208,7 @@ def revoke_token(token_id: int, *, actor: dict[str, Any]) -> dict[str, Any]:
 def rotate_token(token_id: int, *, actor: dict[str, Any], grace_hours: int, expires_in_days: int) -> dict[str, Any]:
     """Issue a replacement with the same owner and scopes; the old token works for ``grace_hours`` more."""
     now = _now()
-    with db.connect() as conn:
+    with connection.connect() as conn:
         old = repository.get_token(token_id, conn=conn, lock=True)
         if not old:
             raise HTTPException(404, detail={"code": "TOKEN_NOT_FOUND", "message": "Токен не найден."})

@@ -92,6 +92,12 @@ def migrated_db():
 def test_db(migrated_db):
     """A clean PostgreSQL data state for a single test."""
     truncate_all_state()
+    # The passport list total memo is a process global keyed by filter; the
+    # TRUNCATE above removes rows it counted, so drop it too or a cached total
+    # leaks across tests.
+    from app.repositories.passports import counts as _passport_counts
+
+    _passport_counts.invalidate_passport_totals()
     # Ensure the RBAC catalog exists (auth unit tests seed it via mocks, but
     # integration tests exercise the real tables).
     from app import auth

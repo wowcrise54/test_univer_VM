@@ -7,6 +7,8 @@ import pytest
 from fastapi import HTTPException
 
 from app import auth, ldap
+from app.persistence import connection as _pconn
+
 
 
 @pytest.fixture
@@ -241,5 +243,5 @@ def test_login_rate_limit_expires_per_identity_and_success_clears_it(monkeypatch
 
 
 def test_audit_storage_failure_does_not_break_authentication(monkeypatch):
-    monkeypatch.setattr(auth.db, "connect", MagicMock(side_effect=RuntimeError("offline")))
+    monkeypatch.setattr(_pconn, "connect", MagicMock(side_effect=RuntimeError("offline")))
     assert auth.audit_event(request=None, user=None, event_type="login", decision="deny") is None

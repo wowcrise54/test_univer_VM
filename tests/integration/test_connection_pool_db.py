@@ -7,15 +7,16 @@ import psycopg
 import pytest
 
 from app import db
+from app.persistence import connection as db_conn
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture()
 def pooled(test_db, monkeypatch):
-    monkeypatch.setattr(db, "DATABASE_POOL_MAX_SIZE", 3)
-    monkeypatch.setattr(db, "DATABASE_POOL_MIN_SIZE", 1)
-    monkeypatch.setattr(db, "DATABASE_POOL_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_MAX_SIZE", 3)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_MIN_SIZE", 1)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_TIMEOUT_SECONDS", 1.0)
     db.close_connection_pool()
     yield
     db.close_connection_pool()
@@ -73,7 +74,7 @@ def test_saturated_pool_raises_operational_error_without_opening_circuit(pooled)
 
 
 def test_pool_can_be_disabled(test_db, monkeypatch):
-    monkeypatch.setattr(db, "DATABASE_POOL_MAX_SIZE", 0)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_MAX_SIZE", 0)
     db.close_connection_pool()
     with db.connect() as conn:
         conn.execute("SELECT 1")
@@ -81,10 +82,10 @@ def test_pool_can_be_disabled(test_db, monkeypatch):
 
 
 def test_unreachable_database_opens_the_circuit_breaker_through_the_pool(test_db, monkeypatch):
-    monkeypatch.setattr(db, "DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/none")
-    monkeypatch.setattr(db, "DATABASE_POOL_MAX_SIZE", 2)
-    monkeypatch.setattr(db, "DATABASE_POOL_MIN_SIZE", 0)
-    monkeypatch.setattr(db, "DATABASE_POOL_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(db_conn, "DATABASE_URL", "postgresql://nobody:***@127.0.0.1:1/none")
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_MAX_SIZE", 2)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_MIN_SIZE", 0)
+    monkeypatch.setattr(db_conn, "DATABASE_POOL_TIMEOUT_SECONDS", 1.0)
     db.close_connection_pool()
     db._close_database_circuit()
     try:

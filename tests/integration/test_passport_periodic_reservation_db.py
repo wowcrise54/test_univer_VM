@@ -86,6 +86,6 @@ def test_manual_catalog_conflict_rolls_back_reservation(test_db, monkeypatch):
     def conflicting(*args, **kwargs):
         raise psycopg.errors.UniqueViolation("another catalog won")
 
-    monkeypatch.setattr(db, "register_operation", conflicting)
+    monkeypatch.setattr(passport_refresh, "register_operation", conflicting)
     assert passport_refresh.reserve_periodic(REQUEST, now=NOW, interval_seconds=3600) is None
     assert passport_refresh.latest() is None

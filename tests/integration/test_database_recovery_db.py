@@ -4,6 +4,8 @@ import psycopg
 from fastapi.testclient import TestClient
 
 from app import db, main
+from app.persistence import connection
+
 from app.core.container import AppContainer
 from app.repositories.readiness import ReadinessRepository
 
@@ -46,7 +48,7 @@ def test_startup_recovers_bootstrap_and_scheduler_after_database_returns(test_db
     monkeypatch.setattr(main, "configure_session_from_env", lambda: None)
     monkeypatch.setattr(main.app.state, "container", container)
     try:
-        with patch.object(db, "connect", side_effect=psycopg.OperationalError("private connection failure")):
+        with patch.object(connection, "connect", side_effect=psycopg.OperationalError("private connection failure")):
             main.startup()
             response = TestClient(main.app).get("/api/ready")
             assert response.status_code == 503

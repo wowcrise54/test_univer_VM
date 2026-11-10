@@ -6,7 +6,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from .. import db
+from ..persistence import connection
 
 
 class ReadinessRepository:
@@ -18,7 +18,7 @@ class ReadinessRepository:
         return set(ScriptDirectory.from_config(config).get_heads())
 
     def probe(self) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             exists = conn.execute(
                 "SELECT to_regclass('public.alembic_version') IS NOT NULL AS present"
             ).fetchone()

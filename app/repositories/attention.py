@@ -4,7 +4,7 @@ import base64
 import json
 from typing import Any
 
-from .. import db
+from ..persistence import connection, schema
 
 _PRIORITY = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 _RETRYABLE_OPERATION_KINDS = {"asset_card_build", "passport_detail_sync", "automation_run"}
@@ -36,9 +36,9 @@ class AttentionRepository:
         self.stale_days = max(1, int(stale_days))
 
     def _rows(self, *, permissions: set[str], owner: str | None = None) -> list[dict[str, Any]]:
-        db.init_db()
+        schema.init_db()
         result: list[dict[str, Any]] = []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             if "remediation.read" in permissions:
                 clauses = ["c.status IN ('open','in_progress')"]
                 params: list[Any] = []
@@ -136,14 +136,14 @@ class AttentionRepository:
         return {"items": page, "total": len(rows), "next_cursor": encode_cursor(offset + limit) if offset + limit < len(rows) else None}
 
     def search(self, *, query: str, kind: str | None, permissions: set[str], limit: int, cursor: str | None) -> dict[str, Any]:
-        db.init_db()
+        schema.init_db()
         q = query.strip()
         if len(q) < 2:
             raise ValueError("Search query must contain at least two characters.")
         pattern = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         requested = {kind} if kind else {"asset", "vulnerability", "task", "case", "operation"}
         items: list[dict[str, Any]] = []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             if "asset" in requested and "asset_cards.read" in permissions:
                 rows = conn.execute("""SELECT asset_id,display_name,ip_address,fqdn,vulnerability_level FROM asset_cards
                     WHERE asset_id ILIKE %s OR display_name ILIKE %s OR ip_address ILIKE %s OR fqdn ILIKE %s

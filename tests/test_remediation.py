@@ -262,8 +262,7 @@ class RemediationRepositoryTests(unittest.TestCase):
         connection = FakeConnection([[finding], [current], [updated], []])
         repository = RemediationRepository()
         expected = {**updated, "events": []}
-        with patch(
-            "app.repositories.remediation.db.connect",
+        with patch("app.persistence.connection.connect",
             return_value=connection,
         ), patch.object(repository, "get", return_value=expected):
             result = repository.start_for_finding(
@@ -290,8 +289,7 @@ class RemediationRepositoryTests(unittest.TestCase):
     def test_start_for_finding_rejects_an_absent_current_finding(self):
         connection = FakeConnection([[]])
         repository = RemediationRepository()
-        with patch(
-            "app.repositories.remediation.db.connect",
+        with patch("app.persistence.connection.connect",
             return_value=connection,
         ), self.assertRaises(LookupError):
             repository.start_for_finding(
@@ -357,8 +355,7 @@ class RemediationRepositoryTests(unittest.TestCase):
             ]
         )
         repository = RemediationRepository()
-        with patch(
-            "app.repositories.remediation.db.connect",
+        with patch("app.persistence.connection.connect",
             return_value=connection,
         ):
             result = repository.resolution_stats(days=30, recent_limit=20)

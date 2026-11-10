@@ -22,6 +22,7 @@ from ..mpvm_client import (
     extract_asset_ids_from_csv,
     extract_ips_from_csv,
 )
+from ..persistence import codecs
 from ..services.scan_postprocess import SCAN_LOG, scan_log
 from .main_host import host
 
@@ -342,7 +343,7 @@ def start_scanner_task_impl(
             db.update_scan_postprocess_docker_group(
                 docker_group_run_id,
                 state="starting",
-                scanner_start_requested_at=db.now_utc(),
+                scanner_start_requested_at=codecs.now_utc(),
             )
         start_response = client.start_scanner_task_with_retry(
             token,
