@@ -68,6 +68,12 @@ SCAN_POSTPROCESS_FUTURES_LOCK = threading.Lock()
 SCAN_POSTPROCESS_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 
+_SCAN_REMOVAL_BATCH_SIZE = 20
+
+
+_SCAN_REMOVAL_BATCHERS: dict[str, _ScanRemovalBatcher] = {}
+
+
 def cancel_scan_postprocess_run(run_id: str) -> dict[str, Any]:
     run = db.request_scan_postprocess_cancel(run_id)
     if not run:
@@ -354,6 +360,9 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
         client.session.close()
         with SCAN_POSTPROCESS_FUTURES_LOCK:
             SCAN_POSTPROCESS_CANCEL_EVENTS.pop(run_id, None)
+            removal_batcher = _SCAN_REMOVAL_BATCHERS.pop(run_id, None)
+        if removal_batcher is not None:
+            removal_batcher.shutdown()
 
 
 def cleanup_finished_task_prechecks(*, client: MpVmClient, token: str, task_id: str) -> None:
@@ -376,6 +385,291 @@ def raise_if_scan_postprocess_cancelled(run_id: str) -> None:
 def scan_postprocess_cancel_event(run_id: str) -> threading.Event | None:
     with SCAN_POSTPROCESS_FUTURES_LOCK:
         return SCAN_POSTPROCESS_CANCEL_EVENTS.get(run_id)
+
+
+def scan_removal_batcher(run_id: str) -> _ScanRemovalBatcher | None:
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        return _SCAN_REMOVAL_BATCHERS.get(run_id)
+
+
+class _ScanRemovalBatcher:
+    """Groups card-saved assets into MP VM removal batches for one scan run.
+
+    Asset workers call :meth:`enqueue_and_wait` after the card is saved
+    locally and block until the single per-run daemon thread reaches a
+    terminal status for their item. One ``remove_assets`` call covers up to
+    ``_SCAN_REMOVAL_BATCH_SIZE`` assets and one ``wait_for_asset_removal``
+    stream covers the whole operation. Items that already carry a removal
+    operation (restart recovery) are joined: the batcher polls the existing
+    operation and never starts a second removal for the same asset.
+
+    Lock discipline: the condition lock guards only in-memory state
+    (``_pending``, ``_joins``, ``_results``, flags). All HTTP calls and DB
+    writes happen outside the lock.
+    """
+
+    def __init__(self, *, run_id: str, auth: Any, token: str) -> None:
+        self.run_id = run_id
+        self.auth = auth
+        self.token = token
+        self._cond = threading.Condition()
+        self._pending: list[tuple[int, str]] = []
+        self._joins: list[tuple[int, str]] = []
+        self._results: dict[int, tuple[str, str, str | None]] = {}
+        self._waiters = 0
+        self._final = False
+        self._stopped = False
+        self._client: MpVmClient | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"scan-removal-batcher-{run_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    # -- worker / monitor API ---------------------------------------------
+
+    def enqueue_and_wait(
+        self,
+        item_id: int,
+        asset_id: str,
+        *,
+        existing_operation_id: str | None = None,
+    ) -> tuple[str, str, str | None]:
+        """Queue the item for removal and block until its terminal status.
+
+        Returns ``(status, message, operation_id)`` where status is
+        ``completed`` or ``removal_failed``; raises ``ScanPostprocessCancelled``
+        when the run was cancelled.
+        """
+        with self._cond:
+            self._waiters += 1
+            if existing_operation_id:
+                self._joins.append((int(item_id), str(existing_operation_id)))
+            else:
+                self._pending.append((int(item_id), asset_id))
+            self._cond.notify_all()
+            try:
+                while int(item_id) not in self._results:
+                    self._cond.wait(timeout=1.0)
+                    if not self._thread.is_alive():
+                        # The batcher thread died unexpectedly; record the
+                        # failure locally so this worker cannot hang.
+                        self._store_result(
+                            int(item_id),
+                            "removal_failed",
+                            "Removal batcher thread exited unexpectedly.",
+                            None,
+                        )
+            finally:
+                self._waiters -= 1
+                self._cond.notify_all()
+            status, message, operation_id = self._results[int(item_id)]
+        if status == "cancelled":
+            raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
+        return status, message, operation_id
+
+    def mark_final(self) -> None:
+        """Flush the remaining queue once no more workers will enqueue."""
+        with self._cond:
+            self._final = True
+            self._cond.notify_all()
+
+    def shutdown(self) -> None:
+        """Ask the thread to exit once its queue is drained (run cleanup)."""
+        with self._cond:
+            self._stopped = True
+            self._final = True
+            self._cond.notify_all()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    # -- internals ----------------------------------------------------------
+
+    def _client_for_removal(self) -> MpVmClient:
+        if self._client is None:
+            self._client = host.MpVmClient(self.auth)
+        return self._client
+
+    def _store_result(self, item_id: int, status: str, message: str, operation_id: str | None) -> None:
+        with self._cond:
+            self._results[item_id] = (status, message, operation_id)
+            self._cond.notify_all()
+
+    def _record_item(self, item_id: int, status: str, message: str, operation_id: str | None) -> None:
+        values: dict[str, Any] = {
+            "status": status,
+            "stage": status,
+            "message": message,
+            "error": None if status == "completed" else message,
+            "finished_at": db.now_utc(),
+        }
+        if operation_id:
+            values["removal_operation_id"] = operation_id
+        try:
+            db.update_scan_postprocess_item(item_id, **values)
+        except psycopg.Error:
+            scan_log(
+                logging.ERROR,
+                "removal_batch_item_update_failed",
+                postprocess_run_id=self.run_id,
+                item_id=item_id,
+                status=status,
+            )
+        self._store_result(item_id, status, message, operation_id)
+
+    def _mark_deleting(self, item_id: int, operation_id: str, batch_size: int) -> None:
+        try:
+            db.update_scan_postprocess_item(
+                item_id,
+                status="deleting",
+                stage="deleting_in_mpvm",
+                removal_operation_id=operation_id,
+                message=f"MP VM asset removal started (batch of {batch_size}).",
+            )
+        except psycopg.Error:
+            scan_log(
+                logging.ERROR,
+                "removal_batch_item_update_failed",
+                postprocess_run_id=self.run_id,
+                item_id=item_id,
+                status="deleting",
+            )
+
+    def _run(self) -> None:
+        try:
+            while True:
+                with self._cond:
+                    while not self._pending and not self._joins and not self._stopped:
+                        if self._final:
+                            break
+                        self._cond.wait(timeout=1.0)
+                    if self._final and not self._pending and not self._joins and self._waiters == 0:
+                        break
+                    batch = self._pending[:_SCAN_REMOVAL_BATCH_SIZE]
+                    del self._pending[:_SCAN_REMOVAL_BATCH_SIZE]
+                    joins = self._joins[:]
+                    self._joins.clear()
+                if batch:
+                    self._process_batch(batch)
+                for join_item_id, join_operation_id in joins:
+                    self._process_join(join_item_id, join_operation_id)
+        finally:
+            if self._client is not None:
+                self._client.session.close()
+
+    def _process_batch(self, batch: list[tuple[int, str]]) -> None:
+        item_ids = [item_id for item_id, _ in batch]
+        asset_ids = [asset_id for _item_id, asset_id in batch]
+        cancel_event = scan_postprocess_cancel_event(self.run_id)
+        if cancel_event is not None and cancel_event.is_set():
+            message = "MP VM asset removal cancelled by operator."
+            scan_log(
+                logging.INFO,
+                "removal_batch_cancelled",
+                postprocess_run_id=self.run_id,
+                item_ids=item_ids,
+                count=len(batch),
+            )
+            for item_id, _asset_id in batch:
+                self._record_item(item_id, "cancelled", message, None)
+            return
+        scan_log(
+            logging.INFO,
+            "removal_batch_started",
+            postprocess_run_id=self.run_id,
+            item_ids=item_ids,
+            asset_ids=asset_ids,
+            count=len(batch),
+        )
+        try:
+            operation_id = self._client_for_removal().remove_assets(self.token, asset_ids)
+        except Exception as exc:  # noqa: BLE001 - no operation id: fail the batch, keep serving
+            message = f"MP VM asset removal batch failed to start: {type(exc).__name__}: {exc}"
+            scan_log(
+                logging.ERROR,
+                "removal_batch_failed",
+                postprocess_run_id=self.run_id,
+                item_ids=item_ids,
+                count=len(batch),
+                error=message,
+            )
+            for item_id, _asset_id in batch:
+                self._record_item(item_id, "removal_failed", message, None)
+            return
+        for item_id, _asset_id in batch:
+            self._mark_deleting(item_id, operation_id, len(batch))
+            scan_log(
+                logging.INFO,
+                "mpvm_removal_started",
+                postprocess_run_id=self.run_id,
+                item_id=item_id,
+                removal_operation_id=operation_id,
+            )
+        try:
+            ok, message, _raw = self._client_for_removal().wait_for_asset_removal(
+                self.token,
+                operation_id,
+                timeout_seconds=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
+                poll_seconds=host.SCAN_ASSET_REMOVAL_POLL_SECONDS,
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ok, message = False, f"Removal operation polling failed: {type(exc).__name__}: {exc}"
+        if cancel_event is not None and cancel_event.is_set():
+            status = "cancelled"
+            message = "MP VM asset removal cancelled by operator."
+        elif ok:
+            status = "completed"
+        else:
+            status = "removal_failed"
+        if status == "completed":
+            scan_log(
+                logging.INFO,
+                "removal_batch_completed",
+                postprocess_run_id=self.run_id,
+                op_id=operation_id,
+                item_ids=item_ids,
+                count=len(batch),
+            )
+        else:
+            scan_log(
+                logging.ERROR,
+                "removal_batch_failed",
+                postprocess_run_id=self.run_id,
+                op_id=operation_id,
+                item_ids=item_ids,
+                count=len(batch),
+                message=message,
+            )
+        for item_id, _asset_id in batch:
+            self._record_item(item_id, status, message, operation_id)
+
+    def _process_join(self, item_id: int, operation_id: str) -> None:
+        cancel_event = scan_postprocess_cancel_event(self.run_id)
+        if cancel_event is not None and cancel_event.is_set():
+            self._record_item(item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id)
+            return
+        try:
+            ok, message, _raw = self._client_for_removal().wait_for_asset_removal(
+                self.token,
+                operation_id,
+                timeout_seconds=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
+                poll_seconds=host.SCAN_ASSET_REMOVAL_POLL_SECONDS,
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ok, message = False, f"Removal operation polling failed: {type(exc).__name__}: {exc}"
+        if cancel_event is not None and cancel_event.is_set():
+            self._record_item(item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id)
+        elif ok:
+            self._record_item(item_id, "completed", message, operation_id)
+        else:
+            self._record_item(item_id, "removal_failed", message, operation_id)
 
 
 def cleanup_auto_created_refresh_task(
@@ -503,6 +797,13 @@ def monitor_successful_scan_jobs(
     resolution_queue_wait_ms = 0.0
     worker_state = threading.local()
     resolution_clients: list[MpVmClient] = []
+
+    # Per-run removal batcher: one remove_assets call per up-to-20 card-saved
+    # assets and one operation poll stream per batch. Registered before any
+    # asset worker is submitted so every worker can enqueue into it.
+    removal_batcher = _ScanRemovalBatcher(run_id=postprocess_run_id, auth=auth, token=token)
+    with SCAN_POSTPROCESS_FUTURES_LOCK:
+        _SCAN_REMOVAL_BATCHERS[postprocess_run_id] = removal_batcher
 
     def resolution_client() -> MpVmClient:
         nonlocal client
@@ -879,6 +1180,20 @@ def monitor_successful_scan_jobs(
                 error=target_errors.get(target, "Asset resolution timed out."),
             )
         drain_asset_batch()
+        # Every asset worker has finished, so no more removals can be
+        # enqueued: flush the batcher and wait for it to drain.
+        removal_batcher.mark_final()
+        removal_batcher.join(timeout=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS)
+        if removal_batcher.is_alive():
+            scan_log(
+                logging.WARNING,
+                "removal_batcher_join_timeout",
+                postprocess_run_id=postprocess_run_id,
+                timeout_seconds=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
+            )
+        with SCAN_POSTPROCESS_FUTURES_LOCK:
+            if _SCAN_REMOVAL_BATCHERS.get(postprocess_run_id) is removal_batcher:
+                _SCAN_REMOVAL_BATCHERS.pop(postprocess_run_id, None)
 
     resolution_http = {"requests": 0, "retries": 0, "errors": 0, "rate_limited": 0}
     for resolution_worker_client in resolution_clients:
@@ -1038,11 +1353,12 @@ def refresh_docker_containers_for_scanned_asset(
 def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token: str) -> None:
     item_id = int(item["id"])
     asset_id = str(item["asset_id"])
+    run_id = str(item.get("postprocess_run_id") or "")
     removal_operation_id = item.get("removal_operation_id")
     card_saved = bool(removal_operation_id)
     client = host.MpVmClient(auth)
     context = {
-        "postprocess_run_id": item.get("postprocess_run_id"),
+        "postprocess_run_id": run_id,
         "item_id": item_id,
         "job_id": item.get("mp_job_id"),
         "target": item.get("target"),
@@ -1055,14 +1371,25 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
         resumed_removal_operation_id=removal_operation_id,
     )
     try:
-        raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
-        if not removal_operation_id:
+        raise_if_scan_postprocess_cancelled(run_id)
+        # Restart recovery: the card was already committed locally before the
+        # previous process died (the removal batch had not started yet), so
+        # skip the docker probe and rebuild and go straight to removal.
+        card_already_saved = (
+            not removal_operation_id
+            and str(item.get("stage") or "") == "card_saved"
+            and db.asset_card_exists(asset_id)
+        )
+        if card_already_saved:
+            card_saved = True
+            scan_log(logging.INFO, "asset_card_save_confirmed", **context)
+        elif not removal_operation_id:
             refresh_docker_containers_for_scanned_asset(
                 client=client,
                 token=token,
                 asset_id=asset_id,
                 item_id=item_id,
-                parent_operation_id=str(item.get("postprocess_run_id") or ""),
+                parent_operation_id=run_id,
             )
             scan_log(logging.INFO, "asset_card_build_starting", **context)
             build_job_id = build_scanned_asset_card(
@@ -1070,7 +1397,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 asset_id=asset_id,
                 auth=auth,
                 token=token,
-                parent_operation_id=str(item.get("postprocess_run_id") or ""),
+                parent_operation_id=run_id,
             )
             item = db.update_scan_postprocess_item(
                 item_id,
@@ -1081,22 +1408,8 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 error=None,
             ) or item
             card_saved = True
-            raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
+            raise_if_scan_postprocess_cancelled(run_id)
             scan_log(logging.INFO, "asset_card_saved", **context, build_job_id=build_job_id)
-            removal_operation_id = client.remove_assets(token, [asset_id])
-            db.update_scan_postprocess_item(
-                item_id,
-                status="deleting",
-                stage="deleting_in_mpvm",
-                removal_operation_id=removal_operation_id,
-                message="MP VM asset removal started.",
-            )
-            scan_log(
-                logging.INFO,
-                "mpvm_removal_started",
-                **context,
-                removal_operation_id=removal_operation_id,
-            )
         else:
             scan_log(
                 logging.INFO,
@@ -1104,47 +1417,33 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 **context,
                 removal_operation_id=removal_operation_id,
             )
-        ok, message, _raw = client.wait_for_asset_removal(
-            token,
-            str(removal_operation_id),
-            timeout_seconds=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS,
-            poll_seconds=host.SCAN_ASSET_REMOVAL_POLL_SECONDS,
-            cancel_event=scan_postprocess_cancel_event(str(item.get("postprocess_run_id") or "")),
+        batcher = scan_removal_batcher(run_id)
+        if batcher is None:
+            raise RuntimeError(f"No removal batcher registered for run {run_id}.")
+        # Removal is batched per run: one remove_assets call per up to
+        # _SCAN_REMOVAL_BATCH_SIZE card-saved assets, one operation poll stream
+        # per batch. This worker only blocks for its own terminal status.
+        removal_status, removal_message, removal_operation_id = batcher.enqueue_and_wait(
+            item_id,
+            asset_id,
+            existing_operation_id=str(removal_operation_id) if removal_operation_id else None,
         )
-        raise_if_scan_postprocess_cancelled(str(item.get("postprocess_run_id") or ""))
-        if not ok:
-            db.update_scan_postprocess_item(
-                item_id,
-                status="removal_failed",
-                stage="removal_failed",
-                message=message,
-                error=message,
-                finished_at=db.now_utc(),
+        if removal_status == "completed":
+            scan_log(
+                logging.INFO,
+                "asset_processing_completed",
+                **context,
+                removal_operation_id=removal_operation_id,
+                message=removal_message,
             )
+        else:
             scan_log(
                 logging.ERROR,
                 "mpvm_removal_failed",
                 **context,
                 removal_operation_id=removal_operation_id,
-                message=message,
-                raw_response=_raw,
+                message=removal_message,
             )
-            return
-        db.update_scan_postprocess_item(
-            item_id,
-            status="completed",
-            stage="completed",
-            message=message,
-            error=None,
-            finished_at=db.now_utc(),
-        )
-        scan_log(
-            logging.INFO,
-            "asset_processing_completed",
-            **context,
-            removal_operation_id=removal_operation_id,
-            message=message,
-        )
     except ScanPostprocessCancelled:
         db.update_scan_postprocess_item(
             item_id,
