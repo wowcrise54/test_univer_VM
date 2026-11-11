@@ -1964,5 +1964,71 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
         self.assertEqual(mpvm_client.extract_successful_connection_targets(jobs), ["10.0.0.7"])
 
 
+class _StopGateWaiting(Exception):
+    pass
+
+
+class BuildScannedAssetCardGateTests(unittest.TestCase):
+    def test_gate_passes_when_active_jobs_below_limit(self):
+        create_job = MagicMock(return_value={"job_id": "job-1", "status": "queued"})
+        run_job = MagicMock()
+        with (
+            patch.object(scan_postprocess.db, "count_active_asset_card_build_jobs", return_value=3),
+            patch.object(scan_postprocess, "raise_if_scan_postprocess_cancelled"),
+            patch.object(scan_postprocess.db, "asset_card_exists", return_value=True),
+            patch.object(scan_postprocess.db, "create_asset_card_build_job", create_job),
+            patch.object(scan_postprocess.db, "update_scan_postprocess_item"),
+            patch.object(
+                scan_postprocess.db,
+                "get_asset_card_build_job",
+                return_value={"job_id": "job-1", "status": "completed", "asset_id": "asset-1"},
+            ),
+            patch.object(main, "register_asset_card_build_job", return_value=threading.Event()),
+            patch.object(main, "run_asset_card_build_job", run_job),
+            patch.object(scan_postprocess.time, "sleep") as sleep,
+        ):
+            scan_postprocess.build_scanned_asset_card(
+                item_id=1,
+                asset_id="asset-1",
+                auth=SimpleNamespace(),
+                token="token",
+                parent_operation_id="post-1",
+            )
+
+        create_job.assert_called_once()
+        run_job.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_gate_waits_without_creating_job_when_at_limit(self):
+        create_job = MagicMock()
+        run_job = MagicMock()
+        sleeps: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                raise _StopGateWaiting()
+
+        with (
+            patch.object(scan_postprocess.db, "count_active_asset_card_build_jobs", return_value=4),
+            patch.object(scan_postprocess, "raise_if_scan_postprocess_cancelled"),
+            patch.object(scan_postprocess.db, "create_asset_card_build_job", create_job),
+            patch.object(main, "run_asset_card_build_job", run_job),
+            patch.object(scan_postprocess.time, "sleep", side_effect=_sleep),
+        ):
+            with self.assertRaises(_StopGateWaiting):
+                scan_postprocess.build_scanned_asset_card(
+                    item_id=1,
+                    asset_id="asset-1",
+                    auth=SimpleNamespace(),
+                    token="token",
+                    parent_operation_id="post-1",
+                )
+
+        create_job.assert_not_called()
+        run_job.assert_not_called()
+        self.assertEqual(sleeps, [2.0, 2.0])
+
+
 if __name__ == "__main__":
     unittest.main()

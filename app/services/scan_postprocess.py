@@ -1199,23 +1199,19 @@ def build_scanned_asset_card(
         "max_depth": ASSET_CARD_MAX_DEPTH,
         "parent_operation_id": parent_operation_id,
     }
-    logged_active_job_id: str | None = None
     while True:
         raise_if_scan_postprocess_cancelled(parent_operation_id)
-        active = db.get_active_asset_card_build_job()
-        if active:
-            active_job_id = str(active.get("job_id") or "")
-            if logged_active_job_id != active_job_id:
-                logged_active_job_id = active_job_id
-                scan_log(
-                    logging.INFO,
-                    "asset_card_waiting_for_slot",
-                    item_id=item_id,
-                    asset_id=asset_id,
-                    active_build_job_id=active_job_id,
-                    active_asset_id=active.get("asset_id"),
-                    active_status=active.get("status"),
-                )
+        # Count-based gate (not "no active job at all"): builds are allowed to
+        # run concurrently up to ASSET_CARD_BUILD_JOB_LIMIT.
+        active_count = db.count_active_asset_card_build_jobs()
+        if active_count >= db.ASSET_CARD_BUILD_JOB_LIMIT:
+            scan_log(
+                logging.INFO,
+                "asset_card_waiting_for_slot",
+                item_id=item_id,
+                asset_id=asset_id,
+                active_build_job_count=active_count,
+            )
             time.sleep(2)
             continue
         build_job_id = str(uuid.uuid4())

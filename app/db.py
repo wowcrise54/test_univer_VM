@@ -61,7 +61,9 @@ PASSPORT_SAVE_BATCH_SIZE = 5000
 # holds it. Longer than the server statement_timeout on purpose (see
 # _lock_vulnerability_passport_writes).
 PASSPORT_LOCK_WAIT_SECONDS = max(1, int(os.getenv("MPVM_PASSPORT_LOCK_WAIT_SECONDS", "3600")))
-ASSET_CARD_BUILD_JOB_LIMIT = 2
+# Must stay equal to ASSET_CARD_BUILD_WORKERS in app/main.py: the admission
+# limit and the worker semaphore are the two halves of the same concurrency cap.
+ASSET_CARD_BUILD_JOB_LIMIT = 4
 _ASSET_CARD_BUILD_ADMISSION_LOCK = (1297106509, 1094927172)
 
 
@@ -3849,7 +3851,7 @@ def create_asset_card_build_jobs(
     *,
     batch_operation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Atomically admit and register one or two independent asset-card jobs."""
+    """Atomically admit and register up to ASSET_CARD_BUILD_JOB_LIMIT independent asset-card jobs."""
     if not 1 <= len(jobs) <= ASSET_CARD_BUILD_JOB_LIMIT:
         raise ValueError(f"jobs must contain between 1 and {ASSET_CARD_BUILD_JOB_LIMIT} items")
 
@@ -3986,6 +3988,18 @@ def get_active_asset_card_build_job() -> dict[str, Any] | None:
             """
         ).fetchone()
     return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def count_active_asset_card_build_jobs() -> int:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS active_count FROM asset_card_build_jobs
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """
+        ).fetchone()
+    return int((row or {}).get("active_count") or 0)
 
 
 def interrupt_active_asset_card_build_jobs() -> int:
