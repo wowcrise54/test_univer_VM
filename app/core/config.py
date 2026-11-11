@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://mpvm:mpvm@localhost:5432/mpvm"
     exports_dir: Path = Path("exports")
     # Keep aggregate MP VM concurrency below the remote connection-pool default
-    # (25), including when several asset-card builds run concurrently.
-    background_request_limit: int = 12
+    # (25): 4 concurrent asset-card builds x 12 request workers share 24 slots.
+    background_request_limit: int = 24
     asset_card_request_workers: int = 12
     asset_card_refresh_workers: int = 10
     scan_postprocess_workers: int = 10

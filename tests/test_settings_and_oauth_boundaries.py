@@ -29,6 +29,12 @@ def test_passport_sync_is_opt_in_and_has_a_configurable_interval(monkeypatch):
     assert settings.passport_sync_interval_seconds == 60
 
 
+def test_background_request_limit_defaults_to_24(monkeypatch):
+    monkeypatch.delenv("MPVM_BACKGROUND_REQUEST_LIMIT", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.background_request_limit == 24
+
+
 @pytest.mark.parametrize("field", [
     "timeout", "background_request_limit", "asset_card_request_workers",
     "asset_card_refresh_workers", "scan_postprocess_workers", "scan_asset_process_workers",
