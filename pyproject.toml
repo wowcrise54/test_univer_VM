@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --timeout=120 --timeout-method=thread"
 markers = ["integration: requires a running PostgreSQL instance"]
 
 [tool.ruff]

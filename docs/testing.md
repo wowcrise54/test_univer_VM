@@ -15,6 +15,18 @@ docker compose -p mpvm-ui-tests -f compose.test.yml run --rm --build --no-deps e
 
 `Dockerfile.test` устанавливает backend test-зависимости; текущие исходники монтируются только для чтения. `Dockerfile.frontend.test` устанавливает frontend-зависимости через `npm ci` по lockfile и включает текущие исходники при сборке. Поэтому для повторной проверки изменённого frontend используйте `--build`.
 
+## Быстрый цикл (без PostgreSQL и без coverage)
+
+Для локальной итерации достаточно unit-набора без интеграционных тестов (≈2 мин вместо ≈18):
+
+```powershell
+docker compose -p mpvm-ui-tests -f compose.test.yml run --rm tests python -m pytest -p no:cacheprovider --ignore=tests/integration
+```
+
+Для конкретного модуля — только его файл: `... tests/test_<module>.py`. Интеграционный набор и покрытие запускайте перед коммитом, как в «Полном прогоне».
+
+Каждый тест ограничен 120 секундами (`pytest-timeout`, `addopts` в `pyproject.toml`): зависший тест падает за 2 минуты, а не останавливает весь прогон на неопределённое время. Не запускайте прогон, пока дерево исходников изменяется параллельно (stash/commit во время теста даёт ложные ошибки alembic и зависание).
+
 `frontend-tests` запускает Vitest с покрытием, ESLint, Prettier и Vite build. `e2e` использует системный Chromium внутри образа и запускает приложение в браузере через Playwright. В этих контейнерах внешняя сеть отключена; браузерные API-ответы подменены fixtures, реальные операции MP VM не запускаются.
 
 Отчёты сохраняются в `output/coverage-python.json`, `output/coverage-js/coverage-summary.json`, `output/playwright/report/`; неудачные e2e оставляют traces и screenshots в `output/playwright/results/`. Сборка frontend остаётся внутри временного test-контейнера.

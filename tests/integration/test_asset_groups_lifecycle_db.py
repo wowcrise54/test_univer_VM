@@ -3,6 +3,8 @@ import psycopg
 import pytest
 
 from app import db
+from app.repositories import asset_groups as asset_groups_repo
+
 from app.repositories.asset_groups import AssetGroupRepository
 from app.services.asset_groups import AssetGroupService
 
@@ -131,7 +133,7 @@ def test_failed_evaluation_persists_error_and_can_be_retried(groups, monkeypatch
     original = db.query_asset_cards_by_fields
     def broken_index(*args, **kwargs):
         raise RuntimeError("Search index unavailable")
-    monkeypatch.setattr(db, "query_asset_cards_by_fields", broken_index)
+    monkeypatch.setattr(asset_groups_repo, "query_asset_cards_by_fields", broken_index)
     with pytest.raises(RuntimeError, match="Search index unavailable"):
         groups.evaluate(group["group_id"])
     failed = groups.get(group["group_id"])
@@ -139,7 +141,7 @@ def test_failed_evaluation_persists_error_and_can_be_retried(groups, monkeypatch
     with db.connect() as conn:
         run = conn.execute("SELECT * FROM asset_group_evaluations WHERE group_id=%s AND status='failed'", (group["group_id"],)).fetchone()
         assert run["error"] == "Search index unavailable" and run["finished_at"] is not None
-    monkeypatch.setattr(db, "query_asset_cards_by_fields", original)
+    monkeypatch.setattr(asset_groups_repo, "query_asset_cards_by_fields", original)
     groups.evaluate(group["group_id"])
     assert groups.get(group["group_id"])["last_error"] is None
     assert groups.target_asset_ids(group["group_id"]) == ["asset-a"]

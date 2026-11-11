@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, main
+from app.persistence import connection as _pconn
+
 
 ADMIN = {"id": 1, "username": "admin", "display_name": "Admin", "role": "admin", "is_active": True}
 OPERATOR = {**ADMIN, "id": 2, "username": "operator", "role": "operator"}
@@ -300,7 +302,7 @@ def test_audited_permissions_cover_writes_only_and_exist_in_route_map():
 
 def test_lost_audit_event_is_kept_in_structured_log():
     with (
-        patch.object(auth.db, "connect", side_effect=RuntimeError("db down")),
+        patch.object(_pconn, "connect", side_effect=RuntimeError("db down")),
         patch("app.diagnostics.log_exception") as log_exception,
     ):
         auth.audit_event(

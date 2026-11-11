@@ -32,6 +32,7 @@ from ..mpvm_client import (
     is_finished,
     is_host_discovery_profile,
 )
+from ..persistence import codecs
 from .main_host import host
 
 # Defaults are bound when the function is defined, so they cannot come from the
@@ -300,7 +301,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             auth=auth,
             token=token,
             options=options,
-            scan_finished_at=scan_finished_at or db.now_utc(),
+            scan_finished_at=scan_finished_at or codecs.now_utc(),
         )
         db.finish_scan_postprocess_run(
             run_id,
@@ -336,7 +337,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             auth=auth,
             token=token,
             options=options,
-            scan_finished_at=scan_finished_at or db.now_utc(),
+            scan_finished_at=scan_finished_at or codecs.now_utc(),
         )
         db.finish_scan_postprocess_run(
             run_id,
@@ -785,7 +786,7 @@ def monitor_successful_scan_jobs(
 
                     terminal = is_finished(latest_run)
                     if terminal and scan_finished_at is None:
-                        scan_finished_at = str(latest_run.get("finishedAt") or db.now_utc())
+                        scan_finished_at = str(latest_run.get("finishedAt") or codecs.now_utc())
                         if docker_dynamic_group_from_options(docker_group_options):
                             host.remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at, confirmed=True)
                         scan_log(
@@ -867,7 +868,7 @@ def monitor_successful_scan_jobs(
                 status="resolution_failed",
                 stage="resolution_failed",
                 error=target_errors.get(target, "Asset resolution timed out."),
-                finished_at=db.now_utc(),
+                finished_at=codecs.now_utc(),
             )
             scan_log(
                 logging.ERROR,
@@ -890,7 +891,7 @@ def monitor_successful_scan_jobs(
     if latest_run is None:
         raise RuntimeError(f"Scanner run was not found before timeout ({timeout_seconds / 60:.1f} minutes).")
     if scan_finished_at is None:
-        scan_finished_at = db.now_utc()
+        scan_finished_at = codecs.now_utc()
         if docker_dynamic_group_from_options(docker_group_options):
             host.remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at, confirmed=False)
     return {
@@ -1119,7 +1120,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
                 stage="removal_failed",
                 message=message,
                 error=message,
-                finished_at=db.now_utc(),
+                finished_at=codecs.now_utc(),
             )
             scan_log(
                 logging.ERROR,
@@ -1136,7 +1137,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             stage="completed",
             message=message,
             error=None,
-            finished_at=db.now_utc(),
+            finished_at=codecs.now_utc(),
         )
         scan_log(
             logging.INFO,
@@ -1151,7 +1152,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             status="cancelled",
             stage="cancelled",
             message="Processing cancelled by operator.",
-            finished_at=db.now_utc(),
+            finished_at=codecs.now_utc(),
         )
         raise
     except Exception as exc:
@@ -1161,7 +1162,7 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
             status=status,
             stage=status,
             error=str(exc)[:4000],
-            finished_at=db.now_utc(),
+            finished_at=codecs.now_utc(),
         )
         SCAN_LOG.exception(
             "[scan-postprocess] asset processing failed status=%s context=%s",
@@ -1258,7 +1259,7 @@ def build_scanned_asset_card(
         status="building",
         stage="building_card",
         build_job_id=build_job_id,
-        started_at=db.now_utc(),
+        started_at=codecs.now_utc(),
     )
     cancel_event = host.register_asset_card_build_job(build_job_id)
     host.run_asset_card_build_job(

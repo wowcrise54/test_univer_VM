@@ -6,6 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from app import auth, db
+from app.persistence import connection as _pconn
+
+from app.persistence import schema
+
 from app.api.schemas import AssetGroupBulkActionRequest
 from app.services.asset_groups import AssetGroupService
 
@@ -165,8 +169,8 @@ def test_precheck_statistics_keep_legacy_runs_without_counters_unknown(monkeypat
     connection.execute.return_value.fetchone.return_value = row
     context = MagicMock()
     context.__enter__.return_value = connection
-    monkeypatch.setattr(db, "init_db", MagicMock())
-    monkeypatch.setattr(db, "connect", MagicMock(return_value=context))
+    monkeypatch.setattr(schema, "init_db", MagicMock())
+    monkeypatch.setattr(_pconn, "connect", MagicMock(return_value=context))
 
     result = db.get_precheck_statistics()
 
@@ -186,8 +190,8 @@ def test_false_precheck_runs_expose_targets_and_retry_capability(monkeypatch: py
     }]
     context = MagicMock()
     context.__enter__.return_value = connection
-    monkeypatch.setattr(db, "init_db", MagicMock())
-    monkeypatch.setattr(db, "connect", MagicMock(return_value=context))
+    monkeypatch.setattr(schema, "init_db", MagicMock())
+    monkeypatch.setattr(_pconn, "connect", MagicMock(return_value=context))
 
     result = db.list_precheck_false_runs(limit=20)
 

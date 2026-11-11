@@ -12,6 +12,14 @@ from fastapi import BackgroundTasks
 from fastapi import HTTPException
 
 from app import db
+from app.repositories.passports import catalog as passport_catalog, trends as passport_trends
+
+from app.persistence import schema
+
+from app.persistence import locks
+
+from app.persistence import connection as _pconn
+
 from app import main
 from app.mpvm_client import TRENDING_VULNERABILITY_PDQL
 
@@ -397,16 +405,19 @@ class PassportQueryTests(unittest.TestCase):
 
 class DatabaseInitializationTests(unittest.TestCase):
     def test_init_db_runs_schema_initialization_once(self):
-        original_initialized = db._DB_INITIALIZED
+        from app.persistence import schema as db_schema
+
+        original_initialized = db_schema._DB_INITIALIZED
         calls = []
         try:
-            db._DB_INITIALIZED = False
-            with patch.object(db, "_initialize_schema", side_effect=lambda: calls.append(True)):
+            with patch.object(db_schema, "_DB_INITIALIZED", False), patch.object(
+                db_schema, "_initialize_schema", side_effect=lambda: calls.append(True)
+            ):
                 db.init_db()
                 db.init_db()
             self.assertEqual(calls, [True])
         finally:
-            db._DB_INITIALIZED = original_initialized
+            db_schema._DB_INITIALIZED = original_initialized
 
     def test_detail_refresh_candidates_respect_24_hour_ttl(self):
         now = datetime.now(timezone.utc)
@@ -419,7 +430,7 @@ class DatabaseInitializationTests(unittest.TestCase):
         connection.__enter__.return_value = connection
         connection.__exit__.return_value = False
         connection.execute.return_value.fetchall.return_value = rows
-        with patch.object(db, "init_db"), patch.object(db, "connect", return_value=connection):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", return_value=connection):
             result = db.vulnerability_passport_detail_refresh_candidates(
                 ["fresh", "stale", "missing"],
                 ttl_hours=24,
@@ -467,12 +478,15 @@ class VulnerabilityPassportWriteLockTests(unittest.TestCase):
             connection = self.connection()
             with (
                 self.subTest(writer=writer),
-                patch.object(db, "init_db"),
-                patch.object(db, "connect", return_value=connection),
+                patch.object(schema, "init_db"),
+                patch.object(_pconn, "connect", return_value=connection),
                 patch.object(
-                    db, "reconcile_asset_card_vulnerability_passport_links", return_value=0
+                    passport_catalog, "reconcile_asset_card_vulnerability_passport_links", return_value=0
                 ),
-                patch.object(db, "_lock_vulnerability_passport_writes") as lock,
+                patch.object(
+                    passport_trends, "reconcile_asset_card_vulnerability_passport_links", return_value=0
+                ),
+                patch.object(locks, "_lock_vulnerability_passport_writes") as lock,
             ):
                 writer()
             lock.assert_called_once_with(connection)
@@ -483,9 +497,7 @@ class VulnerabilityPassportWriteLockTests(unittest.TestCase):
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.executemany.side_effect = lambda *_args: events.append("upsert")
 
-        with patch.object(
-            db,
-            "_lock_vulnerability_passport_writes",
+        with patch.object(locks, "_lock_vulnerability_passport_writes",
             side_effect=lambda _connection: events.append("lock"),
         ):
             saved = db._upsert_vulnerability_passport_details(

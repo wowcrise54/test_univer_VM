@@ -6,14 +6,14 @@ from fastapi import Request
 from fastapi.responses import Response
 
 from .. import auth as app_auth
-from .. import db
+from ..persistence import connection
 from ..services.main_host import host
 from .routers import auth_router
 
 
 @auth_router.get("/bootstrap-status")
 def auth_bootstrap_status() -> dict[str, Any]:
-    with db.connect() as conn:
+    with connection.connect() as conn:
         row = conn.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()
         assert row is not None
         configured = int(row["count"] or 0) > 0

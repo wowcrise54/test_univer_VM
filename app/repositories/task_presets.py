@@ -6,8 +6,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from .. import db
 from ..domain.errors import DomainError
+from ..persistence import connection
+from .operations import get_operation_by_idempotency_key, register_operation
+from .scan_tasks.postprocess import SCAN_POSTPROCESS_ACTIVE_STATUSES
+from .scan_tasks.tasks import _decode_scan_task, record_scan_task
 
 PRESET_SCALAR_FIELDS = (
     "name", "description", "os_family", "scope_id", "profile_id", "credential_id",
@@ -61,7 +64,7 @@ class TaskPresetRepository:
             )
             params.append(role_ids)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 f"{_PRESET_SELECT}{where}{_PRESET_GROUP_BY} ORDER BY p.os_family, lower(p.name), p.preset_id",
                 params,
@@ -69,21 +72,21 @@ class TaskPresetRepository:
         return [_serialize(row) for row in rows]
 
     def get(self, preset_id: str) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(f"{_PRESET_SELECT} WHERE p.preset_id = %s{_PRESET_GROUP_BY}", (preset_id,)).fetchone()
         return _serialize(row) if row else None
 
     def existing_role_ids(self, role_ids: builtins.list[int]) -> set[int]:
         if not role_ids:
             return set()
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute("SELECT id FROM app_roles WHERE id = ANY(%s)", (role_ids,)).fetchall()
         return {int(row["id"]) for row in rows}
 
     def role_ids_by_keys(self, role_keys: builtins.list[str]) -> builtins.list[int]:
         if not role_keys:
             return []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute("SELECT id FROM app_roles WHERE role_key = ANY(%s) ORDER BY id", (role_keys,)).fetchall()
         return [int(row["id"]) for row in rows]
 
@@ -98,7 +101,7 @@ class TaskPresetRepository:
             actor,
             actor,
         ]
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 f"INSERT INTO scan_task_presets ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
                 params,
@@ -117,7 +120,7 @@ class TaskPresetRepository:
             *(values.get(key) for key in PRESET_SCALAR_FIELDS),
             *(_json_param(values.get(key)) for key in PRESET_JSON_FIELDS),
         ]
-        with db.connect() as conn:
+        with connection.connect() as conn:
             self._lock_version(conn, preset_id, expected_version)
             conn.execute(
                 f"UPDATE scan_task_presets SET {', '.join(assignments)}, version=version+1, "
@@ -128,7 +131,7 @@ class TaskPresetRepository:
         return self.get(preset_id)
 
     def archive(self, preset_id: str, *, expected_version: int, actor: str | None) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             self._lock_version(conn, preset_id, expected_version)
             conn.execute(
                 "UPDATE scan_task_presets SET is_active=FALSE, version=version+1, updated_by=%s, updated_at=NOW() "
@@ -174,7 +177,7 @@ class TaskPresetRepository:
                 "WHERE access.preset_id = t.preset_id AND access.role_id = ANY(%s))"
             )
             params.append(role_ids)
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 f"""SELECT t.*, t.preset_id::text AS preset_id, p.name AS preset_name, p.os_family,
                            p.is_active AS preset_is_active, p.allowed_asset_groups
@@ -195,7 +198,7 @@ class TaskPresetRepository:
         latest = {str(run["mp_task_id"]): dict(run) for run in runs}
         result = []
         for row in rows:
-            task = db._decode_scan_task(dict(row))
+            task = _decode_scan_task(dict(row))
             task["postprocess"] = latest.get(str(task["mp_task_id"]))
             result.append(task)
         return result
@@ -209,7 +212,7 @@ class TaskPresetRepository:
                 "WHERE access.preset_id = t.preset_id AND access.role_id = ANY(%s))"
             )
             params.append(role_ids)
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 f"""SELECT t.*, t.preset_id::text AS preset_id, p.name AS preset_name, p.os_family,
                            p.is_active AS preset_is_active
@@ -218,24 +221,24 @@ class TaskPresetRepository:
                     WHERE t.mp_task_id = %s AND t.deleted_at IS NULL{access}""",
                 params,
             ).fetchone()
-        return db._decode_scan_task(dict(row)) if row else None
+        return _decode_scan_task(dict(row)) if row else None
 
     def operation_by_key(self, idempotency_key: str) -> dict[str, Any] | None:
-        return db.get_operation_by_idempotency_key(idempotency_key)
+        return get_operation_by_idempotency_key(idempotency_key)
 
     def register_operation(self, operation_id: str, **values: Any) -> dict[str, Any]:
-        return db.register_operation(operation_id, **values)
+        return register_operation(operation_id, **values)
 
     def record_task(
         self, task_id: str, payload: dict[str, Any], *, status: str, remote_response: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        return db.record_scan_task(mp_task_id=task_id, payload=payload, status=status, remote_response=remote_response)
+        return record_scan_task(mp_task_id=task_id, payload=payload, status=status, remote_response=remote_response)
 
     def attach_task(
         self, task_id: str, *, preset_id: str, preset_version: int,
         asset_groups: builtins.list[dict[str, Any]], actor: str | None, targets: builtins.list[str] | None = None,
     ) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE scan_tasks SET preset_id=%s, preset_version=%s, preset_asset_groups=%s::jsonb,
                           preset_targets=%s::jsonb, created_by=COALESCE(created_by, %s)
@@ -244,13 +247,13 @@ class TaskPresetRepository:
             )
 
     def count_active_tasks(self, preset_id: str, *, exclude_task_id: str | None = None) -> int:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """SELECT COUNT(DISTINCT t.mp_task_id) AS count
                    FROM scan_tasks t
                    JOIN scan_postprocess_runs run ON run.mp_task_id = t.mp_task_id
                    WHERE t.preset_id = %s AND t.deleted_at IS NULL AND run.status = ANY(%s)
                      AND t.mp_task_id IS DISTINCT FROM %s""",
-                (preset_id, sorted(db.SCAN_POSTPROCESS_ACTIVE_STATUSES), exclude_task_id),
+                (preset_id, sorted(SCAN_POSTPROCESS_ACTIVE_STATUSES), exclude_task_id),
             ).fetchone()
         return int(row["count"]) if row else 0

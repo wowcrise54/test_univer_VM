@@ -6,7 +6,7 @@ asset card save. CVE names and OS family now live in tables kept by a trigger.
 
 from alembic import op
 
-from app.repositories.passport_cve_schema import BACKFILL_SQL, SCHEMA_SQL
+from app.persistence.passport_cve_schema import BACKFILL_SQL, SCHEMA_SQL
 
 revision = "20261102_0031"
 down_revision = "20261102_0030"

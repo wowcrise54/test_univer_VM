@@ -12,6 +12,10 @@ from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from app import main, mpvm_client
+from app.persistence import codecs
+
+from app.persistence import connection as _pconn
+
 from app.services import scan_postprocess
 
 
@@ -538,7 +542,7 @@ class ScanAssetResolutionTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(main.db, "connect", connect):
+        with patch.object(_pconn, "connect", connect):
             item = main.db.upsert_scan_postprocess_item(
                 "post-1",
                 item_key="asset:asset-1",
@@ -980,7 +984,7 @@ class DockerGroupCleanupTests(unittest.TestCase):
         }
         with (
             patch.object(main.db, "get_scan_postprocess_run", return_value=run),
-            patch.object(main.db, "now_utc", return_value="2026-07-17T10:00:00+00:00"),
+            patch.object(codecs, "now_utc", return_value="2026-07-17T10:00:00+00:00"),
             patch.object(main, "schedule_scan_docker_group_cleanup", return_value=True),
             patch.object(main.db, "finish_scan_postprocess_run") as finish,
         ):

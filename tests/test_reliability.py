@@ -9,6 +9,11 @@ from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from app import db, main
+from app.persistence import connection as _pconn
+
+from app.persistence import schema
+
+from app.repositories import operations as operations_repo
 
 
 class QueryResult:
@@ -42,8 +47,7 @@ class ScriptedConnection:
 class SystemStatusTests(unittest.TestCase):
     def test_database_outage_is_reported_as_degraded_without_leaking_dsn(self):
         session = SimpleNamespace(client=None, access_token=None, api_url="https://fixture")
-        with patch.object(main, "SESSION", session), patch.object(main, "DATABASE_STARTUP_ERROR", None), patch.object(
-            main.db, "connect", side_effect=psycopg.OperationalError("secret-host failed")
+        with patch.object(main, "SESSION", session), patch.object(main, "DATABASE_STARTUP_ERROR", None), patch.object(_pconn, "connect", side_effect=psycopg.OperationalError("secret-host failed")
         ):
             result = main.system_status()
 
@@ -54,7 +58,7 @@ class SystemStatusTests(unittest.TestCase):
 
     def test_http_errors_use_the_normalized_contract(self):
         with (
-            patch.object(main.db, "init_db"),
+            patch.object(schema, "init_db"),
             patch.object(main.db, "interrupt_active_vulnerability_passport_detail_jobs"),
             patch.object(main.db, "interrupt_active_asset_card_build_jobs"),
             patch.object(main.db, "release_scan_postprocess_leases"),
@@ -80,7 +84,7 @@ class OperationsApiTests(unittest.TestCase):
             QueryResult(one={"count": 0}),
             QueryResult(rows=[]),
         ])
-        with patch.object(db, "connect", return_value=connection):
+        with patch.object(_pconn, "connect", return_value=connection):
             result = db.list_operations(q="OP-123")
 
         self.assertEqual(result["total"], 0)
@@ -94,7 +98,7 @@ class OperationsApiTests(unittest.TestCase):
             QueryResult(rows=[{"status": "failed", "count": 3}, {"status": "running", "count": 2}]),
             QueryResult(rows=[{"kind": "asset_card_build", "count": 5}, {"kind": "automation_run", "count": 2}]),
         ])
-        with patch.object(db, "connect", return_value=connection):
+        with patch.object(_pconn, "connect", return_value=connection):
             result = db.get_operations_summary()
 
         self.assertEqual(result, {
@@ -128,9 +132,9 @@ class OperationsApiTests(unittest.TestCase):
     def test_operations_repository_refreshes_source_jobs_before_reads(self):
         repository = main.CONTAINER.repositories.operations
         with (
-            patch.object(main.db, "list_operations", return_value={"rows": [], "total": 0}) as list_operations,
-            patch.object(main.db, "get_operations_summary", return_value={"total": 0}) as summary,
-            patch.object(main.db, "get_operation", return_value=None) as get_operation,
+            patch.object(operations_repo, "list_operations", return_value={"rows": [], "total": 0}) as list_operations,
+            patch.object(operations_repo, "get_operations_summary", return_value={"total": 0}) as summary,
+            patch.object(operations_repo, "get_operation", return_value=None) as get_operation,
         ):
             repository.list(limit=25)
             repository.summary()

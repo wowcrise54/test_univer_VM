@@ -17,6 +17,7 @@ from croniter import croniter
 from .. import db
 from ..core.config import Settings
 from ..core.runtime import OperationRunner
+from ..persistence import codecs
 from .repository import AutomationRepository
 
 StepHandler = Callable[[str, dict[str, Any], dict[str, Any], str, int], dict[str, Any]]
@@ -259,7 +260,7 @@ class AutomationService:
                         stage="cancelled",
                         progress_percent=100,
                         message="Automation run removed before step execution.",
-                        finished_at=db.now_utc(),
+                        finished_at=codecs.now_utc(),
                     )
                     return
                 if current.get("cancel_requested"):
@@ -377,7 +378,7 @@ class AutomationService:
             progress_percent=100,
             error={"message": error} if error else None,
             result=context,
-            finished_at=db.now_utc(),
+            finished_at=codecs.now_utc(),
         )
         run = self.repository.get_run(run_id, include_steps=False) or {}
         level = (

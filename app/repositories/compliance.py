@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from .. import db
 from ..domain.compliance import (
     ComplianceScope,
     classify_asset_type,
     evaluate_freshness,
     is_internet_asset,
 )
+from ..persistence import connection, schema
 
 
 @dataclass(frozen=True)
@@ -155,9 +155,9 @@ class ComplianceRepository:
     def _rows(self, asset_ids: list[str] | None = None) -> list[dict[str, Any]]:
         """Every asset once, plus only its critical findings: the dataset never
         reads other severities, and loading all of them took ~30 s per request."""
-        db.init_db()
+        schema.init_db()
         selected = list(dict.fromkeys(asset_ids or [])) or None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT card.asset_id, card.display_name, card.ip_address, card.fqdn,
@@ -184,7 +184,7 @@ class ComplianceRepository:
     def _missing_ip_rows(self, asset_ids: list[str] | None = None) -> int:
         """Rows (one per group/finding, at least one per asset) of assets without an IP."""
         selected = list(dict.fromkeys(asset_ids or [])) or None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """
                 SELECT COUNT(*) AS n

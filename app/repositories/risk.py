@@ -6,8 +6,8 @@ import json
 import uuid
 from typing import Any
 
-from .. import db
 from ..domain.errors import DomainError
+from ..persistence import connection
 
 MODEL_VERSION = "local-risk-v2"
 CONTEXT_VALUES = {
@@ -56,7 +56,7 @@ class RiskRepository:
         if not clean:
             raise ValueError("No context fields supplied.")
         updated: list[str] = []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             for asset_id in sorted(set(asset_ids)):
                 # Lock the parent even when no context exists: concurrent creation
                 # must not bypass a caller's expected version zero.
@@ -104,7 +104,7 @@ class RiskRepository:
         matched = 0
         unmatched: list[str] = []
         errors: list[dict[str, Any]] = []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             cards = conn.execute("SELECT c.asset_id,c.ip_address,c.fqdn,COALESCE(x.version,0) context_version FROM asset_cards c LEFT JOIN asset_contexts x ON x.asset_id=c.asset_id").fetchall()
         versions = {r["asset_id"]: r["context_version"] for r in cards}
         by_id = {str(r["asset_id"]).lower(): r["asset_id"] for r in cards}
@@ -156,7 +156,7 @@ class RiskRepository:
         limit = min(max(int(filters.get("limit", 50)), 1), 500)
         offset = max(int(filters.get("offset", 0)), 0)
         source_sql = _QUEUE_SOURCE_SQL
-        with db.connect() as conn:
+        with connection.connect() as conn:
             total_row = conn.execute(
                 f"SELECT COUNT(*) count {source_sql} WHERE {where}",
                 params,
@@ -209,7 +209,7 @@ class RiskRepository:
 
     def summary(self) -> dict[str, Any]:
         score = _risk_sql()
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 f"""SELECT COUNT(*) FILTER (WHERE risk_score >= 80) AS urgent,
                   COUNT(*) FILTER (WHERE risk_score >= 60 AND risk_score < 80) AS high,
@@ -223,7 +223,7 @@ class RiskRepository:
     def create_campaign(self, values: dict[str, Any], actor: str | None) -> dict[str, Any]:
         campaign_id = str(uuid.uuid4())
         case_ids = list(dict.fromkeys(values["case_ids"]))
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO remediation_campaigns(campaign_id,name,assignee,due_at,comment,asset_group_id,created_by)
                 VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
@@ -256,12 +256,12 @@ class RiskRepository:
         return self.get_campaign(campaign_id) or dict(row)
 
     def list_campaigns(self) -> dict[str, Any]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(self._campaign_sql() + " GROUP BY c.campaign_id,g.name ORDER BY c.created_at DESC").fetchall()
         return {"rows": [self._campaign(dict(r)) for r in rows], "total": len(rows)}
 
     def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 self._campaign_sql() + " WHERE c.campaign_id=%s GROUP BY c.campaign_id,g.name", (campaign_id,)
             ).fetchone()
@@ -306,7 +306,7 @@ class RiskRepository:
         for key, value in clean.items():
             assignments.append(f"{key}=%s")
             params.append(value)
-        with db.connect() as conn:
+        with connection.connect() as conn:
             current = conn.execute("SELECT version FROM remediation_campaigns WHERE campaign_id=%s FOR UPDATE", (campaign_id,)).fetchone()
             if not current:
                 return None
@@ -326,7 +326,7 @@ class RiskRepository:
         return self.get_campaign(campaign_id)
 
     def verification_targets(self, campaign_id: str, actor: str | None) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             exists = conn.execute("SELECT 1 FROM remediation_campaigns WHERE campaign_id=%s", (campaign_id,)).fetchone()
             if not exists:
                 return None

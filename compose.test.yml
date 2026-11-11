@@ -10,6 +10,10 @@ services:
     environment:
       MPVM_DATABASE_URL: postgresql://test:test@test-postgres:5432/mpvm_test
       COVERAGE_FILE: /tmp/mpvm-test.coverage
+      # The app loads ./.env at import (load_dotenv, override=False). A local
+      # .env may enable MCP for the working stack; the suite must see the app
+      # default (MCP off) regardless, so pin it explicitly here.
+      MPVM_MCP_ENABLED: "false"
     volumes:
       - .:/workspace:ro
       - ./output:/workspace/output
