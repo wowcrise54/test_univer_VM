@@ -395,17 +395,23 @@ def scan_removal_batcher(run_id: str) -> _ScanRemovalBatcher | None:
 class _ScanRemovalBatcher:
     """Groups card-saved assets into MP VM removal batches for one scan run.
 
-    Asset workers call :meth:`enqueue_and_wait` after the card is saved
-    locally and block until the single per-run daemon thread reaches a
-    terminal status for their item. One ``remove_assets`` call covers up to
-    ``_SCAN_REMOVAL_BATCH_SIZE`` assets and one ``wait_for_asset_removal``
-    stream covers the whole operation. Items that already carry a removal
-    operation (restart recovery) are joined: the batcher polls the existing
+    Asset workers call :meth:`enqueue` after the card is saved locally and
+    return immediately; the item keeps its ``card_saved`` stage until the
+    single per-run daemon thread reaches a terminal status for it. The
+    thread fires a batch as soon as ``_SCAN_REMOVAL_BATCH_SIZE`` pending
+    items have accumulated, so batches of 20 form *during* the scan
+    instead of after it; ``mark_final()`` (called by the monitor only
+    after every asset worker has finished) flushes the remainder, and the
+    thread exits once stopped or once final with empty queues. One
+    ``remove_assets`` call covers up to ``_SCAN_REMOVAL_BATCH_SIZE``
+    assets and one ``wait_for_asset_removal`` stream covers the whole
+    operation. Items that already carry a removal operation (restart
+    recovery) are joined immediately: the batcher polls the existing
     operation and never starts a second removal for the same asset.
 
     Lock discipline: the condition lock guards only in-memory state
-    (``_pending``, ``_joins``, ``_results``, flags). All HTTP calls and DB
-    writes happen outside the lock.
+    (``_pending``, ``_joins``, flags). All HTTP calls and DB writes happen
+    outside the lock.
     """
 
     def __init__(self, *, run_id: str, auth: Any, token: str) -> None:
@@ -414,9 +420,7 @@ class _ScanRemovalBatcher:
         self.token = token
         self._cond = threading.Condition()
         self._pending: list[tuple[int, str]] = []
-        self._joins: list[tuple[int, str]] = []
-        self._results: dict[int, tuple[str, str, str | None]] = {}
-        self._waiters = 0
+        self._joins: list[tuple[int, str, str]] = []
         self._final = False
         self._stopped = False
         self._client: MpVmClient | None = None
@@ -429,45 +433,39 @@ class _ScanRemovalBatcher:
 
     # -- worker / monitor API ---------------------------------------------
 
-    def enqueue_and_wait(
+    def enqueue(
         self,
         item_id: int,
         asset_id: str,
         *,
         existing_operation_id: str | None = None,
-    ) -> tuple[str, str, str | None]:
-        """Queue the item for removal and block until its terminal status.
+    ) -> None:
+        """Queue the item for removal and return immediately (non-blocking).
 
-        Returns ``(status, message, operation_id)`` where status is
-        ``completed`` or ``removal_failed``; raises ``ScanPostprocessCancelled``
-        when the run was cancelled.
+        The item keeps its ``card_saved`` stage in the database until the
+        batcher thread marks it ``deleting`` and later a terminal status.
         """
+        item_id = int(item_id)
+        thread_alive = False
         with self._cond:
-            self._waiters += 1
-            if existing_operation_id:
-                self._joins.append((int(item_id), str(existing_operation_id)))
-            else:
-                self._pending.append((int(item_id), asset_id))
-            self._cond.notify_all()
-            try:
-                while int(item_id) not in self._results:
-                    self._cond.wait(timeout=1.0)
-                    if not self._thread.is_alive():
-                        # The batcher thread died unexpectedly; record the
-                        # failure locally so this worker cannot hang.
-                        self._store_result(
-                            int(item_id),
-                            "removal_failed",
-                            "Removal batcher thread exited unexpectedly.",
-                            None,
-                        )
-            finally:
-                self._waiters -= 1
+            thread_alive = self._thread.is_alive()
+            if thread_alive:
+                if existing_operation_id:
+                    self._joins.append((item_id, str(existing_operation_id), str(asset_id)))
+                else:
+                    self._pending.append((item_id, str(asset_id)))
                 self._cond.notify_all()
-            status, message, operation_id = self._results[int(item_id)]
-        if status == "cancelled":
-            raise ScanPostprocessCancelled("Scan post-processing was cancelled.")
-        return status, message, operation_id
+        if not thread_alive:
+            # Post-shutdown race: the batcher thread already exited (e.g. a
+            # late enqueue after run cleanup). Record the failure directly so
+            # the item cannot dangle without a terminal status.
+            self._record_item(
+                item_id,
+                "removal_failed",
+                "Removal batcher thread exited unexpectedly.",
+                None,
+                asset_id,
+            )
 
     def mark_final(self) -> None:
         """Flush the remaining queue once no more workers will enqueue."""
@@ -495,12 +493,14 @@ class _ScanRemovalBatcher:
             self._client = host.MpVmClient(self.auth)
         return self._client
 
-    def _store_result(self, item_id: int, status: str, message: str, operation_id: str | None) -> None:
-        with self._cond:
-            self._results[item_id] = (status, message, operation_id)
-            self._cond.notify_all()
-
-    def _record_item(self, item_id: int, status: str, message: str, operation_id: str | None) -> None:
+    def _record_item(
+        self,
+        item_id: int,
+        status: str,
+        message: str,
+        operation_id: str | None,
+        asset_id: str | None = None,
+    ) -> None:
         values: dict[str, Any] = {
             "status": status,
             "stage": status,
@@ -510,8 +510,9 @@ class _ScanRemovalBatcher:
         }
         if operation_id:
             values["removal_operation_id"] = operation_id
+        row: dict[str, Any] | None = None
         try:
-            db.update_scan_postprocess_item(item_id, **values)
+            row = db.update_scan_postprocess_item(item_id, **values)
         except psycopg.Error:
             scan_log(
                 logging.ERROR,
@@ -520,7 +521,23 @@ class _ScanRemovalBatcher:
                 item_id=item_id,
                 status=status,
             )
-        self._store_result(item_id, status, message, operation_id)
+        # Per-item terminal events moved here from the asset worker: the
+        # worker no longer blocks on the removal, so only the batcher knows
+        # when an item reached its terminal status.
+        terminal_context: dict[str, Any] = {
+            "postprocess_run_id": self.run_id,
+            "item_id": item_id,
+            "asset_id": asset_id,
+            "removal_operation_id": operation_id,
+            "message": message,
+        }
+        if row:
+            terminal_context["job_id"] = row.get("mp_job_id")
+            terminal_context["target"] = row.get("target")
+        if status == "completed":
+            scan_log(logging.INFO, "asset_processing_completed", **terminal_context)
+        elif status == "removal_failed":
+            scan_log(logging.ERROR, "mpvm_removal_failed", **terminal_context)
 
     def _mark_deleting(self, item_id: int, operation_id: str, batch_size: int) -> None:
         try:
@@ -544,11 +561,23 @@ class _ScanRemovalBatcher:
         try:
             while True:
                 with self._cond:
-                    while not self._pending and not self._joins and not self._stopped:
-                        if self._final:
-                            break
+                    # Fire as soon as a full batch of _SCAN_REMOVAL_BATCH_SIZE
+                    # has accumulated (the user-facing "каждые 20 хостов"
+                    # cadence); joins are always processed immediately. With
+                    # fewer than 20 pending items the thread keeps waiting,
+                    # so a partial wave never triggers a removal on its own.
+                    while (
+                        len(self._pending) < _SCAN_REMOVAL_BATCH_SIZE
+                        and not self._joins
+                        and not self._final
+                        and not self._stopped
+                    ):
                         self._cond.wait(timeout=1.0)
-                    if self._final and not self._pending and not self._joins and self._waiters == 0:
+                    # mark_final()/shutdown() only happen after every asset
+                    # worker has returned (or the run is being torn down), so
+                    # any work still queued here is the complete remainder:
+                    # flush it, then exit once both queues are empty.
+                    if (self._stopped or self._final) and not self._pending and not self._joins:
                         break
                     batch = self._pending[:_SCAN_REMOVAL_BATCH_SIZE]
                     del self._pending[:_SCAN_REMOVAL_BATCH_SIZE]
@@ -556,8 +585,8 @@ class _ScanRemovalBatcher:
                     self._joins.clear()
                 if batch:
                     self._process_batch(batch)
-                for join_item_id, join_operation_id in joins:
-                    self._process_join(join_item_id, join_operation_id)
+                for join_item_id, join_operation_id, join_asset_id in joins:
+                    self._process_join(join_item_id, join_operation_id, join_asset_id)
         finally:
             if self._client is not None:
                 self._client.session.close()
@@ -575,8 +604,8 @@ class _ScanRemovalBatcher:
                 item_ids=item_ids,
                 count=len(batch),
             )
-            for item_id, _asset_id in batch:
-                self._record_item(item_id, "cancelled", message, None)
+            for item_id, asset_id in batch:
+                self._record_item(item_id, "cancelled", message, None, asset_id)
             return
         scan_log(
             logging.INFO,
@@ -598,8 +627,8 @@ class _ScanRemovalBatcher:
                 count=len(batch),
                 error=message,
             )
-            for item_id, _asset_id in batch:
-                self._record_item(item_id, "removal_failed", message, None)
+            for item_id, asset_id in batch:
+                self._record_item(item_id, "removal_failed", message, None, asset_id)
             return
         for item_id, _asset_id in batch:
             self._mark_deleting(item_id, operation_id, len(batch))
@@ -646,13 +675,15 @@ class _ScanRemovalBatcher:
                 count=len(batch),
                 message=message,
             )
-        for item_id, _asset_id in batch:
-            self._record_item(item_id, status, message, operation_id)
+        for item_id, asset_id in batch:
+            self._record_item(item_id, status, message, operation_id, asset_id)
 
-    def _process_join(self, item_id: int, operation_id: str) -> None:
+    def _process_join(self, item_id: int, operation_id: str, asset_id: str) -> None:
         cancel_event = scan_postprocess_cancel_event(self.run_id)
         if cancel_event is not None and cancel_event.is_set():
-            self._record_item(item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id)
+            self._record_item(
+                item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id, asset_id
+            )
             return
         try:
             ok, message, _raw = self._client_for_removal().wait_for_asset_removal(
@@ -665,11 +696,13 @@ class _ScanRemovalBatcher:
         except Exception as exc:  # noqa: BLE001
             ok, message = False, f"Removal operation polling failed: {type(exc).__name__}: {exc}"
         if cancel_event is not None and cancel_event.is_set():
-            self._record_item(item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id)
+            self._record_item(
+                item_id, "cancelled", "MP VM asset removal cancelled by operator.", operation_id, asset_id
+            )
         elif ok:
-            self._record_item(item_id, "completed", message, operation_id)
+            self._record_item(item_id, "completed", message, operation_id, asset_id)
         else:
-            self._record_item(item_id, "removal_failed", message, operation_id)
+            self._record_item(item_id, "removal_failed", message, operation_id, asset_id)
 
 
 def cleanup_auto_created_refresh_task(
@@ -1180,8 +1213,9 @@ def monitor_successful_scan_jobs(
                 error=target_errors.get(target, "Asset resolution timed out."),
             )
         drain_asset_batch()
-        # Every asset worker has finished, so no more removals can be
-        # enqueued: flush the batcher and wait for it to drain.
+        # Every asset worker has returned, so every removal has already been
+        # enqueued (enqueueing is non-blocking): flush the batcher's
+        # remainder and wait for it to drain.
         removal_batcher.mark_final()
         removal_batcher.join(timeout=host.SCAN_ASSET_REMOVAL_TIMEOUT_SECONDS)
         if removal_batcher.is_alive():
@@ -1421,29 +1455,23 @@ def process_scanned_asset_item(*, item: dict[str, Any], auth: AuthConfig, token:
         if batcher is None:
             raise RuntimeError(f"No removal batcher registered for run {run_id}.")
         # Removal is batched per run: one remove_assets call per up to
-        # _SCAN_REMOVAL_BATCH_SIZE card-saved assets, one operation poll stream
-        # per batch. This worker only blocks for its own terminal status.
-        removal_status, removal_message, removal_operation_id = batcher.enqueue_and_wait(
+        # _SCAN_REMOVAL_BATCH_SIZE card-saved assets, one operation poll
+        # stream per batch. Enqueueing is non-blocking — the worker returns
+        # now and the item keeps its card_saved stage until the batcher
+        # thread marks it deleting and then a terminal status (the per-item
+        # asset_processing_completed / mpvm_removal_failed events are
+        # emitted by the batcher).
+        batcher.enqueue(
             item_id,
             asset_id,
             existing_operation_id=str(removal_operation_id) if removal_operation_id else None,
         )
-        if removal_status == "completed":
-            scan_log(
-                logging.INFO,
-                "asset_processing_completed",
-                **context,
-                removal_operation_id=removal_operation_id,
-                message=removal_message,
-            )
-        else:
-            scan_log(
-                logging.ERROR,
-                "mpvm_removal_failed",
-                **context,
-                removal_operation_id=removal_operation_id,
-                message=removal_message,
-            )
+        scan_log(
+            logging.INFO,
+            "asset_removal_enqueued",
+            **context,
+            existing_operation_id=str(removal_operation_id) if removal_operation_id else None,
+        )
     except ScanPostprocessCancelled:
         db.update_scan_postprocess_item(
             item_id,
