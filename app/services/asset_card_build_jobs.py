@@ -119,7 +119,7 @@ def _run_asset_card_build_job(
         nonlocal last_progress_write
         with progress_lock:
             now = time.monotonic()
-            if not force and completed < discovered and now - last_progress_write < 1.0:
+            if not force and completed < discovered and now - last_progress_write < 5.0:
                 return
             last_progress_write = now
             card_stats: Any = card.get("stats") if isinstance(card, dict) else {}
