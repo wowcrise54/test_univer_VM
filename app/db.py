@@ -4135,6 +4135,17 @@ def finish_asset_card_build_job(
 
 
 def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
+    """Save the asset card, then rebuild its full-text search index.
+
+    The card row, cache, and software inventory are committed in the first
+    (save) transaction. The search index (``asset_card_search_fields``) is
+    rebuilt in a second, separate transaction so the save does not hold its
+    transaction open for the index rebuild. Accepted semantics: if the
+    search-index step fails, the exception still propagates, but the
+    already-committed card row is NOT rolled back — for a few seconds the
+    card exists while the search index lags, and the next (idempotent)
+    re-save rebuilds the index.
+    """
     init_db()
     write_started = datetime.now(timezone.utc)
     root = card.get("root") if isinstance(card.get("root"), dict) else {}
@@ -4216,7 +4227,6 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ).fetchone()
         replace_asset_card_cache(conn, asset_id, card, current)
-        replace_asset_card_search_index(conn, asset_id, card, current)
         replace_asset_card_software_inventory(conn, asset_id, card, current)
         save_duration_ms = round((datetime.now(timezone.utc) - write_started).total_seconds() * 1000, 2)
         stats = card.setdefault("stats", {})
@@ -4226,6 +4236,12 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 "UPDATE asset_cards SET stats_json = %s WHERE asset_id = %s",
                 (json.dumps(stats, ensure_ascii=False), asset_id),
             )
+    # Search index rebuild runs in a second transaction after the save
+    # transaction has been committed (see the docstring above).
+    search_index_started = time.perf_counter()
+    with connect() as conn:
+        replace_asset_card_search_index(conn, asset_id, card, current)
+    search_index_duration_ms = round((time.perf_counter() - search_index_started) * 1000, 2)
     result = decode_asset_card_summary(dict(row)) if row else None
     if result:
         record_asset_card_history(result, card)
@@ -4235,6 +4251,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
         asset_id=asset_id,
         operation="upsert_asset_card",
         duration_ms=save_duration_ms,
+        search_index_duration_ms=search_index_duration_ms,
         node_count=len(card.get("nodes") or []),
         collection_count=len(card.get("collections") or []),
         table_row_count=len(card.get("table_rows") or []),
