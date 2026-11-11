@@ -381,6 +381,11 @@ def list_vulnerability_passports(
             assert total_row is not None
             total = int(total_row["count"] or 0)
             remember_passport_total(counts_key, total)
+        if offset >= total:
+            # Page is past the end of the result set: answer empty without
+            # running the stage-1/stage-2 queries (offset beyond total used
+            # to cost a full sort just to return no rows).
+            return {"total": total, "rows": [], "limit": limit, "offset": offset}
         # Deferred join: sort and page on the narrow ``id`` column first,
         # then fetch the wide rows (including the raw_detail_json blob needed
         # for short_description) for the page only. Sorting 500k rows with a

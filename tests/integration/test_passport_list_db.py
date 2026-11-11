@@ -225,6 +225,52 @@ def test_list_limit_offset_clamping_unchanged(test_db):
     )["rows"][:5]
 
 
+def _insert_five_passports() -> list[str]:
+    ids = [f"off-{index:02d}" for index in range(5)]
+    for index, internal_id in enumerate(ids):
+        _insert_passport(internal_id, name=f"off-{index:02d}", score=str(10 - index))
+    return ids
+
+
+def test_list_offset_equal_total_returns_empty(test_db):
+    _insert_five_passports()
+
+    result = catalog.list_vulnerability_passports(limit=50, offset=5)
+    assert result["rows"] == []
+    assert result["total"] == 5
+    assert result["offset"] == 5
+    assert result["limit"] == 50
+
+
+def test_list_offset_beyond_total_returns_empty(test_db):
+    _insert_five_passports()
+
+    result = catalog.list_vulnerability_passports(limit=50, offset=500)
+    assert result["rows"] == []
+    assert result["total"] == 5
+    assert result["offset"] == 500
+
+
+def test_list_valid_pages_unaffected_by_offset_short_circuit(test_db):
+    _insert_five_passports()
+
+    page_two = catalog.list_vulnerability_passports(limit=50, offset=2)
+    assert len(page_two["rows"]) == 3
+    assert page_two["total"] == 5
+    assert page_two["offset"] == 2
+
+    page_zero = catalog.list_vulnerability_passports(limit=50, offset=0)
+    assert len(page_zero["rows"]) == 5
+    assert page_zero["total"] == 5
+
+
+def test_list_empty_table_returns_empty_without_error(test_db):
+    result = catalog.list_vulnerability_passports(limit=50, offset=0)
+    assert result["total"] == 0
+    assert result["rows"] == []
+    assert result["offset"] == 0
+
+
 def test_list_sort_by_variants_unchanged(test_db):
     _insert_passport("sb-1", name="bbb", issue_time="2026-01-02T00:00:00+00:00")
     _insert_passport("sb-2", name="aaa", issue_time="2026-01-03T00:00:00+00:00")
