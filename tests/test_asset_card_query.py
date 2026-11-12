@@ -7,7 +7,9 @@ from psycopg._queries import PostgresQuery
 from psycopg.adapt import Transformer
 
 from app import db
+from app.repositories.asset_cards import queries as card_queries
 
+from app.persistence import connection as _pconn, schema
 
 class AssetCardSearchIndexTests(unittest.TestCase):
     def fixture(self):
@@ -142,12 +144,12 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertTrue(all(preset["pdql"] for preset in presets))
         self.assertTrue(all(preset.get("kind") in {"software", "os"} for preset in presets))
 
-    @patch.object(db, "asset_card_search_index_coverage", return_value={
+    @patch.object(card_queries, "asset_card_search_index_coverage", return_value={
         "indexed_cards": 3,
         "total_cards": 3,
     })
-    @patch.object(db, "connect")
-    @patch.object(db, "init_db")
+    @patch.object(_pconn, "connect")
+    @patch.object(schema, "init_db")
     def test_software_search_preset_groups_local_index(
         self, _init_db, connect, _coverage,
     ):
@@ -186,9 +188,9 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         query.convert(sql + " SELECT * FROM software_rows", [False])
         self.assertIn(b"asset_card_software_inventory", query.query)
 
-    @patch.object(db, "asset_card_search_index_coverage", return_value={})
-    @patch.object(db, "connect")
-    @patch.object(db, "init_db")
+    @patch.object(card_queries, "asset_card_search_index_coverage", return_value={})
+    @patch.object(_pconn, "connect")
+    @patch.object(schema, "init_db")
     def test_os_and_vendor_filters(self, _init, connect, _coverage):
         conn = connect.return_value.__enter__.return_value
         conn.execute.return_value.fetchall.return_value = []
@@ -201,9 +203,9 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertIn("LOWER(vendor)", sql)
         self.assertEqual(params, [False, "Microsoft", 100, 0])
 
-    @patch.object(db, "asset_card_search_index_coverage", return_value={})
-    @patch.object(db, "connect")
-    @patch.object(db, "init_db")
+    @patch.object(card_queries, "asset_card_search_index_coverage", return_value={})
+    @patch.object(_pconn, "connect")
+    @patch.object(schema, "init_db")
     def test_os_assets_use_exact_nullable_group_and_pagination(self, _init, connect, _coverage):
         conn = connect.return_value.__enter__.return_value
         conn.execute.return_value.fetchall.return_value = []
@@ -212,12 +214,12 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertIn("IS NOT DISTINCT FROM %s::text", sql)
         self.assertEqual(params, ["Linux", None, 100, 100])
 
-    @patch.object(db, "asset_card_search_index_coverage", return_value={
+    @patch.object(card_queries, "asset_card_search_index_coverage", return_value={
         "indexed_cards": 3,
         "total_cards": 3,
     })
-    @patch.object(db, "connect")
-    @patch.object(db, "init_db")
+    @patch.object(_pconn, "connect")
+    @patch.object(schema, "init_db")
     def test_software_preset_assets_returns_local_hosts(
         self, _init_db, connect, _coverage,
     ):
@@ -248,8 +250,8 @@ class AssetCardSearchIndexTests(unittest.TestCase):
         self.assertEqual(result["rows"][0]["asset_id"], "asset-1")
         self.assertEqual(result["execution"], "local")
 
-    @patch.object(db, "connect")
-    @patch.object(db, "init_db")
+    @patch.object(_pconn, "connect")
+    @patch.object(schema, "init_db")
     def test_index_coverage_counts_from_asset_cards_side(self, _init_db, connect):
         """Regression: indexed_cards must be counted from the small
         ``asset_cards`` side (indexed EXISTS), not with a full

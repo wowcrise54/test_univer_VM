@@ -8,6 +8,7 @@ the already-committed ``asset_cards`` row is NOT rolled back.
 import pytest
 
 from app import db
+from app.repositories.asset_cards import cards
 
 pytestmark = pytest.mark.integration
 
@@ -49,7 +50,7 @@ def test_search_index_failure_does_not_rollback_committed_card(test_db, monkeypa
     def boom(conn, asset_id, card, updated_at):
         raise RuntimeError("index rebuild failed")
 
-    monkeypatch.setattr(db, "replace_asset_card_search_index", boom)
+    monkeypatch.setattr(cards, "replace_asset_card_search_index", boom)
     with pytest.raises(RuntimeError, match="index rebuild failed"):
         db.upsert_asset_card(_card())
     with db.connect() as conn:

@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Any
 
-from .. import db
+from ..persistence import codecs, connection, schema
 
 ACTIVE_RUN_STATUSES = {"queued", "running", "cancelling"}
 
@@ -30,21 +30,21 @@ def _rows(rows: list[Any]) -> list[dict[str, Any]]:
 
 class AutomationRepository:
     def list_runbooks(self) -> list[dict[str, Any]]:
-        db.init_db()
-        with db.connect() as conn:
+        schema.init_db()
+        with connection.connect() as conn:
             rows = conn.execute("SELECT * FROM automation_runbooks ORDER BY name").fetchall()
         return [self._decode_runbook(row) for row in _rows(rows)]
 
     def get_runbook(self, runbook_id: str) -> dict[str, Any] | None:
-        db.init_db()
-        with db.connect() as conn:
+        schema.init_db()
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM automation_runbooks WHERE runbook_id = %s", (runbook_id,)).fetchone()
         return self._decode_runbook(dict(row)) if row else None
 
     def create_runbook(self, *, name: str, description: str, definition: dict[str, Any]) -> dict[str, Any]:
-        now = db.now_utc()
+        now = codecs.now_utc()
         runbook_id = str(uuid.uuid4())
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO automation_runbooks
                    (runbook_id, name, description, draft_json, created_at, updated_at)
@@ -57,8 +57,8 @@ class AutomationRepository:
     def update_runbook(
         self, runbook_id: str, *, name: str, description: str, definition: dict[str, Any]
     ) -> dict[str, Any] | None:
-        now = db.now_utc()
-        with db.connect() as conn:
+        now = codecs.now_utc()
+        with connection.connect() as conn:
             row = conn.execute(
                 """UPDATE automation_runbooks
                    SET name = %s, description = %s, draft_json = %s,
@@ -69,7 +69,7 @@ class AutomationRepository:
         return self._decode_runbook(dict(row)) if row else None
 
     def delete_runbook(self, runbook_id: str) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 "DELETE FROM automation_runbooks WHERE runbook_id = %s RETURNING runbook_id", (runbook_id,)
             ).fetchone()
@@ -78,8 +78,8 @@ class AutomationRepository:
     def publish_runbook(
         self, runbook_id: str, *, definition: dict[str, Any], definition_hash: str, destructive_approved: bool
     ) -> dict[str, Any] | None:
-        now = db.now_utc()
-        with db.connect() as conn:
+        now = codecs.now_utc()
+        with connection.connect() as conn:
             current = conn.execute(
                 "SELECT * FROM automation_runbooks WHERE runbook_id = %s FOR UPDATE", (runbook_id,)
             ).fetchone()
@@ -109,7 +109,7 @@ class AutomationRepository:
         return self._decode_runbook(dict(row))
 
     def get_version(self, runbook_id: str, version: int | None = None) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             if version is None:
                 row = conn.execute(
                     "SELECT * FROM automation_runbook_versions WHERE runbook_id = %s ORDER BY version DESC LIMIT 1",
@@ -127,7 +127,7 @@ class AutomationRepository:
         return result
 
     def list_schedules(self) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 """SELECT s.*, r.name AS runbook_name FROM automation_schedules s
                    JOIN automation_runbooks r ON r.runbook_id = s.runbook_id ORDER BY s.name"""
@@ -138,8 +138,8 @@ class AutomationRepository:
         self, *, runbook_id: str, name: str, cron_expression: str, timezone: str, enabled: bool, next_run_at: str
     ) -> dict[str, Any]:
         schedule_id = str(uuid.uuid4())
-        now = db.now_utc()
-        with db.connect() as conn:
+        now = codecs.now_utc()
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO automation_schedules
                    (schedule_id, runbook_id, name, cron_expression, timezone, enabled, next_run_at, created_at, updated_at)
@@ -152,23 +152,23 @@ class AutomationRepository:
     def update_schedule(
         self, schedule_id: str, *, name: str, cron_expression: str, timezone: str, enabled: bool, next_run_at: str
     ) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """UPDATE automation_schedules SET name=%s, cron_expression=%s, timezone=%s,
                    enabled=%s, next_run_at=%s, updated_at=%s WHERE schedule_id=%s RETURNING *""",
-                (name, cron_expression, timezone, enabled, next_run_at, db.now_utc(), schedule_id),
+                (name, cron_expression, timezone, enabled, next_run_at, codecs.now_utc(), schedule_id),
             ).fetchone()
         return dict(row) if row else None
 
     def delete_schedule(self, schedule_id: str) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 "DELETE FROM automation_schedules WHERE schedule_id=%s RETURNING schedule_id", (schedule_id,)
             ).fetchone()
         return row is not None
 
     def due_schedules(self, now: str) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM automation_schedules WHERE enabled=TRUE AND next_run_at <= %s ORDER BY next_run_at LIMIT 20",
                 (now,),
@@ -176,15 +176,15 @@ class AutomationRepository:
         return _rows(rows)
 
     def advance_schedule(self, schedule_id: str, *, scheduled_at: str, next_run_at: str, status: str) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE automation_schedules SET last_scheduled_at=%s, last_status=%s,
                    next_run_at=%s, updated_at=%s WHERE schedule_id=%s""",
-                (scheduled_at, status, next_run_at, db.now_utc(), schedule_id),
+                (scheduled_at, status, next_run_at, codecs.now_utc(), schedule_id),
             )
 
     def has_active_run(self, runbook_id: str) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM automation_runs WHERE runbook_id=%s AND status = ANY(%s) LIMIT 1",
                 (runbook_id, list(ACTIVE_RUN_STATUSES)),
@@ -205,9 +205,9 @@ class AutomationRepository:
         status: str = "queued",
     ) -> dict[str, Any]:
         run_id = str(uuid.uuid4())
-        now = db.now_utc()
+        now = codecs.now_utc()
         steps = definition.get("steps") or []
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO automation_runs
                    (run_id, runbook_id, version, schedule_id, trigger_type, scheduled_for, status, dry_run,
@@ -241,12 +241,12 @@ class AutomationRepository:
     def get_run_by_idempotency_key(self, key: str | None) -> dict[str, Any] | None:
         if not key:
             return None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM automation_runs WHERE idempotency_key=%s", (key,)).fetchone()
         return self._decode_run(dict(row)) if row else None
 
     def list_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 """SELECT a.*, r.name AS runbook_name FROM automation_runs a
                    JOIN automation_runbooks r ON r.runbook_id=a.runbook_id ORDER BY a.created_at DESC LIMIT %s""",
@@ -255,7 +255,7 @@ class AutomationRepository:
         return [self._decode_run(row) for row in _rows(rows)]
 
     def get_run(self, run_id: str, *, include_steps: bool = True) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM automation_runs WHERE run_id=%s", (run_id,)).fetchone()
             steps = (
                 conn.execute(
@@ -271,7 +271,7 @@ class AutomationRepository:
         return result
 
     def resumable_runs(self) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 "SELECT run_id FROM automation_runs WHERE status = ANY(%s) ORDER BY created_at",
                 (["queued", "running", "cancelling"],),
@@ -292,7 +292,7 @@ class AutomationRepository:
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        now = db.now_utc()
+        now = codecs.now_utc()
         terminal = status in {
             "completed",
             "completed_with_warnings",
@@ -301,7 +301,7 @@ class AutomationRepository:
             "skipped",
             "needs_attention",
         }
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE automation_runs SET status=%s, current_step=COALESCE(%s,current_step),
                    result_json=COALESCE(%s,result_json), error=%s,
@@ -322,11 +322,11 @@ class AutomationRepository:
             )
 
     def request_cancel(self, run_id: str) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """UPDATE automation_runs SET cancel_requested=TRUE, status=CASE WHEN status='queued' THEN 'cancelled' ELSE 'cancelling' END,
                    updated_at=%s WHERE run_id=%s AND status = ANY(%s) RETURNING run_id""",
-                (db.now_utc(), run_id, list(ACTIVE_RUN_STATUSES)),
+                (codecs.now_utc(), run_id, list(ACTIVE_RUN_STATUSES)),
             ).fetchone()
         return row is not None
 
@@ -341,9 +341,9 @@ class AutomationRepository:
         error: str | None = None,
         child_operation_id: str | None = None,
     ) -> None:
-        now = db.now_utc()
+        now = codecs.now_utc()
         terminal = status in {"completed", "failed", "skipped", "warning", "cancelled"}
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE automation_run_steps SET status=%s, attempts=COALESCE(%s,attempts),
                    output_json=COALESCE(%s,output_json), error=%s,
@@ -375,10 +375,10 @@ class AutomationRepository:
         run_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 "INSERT INTO automation_audit_events VALUES (%s,%s,%s,%s,%s,%s)",
-                (str(uuid.uuid4()), runbook_id, run_id, event_type, _dump(details or {}), db.now_utc()),
+                (str(uuid.uuid4()), runbook_id, run_id, event_type, _dump(details or {}), codecs.now_utc()),
             )
 
     def create_notification(
@@ -393,7 +393,7 @@ class AutomationRepository:
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         notification_id = str(uuid.uuid4())
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """INSERT INTO notifications
                    (notification_id,level,title,message,event_type,runbook_id,run_id,details_json,created_at)
@@ -407,7 +407,7 @@ class AutomationRepository:
                     runbook_id,
                     run_id,
                     _dump(details or {}),
-                    db.now_utc(),
+                    codecs.now_utc(),
                 ),
             ).fetchone()
         assert row is not None
@@ -415,7 +415,7 @@ class AutomationRepository:
 
     def list_notifications(self, *, unread_only: bool = False, limit: int = 100) -> dict[str, Any]:
         where = "WHERE is_read=FALSE" if unread_only else ""
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM notifications {where} ORDER BY created_at DESC LIMIT %s", (limit,)
             ).fetchall()
@@ -424,16 +424,16 @@ class AutomationRepository:
         return {"rows": [self._decode_notification(row) for row in _rows(rows)], "unread": int(unread["count"])}
 
     def mark_notification_read(self, notification_id: str) -> bool:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 "UPDATE notifications SET is_read=TRUE, read_at=%s WHERE notification_id=%s RETURNING notification_id",
-                (db.now_utc(), notification_id),
+                (codecs.now_utc(), notification_id),
             ).fetchone()
         return row is not None
 
     def queue_webhook(self, notification_id: str) -> None:
-        now = db.now_utc()
-        with db.connect() as conn:
+        now = codecs.now_utc()
+        with connection.connect() as conn:
             conn.execute(
                 """INSERT INTO webhook_deliveries
                    (delivery_id,notification_id,attempt,status,next_attempt_at,created_at,updated_at)
@@ -442,7 +442,7 @@ class AutomationRepository:
             )
 
     def due_webhooks(self, now: str) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 """SELECT d.*, n.level, n.title, n.message, n.event_type, n.runbook_id, n.run_id,
                           n.details_json, n.created_at AS notification_created_at
@@ -465,11 +465,11 @@ class AutomationRepository:
         response_status: int | None = None,
         error: str | None = None,
     ) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE webhook_deliveries SET attempt=%s,status=%s,next_attempt_at=%s,
                    response_status=%s,error=%s,updated_at=%s WHERE delivery_id=%s""",
-                (attempt, status, next_attempt_at, response_status, error, db.now_utc(), delivery_id),
+                (attempt, status, next_attempt_at, response_status, error, codecs.now_utc(), delivery_id),
             )
 
     @staticmethod

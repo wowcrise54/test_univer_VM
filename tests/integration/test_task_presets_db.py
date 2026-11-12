@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 import pytest
 
-from app import db
+from app import auth, db
 from app.domain.errors import DomainError
 from app.mpvm_client import build_scanner_task_payload
 from app.repositories.task_presets import TaskPresetRepository
@@ -134,7 +134,24 @@ def test_team_tasks_are_scoped_by_preset_roles(test_db):
     assert task["payload"]["include"] == {"assets": [], "targets": ["10.0.0.1"], "assetsGroups": []}
     assert task["preset_asset_groups"] == [] and task["preset_targets"] == ["10.0.0.1"]
 
+    db.record_scan_task(
+        mp_task_id="precheck-win", payload={"name": "Windows precheck"}, status="precheck_failed",
+        parent_task_id="task-win", remote_response={
+            "false_targets": ["10.0.0.7", "srv-01.example.local", "10.0.1.0/24", "10.0.2.1-10.0.2.10"],
+        },
+    )
+    db.record_scan_task(
+        mp_task_id="precheck-retry", payload={"name": "Precheck retry"}, status="precheck_finished",
+        parent_task_id="task-win", remote_response={
+            "parent_precheck_task_id": "precheck-win", "false_targets": [],
+        },
+    )
+
     assert [row["mp_task_id"] for row in service.list(win_user, unrestricted=False)["rows"]] == ["task-win"]
+    assert service.list(win_user, unrestricted=False)["rows"][0]["latest_precheck"]["hosts"] == [
+        "10.0.0.7", "srv-01.example.local",
+    ]
+    assert service.list(lin_user, unrestricted=False)["rows"][0]["latest_precheck"] is None
     assert {row["mp_task_id"] for row in service.list(win_user, unrestricted=True)["rows"]} == {"task-win", "task-lin"}
     with pytest.raises(LookupError):
         service.get("task-lin", win_user, unrestricted=False)
@@ -173,6 +190,38 @@ def test_ip_and_fqdn_targets_round_trip(test_db):
     assert service.start("task-targets", user, idempotency_key=None, unrestricted=False) == {"status": "started"}
 
 
+def test_team_workspace_folders_and_assignments_are_personal(test_db):
+    repository = TaskPresetRepository()
+    role = _role_id("engineer_windows")
+    preset = TaskPresetService(repository).create(_values("Windows"), [role], actor="admin")
+    service = TeamTasksService(repository)
+    users = [
+        auth.create_user(auth.UserCreateRequest(
+            username=name, display_name=name, password="test-folder-pass", role_ids=[role],
+        ))
+        for name in ("win.one", "win.two")
+    ]
+    first, second = users
+    db.record_scan_task(mp_task_id="task-win", payload={"name": "Windows"}, status="created")
+    repository.attach_task("task-win", preset_id=preset["preset_id"], preset_version=1,
+                           asset_groups=[], targets=["10.0.0.1"], actor=first["username"])
+    first_folder = service.create_folder(first, "Серверы")
+    second_folder = service.create_folder(second, "Серверы")
+    assert service.list_folders(first) == [first_folder]
+    assert service.list_folders(second) == [second_folder]
+    with pytest.raises(LookupError):
+        service.move_task("task-win", first, second_folder["folder_id"], unrestricted=False)
+    with pytest.raises(LookupError):
+        service.move_task("task-win", _engineer("engineer_linux"), None, unrestricted=False)
+
+    for user, folder in zip(users, (first_folder, second_folder), strict=True):
+        service.move_task("task-win", user, folder["folder_id"], unrestricted=False)
+        assert service.list(user, unrestricted=False)["rows"][0]["folder_id"] == folder["folder_id"]
+    service.move_task("task-win", first, None, unrestricted=False)
+    assert service.list(first, unrestricted=False)["rows"][0]["folder_id"] is None
+    assert service.list(second, unrestricted=False)["rows"][0]["folder_id"] == second_folder["folder_id"]
+
+
 def test_active_task_count_uses_running_postprocess(test_db):
     repository = TaskPresetRepository()
     preset = TaskPresetService(repository).create(_values("Windows audit"), [_role_id("engineer_windows")], actor="a")
@@ -181,7 +230,14 @@ def test_active_task_count_uses_running_postprocess(test_db):
         repository.attach_task(task_id, preset_id=preset["preset_id"], preset_version=1,
                                asset_groups=[{"id": "g"}], actor="a")
     db.create_scan_postprocess_run("run-1", mp_task_id="t-1", started_from=db.now_utc(), options={})
-    with db.connect() as conn:
-        conn.execute("UPDATE scan_postprocess_runs SET status='monitoring' WHERE run_id='run-1'")
+    db.update_scan_postprocess_run(
+        "run-1", mp_run_id="mp-run-1", status="processing", asset_count=3, completed_count=1, failed_count=1,
+    )
     assert repository.count_active_tasks(preset["preset_id"]) == 1
     assert repository.count_active_tasks(preset["preset_id"], exclude_task_id="t-1") == 0
+    postprocess = next(
+        task["postprocess"] for task in repository.list_team_tasks(role_ids=None) if task["mp_task_id"] == "t-1"
+    )
+    assert postprocess["mp_run_id"] == "mp-run-1"
+    assert (postprocess["asset_count"], postprocess["completed_count"], postprocess["failed_count"]) == (3, 1, 1)
+    assert postprocess["updated_at"]

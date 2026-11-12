@@ -8,7 +8,7 @@ from typing import Any
 
 import psycopg.errors
 
-from .. import db
+from ..persistence import connection
 
 ACTIVE = {"queued", "running", "cancelling"}
 TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -44,7 +44,7 @@ class VmWorkflowRepository:
                 return replay, True
         workflow_id = str(uuid.uuid4())
         try:
-            with db.connect() as conn:
+            with connection.connect() as conn:
                 conn.execute(
                     """INSERT INTO vm_workflow_runs(workflow_id,kind,requested_by,idempotency_key,retry_of,request_json)
                        VALUES(%s,%s,%s,%s,%s,%s)""",
@@ -92,12 +92,12 @@ class VmWorkflowRepository:
         return self.by_idempotency_key(key)
 
     def by_idempotency_key(self, key: str) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM vm_workflow_runs WHERE idempotency_key=%s", (key,)).fetchone()
         return self.get(str(row["workflow_id"])) if row else None
 
     def by_operation(self, operation_id: str) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 "SELECT workflow_id FROM vm_workflow_runs WHERE operation_id=%s ORDER BY created_at DESC LIMIT 1",
                 (operation_id,),
@@ -114,7 +114,7 @@ class VmWorkflowRepository:
             params.append(kind)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         limit, offset = max(1, min(int(limit), 200)), max(0, int(offset))
-        with db.connect() as conn:
+        with connection.connect() as conn:
             total_row = conn.execute(f"SELECT COUNT(*) count FROM vm_workflow_runs {where}", params).fetchone()
             rows = conn.execute(
                 f"SELECT * FROM vm_workflow_runs {where} ORDER BY created_at DESC LIMIT %s OFFSET %s",
@@ -130,7 +130,7 @@ class VmWorkflowRepository:
             uuid.UUID(str(workflow_id))
         except (ValueError, AttributeError, TypeError):
             return None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("SELECT * FROM vm_workflow_runs WHERE workflow_id=%s", (workflow_id,)).fetchone()
             steps = conn.execute(
                 "SELECT * FROM vm_workflow_steps WHERE workflow_id=%s ORDER BY position", (workflow_id,)
@@ -144,14 +144,14 @@ class VmWorkflowRepository:
         return result
 
     def active(self) -> builtins.list[dict[str, Any]]:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             rows = conn.execute(
                 "SELECT workflow_id FROM vm_workflow_runs WHERE status IN ('queued','running','cancelling') ORDER BY created_at"
             ).fetchall()
         return [item for row in rows if (item := self.get(str(row["workflow_id"]))) is not None]
 
     def active_for_campaign(self, campaign_id: str) -> dict[str, Any] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute(
                 """SELECT workflow_id FROM vm_workflow_runs WHERE campaign_id=%s
                    AND status IN ('queued','running','cancelling') ORDER BY created_at DESC LIMIT 1""",
@@ -175,7 +175,7 @@ class VmWorkflowRepository:
         if status in TERMINAL:
             assignments.append("finished_at=COALESCE(finished_at,NOW())")
         assignments.append("updated_at=NOW()")
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(f"UPDATE vm_workflow_runs SET {','.join(assignments)} WHERE workflow_id=%s", (*params, workflow_id))
         return self.get(workflow_id)
 
@@ -192,7 +192,7 @@ class VmWorkflowRepository:
         if clean.get("status") in {"completed", "failed", "cancelled", "skipped"}:
             assignments.append("finished_at=NOW()")
         assignments.append("updated_at=NOW()")
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 f"UPDATE vm_workflow_steps SET {','.join(assignments)} WHERE workflow_id=%s AND step_key=%s",
                 (*params, workflow_id, step_key),
@@ -201,7 +201,7 @@ class VmWorkflowRepository:
     def request_cancel(self, workflow_id: str) -> dict[str, Any] | None:
         if self.get(workflow_id) is None:
             return None
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE vm_workflow_runs SET cancel_requested=TRUE,status='cancelling',updated_at=NOW()
                    WHERE workflow_id=%s AND status IN ('queued','running','cancelling')""", (workflow_id,)
@@ -209,7 +209,7 @@ class VmWorkflowRepository:
         return self.get(workflow_id)
 
     def campaign_targets(self, campaign_id: str) -> builtins.list[str] | None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             exists = conn.execute("SELECT 1 FROM remediation_campaigns WHERE campaign_id=%s", (campaign_id,)).fetchone()
             if not exists:
                 return None
@@ -221,7 +221,7 @@ class VmWorkflowRepository:
         return [str(row["asset_id"]) for row in rows]
 
     def set_campaign_verification(self, campaign_id: str, workflow_id: str, status: str, message: str | None = None) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE remediation_cases rc SET verification_status=%s,verification_workflow_id=%s,
                    verification_message=%s,version=version+1,updated_at=NOW()
@@ -235,7 +235,7 @@ class VmWorkflowRepository:
             )
 
     def finalize_campaign_verification(self, campaign_id: str, workflow_id: str, failed_assets: builtins.list[str]) -> None:
-        with db.connect() as conn:
+        with connection.connect() as conn:
             conn.execute(
                 """UPDATE remediation_cases rc SET
                    verification_status=CASE WHEN rc.asset_id=ANY(%s::text[]) THEN 'failed'
@@ -253,7 +253,7 @@ class VmWorkflowRepository:
         columns = "case_id,asset_id,title,cve,severity,status,due_at,verification_status"
         # Same expression as idx_remediation_cases_open_attention so both reads walk that index.
         rank = "CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END"
-        with db.connect() as conn:
+        with connection.connect() as conn:
             row = conn.execute("""SELECT
               (SELECT COUNT(*) FROM vm_workflow_runs WHERE status IN ('queued','running','cancelling')) active_workflows,
               (SELECT COUNT(*) FROM operations WHERE status IN ('queued','running','cancelling','recovering')) active_operations,

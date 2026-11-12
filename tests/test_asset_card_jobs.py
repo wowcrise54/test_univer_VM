@@ -12,7 +12,14 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import db
+from app.repositories.asset_cards import cache as card_cache
+from app.repositories.asset_cards import cards as card_cards
+from app.persistence import locks
+
+from app.persistence import schema
+
 from app import main
+from app.persistence import connection as _pconn
 from app.services import asset_card_builder
 
 
@@ -1317,7 +1324,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             card = db.get_asset_card_section("asset-1", "summary")
 
         self.assertEqual(card["loaded_sections"], ["summary"])
@@ -1334,14 +1341,14 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect.return_value.__enter__.return_value = connection
 
         with (
-            patch.object(db, "init_db"),
-            patch.object(db, "connect", connect),
-            patch.object(db, "load_asset_card_structure", return_value={
+            patch.object(schema, "init_db"),
+            patch.object(_pconn, "connect", connect),
+            patch.object(card_cards, "load_asset_card_structure", return_value={
                 "nodes": [{"path": "asset.node"}],
                 "collections": [],
                 "table_rows": [],
             }) as structure,
-            patch.object(db, "load_asset_card_vulnerabilities") as vulnerabilities,
+            patch.object(card_cards, "load_asset_card_vulnerabilities") as vulnerabilities,
         ):
             card = db.get_asset_card_section("asset-1", "configuration")
 
@@ -1391,7 +1398,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             tree = db.list_asset_card_configuration_tree("asset-1", limit=200)
 
         self.assertEqual([row["path"] for row in tree["rows"]], ["asset", "asset.software", "asset.os"])
@@ -1419,7 +1426,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             detail = db.get_asset_card_configuration_detail(
                 "asset-1",
                 path="asset.software",
@@ -1446,7 +1453,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
             one={"has_structure": False, "has_vulnerabilities": False},
         )
 
-        with patch.object(db, "replace_asset_card_cache") as replace_cache:
+        with patch.object(card_cache, "replace_asset_card_cache") as replace_cache:
             hydrated = db._hydrate_legacy_asset_card_cache(connection, "asset-1", row)
 
         self.assertTrue(hydrated)
@@ -1481,7 +1488,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             result = db.list_asset_card_vulnerability_groups("asset-1")
 
         group = result["vulnerabilities"]["sources"][0]["groups"][0]
@@ -1524,7 +1531,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             result = db.list_asset_card_vulnerability_findings(
                 "asset-1",
                 source="os",
@@ -1541,7 +1548,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
     def test_database_circuit_breaker_skips_repeated_connect_attempts(self):
         db._close_database_circuit()
         try:
-            with patch.object(db, "DATABASE_POOL_MAX_SIZE", 0), patch.object(
+            with patch.object(_pconn, "DATABASE_POOL_MAX_SIZE", 0), patch.object(
                 db.DiagnosticConnection,
                 "connect",
                 side_effect=psycopg.OperationalError("connect failed"),
@@ -1577,7 +1584,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             job = db.create_asset_card_build_job(
                 "job-1",
                 trace_id="trace-1",
@@ -1595,7 +1602,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
             SimpleNamespace(rowcount=3),
             SimpleNamespace(rowcount=2),
         ]
-        with patch.object(db, "_lock_vulnerability_passport_writes") as lock:
+        with patch.object(locks, "_lock_vulnerability_passport_writes") as lock:
             created = db.reconcile_asset_card_vulnerability_passport_links(
                 connection,
                 None,
@@ -1621,7 +1628,7 @@ class AssetCardDatabaseTests(unittest.TestCase):
         connection.execute.return_value = SimpleNamespace(rowcount=3)
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
-        with patch.object(db, "init_db"), patch.object(db, "connect", connect):
+        with patch.object(schema, "init_db"), patch.object(_pconn, "connect", connect):
             interrupted = db.interrupt_active_asset_card_build_jobs()
 
         self.assertEqual(interrupted, 3)

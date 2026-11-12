@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.persistence import codecs
 from app import db, main
 from app.core.config import Settings
 from app.repositories import passport_refresh
@@ -18,7 +19,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def periodic(test_db, monkeypatch):
     clock = [datetime(2026, 11, 8, 10, tzinfo=UTC)]
-    monkeypatch.setattr(db, "now_utc", lambda: clock[0].isoformat(timespec="seconds"))
+    monkeypatch.setattr(codecs, "now_utc", lambda: clock[0].isoformat(timespec="seconds"))
     state = SimpleNamespace(
         records=[{"@VulnerPassport": {"internalId": "p1", "id": "EXT-1", "name": "one"},
                   "VulnerPassport.PackageId": "pkg", "VulnerPassport.PackageVersion": "1"}],

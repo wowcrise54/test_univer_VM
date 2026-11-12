@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.persistence import connection, schema
 from app.repositories.attention import AttentionRepository, decode_cursor, encode_cursor
 
 
@@ -36,7 +37,7 @@ def test_attention_filters_before_pagination():
 
 def test_search_skips_inaccessible_categories():
     connection = MagicMock()
-    with patch("app.repositories.attention.db.init_db"), patch("app.repositories.attention.db.connect") as connect:
+    with patch("app.persistence.schema.init_db"), patch("app.persistence.connection.connect") as connect:
         connect.return_value.__enter__.return_value = connection
         result = AttentionRepository().search(query="host", kind=None, permissions=set(), limit=20, cursor=None)
     assert result == {"items": [], "next_cursor": None}
@@ -46,12 +47,12 @@ def test_search_skips_inaccessible_categories():
 def test_search_escapes_wildcards_and_checks_card_permission():
     connection = MagicMock()
     connection.execute.return_value.fetchall.return_value = []
-    with patch("app.repositories.attention.db.init_db"), patch("app.repositories.attention.db.connect") as connect:
+    with patch("app.persistence.schema.init_db"), patch("app.persistence.connection.connect") as connect:
         connect.return_value.__enter__.return_value = connection
         AttentionRepository().search(query="host_%", kind="asset", permissions={"asset_cards.read"}, limit=20, cursor=None)
     assert connection.execute.call_args.args[1] == ("host\\_\\%%",) * 4
 
 
 def test_blank_search_is_rejected():
-    with patch("app.repositories.attention.db.init_db"), pytest.raises(ValueError):
+    with patch("app.persistence.schema.init_db"), pytest.raises(ValueError):
         AttentionRepository().search(query="  ", kind=None, permissions=set(), limit=20, cursor=None)

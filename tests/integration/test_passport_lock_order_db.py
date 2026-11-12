@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.persistence import connection
 from app import db
 from app.diagnostics import DiagnosticConnection
 
@@ -58,11 +59,11 @@ def test_passport_refresh_and_card_writes_do_not_deadlock(test_db, refresh, writ
             return db.upsert_asset_card(card)
         if write == "delete":
             return db.delete_asset_card("host-1")
-        with db.connect() as conn:
+        with connection.connect() as conn:
             db.replace_asset_card_cache(conn, "host-1", card, db.now_utc())
 
     with (
-        patch.object(db, "connect", side_effect=connect),
+        patch.object(connection, "connect", side_effect=connect),
         patch.object(DiagnosticConnection, "execute", execute),
         ThreadPoolExecutor(max_workers=1, thread_name_prefix="passport-refresh") as refresher,
         ThreadPoolExecutor(max_workers=1, thread_name_prefix="card-writer") as writer,

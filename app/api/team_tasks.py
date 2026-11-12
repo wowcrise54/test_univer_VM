@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated, NoReturn
+from typing import Annotated, Literal, NoReturn
 from uuid import UUID
 
 import psycopg
 import requests
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app import auth as app_auth
 from app.mpvm_client import MpVmApiError
@@ -14,8 +14,28 @@ from app.mpvm_client import MpVmApiError
 from ..domain.errors import DomainError
 from ..services.team_tasks import TeamTaskPersistError
 from . import scanner_task_runs
+from .scanner_task_folders import TaskFolderCreateRequest
+from .schemas import Weekday
 
 router = APIRouter(prefix="/api/team-tasks", tags=["team-tasks"])
+
+
+class TeamTaskSchedule(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    type: Literal["Daily", "Weekly"]
+    at_time: str = Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+    days_of_week: list[Weekday] = Field(default_factory=list, max_length=7)
+
+    @model_validator(mode="after")
+    def require_weekdays(self) -> TeamTaskSchedule:
+        if self.type == "Weekly" and not self.days_of_week:
+            raise ValueError("Выберите хотя бы один день недели.")
+        return self
+
+
+class TeamTaskFolderAssignment(BaseModel):
+    folder_id: UUID | None
 
 
 class TeamTaskCreateRequest(BaseModel):
@@ -27,6 +47,7 @@ class TeamTaskCreateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
     start_now: bool = False
+    schedule: TeamTaskSchedule | None = None
 
 
 class TeamTaskUpdateRequest(BaseModel):
@@ -51,14 +72,17 @@ def _unrestricted(request: Request) -> bool:
     return "task_presets.manage" in app_auth.effective_permissions(_user(request))
 
 
-def _audit(request: Request, event_type: str, target_id: str | None, details: dict | None = None) -> None:
+def _audit(
+    request: Request, event_type: str, target_id: str | None, details: dict | None = None,
+    *, target_type: str = "scanner_task",
+) -> None:
     app_auth.audit_event(
         request=request,
         user=getattr(request.state, "user", None),
         event_type=event_type,
         decision="allow",
         permission_key="tasks.team",
-        target_type="scanner_task",
+        target_type=target_type,
         target_id=target_id,
         details=details,
     )
@@ -94,6 +118,39 @@ def list_team_tasks(request: Request) -> dict:
     return _service(request).list(_user(request), unrestricted=_unrestricted(request))
 
 
+@router.get("/folders")
+def list_team_task_folders(request: Request) -> dict:
+    try:
+        return {"rows": _service(request).list_folders(_user(request))}
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
+@router.post("/folders", status_code=201)
+def create_team_task_folder(request: Request, payload: TaskFolderCreateRequest) -> dict:
+    try:
+        folder = _service(request).create_folder(_user(request), payload.name)
+        _audit(request, "team_task_folder_created", folder["folder_id"], target_type="team_task_folder")
+        return folder
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(409, detail={
+            "code": "TEAM_TASK_FOLDER_NAME_EXISTS", "message": "Папка с таким названием уже существует.",
+        }) from exc
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
+@router.put("/{task_id}/folder")
+def move_team_task(request: Request, task_id: str, payload: TeamTaskFolderAssignment) -> dict:
+    try:
+        folder_id = str(payload.folder_id) if payload.folder_id else None
+        _service(request).move_task(task_id, _user(request), folder_id, unrestricted=_unrestricted(request))
+        _audit(request, "team_task_folder_changed", task_id, {"folder_id": folder_id})
+        return {"folder_id": folder_id}
+    except Exception as exc:
+        _raise_domain_error(exc)
+
+
 @router.post("", status_code=201)
 def create_team_task(
     request: Request,
@@ -106,12 +163,13 @@ def create_team_task(
             _user(request), preset_id=str(payload.preset_id), asset_group_ids=payload.asset_group_ids,
             name=payload.name, description=payload.description, unrestricted=_unrestricted(request),
             idempotency_key=idempotency_key, targets=payload.targets,
+            schedule=payload.schedule.model_dump() if payload.schedule else None,
         )
         task = created["task"]
         if not created["idempotent_replay"]:
             _audit(request, "team_task_created", task["mp_task_id"],
                    {"preset_id": task.get("preset_id"), "asset_group_ids": _groups(task),
-                    "targets": task.get("preset_targets") or []})
+                    "targets": task.get("preset_targets") or [], "schedule": task.get("team_schedule_override")})
         if payload.start_now:
             created["start"] = service.start(
                 task["mp_task_id"], _user(request), unrestricted=True,

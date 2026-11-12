@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from app.repositories.risk_evidence_schema import EVIDENCE_COLUMNS, FUNCTIONS_SQL
+from app.persistence.risk_evidence_schema import EVIDENCE_COLUMNS, FUNCTIONS_SQL
 
 revision = "20261001_0025"
 down_revision = "20260924_0024"

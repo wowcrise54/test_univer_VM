@@ -3,13 +3,19 @@ from __future__ import annotations
 import builtins
 from typing import Any
 
-from .. import db
+from .asset_cards.cards import get_asset_card, get_asset_card_section, list_asset_cards
+from .asset_cards.queries import query_asset_cards_by_fields
+from .asset_cards.search_index import list_asset_card_search_fields
 from .asset_groups import AssetGroupRepository
+from .assets import get_summary, list_asset_findings
 from .attention import AttentionRepository
 from .compliance import ComplianceRepository
+from .imports.csv_import import import_csv_text
 from .operations import OperationsRepository
+from .passports.catalog import get_vulnerability_passport, list_vulnerability_passports
 from .remediation import CoverageRepository, RemediationRepository
 from .risk import RiskRepository
+from .scan_tasks.tasks import get_scan_task, list_scan_tasks
 from .scanner_task_folders import ScannerTaskFolderRepository
 from .task_presets import TaskPresetRepository
 from .vm_workflows import VmWorkflowRepository
@@ -18,49 +24,49 @@ from .vulnerabilities import VulnerabilityAnalyticsRepository
 
 class TasksRepository:
     def list(self) -> builtins.list[dict[str, Any]]:
-        return db.list_scan_tasks()
+        return list_scan_tasks()
 
     def get(self, task_id: str) -> dict[str, Any] | None:
-        return db.get_scan_task(task_id)
+        return get_scan_task(task_id)
 
 
 class AssetsRepository:
     def summary(self) -> dict[str, Any]:
-        return db.get_summary()
+        return get_summary()
 
     def list_findings(self, **filters: Any) -> dict[str, Any]:
-        return db.list_asset_findings(**filters)
+        return list_asset_findings(**filters)
 
 
 class AssetCardsRepository:
     def get(self, asset_id: str, *, section: str = "full") -> dict[str, Any] | None:
         if section == "full":
-            return db.get_asset_card(asset_id)
-        return db.get_asset_card_section(asset_id, section)
+            return get_asset_card(asset_id)
+        return get_asset_card_section(asset_id, section)
 
     def list(self, **filters: Any) -> dict[str, Any]:
-        return db.list_asset_cards(**filters)
+        return list_asset_cards(**filters)
 
 
 class PassportsRepository:
     def get(self, passport_id: str) -> dict[str, Any] | None:
-        return db.get_vulnerability_passport(passport_id)
+        return get_vulnerability_passport(passport_id)
 
     def list(self, **filters: Any) -> dict[str, Any]:
-        return db.list_vulnerability_passports(**filters)
+        return list_vulnerability_passports(**filters)
 
 
 class ImportsRepository:
     def import_csv(self, csv_text: str, **metadata: Any) -> dict[str, Any]:
-        return db.import_csv_text(csv_text, **metadata)
+        return import_csv_text(csv_text, **metadata)
 
 
 class AssetQueryRepository:
     def fields(self, **filters: Any) -> dict[str, Any]:
-        return db.list_asset_card_search_fields(**filters)
+        return list_asset_card_search_fields(**filters)
 
     def query(self, query: dict[str, Any], **options: Any) -> dict[str, Any]:
-        return db.query_asset_cards_by_fields(query, **options)
+        return query_asset_cards_by_fields(query, **options)
 
 
 class RepositoryBundle:

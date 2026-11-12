@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .. import db
+from ..persistence import connection
 
 _SELECT = """
     SELECT t.*, owner.username AS owner_username, owner.display_name AS owner_display_name,
@@ -54,7 +54,7 @@ def count_active(conn: Any, owner_user_id: int, *, now: datetime) -> int:
 
 
 def list_tokens() -> list[dict[str, Any]]:
-    with db.connect() as conn:
+    with connection.connect() as conn:
         return [dict(row) for row in conn.execute(f"{_SELECT} ORDER BY t.created_at DESC, t.id DESC").fetchall()]
 
 
@@ -63,20 +63,20 @@ def get_token(token_id: int, *, conn: Any = None, lock: bool = False) -> dict[st
     if conn is not None:
         row = conn.execute(sql, (token_id,)).fetchone()
     else:
-        with db.connect() as own:
+        with connection.connect() as own:
             row = own.execute(sql, (token_id,)).fetchone()
     return dict(row) if row else None
 
 
 def get_by_public_id(public_id: str) -> dict[str, Any] | None:
-    with db.connect() as conn:
+    with connection.connect() as conn:
         row = conn.execute(f"{_SELECT} WHERE t.public_id = %s", (public_id,)).fetchone()
     return dict(row) if row else None
 
 
 def touch_used(token_id: int, *, now: datetime, ip: str | None, min_interval_seconds: int = 60) -> None:
     """Record the last use, at most once per interval so busy clients do not write on every request."""
-    with db.connect() as conn:
+    with connection.connect() as conn:
         conn.execute(
             """UPDATE app_mcp_tokens SET last_used_at = %s, last_used_ip = %s
                WHERE id = %s AND (last_used_at IS NULL OR last_used_at < %s - make_interval(secs => %s))""",

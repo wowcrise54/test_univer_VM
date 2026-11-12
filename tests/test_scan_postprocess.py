@@ -13,6 +13,10 @@ from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from app import main, mpvm_client
+from app.persistence import codecs
+
+from app.persistence import connection as _pconn
+
 from app.services import scan_postprocess
 
 
@@ -43,7 +47,11 @@ def test_precheck_persists_requested_successful_and_false_targets() -> None:
     client.start_connection_check_with_retry.return_value = {"started": True}
     client.wait_for_connection_check_targets.return_value = (["10.0.0.1"], "completed")
     options = main.StartScannerTaskRequest(precheck_enabled=True, skip_validation=True)
-    payload = {"name": "Audit", "include": {"targets": ["10.0.0.1", "10.0.0.2"]}}
+    trigger = {"isEnabled": True, "type": "Daily", "atTime": "18:00:00", "timeZone": "+05:00"}
+    payload = {
+        "name": "Audit", "include": {"targets": ["10.0.0.1", "10.0.0.2"]},
+        "triggerParameters": trigger,
+    }
 
     with (
         patch.object(main.db, "get_scan_task", return_value={"payload": payload}),
@@ -62,6 +70,8 @@ def test_precheck_persists_requested_successful_and_false_targets() -> None:
     assert result["false_target_count"] == 1
     assert result["false_targets"] == ["10.0.0.2"]
     assert result["audit_task_id"] == "audit-1"
+    assert client.create_scanner_task.call_args.args[1]["triggerParameters"]["isEnabled"] is False
+    assert client.update_scanner_task.call_args.args[2]["triggerParameters"] == trigger
     assert update_status.call_args_list[-1].args == ("precheck-1", "precheck_finished", result)
 
 
@@ -555,7 +565,7 @@ class ScanAssetResolutionTests(unittest.TestCase):
         connect = MagicMock()
         connect.return_value.__enter__.return_value = connection
 
-        with patch.object(main.db, "connect", connect):
+        with patch.object(_pconn, "connect", connect):
             item = main.db.upsert_scan_postprocess_item(
                 "post-1",
                 item_key="asset:asset-1",
@@ -1298,7 +1308,7 @@ class DockerGroupCleanupTests(unittest.TestCase):
         }
         with (
             patch.object(main.db, "get_scan_postprocess_run", return_value=run),
-            patch.object(main.db, "now_utc", return_value="2026-07-17T10:00:00+00:00"),
+            patch.object(codecs, "now_utc", return_value="2026-07-17T10:00:00+00:00"),
             patch.object(main, "schedule_scan_docker_group_cleanup", return_value=True),
             patch.object(main.db, "finish_scan_postprocess_run") as finish,
         ):

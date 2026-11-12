@@ -153,6 +153,55 @@ describe("engineer scans page", () => {
     expect(request.headers["X-Idempotency-Key"]).toBe("key-1:run");
   });
 
+  it("creates a task with a weekly schedule and organizes it in a personal folder", async () => {
+    const fallback = api.getMockImplementation();
+    const folder = { folder_id: "folder-1", name: "Серверы" };
+    let folders = [];
+    let task = TASK;
+    api.mockImplementation(async (path, options = {}) => {
+      if (path === "/api/team-tasks/folders") {
+        if (options.method === "POST") {
+          folders = [folder];
+          return folder;
+        }
+        return { rows: folders };
+      }
+      if (path === "/api/team-tasks/task-1/folder") {
+        task = { ...task, ...JSON.parse(options.body) };
+        return { folder_id: task.folder_id };
+      }
+      if (path === "/api/team-tasks" && !options.method) return { rows: [task] };
+      if (path.endsWith("/runs?limit=1")) return { items: [] };
+      return fallback(path, options);
+    });
+    renderWithClient(
+      <TeamTasksPage currentUser={{ id: 7, permissions: ["tasks.team"] }} showAlert={vi.fn()} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Создать задачу" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/IP-адреса, подсети и FQDN для/), {
+      target: { value: "10.0.0.15" },
+    });
+    fireEvent.change(dialog.getByLabelText("Расписание"), { target: { value: "Weekly" } });
+    expect(dialog.getByRole("button", { name: "Создать", exact: true })).toBeDisabled();
+    fireEvent.click(dialog.getByRole("checkbox", { name: "Пн" }));
+    fireEvent.click(dialog.getByRole("button", { name: "Создать", exact: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const [, request] = api.mock.calls.find(([path, options]) =>
+      path === "/api/team-tasks" && options?.method === "POST");
+    expect(JSON.parse(request.body).schedule).toEqual({
+      type: "Weekly", at_time: "09:00", days_of_week: ["monday"],
+    });
+
+    fireEvent.change(screen.getByLabelText("Название новой папки"), { target: { value: folder.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать папку" }));
+    const move = await screen.findByLabelText("Папка для задачи [WIN] Servers");
+    fireEvent.change(move, { target: { value: folder.folder_id } });
+    await waitFor(() => expect(move).toHaveValue(folder.folder_id));
+    fireEvent.change(screen.getByLabelText("Личная папка"), { target: { value: "unassigned" } });
+    expect(screen.queryByText("[WIN] Servers")).toBeNull();
+  });
+
   it("creates a task for IP addresses, subnets and FQDNs typed by the engineer", async () => {
     const showAlert = vi.fn();
     renderWithClient(
@@ -678,6 +727,98 @@ describe("team task progress", () => {
       />,
     );
   }
+
+  it("shows a scheduled run separately from older local results and filters partial failures", async () => {
+    const fallback = api.getMockImplementation();
+    api.mockImplementation(async (path, options) => {
+      if (path === "/api/team-tasks")
+        return {
+          rows: [
+            { ...TASK, postprocess: { mp_run_id: "run-1", status: "completed" } },
+            { ...TASK, mp_task_id: "task-2", name: "Новая задача", status: "created", postprocess: null },
+            {
+              ...TASK,
+              mp_task_id: "task-3",
+              name: "Ручной запуск",
+              postprocess: {
+                mp_run_id: "run-3",
+                status: "processing",
+                asset_count: 3,
+                completed_count: 1,
+                failed_count: 0,
+              },
+            },
+          ],
+        };
+      if (path === "/api/team-tasks/task-1/runs?limit=1")
+        return { items: [{ id: "run-2", status: "finished" }] };
+      if (path === "/api/team-tasks/task-2/runs?limit=1")
+        return { items: [] };
+      if (path === "/api/team-tasks/task-3/runs?limit=1")
+        return { items: [{ id: "run-3", status: "running" }] };
+      if (path === "/api/team-tasks/task-3/runs/run-3/jobs")
+        return {
+          items: [
+            { ...JOB, connectionCheckResults: [] },
+            { ...JOB, id: "job-2", status: "running", finishedAt: null, connectionCheckResults: [] },
+          ],
+        };
+      if (path === "/api/team-tasks/task-1/runs?limit=20")
+        return { items: [{ id: "run-4", status: "running" }, { id: "run-2", status: "finished" }] };
+      if (path === "/api/team-tasks/task-1/runs/run-2/jobs")
+        return { items: [JOB, { ...JOB, id: "job-2", errorStatus: "failed" }] };
+      return fallback(path, options);
+    });
+    renderPage();
+    expect(await screen.findByText("2 из 2 заданий · 1 с ошибкой")).toBeInTheDocument();
+    const scheduled = within(screen.getByText("[WIN] Servers").closest("tr"));
+    expect(scheduled.getByText("Карточки — данных по запуску нет")).toBeInTheDocument();
+    expect(await screen.findByText("Карточки обработаны 1 из 3 · ошибок 0")).toBeInTheDocument();
+    expect(await screen.findByText("1 из 2 заданий · 0 с ошибкой")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "active" },
+    });
+    expect(screen.getByText("Ручной запуск")).toBeInTheDocument();
+    expect(screen.queryByText("[WIN] Servers")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "completed" },
+    });
+    expect(screen.getByText("[WIN] Servers")).toBeInTheDocument();
+    expect(screen.queryByText("Ручной запуск")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Статус задач"), {
+      target: { value: "attention" },
+    });
+    expect(screen.queryByText("Новая задача")).toBeNull();
+    expect(screen.queryByText("Ручной запуск")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Ход выполнения" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findAllByText("10.0.0.5")).toHaveLength(2);
+  });
+
+  it("shows hosts from the latest precheck even without a main scan", async () => {
+    const fallback = api.getMockImplementation();
+    api.mockImplementation(async (path, options) => {
+      if (path === "/api/team-tasks")
+        return {
+          rows: [{
+            ...TASK,
+            status: "precheck_failed",
+            postprocess: null,
+            latest_precheck: { hosts: ["10.0.0.7", "srv-01.example.local"] },
+          }],
+        };
+      if (path.startsWith("/api/team-tasks/task-1/runs?")) return { items: [] };
+      return fallback(path, options);
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Ход выполнения" }));
+    const dialog = await screen.findByRole("dialog");
+    const precheck = within(dialog).getByRole("region", {
+      name: "Хосты, не прошедшие последнюю предварительную проверку",
+    });
+    expect(within(precheck).getByText("10.0.0.7")).toBeInTheDocument();
+    expect(within(precheck).getByText("srv-01.example.local")).toBeInTheDocument();
+  });
 
   it("opens run progress on double click and switches between runs", async () => {
     renderPage();

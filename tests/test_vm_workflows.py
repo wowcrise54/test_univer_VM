@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app import auth
+from app.persistence import connection as _pconn
+
 from app.repositories.vm_workflows import VmWorkflowRepository
 from app.services.vm_workflows import VmPreflightBlocked, VmWorkflowService
 
@@ -616,7 +618,7 @@ def test_ldap_login_rejects_disabled_local_user():
         patch.object(auth, "_local_user_record", return_value=None),
         patch.object(auth, "_provision_ldap_user") as provision,
         patch.object(auth, "audit_event"),
-        patch.object(auth.db, "connect", side_effect=_fake_connect({"is_active": False})),
+        patch.object(_pconn, "connect", side_effect=_fake_connect({"is_active": False})),
     ):
         response = TestClient(main.app).post(
             "/api/auth/login",

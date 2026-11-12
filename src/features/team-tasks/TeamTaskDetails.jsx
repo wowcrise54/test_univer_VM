@@ -27,12 +27,12 @@ function errorText(error) {
  * Run history and per-target progress of a team task: the same view the main
  * task workspace opens for a task, backed by the RBAC-scoped team endpoints.
  */
-export function TeamTaskDetails({ task, running, onClose }) {
+export function TeamTaskDetails({ task, initialRunId, running, onClose }) {
   const titleId = useId();
   const dialogRef = useDialogAccessibility(true, onClose);
   const taskId = task.mp_task_id;
   const [limit, setLimit] = useState(RUNS_PAGE);
-  const [pickedRunId, setPickedRunId] = useState(null);
+  const [pickedRunId, setPickedRunId] = useState(initialRunId);
 
   const runsQuery = useQuery({
     queryKey: ["team-task-details-runs", taskId, limit],
@@ -58,6 +58,7 @@ export function TeamTaskDetails({ task, running, onClose }) {
     (group) => group.name || group.id,
   );
   const scope = [...groups, ...(task.preset_targets || [])].join(", ");
+  const precheck = task.latest_precheck;
 
   const dialog = (
     <div
@@ -79,6 +80,24 @@ export function TeamTaskDetails({ task, running, onClose }) {
         <p className="preset-muted">
           {task.preset_name} · {scope || "цели не указаны"}
         </p>
+        {precheck?.hosts?.length ? (
+          <section
+            className="task-connection-checks"
+            aria-labelledby={`${titleId}-precheck`}
+          >
+            <h3 id={`${titleId}-precheck`}>
+              Хосты, не прошедшие последнюю предварительную проверку
+            </h3>
+            {precheck.updated_at ? (
+              <p className="preset-muted">{formatDate(precheck.updated_at)}</p>
+            ) : null}
+            <ul>
+              {precheck.hosts.map((host) => (
+                <li key={host}>{host}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <div className="team-details-grid">
           <section aria-labelledby={`${titleId}-runs`}>

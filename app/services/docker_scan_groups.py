@@ -11,6 +11,7 @@ from .. import db
 from ..mpvm.common import parse_mpvm_datetime
 from ..mpvm.docker_vulnerabilities import docker_dynamic_group_from_options, docker_scan_group_name
 from ..mpvm_client import AuthConfig, is_finished
+from ..persistence import codecs
 from .main_host import host
 from .scan_postprocess import SCAN_LOG, scan_log
 
@@ -51,13 +52,13 @@ def prepare_docker_dynamic_group_for_scan(
             db.update_scan_postprocess_docker_group(
                 run_id,
                 state="create_failed",
-                cleanup_after=db.now_utc(),
+                cleanup_after=codecs.now_utc(),
                 cleanup_error=str(exc)[:4000],
             )
         raise
     if existing and existing.get("id"):
         group_id = str(existing["id"])
-        reused_at = db.now_utc()
+        reused_at = codecs.now_utc()
         if persist_lifecycle:
             db.update_scan_postprocess_docker_group(
                 run_id,
@@ -109,13 +110,13 @@ def prepare_docker_dynamic_group_for_scan(
             db.update_scan_postprocess_docker_group(
                 run_id,
                 state="create_failed",
-                cleanup_after=db.now_utc(),
+                cleanup_after=codecs.now_utc(),
                 cleanup_error=str(exc)[:4000],
             )
         raise
     if host.DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS > 0:
         time.sleep(host.DOCKER_DYNAMIC_GROUP_SETTLE_SECONDS)
-    created_at = db.now_utc()
+    created_at = codecs.now_utc()
     if persist_lifecycle:
         db.update_scan_postprocess_docker_group(
             run_id,
@@ -233,7 +234,7 @@ def confirm_docker_scan_terminal_for_cleanup(
     if not is_finished(latest_run):
         return None
 
-    terminal_at = str(latest_run.get("finishedAt") or db.now_utc())
+    terminal_at = str(latest_run.get("finishedAt") or codecs.now_utc())
     cleanup_after = docker_group_cleanup_after(terminal_at)
     db.update_scan_postprocess_docker_group(
         str(run["run_id"]),
@@ -261,7 +262,7 @@ def finish_provisional_scan_start_failure(
     if not run or run.get("status") not in db.SCAN_POSTPROCESS_ACTIVE_STATUSES:
         return
     options = run.get("options") if isinstance(run.get("options"), dict) else {}
-    failed_at = db.now_utc()
+    failed_at = codecs.now_utc()
     host.schedule_scan_docker_group_cleanup(
         run_id=run_id,
         auth=auth,
@@ -297,7 +298,7 @@ def schedule_scan_docker_group_cleanup(
     if group.get("removed_at"):
         return False
 
-    terminal_at = str(group.get("scan_finished_at") or scan_finished_at or db.now_utc())
+    terminal_at = str(group.get("scan_finished_at") or scan_finished_at or codecs.now_utc())
     cleanup_after = str(group.get("cleanup_after") or docker_group_cleanup_after(terminal_at))
     updated = db.update_scan_postprocess_docker_group(
         run_id,
@@ -398,7 +399,7 @@ def run_scan_docker_group_cleanup(
 
                 cleanup_token = client.ensure_access_token()
                 cleanup = remove_docker_dynamic_group(client=client, token=cleanup_token, group=group)
-                removed_at = db.now_utc()
+                removed_at = codecs.now_utc()
                 db.update_scan_postprocess_docker_group(
                     run_id,
                     removed_at=removed_at,
@@ -419,7 +420,7 @@ def run_scan_docker_group_cleanup(
                     db.update_scan_postprocess_docker_group(
                         run_id,
                         cleanup_error=str(exc)[:4000],
-                        cleanup_last_attempt_at=db.now_utc(),
+                        cleanup_last_attempt_at=codecs.now_utc(),
                     )
                 except Exception:
                     SCAN_LOG.exception(
