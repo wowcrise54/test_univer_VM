@@ -64,6 +64,7 @@ from .persistence.sql import chunked, copy_rows, rows_to_dicts, validated_sort_s
 from .persistence.transactions import PooledConnection
 from .repositories.asset_cards.build_jobs import (
     ASSET_CARD_BUILD_JOB_LIMIT,
+    count_active_asset_card_build_jobs,
     create_asset_card_build_job,
     create_asset_card_build_jobs,
     decode_asset_card_build_job,
@@ -407,6 +408,7 @@ __all__ = [
     "compile_asset_query_rule",
     "connect",
     "copy_rows",
+    "count_active_asset_card_build_jobs",
     "create_asset_card_build_job",
     "create_asset_card_build_jobs",
     "create_import_run",

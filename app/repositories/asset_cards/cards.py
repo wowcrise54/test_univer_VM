@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +25,11 @@ def asset_card_exists(asset_id: str) -> bool:
 
 
 def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
+    """Commit the card and inventory before rebuilding the search index.
+
+    A search index failure propagates after the card has been saved.
+    The next save can rebuild the index.
+    """
     schema.init_db()
     write_started = datetime.now(UTC)
     root = card.get("root")
@@ -111,7 +117,6 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
         from .cache import replace_asset_card_cache
 
         replace_asset_card_cache(conn, asset_id, card, current)
-        replace_asset_card_search_index(conn, asset_id, card, current)
         replace_asset_card_software_inventory(conn, asset_id, card, current)
         save_duration_ms = round((datetime.now(UTC) - write_started).total_seconds() * 1000, 2)
         stats = card.setdefault("stats", {})
@@ -121,6 +126,10 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
                 "UPDATE asset_cards SET stats_json = %s WHERE asset_id = %s",
                 (json.dumps(stats, ensure_ascii=False), asset_id),
             )
+    search_index_started = time.perf_counter()
+    with connection.connect() as conn:
+        replace_asset_card_search_index(conn, asset_id, card, current)
+    search_index_duration_ms = round((time.perf_counter() - search_index_started) * 1000, 2)
     result = decode_asset_card_summary(dict(row)) if row else None
     if result:
         record_asset_card_history(result, card)
@@ -130,6 +139,7 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
         asset_id=asset_id,
         operation="upsert_asset_card",
         duration_ms=save_duration_ms,
+        search_index_duration_ms=search_index_duration_ms,
         node_count=len(card.get("nodes") or []),
         collection_count=len(card.get("collections") or []),
         table_row_count=len(card.get("table_rows") or []),

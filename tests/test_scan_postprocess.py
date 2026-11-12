@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -22,6 +23,22 @@ from app.services import scan_postprocess
 class FakeSession:
     def close(self) -> None:
         pass
+
+
+@contextmanager
+def registered_removal_batcher(run_id: str):
+    """Register a real _ScanRemovalBatcher for run_id; flush and wait on exit."""
+    batcher = scan_postprocess._ScanRemovalBatcher(run_id=run_id, auth=SimpleNamespace(), token="token")
+    with scan_postprocess.SCAN_POSTPROCESS_FUTURES_LOCK:
+        scan_postprocess._SCAN_REMOVAL_BATCHERS[run_id] = batcher
+    try:
+        yield batcher
+    finally:
+        with scan_postprocess.SCAN_POSTPROCESS_FUTURES_LOCK:
+            scan_postprocess._SCAN_REMOVAL_BATCHERS.pop(run_id, None)
+        batcher.mark_final()
+        batcher.join(timeout=10)
+        assert not batcher.is_alive()
 
 
 def test_precheck_persists_requested_successful_and_false_targets() -> None:
@@ -657,42 +674,53 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
             patch.object(main.db, "update_scan_postprocess_item", return_value=item),
             patch.object(main.db, "delete_asset_card") as local_delete,
         ):
-            main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
+            with registered_removal_batcher("post-1"):
+                main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
 
         self.assertEqual(events, ["docker_refreshed", "card_saved", "remove:asset-1", "removed"])
         local_delete.assert_not_called()
 
     def test_build_failure_never_starts_remote_removal(self):
+        remove_calls: list[list[str]] = []
+
         class RemovalClient:
             def __init__(self, _auth) -> None:
                 self.session = FakeSession()
-                self.remove_assets = MagicMock()
 
-        client = RemovalClient(SimpleNamespace())
+            def remove_assets(self, _token, asset_ids):
+                remove_calls.append(list(asset_ids))
+                return "operation-1"
+
         item = {"id": 1, "postprocess_run_id": "post-1", "asset_id": "asset-1", "removal_operation_id": None}
         updates: list[dict] = []
         with (
-            patch.object(main, "MpVmClient", return_value=client),
+            patch.object(main, "MpVmClient", RemovalClient),
             patch.object(scan_postprocess, "refresh_docker_containers_for_scanned_asset"),
             patch.object(scan_postprocess, "build_scanned_asset_card", side_effect=RuntimeError("build failed")),
             patch.object(main.db, "update_scan_postprocess_item", side_effect=lambda _id, **kwargs: updates.append(kwargs) or item),
         ):
-            main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
+            with registered_removal_batcher("post-1"):
+                main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
 
-        client.remove_assets.assert_not_called()
+        self.assertEqual(remove_calls, [])
         self.assertEqual(updates[-1]["status"], "build_failed")
 
     def test_existing_removal_operation_is_polled_without_duplicate_delete(self):
+        remove_calls: list[list[str]] = []
+        wait_calls: list[str] = []
+
         class RemovalClient:
             def __init__(self, _auth) -> None:
                 self.session = FakeSession()
-                self.remove_assets = MagicMock()
+
+            def remove_assets(self, _token, asset_ids):
+                remove_calls.append(list(asset_ids))
+                return "operation-new"
 
             def wait_for_asset_removal(self, _token, operation_id, **_kwargs):
-                self.polled = operation_id
+                wait_calls.append(operation_id)
                 return True, "done", {"status": "completed"}
 
-        client = RemovalClient(SimpleNamespace())
         item = {
             "id": 1,
             "postprocess_run_id": "post-1",
@@ -701,15 +729,305 @@ class ScanAssetProcessingOrderTests(unittest.TestCase):
         }
         updates: list[dict] = []
         with (
-            patch.object(main, "MpVmClient", return_value=client),
+            patch.object(main, "MpVmClient", RemovalClient),
             patch.object(scan_postprocess, "build_scanned_asset_card") as build,
             patch.object(main.db, "update_scan_postprocess_item", side_effect=lambda _id, **kwargs: updates.append(kwargs) or item),
         ):
-            main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
+            with registered_removal_batcher("post-1"):
+                main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
 
         build.assert_not_called()
-        client.remove_assets.assert_not_called()
-        self.assertEqual(client.polled, "operation-existing")
+        self.assertEqual(remove_calls, [])
+        self.assertEqual(wait_calls, ["operation-existing"])
+        self.assertEqual(updates[-1]["status"], "completed")
+
+    def test_restart_recovery_skips_build_when_card_already_saved(self):
+        remove_calls: list[list[str]] = []
+
+        class RemovalClient:
+            def __init__(self, _auth) -> None:
+                self.session = FakeSession()
+
+            def remove_assets(self, _token, asset_ids):
+                remove_calls.append(list(asset_ids))
+                return "operation-1"
+
+            def wait_for_asset_removal(self, *_args, **_kwargs):
+                return True, "done", {"status": "completed"}
+
+        item = {
+            "id": 1,
+            "postprocess_run_id": "post-1",
+            "asset_id": "asset-1",
+            "stage": "card_saved",
+            "removal_operation_id": None,
+        }
+        with (
+            patch.object(main, "MpVmClient", RemovalClient),
+            patch.object(scan_postprocess, "refresh_docker_containers_for_scanned_asset") as docker_probe,
+            patch.object(scan_postprocess, "build_scanned_asset_card") as build,
+            patch.object(main.db, "asset_card_exists", return_value=True),
+            patch.object(main.db, "update_scan_postprocess_item", return_value=item),
+        ):
+            with registered_removal_batcher("post-1"):
+                main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
+
+        build.assert_not_called()
+        docker_probe.assert_not_called()
+        self.assertEqual(remove_calls, [["asset-1"]])
+
+
+class ScanRemovalBatcherTests(unittest.TestCase):
+    """Non-blocking protocol: workers enqueue and return; batches of 20
+    fire during the scan and the remainder is flushed on mark_final()."""
+
+    def _start_batcher(self, fake_client, updates):
+        self._fake_client_patch = patch.object(main, "MpVmClient", return_value=fake_client)
+        self._fake_client_patch.start()
+        self.addCleanup(self._fake_client_patch.stop)
+        self._update_patch = patch.object(
+            main.db,
+            "update_scan_postprocess_item",
+            side_effect=lambda item_id, **kwargs: updates.append((item_id, kwargs)) or {"id": item_id},
+        )
+        self._update_patch.start()
+        self.addCleanup(self._update_patch.stop)
+        self._fake_client = fake_client
+        return scan_postprocess._ScanRemovalBatcher(run_id="post-1", auth=SimpleNamespace(), token="token")
+
+    def _fake_client(self, remove_side_effect=None, wait_result=(True, "done", {"status": "completed"})):
+        fake_client = MagicMock()
+        fake_client.session = FakeSession()
+        if remove_side_effect is None:
+            fake_client.remove_assets.return_value = "operation-1"
+        else:
+            fake_client.remove_assets.side_effect = remove_side_effect
+        fake_client.wait_for_asset_removal.return_value = wait_result
+        return fake_client
+
+    def _enqueue(self, batcher, pairs):
+        for item_id, asset_id in pairs:
+            batcher.enqueue(item_id, asset_id)
+
+    def _wait_for_remove_call(self, timeout=10):
+        deadline = time.time() + timeout
+        while self._fake_client.remove_assets.call_count == 0:
+            if time.time() >= deadline:
+                self.fail("remove_assets was never called")
+            time.sleep(0.01)
+
+    def _wait_for_terminal(self, updates, item_id, timeout=10):
+        deadline = time.time() + timeout
+        while True:
+            terminal = [
+                kwargs
+                for recorded_id, kwargs in updates
+                if recorded_id == item_id and kwargs.get("status") in {"completed", "removal_failed", "cancelled"}
+            ]
+            if terminal:
+                return terminal[-1]
+            if time.time() >= deadline:
+                self.fail(f"item {item_id} did not reach a terminal result in time")
+            time.sleep(0.01)
+
+    def test_twenty_assets_share_one_remove_operation(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(self._fake_client(), updates)
+        self._enqueue(batcher, [(index, f"asset-{index}") for index in range(1, 21)])
+        # A full batch of 20 must fire during the scan, before any
+        # mark_final() — this is the "каждые 20 хостов" cadence.
+        self._wait_for_remove_call()
+        self._fake_client.remove_assets.assert_called_once_with(
+            "token", [f"asset-{index}" for index in range(1, 21)]
+        )
+        batcher.mark_final()
+        batcher.join(timeout=10)
+        self.assertFalse(batcher.is_alive())
+
+        self._fake_client.wait_for_asset_removal.assert_called_once()
+        deleting = {item_id: kwargs for item_id, kwargs in updates if kwargs["status"] == "deleting"}
+        self.assertEqual(len(deleting), 20)
+        self.assertTrue(all(kwargs["removal_operation_id"] == "operation-1" for kwargs in deleting.values()))
+        completed = {item_id: kwargs for item_id, kwargs in updates if kwargs["status"] == "completed"}
+        self.assertEqual(len(completed), 20)
+        self.assertTrue(all(kwargs["finished_at"] for kwargs in completed.values()))
+        self.assertTrue(all(kwargs["error"] is None for kwargs in completed.values()))
+
+    def test_final_flush_releases_remainder_below_batch_size(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(self._fake_client(), updates)
+        self._enqueue(batcher, [(index, f"asset-{index}") for index in range(1, 6)])
+        batcher.mark_final()
+        batcher.join(timeout=10)
+
+        self._fake_client.remove_assets.assert_called_once_with(
+            "token", [f"asset-{index}" for index in range(1, 6)]
+        )
+        self.assertEqual(len(updates), 10)
+
+    def test_below_batch_size_waits_for_final_flush(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(self._fake_client(), updates)
+        self._enqueue(batcher, [(index, f"asset-{index}") for index in range(1, 20)])
+        # Several 1-second ticks with only 19 pending items: no batch.
+        time.sleep(1.2)
+        self._fake_client.remove_assets.assert_not_called()
+        self._fake_client.wait_for_asset_removal.assert_not_called()
+        with batcher._cond:
+            self.assertEqual(len(batcher._pending), 19)
+        batcher.mark_final()
+        batcher.join(timeout=10)
+        self.assertFalse(batcher.is_alive())
+
+        self._fake_client.remove_assets.assert_called_once_with(
+            "token", [f"asset-{index}" for index in range(1, 20)]
+        )
+
+    def test_failed_removal_operation_marks_batch_removal_failed(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(
+            self._fake_client(wait_result=(False, "asset 42 disappeared", {"status": "failed"})),
+            updates,
+        )
+        self._enqueue(batcher, [(1, "asset-1"), (2, "asset-2")])
+        batcher.mark_final()
+        batcher.join(timeout=10)
+
+        self._fake_client.remove_assets.assert_called_once_with("token", ["asset-1", "asset-2"])
+        terminal = {
+            item_id: kwargs for item_id, kwargs in updates
+            if kwargs["status"] in {"completed", "removal_failed", "cancelled"}
+        }
+        self.assertEqual(len(terminal), 2)
+        for item_id in (1, 2):
+            self.assertEqual(terminal[item_id]["status"], "removal_failed")
+            self.assertEqual(terminal[item_id]["error"], "asset 42 disappeared")
+            self.assertTrue(terminal[item_id]["finished_at"])
+
+    def test_remove_assets_failure_fails_batch_but_batcher_keeps_serving(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(
+            self._fake_client(remove_side_effect=[RuntimeError("boom"), "operation-1"]),
+            updates,
+        )
+        self._enqueue(batcher, [(index, f"asset-{index}") for index in range(1, 21)])
+        first = self._wait_for_terminal(updates, 1)
+        # A second, full-sized remainder is processed after the failed batch.
+        self._enqueue(batcher, [(index, f"asset-{index}") for index in range(21, 26)])
+        batcher.mark_final()
+        batcher.join(timeout=10)
+
+        self.assertEqual(self._fake_client.remove_assets.call_count, 2)
+        self.assertEqual(self._fake_client.wait_for_asset_removal.call_count, 1)
+        self.assertEqual(first["status"], "removal_failed")
+        self.assertIn("boom", first["error"])
+        for index in range(1, 21):
+            self.assertEqual(
+                self._wait_for_terminal(updates, index)["status"], "removal_failed"
+            )
+        for index in range(21, 26):
+            terminal = self._wait_for_terminal(updates, index)
+            self.assertEqual(terminal["status"], "completed")
+            self.assertEqual(terminal["removal_operation_id"], "operation-1")
+
+    def test_cancelled_run_cancels_pending_items(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(self._fake_client(), updates)
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with scan_postprocess.SCAN_POSTPROCESS_FUTURES_LOCK:
+            scan_postprocess.SCAN_POSTPROCESS_CANCEL_EVENTS["post-1"] = cancel_event
+        self.addCleanup(
+            lambda: scan_postprocess.SCAN_POSTPROCESS_CANCEL_EVENTS.pop("post-1", None)
+        )
+
+        # Production cancel path: the monitor never calls mark_final, the
+        # run's finally calls shutdown(); the thread must flush pending
+        # items as cancelled instead of leaving them dangling.
+        batcher.enqueue(1, "asset-1")
+        batcher.enqueue(2, "asset-2")
+        batcher.shutdown()
+        batcher.join(timeout=10)
+        self.assertFalse(batcher.is_alive())
+
+        self._fake_client.remove_assets.assert_not_called()
+        self._fake_client.wait_for_asset_removal.assert_not_called()
+        terminal = {
+            item_id: kwargs for item_id, kwargs in updates
+            if kwargs["status"] in {"completed", "removal_failed", "cancelled"}
+        }
+        self.assertEqual(
+            {item_id: kwargs["status"] for item_id, kwargs in terminal.items()},
+            {1: "cancelled", 2: "cancelled"},
+        )
+
+    def test_join_of_existing_operation_never_starts_new_removal(self):
+        updates: list[tuple[int, dict]] = []
+        batcher = self._start_batcher(self._fake_client(), updates)
+        batcher.enqueue(7, "asset-7", existing_operation_id="operation-existing")
+        batcher.mark_final()
+        batcher.join(timeout=10)
+
+        self._fake_client.remove_assets.assert_not_called()
+        self._fake_client.wait_for_asset_removal.assert_called_once()
+        self.assertEqual(self._fake_client.wait_for_asset_removal.call_args.args[1], "operation-existing")
+        terminal = {
+            item_id: kwargs for item_id, kwargs in updates
+            if kwargs["status"] in {"completed", "removal_failed", "cancelled"}
+        }
+        self.assertEqual(terminal[7]["status"], "completed")
+        self.assertEqual(terminal[7]["removal_operation_id"], "operation-existing")
+
+    def test_process_scanned_asset_item_returns_before_removal_completes(self):
+        updates: list[dict] = []
+        enqueued: list[int] = []
+        terminal_event = threading.Event()
+
+        class DelayedBatcher:
+            def enqueue(self, item_id, asset_id, *, existing_operation_id=None):
+                enqueued.append(int(item_id))
+
+                def finish() -> None:
+                    time.sleep(0.5)
+                    updates.append(
+                        {"status": "completed", "stage": "completed", "finished_at": "2026-01-01T00:00:00+00:00"}
+                    )
+                    terminal_event.set()
+
+                threading.Thread(target=finish, daemon=True).start()
+
+        item = {
+            "id": 1,
+            "postprocess_run_id": "post-worker-1",
+            "asset_id": "asset-1",
+            "removal_operation_id": None,
+        }
+        with (
+            patch.object(main, "MpVmClient", lambda _auth: SimpleNamespace(session=FakeSession())),
+            patch.object(scan_postprocess, "refresh_docker_containers_for_scanned_asset"),
+            patch.object(scan_postprocess, "build_scanned_asset_card", return_value="build-1"),
+            patch.object(
+                main.db,
+                "update_scan_postprocess_item",
+                side_effect=lambda _id, **kwargs: updates.append(kwargs) or item,
+            ),
+            patch.object(scan_postprocess, "scan_removal_batcher", return_value=DelayedBatcher()),
+        ):
+            started = time.monotonic()
+            main.process_scanned_asset_item(item=item, auth=SimpleNamespace(), token="token")
+            elapsed = time.monotonic() - started
+
+        # The worker returned while its removal was still in flight.
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(enqueued, [1])
+        self.assertFalse(terminal_event.is_set())
+        self.assertEqual(
+            [kwargs for kwargs in updates if kwargs.get("status") in {"completed", "removal_failed", "cancelled"}],
+            [],
+        )
+        self.assertTrue(any(kwargs.get("stage") == "card_saved" for kwargs in updates))
+        # ...and the item reaches the terminal status only afterwards.
+        self.assertTrue(terminal_event.wait(timeout=5))
         self.assertEqual(updates[-1]["status"], "completed")
 
 
@@ -1972,6 +2290,72 @@ class ScanJobLiveMonitoringTests(unittest.TestCase):
             "connectionCheckResults": [{"status": "success", "errors": []}],
         }]
         self.assertEqual(mpvm_client.extract_successful_connection_targets(jobs), ["10.0.0.7"])
+
+
+class _StopGateWaiting(Exception):
+    pass
+
+
+class BuildScannedAssetCardGateTests(unittest.TestCase):
+    def test_gate_passes_when_active_jobs_below_limit(self):
+        create_job = MagicMock(return_value={"job_id": "job-1", "status": "queued"})
+        run_job = MagicMock()
+        with (
+            patch.object(scan_postprocess.db, "count_active_asset_card_build_jobs", return_value=3),
+            patch.object(scan_postprocess, "raise_if_scan_postprocess_cancelled"),
+            patch.object(scan_postprocess.db, "asset_card_exists", return_value=True),
+            patch.object(scan_postprocess.db, "create_asset_card_build_job", create_job),
+            patch.object(scan_postprocess.db, "update_scan_postprocess_item"),
+            patch.object(
+                scan_postprocess.db,
+                "get_asset_card_build_job",
+                return_value={"job_id": "job-1", "status": "completed", "asset_id": "asset-1"},
+            ),
+            patch.object(main, "register_asset_card_build_job", return_value=threading.Event()),
+            patch.object(main, "run_asset_card_build_job", run_job),
+            patch.object(scan_postprocess.time, "sleep") as sleep,
+        ):
+            scan_postprocess.build_scanned_asset_card(
+                item_id=1,
+                asset_id="asset-1",
+                auth=SimpleNamespace(),
+                token="token",
+                parent_operation_id="post-1",
+            )
+
+        create_job.assert_called_once()
+        run_job.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_gate_waits_without_creating_job_when_at_limit(self):
+        create_job = MagicMock()
+        run_job = MagicMock()
+        sleeps: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                raise _StopGateWaiting()
+
+        with (
+            patch.object(scan_postprocess.db, "count_active_asset_card_build_jobs", return_value=4),
+            patch.object(scan_postprocess, "raise_if_scan_postprocess_cancelled"),
+            patch.object(scan_postprocess.db, "create_asset_card_build_job", create_job),
+            patch.object(main, "run_asset_card_build_job", run_job),
+            patch.object(scan_postprocess.time, "sleep", side_effect=_sleep),
+        ):
+            with self.assertRaises(_StopGateWaiting):
+                scan_postprocess.build_scanned_asset_card(
+                    item_id=1,
+                    asset_id="asset-1",
+                    auth=SimpleNamespace(),
+                    token="token",
+                    parent_operation_id="post-1",
+                )
+
+        create_job.assert_not_called()
+        run_job.assert_not_called()
+        self.assertEqual(sleeps, [2.0, 2.0])
 
 
 if __name__ == "__main__":

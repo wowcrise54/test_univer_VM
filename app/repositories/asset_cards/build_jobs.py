@@ -12,7 +12,8 @@ from ..operations import register_operation
 from ..scan_tasks.postprocess import decode_scan_postprocess_run
 from ..scan_tasks.tasks import _decode_scan_task
 
-ASSET_CARD_BUILD_JOB_LIMIT = 2
+# Keep this equal to the worker semaphore limit in app/main.py.
+ASSET_CARD_BUILD_JOB_LIMIT = 4
 
 
 def get_asset_card_refresh_template(asset_id: str, template_task_id: str | None = None) -> dict[str, Any] | None:
@@ -94,7 +95,7 @@ def create_asset_card_build_jobs(
     *,
     batch_operation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Atomically admit and register one or two independent asset-card jobs."""
+    """Atomically admit and register up to ASSET_CARD_BUILD_JOB_LIMIT independent asset-card jobs."""
     if not 1 <= len(jobs) <= ASSET_CARD_BUILD_JOB_LIMIT:
         raise ValueError(f"jobs must contain between 1 and {ASSET_CARD_BUILD_JOB_LIMIT} items")
 
@@ -231,6 +232,18 @@ def get_active_asset_card_build_job() -> dict[str, Any] | None:
             """
         ).fetchone()
     return decode_asset_card_build_job(dict(row)) if row else None
+
+
+def count_active_asset_card_build_jobs() -> int:
+    schema.init_db()
+    with connection.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS active_count FROM asset_card_build_jobs
+            WHERE status IN ('queued', 'running', 'cancelling')
+            """
+        ).fetchone()
+    return int((row or {}).get("active_count") or 0)
 
 
 def interrupt_active_asset_card_build_jobs() -> int:
