@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -25,6 +26,14 @@ from .schemas import (
 )
 
 
+def _unique_export_filename() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    while True:
+        filename = f"mpvm_export_{timestamp}_{uuid.uuid4().hex}.csv"
+        if not (host.EXPORTS_DIR / filename).exists():
+            return filename
+
+
 @imports_router.post("/api/exports/pdql")
 def export_pdql(payload: PdqlExportRequest) -> dict[str, Any]:
     client, token = host.require_mpvm()
@@ -41,7 +50,7 @@ def export_pdql(payload: PdqlExportRequest) -> dict[str, Any]:
     except (MpVmApiError, requests.RequestException) as exc:
         raise http_error(exc) from exc
 
-    filename = f"mpvm_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = _unique_export_filename()
     output_path = host.EXPORTS_DIR / filename
     output_path.write_text(csv_text, encoding="utf-8-sig")
 
@@ -67,7 +76,6 @@ def export_pdql(payload: PdqlExportRequest) -> dict[str, Any]:
             utc_offset=payload.utc_offset,
             group_ids=payload.group_ids,
             include_nested_groups=payload.include_nested_groups,
-            asset_ids=payload.asset_ids,
             timeout_minutes=payload.delete_timeout_minutes,
             poll_seconds=payload.delete_poll_seconds,
         )

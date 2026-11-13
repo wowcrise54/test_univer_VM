@@ -241,3 +241,42 @@ def test_active_task_count_uses_running_postprocess(test_db):
     assert postprocess["mp_run_id"] == "mp-run-1"
     assert (postprocess["asset_count"], postprocess["completed_count"], postprocess["failed_count"]) == (3, 1, 1)
     assert postprocess["updated_at"]
+
+
+def test_precheck_results_survive_remote_cleanup(test_db):
+    repository = TaskPresetRepository()
+    presets = TaskPresetService(repository)
+    windows = presets.create(_values("Windows audit"), [_role_id("engineer_windows")], actor="admin")
+
+    service = TeamTasksService(repository)
+    service.configure(
+        create_remote=lambda payload: "task-win", update_remote=lambda task_id, payload: {},
+        start_task=lambda *args: {"status": "started"}, stop_task=lambda task_id: {},
+        delete_task=lambda task_id, key: {},
+    )
+    win_user = _engineer("engineer_windows")
+    service.create(win_user, preset_id=windows["preset_id"], asset_group_ids=[], targets=["10.0.0.1"],
+                   name="Nightly", description=None, unrestricted=False)
+
+    db.record_scan_task(
+        mp_task_id="precheck-v1", payload={"name": "Windows precheck"}, status="precheck_finished",
+        parent_task_id="task-win", remote_response={"false_targets": ["10.0.0.9"]},
+    )
+    db.record_scan_task(
+        mp_task_id="precheck-retry", payload={"name": "Precheck retry"}, status="precheck_failed",
+        parent_task_id="task-win", remote_response={
+            "parent_precheck_task_id": "precheck-v1", "false_targets": ["10.0.0.99"],
+        },
+    )
+    db.record_scan_task(
+        mp_task_id="precheck-v2", payload={"name": "Windows precheck"}, status="precheck_failed",
+        parent_task_id="task-win", remote_response={"false_targets": ["10.0.0.7", "10.0.1.0/24"]},
+    )
+    # Simulate cleanup_precheck_tasks with forget_locally=False: remote delete + local soft delete.
+    for precheck_id in ("precheck-v1", "precheck-retry", "precheck-v2"):
+        db.mark_scan_task_removed(precheck_id)
+
+    rows = service.list(win_user, unrestricted=False)["rows"]
+    # v2 is the latest ORIGINAL precheck; the retry row is excluded and the
+    # network-range target is filtered by is_individual_scan_target.
+    assert rows[0]["latest_precheck"]["hosts"] == ["10.0.0.7"]

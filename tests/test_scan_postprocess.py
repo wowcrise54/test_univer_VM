@@ -13,9 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import main, mpvm_client
 from app.persistence import codecs
-
 from app.persistence import connection as _pconn
-
 from app.services import scan_postprocess
 
 
@@ -979,6 +977,139 @@ class StartScannerTaskApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(finish_run.call_args.kwargs["status"], "completed")
         capture_snapshot.assert_called_once_with("scan_postprocess", "post-full")
+
+
+class StartScannerTaskIdempotencyReplayTests(unittest.TestCase):
+    def _replay_operation(self, *, options, subject_id="task-replay", status="completed",
+                          kind="scan_postprocess", error=None, operation_id="operation-1",
+                          source_id="post-replay"):
+        return {
+            "operation_id": operation_id,
+            "kind": kind,
+            "source_id": source_id,
+            "status": status,
+            "stage": status,
+            "progress_percent": 100,
+            "subject": {"type": "scanner_task", "id": subject_id, "label": subject_id},
+            "message": None,
+            "error": error or {},
+            "request": options.model_dump(),
+            "result": {},
+        }
+
+    def _replay_context(self, replay_operation, postprocess):
+        patches = (
+            patch.object(main.db, "get_operation_by_idempotency_key", return_value=replay_operation),
+            patch.object(main.db, "get_scan_postprocess_run", return_value=postprocess),
+            patch.object(main, "start_scanner_task_impl"),
+            patch.object(main.db, "create_scan_postprocess_run"),
+            patch.object(main.CONTAINER.repositories.vm_workflows, "by_operation", return_value={"workflow_id": "wf-1"}),
+        )
+        started = [patcher.start() for patcher in patches]
+        self.addCleanup(lambda: [p.stop() for p in reversed(patches)])
+        return started
+
+    def test_matching_replay_returns_original_run_without_restart(self):
+        options = main.StartScannerTaskRequest()
+        replay_operation = self._replay_operation(options=options)
+        postprocess = {"run_id": "post-replay", "status": "completed", "stage": "completed"}
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, postprocess,
+        )
+
+        result = main._start_scanner_task_request("task-replay", options, "replay-key")
+
+        self.assertIs(result["idempotent_replay"], True)
+        self.assertEqual(result["status"], "started")
+        self.assertEqual(result["postprocess_run_id"], "post-replay")
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
+
+    def test_replay_still_matches_when_stored_request_has_server_injected_docker_group(self):
+        options = main.StartScannerTaskRequest()
+        stored_request = {**options.model_dump(), "docker_dynamic_group": {
+            "name": "docker containers [mpvm scan] post-replay", "state": "planned",
+        }}
+        replay_operation = self._replay_operation(options=options, source_id="post-replay")
+        replay_operation["request"] = stored_request
+        postprocess = {"run_id": "post-replay", "status": "completed", "stage": "completed"}
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, postprocess,
+        )
+
+        result = main._start_scanner_task_request("task-replay", options, "replay-key")
+
+        self.assertIs(result["idempotent_replay"], True)
+        self.assertEqual(result["status"], "started")
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
+
+    def test_replay_for_another_task_is_a_conflict(self):
+        options = main.StartScannerTaskRequest()
+        replay_operation = self._replay_operation(options=options, subject_id="other-task")
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, {"run_id": "post-replay"},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            main._start_scanner_task_request("task-replay", options, "replay-key")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "IDEMPOTENCY_KEY_CONFLICT")
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
+
+    def test_replay_with_different_launch_params_is_a_conflict(self):
+        stored_options = main.StartScannerTaskRequest()
+        current_options = main.StartScannerTaskRequest(wait_for_finish=True)
+        replay_operation = self._replay_operation(options=stored_options)
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, {"run_id": "post-replay"},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            main._start_scanner_task_request("task-replay", current_options, "replay-key")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "IDEMPOTENCY_KEY_CONFLICT")
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
+
+    def test_replay_of_another_operation_kind_is_a_conflict(self):
+        options = main.StartScannerTaskRequest()
+        replay_operation = self._replay_operation(
+            options=options, kind="task_delete", operation_id="delete-1", source_id="delete-1",
+        )
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, {"run_id": "post-replay"},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            main._start_scanner_task_request("task-replay", options, "replay-key")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "IDEMPOTENCY_KEY_CONFLICT")
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
+
+    def test_failed_original_replay_reports_failure_instead_of_started(self):
+        options = main.StartScannerTaskRequest()
+        replay_operation = self._replay_operation(
+            options=options, status="failed", error={"message": "boom"},
+        )
+        postprocess = {"run_id": "post-replay", "status": "failed", "stage": "failed"}
+        (_replay_lookup, _get_run, start_impl, create_run, _by_operation) = self._replay_context(
+            replay_operation, postprocess,
+        )
+
+        result = main._start_scanner_task_request("task-replay", options, "replay-key")
+
+        self.assertIs(result["idempotent_replay"], True)
+        self.assertEqual(result["status"], "failed")
+        self.assertNotEqual(result["status"], "started")
+        self.assertIn("boom", result["error"])
+        start_impl.assert_not_called()
+        create_run.assert_not_called()
 
 
 class DockerGroupCleanupTests(unittest.TestCase):

@@ -238,6 +238,24 @@ def test_pdql_export_without_import_or_removal(client, mpvm, tmp_path):
     assert result["csv_bytes"] > 0
 
 
+def test_pdql_export_filenames_are_unique_across_consecutive_exports(client, mpvm, tmp_path):
+    mpvm.create_pdql_token.side_effect = ["pdql-a", "pdql-b"]
+    mpvm.fetch_csv.side_effect = ["asset-a;10.0.0.1\n", "asset-b;10.0.0.2\n"]
+    body = {"import_results": False, "delete_assets_after_export": False}
+    with patch.object(main, "EXPORTS_DIR", tmp_path):
+        first = client.post("/api/exports/pdql", json=body).json()
+        second = client.post("/api/exports/pdql", json=body).json()
+
+    assert first["csv_filename"] != second["csv_filename"]
+    first_path = tmp_path / first["csv_filename"]
+    second_path = tmp_path / second["csv_filename"]
+    assert first_path.exists() and second_path.exists()
+    assert first_path.read_text(encoding="utf-8-sig") == "asset-a;10.0.0.1\n"
+    assert second_path.read_text(encoding="utf-8-sig") == "asset-b;10.0.0.2\n"
+    assert first["csv_bytes"] == first_path.stat().st_size
+    assert second["csv_bytes"] == second_path.stat().st_size
+
+
 def test_pdql_export_imports_then_removes_assets_in_order(client, mpvm, tmp_path):
     order: list[str] = []
     mpvm.create_pdql_token.return_value = "tok"
