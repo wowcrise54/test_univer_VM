@@ -171,6 +171,7 @@ class TaskPresetRepository:
     def list_team_tasks(
         self, *, role_ids: builtins.list[int] | None, owner_id: int | None = None,
     ) -> builtins.list[dict[str, Any]]:
+        """Precheck rows soft-deleted by cleanup still contribute their saved result."""
         params: builtins.list[Any] = [owner_id]
         access = ""
         if role_ids is not None:
@@ -194,7 +195,7 @@ class TaskPresetRepository:
                             'false_targets', child.last_remote_response_json::jsonb -> 'false_targets'
                         ) AS latest_precheck
                         FROM scan_tasks child
-                        WHERE child.parent_task_id = t.mp_task_id AND child.deleted_at IS NULL
+                        WHERE child.parent_task_id = t.mp_task_id
                           AND child.status IN ('precheck_finished', 'precheck_failed')
                           AND NOT (child.last_remote_response_json::jsonb ? 'parent_precheck_task_id')
                         ORDER BY child.created_at DESC, child.id DESC

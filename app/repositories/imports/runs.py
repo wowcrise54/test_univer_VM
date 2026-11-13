@@ -26,6 +26,24 @@ def create_import_run(
         return int(row["id"])
 
 
+def get_confirmed_exported_asset_ids(run_id: int):
+    """MP asset IDs saved by a completed import run; None when the run is missing or did not complete."""
+    with connection.connect() as conn:
+        row = conn.execute("SELECT status FROM import_runs WHERE id = %s", (run_id,)).fetchone()
+        if row is None or row["status"] != "completed":
+            return None
+        rows = conn.execute(
+            """
+            SELECT DISTINCT a.mp_asset_id
+            FROM vulnerability_findings f
+            JOIN assets a ON a.id = f.asset_id
+            WHERE f.import_run_id = %s AND a.mp_asset_id IS NOT NULL
+            """,
+            (run_id,),
+        ).fetchall()
+    return [str(r["mp_asset_id"]) for r in rows]
+
+
 def finish_import_run(
     run_id: int,
     *,

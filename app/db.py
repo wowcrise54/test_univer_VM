@@ -207,7 +207,11 @@ from .repositories.imports.assets import (
     upsert_software,
 )
 from .repositories.imports.csv_import import import_csv_text
-from .repositories.imports.runs import create_import_run, finish_import_run
+from .repositories.imports.runs import (
+    create_import_run,
+    finish_import_run,
+    get_confirmed_exported_asset_ids,
+)
 from .repositories.operations import (
     ACTIVE_OPERATION_STATUSES,
     ATTENTION_OPERATION_STATUSES,
@@ -455,6 +459,7 @@ __all__ = [
     "get_asset_card_section",
     "get_asset_card_summary",
     "get_asset_group",
+    "get_confirmed_exported_asset_ids",
     "get_latest_scan_postprocess_run",
     "get_operation",
     "get_operation_by_idempotency_key",

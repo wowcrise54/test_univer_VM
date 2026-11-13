@@ -21,7 +21,6 @@ from ..mpvm_client import (
     build_disabled_daily_trigger,
     build_scanner_task_payload,
     extract_asset_ids_from_csv,
-    extract_ips_from_csv,
 )
 from ..persistence import codecs
 from ..services.scan_postprocess import SCAN_LOG, scan_log
@@ -31,22 +30,42 @@ if TYPE_CHECKING:
     from ..mpvm_client import MpVmClient
 
 
+UNSUCCESSFUL_OPERATION_STATUSES = {"failed", "interrupted", "cancelled", "needs_attention"}
+
+
 def _start_scanner_task_request(
     task_id: str, options: StartScannerTaskRequest, clean_idempotency_key: str | None,
     *, background_tasks: BackgroundTasks | None = None,
 ) -> dict[str, Any]:
     replay = db.get_operation_by_idempotency_key(clean_idempotency_key)
-    if replay and replay.get("kind") == "scan_postprocess":
+    if replay:
+        if replay.get("kind") != "scan_postprocess":
+            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": "Idempotency key belongs to another operation.", "component": "operations"})
+        stored_options = replay.get("request") or {}
+        current_options = options.model_dump()
+        # docker_dynamic_group is injected server-side into the stored options, so it is excluded from the comparison.
+        launch_params_match = (
+            {k: v for k, v in stored_options.items() if k != "docker_dynamic_group"}
+            == {k: v for k, v in current_options.items() if k != "docker_dynamic_group"}
+        )
+        if replay.get("subject", {}).get("id") != task_id or not launch_params_match:
+            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": "Idempotency key belongs to another operation.", "component": "operations"})
+        run = db.get_scan_postprocess_run(replay["source_id"], include_items=True)
+        original_status = str(replay.get("status") or "unknown")
+        started = original_status not in UNSUCCESSFUL_OPERATION_STATUSES
         workflow = host.CONTAINER.repositories.vm_workflows.by_operation(replay["operation_id"])
-        return {
-            "status": "started",
+        response = {
+            "status": "started" if started else original_status,
             "postprocess_run_id": replay["source_id"],
-            "postprocess": db.get_scan_postprocess_run(replay["source_id"], include_items=True),
+            "postprocess": run,
             "operation": replay,
             "operation_id": replay["operation_id"],
             "workflow_id": workflow.get("workflow_id") if workflow else None,
             "idempotent_replay": True,
         }
+        if not started:
+            response["error"] = (run.get("error") if isinstance(run, dict) else None) or (replay.get("error") or {}).get("message")
+        return response
     client, token = host.require_mpvm()
     postprocess_run_id = str(uuid.uuid4())
     run_options = options.model_dump()
@@ -649,38 +668,38 @@ def remove_assets_after_export(
     utc_offset: str | None,
     group_ids: list[str],
     include_nested_groups: bool,
-    asset_ids: list[str],
     timeout_minutes: float,
     poll_seconds: float,
 ) -> dict[str, Any]:
-    resolved_asset_ids = extract_asset_ids_from_csv(csv_text)
-    resolution_source = "export_csv"
-    if not resolved_asset_ids:
-        resolved_asset_ids = list(asset_ids)
-        resolution_source = "request_asset_ids"
-    if not resolved_asset_ids:
-        ips = extract_ips_from_csv(csv_text)
-        resolved_asset_ids = resolve_asset_ids_by_ips(
-            client=client,
-            token=token,
-            ips=ips,
-            utc_offset=utc_offset,
-            group_ids=group_ids,
-            include_nested_groups=include_nested_groups,
-        )
-        resolution_source = "ip_resolution_pdql"
+    # Safety rule: only assets confirmed as saved locally by the completed import run may be removed; unconfirmed assets are skipped, never deleted.
+    exported_ids = extract_asset_ids_from_csv(csv_text)
 
-    if not resolved_asset_ids:
+    def _skip(message: str) -> dict[str, Any]:
         db.record_asset_removal(
             import_run_id=import_run_id,
             operation_id=None,
             asset_ids=[],
             status="skipped",
-            message="No asset IDs found in CSV or via IP resolution.",
+            message=message,
         )
-        return {"status": "skipped", "message": "No asset IDs found.", "asset_count": 0}
+        return {"status": "skipped", "message": message, "asset_count": 0}
 
-    operation_id = client.remove_assets(token, resolved_asset_ids)
+    if not exported_ids:
+        return _skip("No asset IDs found in the exported CSV; nothing was removed.")
+    if import_run_id is None:
+        return _skip(
+            "No local import run is recorded for this export, so the local save is not confirmed; nothing was removed."
+        )
+    saved_ids = db.get_confirmed_exported_asset_ids(import_run_id)
+    if saved_ids is None:
+        return _skip(
+            f"Import run {import_run_id} did not complete, so the local save is not confirmed; nothing was removed."
+        )
+    confirmed = [asset_id for asset_id in exported_ids if asset_id in set(saved_ids)]
+    if not confirmed:
+        return _skip("None of the exported asset IDs is confirmed as saved locally; nothing was removed.")
+
+    operation_id = client.remove_assets(token, confirmed)
     ok, message, raw_response = client.wait_for_asset_removal(
         token,
         operation_id,
@@ -691,7 +710,7 @@ def remove_assets_after_export(
     db.record_asset_removal(
         import_run_id=import_run_id,
         operation_id=operation_id,
-        asset_ids=resolved_asset_ids,
+        asset_ids=confirmed,
         status=status,
         message=message,
         raw_response=raw_response,
@@ -699,8 +718,8 @@ def remove_assets_after_export(
     return {
         "status": status,
         "operation_id": operation_id,
-        "asset_count": len(resolved_asset_ids),
-        "resolution_source": resolution_source,
+        "asset_count": len(confirmed),
+        "resolution_source": "export_csv_import_run",
         "message": message,
     }
 
