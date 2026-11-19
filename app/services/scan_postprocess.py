@@ -207,7 +207,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             client, token, run_id, monitoring, lambda: raise_if_scan_postprocess_cancelled(run_id),
             connection_check=as_dict(options.get("connection_check")),
         )
-        cleanup_summary = f" Stale assets removed: {removed_count}." if removed_count else ""
+        cleanup_summary = f" Stale local assets removed: {removed_count}." if removed_count else ""
         if not monitoring["successful_job_count"]:
             scan_log(
                 logging.ERROR,
