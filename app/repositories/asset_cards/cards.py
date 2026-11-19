@@ -173,13 +173,32 @@ def get_asset_card_history(asset_id: str, limit: int = 20) -> list[dict[str, Any
     return [{"captured_at": r["captured_at"], "quality": json_loads(r["quality_json"], {}), "changes": json_loads(r["changes_json"], []), "summary": json_loads(r["summary_json"], {})} for r in rows]
 
 
-def delete_asset_card(asset_id: str) -> bool:
+def stale_scan_card_version(asset_id: str, address: str, cutoff: datetime) -> str | None:
+    with connection.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT card.last_seen FROM asset_cards card
+            LEFT JOIN asset_scan_evidence evidence USING (asset_id)
+            WHERE card.asset_id = %s AND card.ip_address = %s
+              AND card.last_seen::timestamptz < %s
+              AND (evidence.scanned_at IS NULL OR evidence.scanned_at < %s)
+            """,
+            (asset_id, address, cutoff, cutoff),
+        ).fetchone()
+    return row["last_seen"] if row else None
+
+
+def delete_asset_card(asset_id: str, *, expected_last_seen: str | None = None) -> bool:
     schema.init_db()
     with connection.connect() as conn:
         locks._lock_vulnerability_passport_writes(conn)
         row = conn.execute(
-            "DELETE FROM asset_cards WHERE asset_id = %s RETURNING asset_id",
-            (asset_id,),
+            """
+            DELETE FROM asset_cards WHERE asset_id = %s
+              AND (%s::text IS NULL OR last_seen = %s)
+            RETURNING asset_id
+            """,
+            (asset_id, expected_last_seen, expected_last_seen),
         ).fetchone()
     return row is not None
 

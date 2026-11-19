@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     scan_asset_resolution_poll_seconds: int = 15
     scan_asset_removal_timeout_seconds: int = 1800
     scan_asset_removal_poll_seconds: int = 10
+    scan_unreachable_errors: str = ""
     docker_dynamic_group_iterations: int = 3
     docker_dynamic_group_settle_seconds: int = 10
     docker_dynamic_group_timeout_seconds: int = 120
