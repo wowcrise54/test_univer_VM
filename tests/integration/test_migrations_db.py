@@ -36,7 +36,7 @@ from app import db, main
 # both in the Docker test stack and on a plain CI checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_HEAD = "20261110_0039"
+EXPECTED_HEAD = "20261111_0040"
 HEAD_PARENT = "20260910_0022"
 
 # Tables created by migrations that a full upgrade must materialise and a
@@ -56,6 +56,8 @@ DROPPED_AT_BASE = {
     "app_mcp_tokens",         # 0034
     "vulnerability_rollup",   # 0037
     "vulnerability_host_rollup",  # 0037
+    "team_task_folders",       # 0040
+    "team_task_folder_assignments",  # 0040
 }
 
 # 0002 uses the expand/contract strategy: its downgrade is a no-op that keeps
@@ -73,6 +75,7 @@ ALTERED_COLUMNS = {
     ("scan_tasks", "preset_asset_groups"),   # 0028
     ("scan_tasks", "preset_targets"),        # 0029
     ("asset_card_vulnerabilities", "selector"),  # 0036
+    ("scan_tasks", "team_schedule_override"),  # 0040
 }
 
 INDEX_0023 = "idx_asset_card_vulnerability_passports_finding"

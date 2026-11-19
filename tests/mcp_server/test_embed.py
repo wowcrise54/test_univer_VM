@@ -71,7 +71,8 @@ def _call(client: TestClient, method: str, params: dict[str, Any] | None = None,
     return client.post(path, json=payload, headers=kwargs.pop("headers", MCP_HEADERS), **kwargs)
 
 
-def test_disabled_by_default_leaves_the_application_untouched(caplog):
+def test_disabled_by_default_leaves_the_application_untouched(monkeypatch, caplog):
+    monkeypatch.delenv("MPVM_MCP_ENABLED", raising=False)
     app = _host_app()
     with caplog.at_level(logging.INFO, logger=embed.logger.name):
         assert install_embedded_mcp(app, settings=make_settings(), authenticator=FakeAuthenticator()) is False

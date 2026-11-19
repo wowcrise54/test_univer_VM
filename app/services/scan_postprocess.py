@@ -31,9 +31,11 @@ from ..mpvm_client import (
     has_success_status,
     is_finished,
     is_host_discovery_profile,
+    status_strings,
 )
 from ..persistence import codecs
 from .main_host import host
+from .stale_scan_assets import cleanup_stale_scan_assets
 
 # Defaults are bound when the function is defined, so they cannot come from the
 # lazily resolved app.main; they are derived from the same cached settings.
@@ -201,6 +203,11 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             docker_group_options=options,
         )
         scan_finished_at = str(monitoring.get("scan_finished_at") or "") or None
+        removed_count = cleanup_stale_scan_assets(
+            client, token, run_id, monitoring, lambda: raise_if_scan_postprocess_cancelled(run_id),
+            connection_check=as_dict(options.get("connection_check")),
+        )
+        cleanup_summary = f" Stale assets removed: {removed_count}." if removed_count else ""
         if not monitoring["successful_job_count"]:
             scan_log(
                 logging.ERROR,
@@ -231,8 +238,10 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
                 run_id,
                 status="completed_with_errors",
                 stage="completed_with_errors",
-                message=f"The scanner run has no jobs with errorStatus=success.{cleanup_text}",
+                message=f"The scanner run has no jobs with errorStatus=success.{cleanup_text}{cleanup_summary}",
             )
+            if removed_count:
+                host.capture_vulnerability_snapshot("scan_postprocess", run_id)
             return
 
         summary = db.refresh_scan_postprocess_counts(run_id) or {}
@@ -246,7 +255,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             )
         refresh_result = finalize_asset_card_refresh(run_id, options) if completed_count else None
         final_status = "completed_with_errors" if failed_count else "completed"
-        message = f"Completed {completed_count} asset(s); failures: {failed_count}."
+        message = f"Completed {completed_count} asset(s); failures: {failed_count}.{cleanup_summary}"
         if refresh_result:
             message += f" Asset card refreshed as {refresh_result['asset_id']}."
         db.update_scan_task_status(
@@ -270,7 +279,7 @@ def run_scan_postprocess(*, run_id: str, auth: AuthConfig, token: str) -> None:
             scan_finished_at=scan_finished_at,
         )
         db.finish_scan_postprocess_run(run_id, status=final_status, stage=final_status, message=message)
-        if completed_count:
+        if completed_count or removed_count:
             host.capture_vulnerability_snapshot("scan_postprocess", run_id)
         scan_log(
             logging.INFO if final_status == "completed" else logging.ERROR,
@@ -895,6 +904,14 @@ def monitor_successful_scan_jobs(
         if docker_dynamic_group_from_options(docker_group_options):
             host.remember_docker_scan_finished_at(postprocess_run_id, scan_finished_at, confirmed=False)
     return {
+        "confirmed_finished_at": latest_run.get("finishedAt")
+        if status_strings(latest_run.get("status")) in ({"finished"}, {"completed"})
+        and latest_jobs
+        and all(is_finished(job) for job in latest_jobs)
+        and not pending_targets
+        and not target_errors
+        else None,
+        "jobs": latest_jobs,
         "total_job_count": len(latest_jobs),
         "successful_job_count": len(successful_jobs),
         "asset_count": len(seen_asset_ids),

@@ -82,6 +82,7 @@ def _start_scanner_task_request(
             options=options,
             docker_group_run_id=postprocess_run_id,
             before_remote_start=ensure_postprocess_run,
+            precheck_context=run_options,
         )
     except Exception as exc:
         if "run" in postprocess_holder:
@@ -299,6 +300,7 @@ def start_scanner_task_impl(
     options: StartScannerTaskRequest,
     docker_group_run_id: str | None = None,
     before_remote_start: Callable[[str], Any] | None = None,
+    precheck_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": task_id,
@@ -324,6 +326,11 @@ def start_scanner_task_impl(
         if not successful_targets:
             db.update_scan_task_status(task_id, "precheck_failed", precheck_result)
             return {**result, "status": "precheck_failed"}
+        if precheck_context is not None:
+            precheck_context["connection_check"] = {
+                "task_id": precheck_result.get("task_id"),
+                "started_from": precheck_result.get("started_from"),
+            }
 
     started_from = datetime.now(UTC).isoformat()
     if before_remote_start:
@@ -475,6 +482,7 @@ def run_precheck_for_scanner_task(
     precheck_result = {
         "task_id": precheck_task_id,
         "audit_task_id": task_id,
+        "started_from": started_from,
         "successful_targets": targets,
         "successful_target_count": len(targets),
         "false_targets": false_targets,
