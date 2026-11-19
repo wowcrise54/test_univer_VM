@@ -3,63 +3,71 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
-from ..persistence import codecs, connection
+from ..persistence import codecs, connection, locks
 from ..persistence.sql import rows_to_dicts, validated_sort_sql
 
 
-def list_scan_asset_removals(run_id: str) -> list[dict[str, Any]]:
+def delete_stale_local_asset(address: str, cutoff: datetime, *, run_id: str) -> bool:
     with connection.connect() as conn:
-        return conn.execute(
+        locks._lock_vulnerability_passport_writes(conn)
+        cards = conn.execute(
             """
-            SELECT id, operation_id, split_part(message, '/', 2) AS address,
-                   asset_ids_json::jsonb ->> 0 AS asset_id,
-                   raw_response_json::jsonb ->> 'card_version' AS card_version
-            FROM asset_removal_operations
-            WHERE split_part(message, '/', 1) = %s AND status = 'processing'
-            ORDER BY id
+            SELECT asset_id, last_seen::timestamptz >= %s AS fresh
+            FROM asset_cards WHERE ip_address = %s
+            FOR UPDATE
             """,
-            (f"Stale scan asset: {run_id}",),
+            (cutoff, address),
         ).fetchall()
+        imported = conn.execute(
+            """
+            SELECT id, asset_key, mp_asset_id, last_seen::timestamptz >= %s AS fresh
+            FROM assets WHERE ip_address = %s
+            FOR UPDATE
+            """,
+            (cutoff, address),
+        ).fetchall()
+        if not (cards or imported) or any(row["fresh"] for row in (*cards, *imported)):
+            return False
 
+        card_ids = [row["asset_id"] for row in cards]
+        remote_ids = sorted(set(card_ids) | {row["mp_asset_id"] for row in imported if row["mp_asset_id"]})
+        if conn.execute(
+            """
+            SELECT 1 FROM asset_scan_evidence
+            WHERE asset_id = ANY(%s) AND scanned_at >= %s
+            UNION ALL
+            SELECT 1 FROM asset_cards
+            WHERE asset_id = ANY(%s) AND ip_address IS DISTINCT FROM %s
+            UNION ALL
+            SELECT 1 FROM assets
+            WHERE mp_asset_id = ANY(%s) AND ip_address IS DISTINCT FROM %s
+            LIMIT 1
+            """,
+            (remote_ids, cutoff, remote_ids, address, remote_ids, address),
+        ).fetchone():
+            return False
 
-def reserve_scan_asset_removal(key: str, asset_id: str, version: str) -> int | None:
-    now = codecs.now_utc()
-    asset_ids = json.dumps([asset_id])
-    with connection.connect() as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (asset_id,))
-        # A submission without a response may already be active in MP VM.
-        row = conn.execute(
+        imported_ids = [row["id"] for row in imported]
+        conn.execute("DELETE FROM asset_cards WHERE asset_id = ANY(%s)", (card_ids,))
+        conn.execute("DELETE FROM assets WHERE id = ANY(%s)", (imported_ids,))
+        now = codecs.now_utc()
+        conn.execute(
             """
             INSERT INTO asset_removal_operations
                 (asset_ids_json, status, message, raw_response_json, created_at, updated_at)
-            SELECT %s, 'submitting', %s, %s, %s, %s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM asset_removal_operations
-                WHERE asset_ids_json = %s AND message LIKE 'Stale scan asset: %%'
-                  AND status IN ('submitting', 'processing')
-            )
-            RETURNING id
+            VALUES (%s, 'completed', 'Stale local asset removed', %s, %s, %s)
             """,
-            (asset_ids, key, json.dumps({"card_version": version}), now, now, asset_ids),
-        ).fetchone()
-    return int(row["id"]) if row else None
-
-
-def update_scan_asset_removal(
-    removal_id: int, operation_id: str | None, status: str, response: dict[str, Any] | None = None,
-) -> None:
-    with connection.connect() as conn:
-        conn.execute(
-            """
-            UPDATE asset_removal_operations
-            SET operation_id = %s, status = %s, updated_at = %s,
-                raw_response_json = (raw_response_json::jsonb || %s::jsonb)::text
-            WHERE id = %s
-            """,
-            (operation_id, status, codecs.now_utc(), json.dumps({"operation": response}), removal_id),
+            (
+                json.dumps(sorted(set(remote_ids) | {row["asset_key"] for row in imported})),
+                json.dumps({"postprocess_run_id": run_id, "ip_address": address, "local_only": True}),
+                now,
+                now,
+            ),
         )
+    return True
 
 
 def list_asset_findings(
