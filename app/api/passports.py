@@ -12,6 +12,7 @@ from .. import db
 from ..mpvm.common import http_error
 from ..mpvm_client import VULNER_PASSPORT_PDQL, MpVmApiError
 from ..repositories import passport_refresh
+from ..services import wazuh_cti
 from ..services.main_host import host
 from ..services.vulnerability_passport_jobs import (
     _execute_vulnerability_passport_query,
@@ -146,6 +147,11 @@ def vulnerability_passport(passport_id: str) -> dict[str, Any]:
     local = host.CONTAINER.services.passports.get(passport_id)
     if local and local.get("raw_detail"):
         return {"id": passport_id, "raw": local["raw_detail"], "source": "db", "passport": local}
+    if wazuh_cti.PASSPORT_ID.fullmatch(passport_id):
+        if not local:
+            raise HTTPException(status_code=404, detail="Паспорт Wazuh CTI не найден.")
+        saved = wazuh_cti.refresh_passport(passport_id)
+        return {"id": passport_id, "raw": saved["raw_detail"], "source": "wazuh-cti", "passport": saved}
 
     client, token = host.require_mpvm()
     try:
@@ -160,6 +166,12 @@ def vulnerability_passport(passport_id: str) -> dict[str, Any]:
 def update_vulnerability_passport(passport_id: str) -> dict[str, Any]:
     if not db.get_vulnerability_passport(passport_id):
         raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
+    if wazuh_cti.PASSPORT_ID.fullmatch(passport_id):
+        saved = wazuh_cti.refresh_passport(passport_id)
+        return {
+            "id": passport_id, "raw": saved["raw_detail"], "source": "wazuh-cti",
+            "passport": saved, "updated": True,
+        }
 
     client, token = host.require_mpvm()
     try:

@@ -186,6 +186,7 @@ def reconcile_asset_card_vulnerability_passport_links(
                 FROM (SELECT DISTINCT cve_name FROM finding_base WHERE cve_name IS NOT NULL) AS wanted
                 JOIN vulnerability_passport_cves AS matched
                   ON matched.cve_name = wanted.cve_name
+                WHERE matched.passport_internal_id NOT LIKE 'wazuh-cti:%%'
             ), passport_context AS (
                 SELECT
                     passport.internal_id,

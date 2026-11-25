@@ -5,6 +5,8 @@ import { severityLabel } from "../../shared/labels.js";
 import { Button, useDialogAccessibility } from "../../shared/ui.jsx";
 import { firstFilled } from "../../shared/values.js";
 
+const EMPTY_PASSPORT_DETAIL = {};
+
 export function PassportModal({
   children,
   onClose,
@@ -42,7 +44,7 @@ export function PassportModal({
 }
 
 export function PassportCard({ row, detail, loading }) {
-  const raw = detail || row?.raw_detail || row?.raw_record || {};
+  const raw = detail || row?.raw_detail || row?.raw_record || EMPTY_PASSPORT_DETAIL;
   const model = useMemo(() => buildPassportModel(row, raw), [row, raw]);
 
   if (!row && !detail) {
@@ -77,13 +79,13 @@ export function PassportCard({ row, detail, loading }) {
         id="passport-summary-panel"
         aria-labelledby="passport-summary-tab"
       >
-        <PassportSummaryTab model={model} row={row} loading={loading} />
+        <PassportSummaryTab model={model} row={row} loading={loading} raw={raw} />
       </div>
     </div>
   );
 }
 
-function PassportSummaryTab({ model, row, loading }) {
+function PassportSummaryTab({ model, row, loading, raw }) {
   return (
     <div className="asset-summary-grid">
       <div className="asset-summary-main">
@@ -110,6 +112,12 @@ function PassportSummaryTab({ model, row, loading }) {
               "Рекомендации нет."}
           </p>
         </PassportSection>
+        {raw.source === "wazuh-cti" && raw.record ? (
+          <details className="raw-details">
+            <summary>Запись Wazuh CTI</summary>
+            <pre>{JSON.stringify(raw.record, null, 2)}</pre>
+          </details>
+        ) : null}
       </div>
       <div className="asset-summary-side">
         <div className="asset-summary-card">
