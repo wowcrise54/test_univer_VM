@@ -5,6 +5,25 @@ from typing import Any
 from ...persistence import connection, schema
 
 
+def inventory_package_names() -> list[dict[str, Any]]:
+    with connection.connect() as conn:
+        return conn.execute(
+            """
+            SELECT DISTINCT card.os_name, card.os_version, item.data_json::jsonb ->> 'name' AS package
+            FROM asset_cards AS card
+            JOIN asset_card_collections AS collection ON collection.asset_id = card.asset_id
+              AND collection.name = 'packages'
+              AND collection.parent_object_id = card.root_json::jsonb ->> 'objectId'
+            JOIN asset_card_collection_items AS item
+              ON item.asset_id = collection.asset_id AND item.collection_path = collection.path
+            WHERE item.object_type IN (
+                'OperatingSystem.UNIX.Linux.Debian.UbuntuPackage',
+                'OperatingSystem.UNIX.Linux.Debian.DebianPackage'
+            )
+            """
+        ).fetchall()
+
+
 def read_inventory(asset_id: str) -> dict[str, Any] | None:
     schema.init_db()
     with connection.connect() as conn:
