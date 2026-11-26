@@ -7,6 +7,7 @@ import requests
 from fastapi import HTTPException
 
 from ..repositories.passports.wazuh_cti import save_detail
+from .wazuh_asset_match import extract_rules
 
 PASSPORT_ID = re.compile(r"wazuh-cti:(CVE-[0-9]{4}-[0-9]{4,})")
 
@@ -68,7 +69,7 @@ def refresh_passport(passport_id: str) -> dict[str, Any]:
         "score": cvss.get("baseScore"),
         "publishedAt": metadata.get("datePublished"),
         "references": list(references),
-    })
+    }, extract_rules(providers))
     if saved is None:
         raise HTTPException(status_code=404, detail="Паспорт Wazuh CTI не найден.")
     return saved

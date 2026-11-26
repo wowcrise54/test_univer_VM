@@ -27,6 +27,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/asset-cards/{asset_id}/summary"): "asset_cards.read",
     ("GET", "/api/asset-cards/{asset_id}/vulnerabilities/findings"): "asset_cards.read",
     ("GET", "/api/asset-cards/{asset_id}/vulnerabilities/groups"): "asset_cards.read",
+    ("GET", "/api/asset-cards/{asset_id}/vulnerabilities/wazuh-cti"): "asset_cards.read",
     ("GET", "/api/asset-groups"): "asset_groups.read",
     ("GET", "/api/asset-groups/precheck-runs"): "asset_groups.read",
     ("GET", "/api/asset-groups/precheck-stats"): "asset_groups.read",

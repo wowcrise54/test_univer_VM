@@ -27,6 +27,7 @@ from ..services.asset_card_refresh import (
 )
 from ..services.main_host import host
 from ..services.scan_postprocess import SCAN_LOG, scan_log
+from ..services.wazuh_asset_match import assess_asset
 from .routers import asset_cards_router
 from .schemas import (
     AssetCardAssetQueryRequest,
@@ -595,6 +596,14 @@ def local_asset_card_configuration_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Asset card not found in local DB.")
     return detail
+
+
+@asset_cards_router.get("/api/asset-cards/{asset_id}/vulnerabilities/wazuh-cti")
+def local_asset_wazuh_cti_matches(asset_id: str) -> dict[str, Any]:
+    result = assess_asset(asset_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Карточка актива не найдена.")
+    return result
 
 
 @asset_cards_router.get("/api/asset-cards/{asset_id}/vulnerabilities/groups")

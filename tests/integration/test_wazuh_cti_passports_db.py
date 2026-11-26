@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from app import db
 from app.repositories.passports.wazuh_cti import create_passports
 from app.services import wazuh_cti
+from app.services.wazuh_asset_match import assess_asset
 
 pytestmark = pytest.mark.integration
 
@@ -27,6 +28,12 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
             "descriptions": [{"lang": "en", "value": "Test description."}],
             "metrics": [{"cvssV3_1": {"baseScore": 9.1, "baseSeverity": "CRITICAL"}}],
             "references": [{"url": "https://example.com/advisory"}],
+            "providerMetadata": {"shortName": "debian"},
+            "affected": [{
+                "vendor": "debian", "product": "example", "platforms": ["bookworm"],
+                "defaultStatus": "unaffected",
+                "versions": [{"status": "affected", "version": "0", "lessThan": "2.0-2", "versionType": "deb"}],
+            }],
         }},
     }
 
@@ -43,6 +50,23 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     assert saved["raw_detail"]["references"] == ["https://example.com/advisory"]
     assert saved["raw_detail"]["description"] == "Test description."
     assert saved["score"] == "9.1"
+    db.upsert_asset_card({
+        "asset_id": "linux-test",
+        "root": {"objectId": "linux-test", "data": {"osName": "Debian", "osVersion": "12.15"}},
+        "collections": [{
+            "name": "packages", "path": "packages", "parent_object_id": "linux-test",
+            "count": 2, "fetched_count": 2, "truncated": False,
+            "items": [
+                {"type": "OperatingSystem.UNIX.Linux.Debian.DebianPackage",
+                 "data": {"name": "example", "version": version}}
+                for version in ("2.0-1", "2.0-2")
+            ],
+        }],
+    })
+    result = assess_asset("linux-test")
+    assert result["inventory_complete"]
+    assert result["evaluated_packages"] == 2
+    assert [(item["passport_id"], item["version"]) for item in result["matches"]] == [(passport_id, "2.0-1")]
 
     def unavailable(*args, **kwargs):
         raise wazuh_cti.requests.Timeout

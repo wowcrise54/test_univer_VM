@@ -4,6 +4,7 @@ import { formatCount } from "../../shared/format.js";
 import { SortableHeader, sortRows, useTableSort } from "../../shared/table.jsx";
 import { Button } from "../../shared/ui.jsx";
 import { firstFilled } from "../../shared/values.js";
+import { AssetWazuhMatches } from "./AssetWazuhMatches.jsx";
 
 const ASSET_VULNERABILITY_FINDING_LIMIT = 100;
 
@@ -263,6 +264,11 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       className="asset-vulnerability-pane"
       aria-label="Уязвимости актива"
     >
+      <AssetWazuhMatches
+        key={assetId}
+        assetId={assetId}
+        onOpenPassport={onOpenPassport}
+      />
       <div
         className="asset-vulnerability-subtabs"
         role="tablist"
