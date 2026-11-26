@@ -16,7 +16,7 @@ from app.services.wazuh_asset_match import assess_asset
 pytestmark = pytest.mark.integration
 
 
-def test_bulk_snapshot_updates_local_passports_once_and_reports_invalid_records(test_db, monkeypatch):
+def test_bulk_snapshot_updates_local_passports_once_and_reports_invalid_records(test_db, monkeypatch, tmp_path):
     cves = ["CVE-2025-1000", "CVE-2025-1001", "CVE-2025-1002"]
     db.upsert_vulnerability_passports([{"internal_id": "mpvm-a", "cves": cves}])
     create_passports()
@@ -43,12 +43,13 @@ def test_bulk_snapshot_updates_local_passports_once_and_reports_invalid_records(
         if url == wazuh_snapshot.CATALOG_URL:
             return FakeResponse(document={"data": {
                 "last_snapshot_offset": snapshot[0],
-                "last_snapshot_link": "https://cti.wazuh.com/store/contexts/vd_1.0.0/test.zip",
+                "last_snapshot_link": f"https://cti.wazuh.com/store/contexts/vd_1.0.0/test-{snapshot[0]}.zip",
             }})
         downloads.append(url)
         return FakeResponse(content=archive_bytes.getvalue())
 
     monkeypatch.setattr(wazuh_snapshot.requests.Session, "get", get)
+    monkeypatch.setattr(wazuh_snapshot, "SNAPSHOT_CACHE", tmp_path)
 
     def run_job():
         tasks = BackgroundTasks()
@@ -82,6 +83,29 @@ def test_bulk_snapshot_updates_local_passports_once_and_reports_invalid_records(
     assert run_job()["status"] == "completed"
     assert len(downloads) == 2
 
+    snapshot[0] = 3
+
+    def unavailable(*args):
+        raise wazuh_snapshot.SnapshotUnavailable("Range ignored")
+
+    monkeypatch.setattr(wazuh_snapshot, "download_snapshot", unavailable)
+    fallback_requests = []
+
+    def get_cve(url, **kwargs):
+        fallback_requests.append(url)
+        cve_id = url.split("/")[-2]
+        return FakeResponse(document={"cveMetadata": {"cveId": cve_id}, "containers": {}})
+
+    def get_with_fallback(session, url, **kwargs):
+        return get_cve(url, **kwargs) if url.endswith("/json5") else get(session, url, **kwargs)
+
+    monkeypatch.setattr(wazuh_snapshot.requests.Session, "get", get_with_fallback)
+    fallback_job = run_job()
+    assert fallback_job["status"] == "completed"
+    assert fallback_job["result"]["mode"] == "per-cve"
+    assert fallback_job["result"]["wazuh_cti"]["updated"] == 2
+    assert len(fallback_requests) == 2
+
 
 class FakeResponse:
     status_code = 200
@@ -89,6 +113,7 @@ class FakeResponse:
     def __init__(self, *, content=b"", document=None):
         self.content = content
         self.document = document
+        self.headers = {"Content-Length": str(len(content)), "ETag": '"snapshot"'}
 
     def __enter__(self):
         return self

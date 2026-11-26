@@ -12,14 +12,19 @@ from .wazuh_asset_match import PackageRule, extract_rules
 PASSPORT_ID = re.compile(r"wazuh-cti:(CVE-[0-9]{4}-[0-9]{4,})")
 
 
-def refresh_passport(passport_id: str) -> dict[str, Any]:
+class TransientWazuhError(HTTPException):
+    """A transport or upstream HTTP failure eligible for a retry."""
+
+
+def refresh_passport(passport_id: str, *, session: requests.Session | None = None) -> dict[str, Any]:
     match = PASSPORT_ID.fullmatch(passport_id)
     if not match:
         raise HTTPException(status_code=404, detail="Паспорт Wazuh CTI не найден.")
     cve = match[1]
     url = f"https://cti.wazuh.com/vulnerabilities/cves/{cve}"
     try:
-        response = requests.get(f"{url}/json5", timeout=(3, 10), allow_redirects=False)
+        get = session.get if session is not None else requests.get
+        response = get(f"{url}/json5", timeout=(3, 10), allow_redirects=False)
         response.raise_for_status()
         record = response.json()
     except requests.HTTPError as exc:
@@ -29,10 +34,10 @@ def refresh_passport(passport_id: str) -> dict[str, Any]:
         if status == 429:
             raise HTTPException(status_code=429, detail="Wazuh CTI ограничил частоту запросов.") from exc
         if status in (408, 500, 502, 503, 504):
-            raise HTTPException(status_code=502, detail=f"Wazuh CTI вернул HTTP {status}.") from exc
+            raise TransientWazuhError(status_code=502, detail=f"Wazuh CTI вернул HTTP {status}.") from exc
         raise HTTPException(status_code=502, detail="Wazuh CTI временно недоступен.") from exc
     except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
-        raise HTTPException(status_code=502, detail="Сбой соединения с Wazuh CTI.") from exc
+        raise TransientWazuhError(status_code=502, detail="Сбой соединения с Wazuh CTI.") from exc
     except (requests.RequestException, ValueError) as exc:
         raise HTTPException(status_code=502, detail="Не удалось загрузить запись Wazuh CTI.") from exc
 

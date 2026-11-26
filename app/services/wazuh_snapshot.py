@@ -5,12 +5,13 @@ import logging
 import re
 from collections.abc import Callable
 from hashlib import sha256
-from tempfile import TemporaryFile
+from pathlib import Path
 from threading import Event
 from time import monotonic
 from typing import BinaryIO
 from urllib.parse import urlsplit
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
+from zlib import error as ZipDecodeError
 
 import requests
 from fastapi import HTTPException
@@ -28,14 +29,13 @@ from ..repositories.passports.wazuh_cti import (
 )
 from .wazuh_asset_match import PLATFORMS, platform_for
 from .wazuh_cti import summarize_record
+from .wazuh_cti_fallback import refresh_local_passports as refresh_per_cve
+from .wazuh_snapshot_download import SnapshotCancelled, SnapshotUnavailable, download_snapshot
 
 CATALOG_URL = "https://cti.wazuh.com/api/v1/catalog/contexts/vd_1.0.0/consumers/vd_4.8.0"
 CVE_LINE = re.compile(rb'^\s*\{\s*"name"\s*:\s*"(CVE-[0-9]{4}-[0-9]{4,})"')
 BATCH_SIZE = 500
-
-
-class SnapshotCancelled(Exception):
-    pass
+SNAPSHOT_CACHE = Path("output/wazuh-cti")
 
 
 def collect_snapshot(
@@ -137,28 +137,31 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
                 total=2, allowed_methods={"GET"}, status_forcelist=(408, 500, 502, 503, 504),
                 backoff_factor=0.5, respect_retry_after_header=False,
             )))
-            offset, url = snapshot_metadata(session)
+            try:
+                offset, url = snapshot_metadata(session)
+            except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+                raise SnapshotUnavailable("Не удалось получить метаданные снимка Wazuh CTI.") from exc
             checkpoint.update(offset=offset, scope=scope)
             if snapshot_applied(offset, scope):
                 return f"Снимок Wazuh CTI {offset} уже применён к этому набору паспортов."
             report(3, "snapshot", "Загрузка снимка Wazuh CTI.", force=True)
-            with TemporaryFile() as downloaded:
-                with session.get(url, timeout=(5, 60), stream=True, allow_redirects=False) as response:
-                    if response.status_code != 200:
-                        response.raise_for_status()
-                        raise ValueError("Ожидался ZIP-снимок Wazuh CTI.")
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if cancel.is_set():
-                            raise SnapshotCancelled
-                        downloaded.write(chunk)
-                        size = downloaded.tell()
-                        report(20, "snapshot", f"Скачано {size // (1024 * 1024)} МиБ снимка Wazuh CTI.")
-                report(40, "filter", "Отбор CVE для Ubuntu и Debian.", force=True)
-                inventory = {
-                    (*platform, row["package"])
-                    for row in inventory_package_names() if row["package"]
-                    if (platform := platform_for(row["os_name"], row["os_version"]))
-                }
+            try:
+                downloaded = download_snapshot(
+                    session, url, SNAPSHOT_CACHE, cancel,
+                    lambda done, total: report(
+                        3 + 36 * done // total, "snapshot",
+                        f"ZIP Wazuh CTI: {done // (1024 * 1024)} из {total // (1024 * 1024)} МиБ.",
+                    ),
+                )
+            except OSError as exc:
+                raise SnapshotUnavailable("Не удалось сохранить ZIP Wazuh CTI.") from exc
+            report(40, "filter", "Отбор CVE для Ubuntu и Debian.", force=True)
+            inventory = {
+                (*platform, row["package"])
+                for row in inventory_package_names() if row["package"]
+                if (platform := platform_for(row["os_name"], row["os_version"]))
+            }
+            try:
                 with ZipFile(downloaded) as archive:
                     members = [name for name in archive.namelist() if name.endswith(".json")]
                     if len(members) != 1:
@@ -168,6 +171,9 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
                             stream, targets, inventory, cancel,
                             lambda: report(40, "filter", "Чтение и отбор CVE из снимка Wazuh CTI."),
                         )
+            except (BadZipFile, ZipDecodeError, EOFError, ValueError) as exc:
+                downloaded.unlink(missing_ok=True)
+                raise SnapshotUnavailable("ZIP Wazuh CTI повреждён или имеет неожиданный формат.") from exc
         counts["not_in_snapshot"] = len(targets) - seen
         counts["outside_scope"] = seen - len(entries) - len(failures)
         for start in range(0, len(failures), BATCH_SIZE):
@@ -200,6 +206,19 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
     except SnapshotCancelled:
         status = "cancelled"
         message = "Обновление Wazuh CTI остановлено."
+    except SnapshotUnavailable as exc:
+        if cancel.is_set():
+            passport_refresh.update(
+                operation_id, status="cancelled", stage="cancelled", percent=progress,
+                message="Обновление Wazuh CTI остановлено.", result={"wazuh_cti": counts},
+            )
+            return
+        passport_refresh.update(
+            operation_id, status="running", stage="wazuh-cti-fallback", percent=progress,
+            message=f"{exc} Переключение на per-CVE.", result={"wazuh_cti": counts, "mode": "per-cve"},
+        )
+        refresh_per_cve(operation_id, cancel)
+        return
     except Exception as exc:
         log_event("passport-sync", "wazuh-cti.snapshot.failed", level=logging.ERROR,
                   operation_id=operation_id, error_type=type(exc).__name__)

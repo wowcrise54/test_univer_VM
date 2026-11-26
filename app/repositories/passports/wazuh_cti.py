@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -34,6 +35,30 @@ def iter_refresh_failures(operation_id: str) -> Iterator[dict[str, Any]]:
             (operation_id,),
         )
         yield from cursor
+
+
+def refresh_candidates(ttl_hours: int) -> tuple[list[str], int]:
+    schema.init_db()
+    cutoff = (datetime.fromisoformat(codecs.now_utc()) - timedelta(hours=ttl_hours)).isoformat(timespec="seconds")
+    with connection.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT internal_id,
+                   detail_updated_at >= %s AND raw_detail_json IS NOT NULL AND (
+                       raw_detail_json::jsonb ->> 'rules_indexed' = 'true'
+                       OR EXISTS (
+                           SELECT 1 FROM wazuh_cti_package_rules
+                           WHERE passport_id = vulnerability_passports.internal_id
+                       )
+                   ) AS fresh
+            FROM vulnerability_passports
+            WHERE internal_id ~ '^wazuh-cti:CVE-[0-9]{4}-[0-9]{4,}$'
+            ORDER BY detail_updated_at NULLS FIRST, internal_id
+            """,
+            (cutoff,),
+        ).fetchall()
+    due = [row["internal_id"] for row in rows if not row["fresh"]]
+    return due, len(rows) - len(due)
 
 
 def snapshot_targets() -> dict[str, bool]:
