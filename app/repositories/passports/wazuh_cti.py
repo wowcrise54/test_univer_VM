@@ -1,6 +1,7 @@
 """Persistence for the CVE-level Wazuh CTI passports."""
 
 import json
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -9,6 +10,31 @@ from psycopg.types.json import Jsonb
 from ...persistence import codecs, connection, locks, schema
 from .counts import invalidate_passport_totals
 from .serializers import decode_vulnerability_passport
+
+
+def record_refresh_failures(operation_id: str, failures: list[tuple[str, int, int, str]]) -> None:
+    with connection.connect() as conn, conn.cursor() as cursor:
+        cursor.executemany(
+            """
+            INSERT INTO wazuh_cti_refresh_failures (operation_id, passport_id, status_code, attempts, reason)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (operation_id, passport_id) DO UPDATE
+            SET status_code = EXCLUDED.status_code, attempts = EXCLUDED.attempts, reason = EXCLUDED.reason
+            """,
+            [(operation_id, *failure) for failure in failures],
+        )
+
+
+def iter_refresh_failures(operation_id: str) -> Iterator[dict[str, Any]]:
+    with connection.connect() as conn, conn.cursor(name="wazuh_refresh_failures_export") as cursor:
+        cursor.execute(
+            """
+            SELECT passport_id, status_code, attempts, reason FROM wazuh_cti_refresh_failures
+            WHERE operation_id = %s ORDER BY passport_id
+            """,
+            (operation_id,),
+        )
+        yield from cursor
 
 
 def refresh_candidates(ttl_hours: int) -> tuple[list[str], int]:

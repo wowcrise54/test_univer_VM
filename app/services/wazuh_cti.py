@@ -4,6 +4,7 @@ import logging
 import re
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import ExitStack
+from random import uniform
 from threading import Event
 from time import monotonic
 from typing import Any
@@ -14,17 +15,42 @@ from fastapi import HTTPException
 from ..core import get_settings
 from ..diagnostics import log_event
 from ..repositories import passport_refresh
-from ..repositories.passports.wazuh_cti import refresh_candidates, save_detail
+from ..repositories.passports.wazuh_cti import record_refresh_failures, refresh_candidates, save_detail
 from .wazuh_asset_match import extract_rules
 
 PASSPORT_ID = re.compile(r"wazuh-cti:(CVE-[0-9]{4}-[0-9]{4,})")
+WAZUH_REFRESH_WORKERS = 64
 PROGRESS_INTERVAL = 2
+MAX_REFRESH_ATTEMPTS = 3
+
+
+class TransientWazuhError(HTTPException):
+    """An HTTP or transport failure eligible for another attempt."""
+
+
+def _refresh_with_retries(
+    passport_id: str, session: requests.Session, cancel_event: Event, rate_limited: Event,
+) -> tuple[str, int, int, str] | None:
+    for attempt in range(1, MAX_REFRESH_ATTEMPTS + 1):
+        try:
+            refresh_passport(passport_id, session=session)
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                rate_limited.set()
+            failure = (passport_id, exc.status_code, attempt, str(exc.detail)[:1000])
+            if not isinstance(exc, TransientWazuhError) or attempt == MAX_REFRESH_ATTEMPTS or rate_limited.is_set():
+                return failure
+            if cancel_event.wait(2 ** (attempt - 1) + uniform(0, 0.5)) or rate_limited.is_set():
+                return failure
+        else:
+            return None
+    raise AssertionError("Unreachable retry state")
 
 
 def refresh_local_passports(operation_id: str, cancel_event: Event) -> None:
     counts = {"total": 0, "updated": 0, "failed": 0, "skipped_fresh": 0}
     progress = 0
-    rate_limited = False
+    rate_limited = Event()
 
     def report() -> None:
         nonlocal progress
@@ -43,7 +69,7 @@ def refresh_local_passports(operation_id: str, cancel_event: Event) -> None:
             settings = get_settings()
             passport_ids, counts["skipped_fresh"] = refresh_candidates(min(8760, settings.passport_detail_ttl_hours))
             counts["total"] = len(passport_ids) + counts["skipped_fresh"]
-            workers = min(8, max(1, settings.passport_detail_workers), len(passport_ids))
+            workers = min(WAZUH_REFRESH_WORKERS, len(passport_ids))
             if workers and not cancel_event.is_set():
                 report()
                 last_report = monotonic()
@@ -54,26 +80,29 @@ def refresh_local_passports(operation_id: str, cancel_event: Event) -> None:
                     pending = {}
 
                     def submit_next(session: requests.Session) -> None:
-                        if cancel_event.is_set() or rate_limited:
+                        if cancel_event.is_set() or rate_limited.is_set():
                             return
                         passport_id = next(remaining, None)
                         if passport_id is not None:
-                            pending[executor.submit(refresh_passport, passport_id, session=session)] = session
+                            future = executor.submit(_refresh_with_retries, passport_id, session, cancel_event, rate_limited)
+                            pending[future] = session
 
                     for session in sessions:
                         submit_next(session)
                     while pending:
                         completed, _ = wait(pending, timeout=PROGRESS_INTERVAL, return_when=FIRST_COMPLETED)
                         available = []
+                        failures = []
                         for future in completed:
                             available.append(pending.pop(future))
-                            try:
-                                future.result()
-                            except HTTPException as exc:
-                                counts["failed"] += 1
-                                rate_limited |= exc.status_code == 429
+                            failure = future.result()
+                            if failure is not None:
+                                failures.append(failure)
                             else:
                                 counts["updated"] += 1
+                        if failures:
+                            record_refresh_failures(operation_id, failures)
+                            counts["failed"] += len(failures)
                         for session in available:
                             submit_next(session)
                         now = monotonic()
@@ -84,7 +113,7 @@ def refresh_local_passports(operation_id: str, cancel_event: Event) -> None:
         if cancel_event.is_set():
             status = "cancelled"
             message = "Обновление Wazuh CTI остановлено."
-        elif rate_limited:
+        elif rate_limited.is_set():
             status = "completed_with_errors"
             message = (f"Wazuh CTI ограничил частоту запросов. Обновлено: {counts['updated']}, "
                        f"ошибок: {counts['failed']}, свежих пропущено: {counts['skipped_fresh']}.")
@@ -116,11 +145,16 @@ def refresh_passport(passport_id: str, *, session: requests.Session | None = Non
         response.raise_for_status()
         record = response.json()
     except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404:
             raise HTTPException(status_code=404, detail=f"{cve} отсутствует в Wazuh CTI.") from exc
-        if exc.response is not None and exc.response.status_code == 429:
+        if status == 429:
             raise HTTPException(status_code=429, detail="Wazuh CTI ограничил частоту запросов.") from exc
+        if status in (408, 500, 502, 503, 504):
+            raise TransientWazuhError(status_code=502, detail=f"Wazuh CTI вернул HTTP {status}.") from exc
         raise HTTPException(status_code=502, detail="Wazuh CTI временно недоступен.") from exc
+    except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
+        raise TransientWazuhError(status_code=502, detail="Сбой соединения с Wazuh CTI.") from exc
     except (requests.RequestException, ValueError) as exc:
         raise HTTPException(status_code=502, detail="Не удалось загрузить запись Wazuh CTI.") from exc
 

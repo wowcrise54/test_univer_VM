@@ -1,14 +1,14 @@
 import json
+from asyncio import run
 from threading import Barrier, Event
-from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app import db
-from app.api.passports import create_vulnerability_passport_refresh_job
+from app.api.passports import create_vulnerability_passport_refresh_job, export_wazuh_refresh_errors
 from app.repositories import passport_refresh
-from app.repositories.passports.wazuh_cti import create_passports
+from app.repositories.passports.wazuh_cti import create_passports, iter_refresh_failures
 from app.services import wazuh_cti
 from app.services.wazuh_asset_match import assess_asset
 
@@ -45,17 +45,24 @@ def test_bulk_refresh_only_visits_local_wazuh_passports(test_db, monkeypatch):
     assert completed["result"]["wazuh_cti"] == {
         "total": 3, "updated": 1, "failed": 1, "skipped_fresh": 1,
     }
+    assert list(iter_refresh_failures(job["operation_id"])) == [
+        {"passport_id": "wazuh-cti:CVE-2025-1001", "status_code": 404, "attempts": 1, "reason": "CVE not found"},
+    ]
+    response = export_wazuh_refresh_errors(job["operation_id"])
+
+    async def read_csv():
+        return "".join([chunk async for chunk in response.body_iterator])
+
+    assert "CVE-2025-1001,404,1,CVE not found" in run(read_csv())
 
 
 def test_bulk_reuses_session_and_stops_on_rate_limit(monkeypatch):
     sessions = []
     updates = []
     monkeypatch.setattr(wazuh_cti, "refresh_candidates", lambda ttl: (["a", "b", "c"], 0))
-    monkeypatch.setattr(
-        wazuh_cti, "get_settings",
-        lambda: SimpleNamespace(passport_detail_workers=1, passport_detail_ttl_hours=24),
-    )
+    monkeypatch.setattr(wazuh_cti, "WAZUH_REFRESH_WORKERS", 1)
     monkeypatch.setattr(passport_refresh, "update", lambda operation_id, **fields: updates.append(fields))
+    monkeypatch.setattr(wazuh_cti, "record_refresh_failures", lambda operation_id, failures: None)
 
     def refresh(passport_id, *, session):
         sessions.append(session)
@@ -69,6 +76,41 @@ def test_bulk_reuses_session_and_stops_on_rate_limit(monkeypatch):
     assert sessions[0] is sessions[1]
     assert updates[-1]["status"] == "completed_with_errors"
     assert updates[-1]["percent"] == 66
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_transient_wazuh_error_retries_only_within_limit(monkeypatch, recovers):
+    attempted = []
+    retries = Event()
+    monkeypatch.setattr(retries, "wait", lambda delay: False)
+
+    def refresh(passport_id, *, session):
+        attempted.append(passport_id)
+        if not recovers or len(attempted) < 2:
+            raise wazuh_cti.TransientWazuhError(502, "Timeout")
+
+    monkeypatch.setattr(wazuh_cti, "refresh_passport", refresh)
+    with wazuh_cti.requests.Session() as session:
+        failure = wazuh_cti._refresh_with_retries("wazuh-cti:CVE-2025-1000", session, retries, Event())
+    assert attempted == ["wazuh-cti:CVE-2025-1000"] * (2 if recovers else 3)
+    assert failure == (None if recovers else ("wazuh-cti:CVE-2025-1000", 502, 3, "Timeout"))
+
+
+def test_bulk_wazuh_has_64_worker_slots(monkeypatch):
+    pending_sizes = []
+    real_wait = wazuh_cti.wait
+    monkeypatch.setattr(wazuh_cti, "refresh_candidates", lambda ttl: ([str(i) for i in range(65)], 0))
+    monkeypatch.setattr(passport_refresh, "update", lambda operation_id, **fields: None)
+    monkeypatch.setattr(wazuh_cti, "refresh_passport", lambda passport_id, *, session: None)
+
+    def observe_pending(futures, **kwargs):
+        pending_sizes.append(len(futures))
+        return real_wait(futures, **kwargs)
+
+    monkeypatch.setattr(wazuh_cti, "wait", observe_pending)
+    wazuh_cti.refresh_local_passports("operation", Event())
+
+    assert max(pending_sizes) == 64
 
 
 def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):

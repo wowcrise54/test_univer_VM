@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import csv
+import io
 import os
 import uuid
+from collections.abc import Iterator
 from typing import Any, Literal
 
 import psycopg
 import requests
 from fastapi import BackgroundTasks, HTTPException
+from fastapi.responses import StreamingResponse
 
 from .. import db
 from ..mpvm.common import http_error
 from ..mpvm_client import VULNER_PASSPORT_PDQL, MpVmApiError
 from ..repositories import passport_refresh
+from ..repositories.passports.wazuh_cti import iter_refresh_failures
 from ..services import wazuh_cti
 from ..services.main_host import host
 from ..services.vulnerability_passport_jobs import (
@@ -80,6 +85,35 @@ def cancel_vulnerability_passport_refresh_job(operation_id: str) -> dict[str, An
         raise HTTPException(status_code=404, detail="Passport refresh job not found.")
     host.CONTAINER.operation_runner.cancellations.cancel("passport-refresh", operation_id)
     return passport_refresh.request_cancel(operation_id) or job
+
+
+@passports_router.get("/api/vulnerability-passports/refresh-jobs/{operation_id}/wazuh-errors.csv")
+def export_wazuh_refresh_errors(operation_id: str) -> StreamingResponse:
+    job = passport_refresh.get(operation_id)
+    if not job or job["request"].get("source") != "wazuh-cti":
+        raise HTTPException(status_code=404, detail="Задача обновления Wazuh CTI не найдена.")
+
+    def rows() -> Iterator[str]:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(("cve", "status_code", "attempts", "reason"))
+        yield "\ufeff" + buffer.getvalue()
+        for failure in iter_refresh_failures(operation_id):
+            buffer.seek(0)
+            buffer.truncate(0)
+            reason = failure["reason"]
+            if reason.lstrip().startswith(("=", "+", "-", "@")):
+                reason = "'" + reason
+            writer.writerow((
+                failure["passport_id"].removeprefix("wazuh-cti:"),
+                failure["status_code"], failure["attempts"], reason,
+            ))
+            yield buffer.getvalue()
+
+    return StreamingResponse(
+        rows(), media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="wazuh-cti-errors.csv"'},
+    )
 
 
 @passports_router.post("/api/vulnerability-passports/trending/refresh")

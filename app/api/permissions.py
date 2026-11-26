@@ -97,6 +97,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/vulnerability-passports/local"): "passports.read",
     ("GET", "/api/vulnerability-passports/refresh-jobs/latest"): "passports.read",
     ("GET", "/api/vulnerability-passports/refresh-jobs/{operation_id}"): "passports.read",
+    ("GET", "/api/vulnerability-passports/refresh-jobs/{operation_id}/wazuh-errors.csv"): "passports.read",
     ("GET", "/api/vulnerability-passports/{passport_id}"): "passports.read",
     ("GET", "/api/vulnerability-passports/{passport_id}/asset-links"): "passports.read",
     ("PATCH", "/api/asset-groups/{group_id}"): "asset_groups.manage",
