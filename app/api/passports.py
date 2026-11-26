@@ -17,6 +17,7 @@ from ..services.main_host import host
 from ..services.vulnerability_passport_jobs import (
     _execute_vulnerability_passport_query,
     run_vulnerability_passport_refresh_job,
+    run_wazuh_cti_passport_refresh_job,
 )
 from .routers import passports_router
 from .schemas import VulnerabilityPassportQueryRequest
@@ -31,8 +32,11 @@ def query_vulnerability_passports(
 
 
 @passports_router.post("/api/vulnerability-passports/refresh-jobs", status_code=202)
-def create_vulnerability_passport_refresh_job(background_tasks: BackgroundTasks) -> dict[str, Any]:
-    host.require_mpvm()
+def create_vulnerability_passport_refresh_job(
+    background_tasks: BackgroundTasks, source: Literal["mpvm", "wazuh-cti"] = "mpvm",
+) -> dict[str, Any]:
+    if source == "mpvm":
+        host.require_mpvm()
     active_detail = db.get_active_vulnerability_passport_detail_job()
     if active_detail:
         raise HTTPException(status_code=409, detail={"message": "Загрузка деталей паспортов уже выполняется.", "job": active_detail})
@@ -40,16 +44,19 @@ def create_vulnerability_passport_refresh_job(background_tasks: BackgroundTasks)
         pdql=VULNER_PASSPORT_PDQL,
         utc_offset=os.getenv("MPVM_UTC_OFFSET") or os.getenv("MP10_UTC_OFFSET") or "+05:00",
         limit=None, batch_size=5000, save_to_db=True, load_details=True,
-    )
+    ) if source == "mpvm" else None
     operation_id = str(uuid.uuid4())
     try:
-        operation = passport_refresh.create(operation_id, payload.model_dump())
+        operation = passport_refresh.create(
+            operation_id, payload.model_dump() if payload else {"source": source},
+        )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=409, detail={"message": "Обновление паспортов уже выполняется.", "job": passport_refresh.latest()}) from exc
     cancel_event = host.CONTAINER.operation_runner.cancellations.register("passport-refresh", operation_id)
-    background_tasks.add_task(
-        run_vulnerability_passport_refresh_job, operation_id, payload, cancel_event,
-    )
+    if payload:
+        background_tasks.add_task(run_vulnerability_passport_refresh_job, operation_id, payload, cancel_event)
+    else:
+        background_tasks.add_task(run_wazuh_cti_passport_refresh_job, operation_id, cancel_event)
     return {"job": operation}
 
 

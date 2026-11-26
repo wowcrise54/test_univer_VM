@@ -1,15 +1,57 @@
 """Load and cache the public Wazuh CTI record for a local CVE passport."""
 
 import re
+from threading import Event
 from typing import Any
 
 import requests
 from fastapi import HTTPException
 
-from ..repositories.passports.wazuh_cti import save_detail
+from ..repositories import passport_refresh
+from ..repositories.passports.wazuh_cti import list_passport_ids, save_detail
 from .wazuh_asset_match import extract_rules
 
 PASSPORT_ID = re.compile(r"wazuh-cti:(CVE-[0-9]{4}-[0-9]{4,})")
+
+
+def refresh_local_passports(operation_id: str, cancel_event: Event) -> None:
+    counts = {"total": 0, "updated": 0, "failed": 0}
+    progress = 0
+    try:
+        if not cancel_event.is_set():
+            passport_ids = list_passport_ids()
+            counts["total"] = len(passport_ids)
+            for index, passport_id in enumerate(passport_ids):
+                if cancel_event.is_set():
+                    break
+                percent = index * 100 // counts["total"]
+                if index == 0 or percent != progress:
+                    progress = percent
+                    passport_refresh.update(
+                        operation_id, status="running", stage="wazuh-cti", percent=progress,
+                        message=f"Wazuh CTI: обработано {index} из {counts['total']} паспортов.",
+                        result={"wazuh_cti": counts},
+                    )
+                try:
+                    refresh_passport(passport_id)
+                except HTTPException:
+                    counts["failed"] += 1
+                else:
+                    counts["updated"] += 1
+        if cancel_event.is_set():
+            status = "cancelled"
+            message = "Обновление Wazuh CTI остановлено."
+        else:
+            status = "completed_with_errors" if counts["failed"] else "completed"
+            message = f"Wazuh CTI: обновлено {counts['updated']} из {counts['total']}, ошибок {counts['failed']}."
+            progress = 100
+    except Exception:
+        status = "failed"
+        message = "Не удалось завершить обновление паспортов Wazuh CTI."
+    passport_refresh.update(
+        operation_id, status=status, stage=status, percent=progress, message=message,
+        result={"wazuh_cti": counts},
+    )
 
 
 def refresh_passport(passport_id: str) -> dict[str, Any]:

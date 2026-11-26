@@ -1,14 +1,38 @@
 import json
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from app import db
+from app.api.passports import create_vulnerability_passport_refresh_job
+from app.repositories import passport_refresh
 from app.repositories.passports.wazuh_cti import create_passports
 from app.services import wazuh_cti
 from app.services.wazuh_asset_match import assess_asset
 
 pytestmark = pytest.mark.integration
+
+
+def test_bulk_refresh_only_visits_local_wazuh_passports(test_db, monkeypatch):
+    cves = ["CVE-2025-1000", "CVE-2025-1001"]
+    db.upsert_vulnerability_passports([{"internal_id": "mpvm-a", "cves": cves}])
+    create_passports()
+    attempted = []
+
+    def refresh(passport_id):
+        attempted.append(passport_id)
+        if passport_id.endswith("1001"):
+            raise HTTPException(404, "CVE not found")
+
+    monkeypatch.setattr(wazuh_cti, "refresh_passport", refresh)
+    tasks = BackgroundTasks()
+    job = create_vulnerability_passport_refresh_job(tasks, source="wazuh-cti")["job"]
+    task = tasks.tasks[0]
+    task.func(*task.args, **task.kwargs)
+    completed = passport_refresh.get(job["operation_id"])
+    assert attempted == [f"wazuh-cti:{cve}" for cve in cves]
+    assert completed["status"] == "completed_with_errors"
+    assert completed["result"]["wazuh_cti"] == {"total": 2, "updated": 1, "failed": 1}
 
 
 def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):

@@ -10,6 +10,19 @@ from .counts import invalidate_passport_totals
 from .serializers import decode_vulnerability_passport
 
 
+def list_passport_ids() -> list[str]:
+    schema.init_db()
+    with connection.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT internal_id FROM vulnerability_passports
+            WHERE internal_id ~ '^wazuh-cti:CVE-[0-9]{4}-[0-9]{4,}$'
+            ORDER BY internal_id
+            """
+        ).fetchall()
+    return [row["internal_id"] for row in rows]
+
+
 def create_passports() -> int:
     schema.init_db()
     now = codecs.now_utc()
