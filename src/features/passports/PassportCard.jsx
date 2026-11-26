@@ -79,13 +79,13 @@ export function PassportCard({ row, detail, loading }) {
         id="passport-summary-panel"
         aria-labelledby="passport-summary-tab"
       >
-        <PassportSummaryTab model={model} row={row} loading={loading} raw={raw} />
+        <PassportSummaryTab model={model} row={row} loading={loading} />
       </div>
     </div>
   );
 }
 
-function PassportSummaryTab({ model, row, loading, raw }) {
+function PassportSummaryTab({ model, row, loading }) {
   return (
     <div className="asset-summary-grid">
       <div className="asset-summary-main">
@@ -112,12 +112,6 @@ function PassportSummaryTab({ model, row, loading, raw }) {
               "Рекомендации нет."}
           </p>
         </PassportSection>
-        {raw.source === "wazuh-cti" && raw.record ? (
-          <details className="raw-details">
-            <summary>Запись Wazuh CTI</summary>
-            <pre>{JSON.stringify(raw.record, null, 2)}</pre>
-          </details>
-        ) : null}
       </div>
       <div className="asset-summary-side">
         <div className="asset-summary-card">

@@ -36,9 +36,14 @@ def refresh_passport(passport_id: str) -> dict[str, Any]:
     providers = [containers.get("cna"), *(adp if isinstance(adp, list) else [])]
     descriptions = []
     scores = []
+    references: dict[str, None] = {}
     for provider in providers:
         if not isinstance(provider, dict):
             continue
+        for reference in provider.get("references") or []:
+            link = reference.get("url") if isinstance(reference, dict) else None
+            if isinstance(link, str) and link.lower().startswith(("https://", "http://")):
+                references[link] = None
         for item in provider.get("descriptions") or []:
             if isinstance(item, dict) and isinstance(item.get("value"), str):
                 descriptions.append(item)
@@ -62,7 +67,7 @@ def refresh_passport(passport_id: str) -> dict[str, Any]:
         "severity": cvss.get("baseSeverity"),
         "score": cvss.get("baseScore"),
         "publishedAt": metadata.get("datePublished"),
-        "record": record,
+        "references": list(references),
     })
     if saved is None:
         raise HTTPException(status_code=404, detail="Паспорт Wazuh CTI не найден.")

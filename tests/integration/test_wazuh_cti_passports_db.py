@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 
@@ -24,6 +26,7 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
         "containers": {"cna": {
             "descriptions": [{"lang": "en", "value": "Test description."}],
             "metrics": [{"cvssV3_1": {"baseScore": 9.1, "baseSeverity": "CRITICAL"}}],
+            "references": [{"url": "https://example.com/advisory"}],
         }},
     }
 
@@ -36,7 +39,8 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
 
     monkeypatch.setattr(wazuh_cti.requests, "get", lambda *args, **kwargs: Response())
     saved = wazuh_cti.refresh_passport(passport_id)
-    assert saved["raw_detail"]["record"] == document
+    assert "record" not in saved["raw_detail"]
+    assert saved["raw_detail"]["references"] == ["https://example.com/advisory"]
     assert saved["raw_detail"]["description"] == "Test description."
     assert saved["score"] == "9.1"
 
@@ -47,4 +51,15 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     with pytest.raises(HTTPException) as error:
         wazuh_cti.refresh_passport(passport_id)
     assert error.value.status_code == 502
-    assert db.get_vulnerability_passport(passport_id)["raw_detail"]["record"] == document
+    with db.connect() as conn:
+        stored = conn.execute(
+            "SELECT raw_detail_json FROM vulnerability_passports WHERE internal_id = %s",
+            (passport_id,),
+        ).fetchone()
+        detail = json.loads(stored["raw_detail_json"])
+        assert "record" not in detail
+        conn.execute(
+            "UPDATE vulnerability_passports SET raw_detail_json = %s WHERE internal_id = %s",
+            (json.dumps({**detail, "record": document}), passport_id),
+        )
+    assert db.get_vulnerability_passport(passport_id)["raw_detail"] == detail
