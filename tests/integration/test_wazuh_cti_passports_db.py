@@ -1,4 +1,6 @@
 import json
+from threading import Barrier, Event
+from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -14,13 +16,21 @@ pytestmark = pytest.mark.integration
 
 
 def test_bulk_refresh_only_visits_local_wazuh_passports(test_db, monkeypatch):
-    cves = ["CVE-2025-1000", "CVE-2025-1001"]
+    cves = ["CVE-2025-1000", "CVE-2025-1001", "CVE-2025-1002"]
     db.upsert_vulnerability_passports([{"internal_id": "mpvm-a", "cves": cves}])
     create_passports()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE vulnerability_passports SET detail_updated_at = %s, raw_detail_json = %s WHERE internal_id = %s",
+            (db.now_utc(), '{"rules_indexed":true}', "wazuh-cti:CVE-2025-1002"),
+        )
     attempted = []
+    concurrent = Barrier(2, timeout=5)
 
-    def refresh(passport_id):
+    def refresh(passport_id, *, session):
+        assert isinstance(session, wazuh_cti.requests.Session)
         attempted.append(passport_id)
+        concurrent.wait()
         if passport_id.endswith("1001"):
             raise HTTPException(404, "CVE not found")
 
@@ -30,9 +40,35 @@ def test_bulk_refresh_only_visits_local_wazuh_passports(test_db, monkeypatch):
     task = tasks.tasks[0]
     task.func(*task.args, **task.kwargs)
     completed = passport_refresh.get(job["operation_id"])
-    assert attempted == [f"wazuh-cti:{cve}" for cve in cves]
+    assert sorted(attempted) == [f"wazuh-cti:{cve}" for cve in cves[:2]]
     assert completed["status"] == "completed_with_errors"
-    assert completed["result"]["wazuh_cti"] == {"total": 2, "updated": 1, "failed": 1}
+    assert completed["result"]["wazuh_cti"] == {
+        "total": 3, "updated": 1, "failed": 1, "skipped_fresh": 1,
+    }
+
+
+def test_bulk_reuses_session_and_stops_on_rate_limit(monkeypatch):
+    sessions = []
+    updates = []
+    monkeypatch.setattr(wazuh_cti, "refresh_candidates", lambda ttl: (["a", "b", "c"], 0))
+    monkeypatch.setattr(
+        wazuh_cti, "get_settings",
+        lambda: SimpleNamespace(passport_detail_workers=1, passport_detail_ttl_hours=24),
+    )
+    monkeypatch.setattr(passport_refresh, "update", lambda operation_id, **fields: updates.append(fields))
+
+    def refresh(passport_id, *, session):
+        sessions.append(session)
+        if passport_id == "b":
+            raise HTTPException(429, "Rate limit")
+
+    monkeypatch.setattr(wazuh_cti, "refresh_passport", refresh)
+    wazuh_cti.refresh_local_passports("operation", Event())
+
+    assert len(sessions) == 2
+    assert sessions[0] is sessions[1]
+    assert updates[-1]["status"] == "completed_with_errors"
+    assert updates[-1]["percent"] == 66
 
 
 def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):

@@ -1,6 +1,7 @@
 """Persistence for the CVE-level Wazuh CTI passports."""
 
 import json
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -10,17 +11,28 @@ from .counts import invalidate_passport_totals
 from .serializers import decode_vulnerability_passport
 
 
-def list_passport_ids() -> list[str]:
+def refresh_candidates(ttl_hours: int) -> tuple[list[str], int]:
     schema.init_db()
+    cutoff = (datetime.fromisoformat(codecs.now_utc()) - timedelta(hours=ttl_hours)).isoformat(timespec="seconds")
     with connection.connect() as conn:
         rows = conn.execute(
             """
-            SELECT internal_id FROM vulnerability_passports
+            SELECT internal_id,
+                   detail_updated_at >= %s AND raw_detail_json IS NOT NULL AND (
+                       raw_detail_json::jsonb ->> 'rules_indexed' = 'true'
+                       OR EXISTS (
+                           SELECT 1 FROM wazuh_cti_package_rules
+                           WHERE passport_id = vulnerability_passports.internal_id
+                       )
+                   ) AS fresh
+            FROM vulnerability_passports
             WHERE internal_id ~ '^wazuh-cti:CVE-[0-9]{4}-[0-9]{4,}$'
-            ORDER BY internal_id
-            """
+            ORDER BY detail_updated_at NULLS FIRST, internal_id
+            """,
+            (cutoff,),
         ).fetchall()
-    return [row["internal_id"] for row in rows]
+    due = [row["internal_id"] for row in rows if not row["fresh"]]
+    return due, len(rows) - len(due)
 
 
 def create_passports() -> int:
