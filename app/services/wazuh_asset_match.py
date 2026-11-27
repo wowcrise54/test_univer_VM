@@ -185,4 +185,6 @@ def load_asset_assessment(asset_id: str, *, additional_only: bool = False) -> di
             }
         if additional_only:
             _exclude_existing(conn, asset_id, result)
-        return {**result, "checked_at": saved["checked_at"], "pending": False}
+        passport_ids = sorted({match["passport_id"] for match in result["matches"]})
+        passports = wazuh_match.read_passports(conn, passport_ids) if passport_ids else {}
+        return {**result, "passports": passports, "checked_at": saved["checked_at"], "pending": False}

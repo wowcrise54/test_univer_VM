@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client.js";
+import { sortRows, useTableSort } from "../../shared/table.jsx";
 import { Button } from "../../shared/ui.jsx";
 import { formatDateTime } from "../../shared/values.js";
+import {
+  AssetVulnerabilityFindingRow,
+  AssetVulnerabilityTableHeader,
+} from "./AssetVulnerabilityTable.jsx";
 
 const PAGE_SIZE = 50;
 const RESULT_POLL_MS = 30_000;
@@ -11,6 +16,7 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [page, setPage] = useState(0);
+  const [sort, toggleSort] = useTableSort("cve_name");
 
   useEffect(() => {
     let active = true;
@@ -45,13 +51,21 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
   const byCve = new Map();
   for (const match of result?.matches || []) {
     if (!byCve.has(match.cve)) {
-      byCve.set(match.cve, { ...match, packages: [] });
+      const passport = result.passports?.[match.passport_id];
+      byCve.set(match.cve, {
+        cve_name: match.cve,
+        name: passport?.name || match.cve,
+        cvss_score: passport?.cvss_score ?? null,
+        passport_ids: [match.passport_id],
+        packages: [],
+      });
     }
     byCve.get(match.cve).packages.push(`${match.package} · ${match.version}`);
   }
-  const findings = [...byCve.values()].sort((a, b) =>
-    a.cve.localeCompare(b.cve),
-  );
+  const findings = sortRows([...byCve.values()], sort, {
+    cvss_score: (finding) =>
+      finding.cvss_score === null ? null : Number(finding.cvss_score),
+  });
   const visiblePage = Math.min(
     page,
     Math.max(0, Math.ceil(findings.length / PAGE_SIZE) - 1),
@@ -89,25 +103,38 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
               ? ` Последняя сверка: ${formatDateTime(result.checked_at)}.`
               : ""}
           </p>
-          {findings.length ? (
-            <ul>
-              {findings
-                .slice(visiblePage * PAGE_SIZE, (visiblePage + 1) * PAGE_SIZE)
-                .map((match) => (
-                  <li key={match.cve}>
-                    <Button
-                      variant="tiny"
-                      onClick={() =>
-                        onOpenPassport?.({ internal_id: match.passport_id })
-                      }
+          <table className="asset-vulnerability-table">
+            <AssetVulnerabilityTableHeader
+              sort={sort}
+              onSort={(column, direction) => {
+                setPage(0);
+                toggleSort(column, direction);
+              }}
+            />
+            <tbody>
+              {findings.length ? (
+                findings
+                  .slice(visiblePage * PAGE_SIZE, (visiblePage + 1) * PAGE_SIZE)
+                  .map((finding) => (
+                    <AssetVulnerabilityFindingRow
+                      key={finding.cve_name}
+                      finding={finding}
+                      onOpenPassport={onOpenPassport}
                     >
-                      {match.cve}
-                    </Button>{" "}
-                    {match.packages.join(", ")}
-                  </li>
-                ))}
-            </ul>
-          ) : null}
+                      <small className="asset-docker-package-meta">
+                        {finding.packages.join(", ")}
+                      </small>
+                    </AssetVulnerabilityFindingRow>
+                  ))
+              ) : (
+                <tr>
+                  <td colSpan={3} className="empty-cell">
+                    Дополнительных уязвимостей Wazuh не найдено.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
           {findings.length > PAGE_SIZE ? (
             <div>
               <Button

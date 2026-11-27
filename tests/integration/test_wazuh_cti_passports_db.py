@@ -198,6 +198,7 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     saved_result = local_asset_wazuh_cti_matches("linux-test", additional_only=True)
     assert saved_result["checked_at"]
     assert saved_result["matches"] == result["matches"]
+    assert saved_result["passports"][passport_id]["cvss_score"] == "9.1"
 
     refreshed_card = db.upsert_asset_card(card)
     assert local_asset_wazuh_cti_matches("linux-test")["pending"]

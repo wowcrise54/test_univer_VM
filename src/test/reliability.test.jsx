@@ -39,6 +39,9 @@ describe("reliability UI", () => {
             evaluated_packages: 2,
             packages: 2,
             pending: false,
+            passports: {
+              [passportId]: { name: "Уязвимость пакета", cvss_score: "9.1" },
+            },
             matches: ["lib-a", "lib-b"].map((name) => ({
               cve,
               passport_id: passportId,
@@ -60,6 +63,9 @@ describe("reliability UI", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: cve }));
     expect(api).toHaveBeenCalledWith(path);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3);
+    expect(screen.getByRole("cell", { name: "9,1" })).toBeVisible();
+    expect(screen.getByText("Уязвимость пакета")).toBeVisible();
     expect(screen.getByText("lib-a · 1.0, lib-b · 1.0")).toBeVisible();
     expect(openPassport).toHaveBeenCalledWith({ internal_id: passportId });
   });

@@ -150,3 +150,15 @@ def read_assessment(conn: psycopg.Connection[dict[str, Any]], asset_id: str) -> 
         """,
         (asset_id,),
     ).fetchone()
+
+
+def read_passports(conn: psycopg.Connection[dict[str, Any]], passport_ids: list[str]) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT internal_id, name, NULLIF(score, '') AS cvss_score
+        FROM vulnerability_passports
+        WHERE internal_id = ANY(%s)
+        """,
+        (passport_ids,),
+    ).fetchall()
+    return {row["internal_id"]: row for row in rows}

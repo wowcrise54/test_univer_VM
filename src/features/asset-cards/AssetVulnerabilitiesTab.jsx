@@ -1,56 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/client.js";
 import { formatCount } from "../../shared/format.js";
-import { SortableHeader, sortRows, useTableSort } from "../../shared/table.jsx";
+import { sortRows, useTableSort } from "../../shared/table.jsx";
 import { Button } from "../../shared/ui.jsx";
-import { firstFilled } from "../../shared/values.js";
+import {
+  AssetVulnerabilityFindingRow,
+  AssetVulnerabilityTableHeader,
+  formatVulnerabilityScore,
+} from "./AssetVulnerabilityTable.jsx";
 import { AssetWazuhMatches } from "./AssetWazuhMatches.jsx";
 
 const ASSET_VULNERABILITY_FINDING_LIMIT = 100;
-
-function assetFindingPassports(finding) {
-  const byId = new Map();
-  const summaries = Array.isArray(finding?.passports) ? finding.passports : [];
-  summaries.forEach((passport) => {
-    if (passport?.internal_id) byId.set(passport.internal_id, passport);
-  });
-  (finding?.passport_ids || []).forEach((passportId) => {
-    if (passportId && !byId.has(passportId))
-      byId.set(passportId, { internal_id: passportId });
-  });
-  const matchPriority = {
-    vulner_id: 0,
-    cve_os_version: 1,
-    cve_os: 2,
-    cve_generic: 3,
-    cve: 4,
-  };
-  return Array.from(byId.values()).sort(
-    (left, right) =>
-      (matchPriority[left.match_method] ?? 99) -
-        (matchPriority[right.match_method] ?? 99) ||
-      assetPassportLabel(left).localeCompare(assetPassportLabel(right), "ru"),
-  );
-}
-
-function assetPassportMatchLabel(passport) {
-  return {
-    vulner_id: "точное совпадение",
-    cve_os_version: "CVE, ОС и версия",
-    cve_os: "CVE и дистрибутив",
-    cve_generic: "совпадение по CVE",
-    cve: "совпадение по CVE",
-  }[passport?.match_method];
-}
-
-function assetPassportLabel(passport) {
-  return firstFilled(
-    passport?.name,
-    passport?.external_id,
-    passport?.internal_id,
-    "Паспорт",
-  );
-}
 
 function assetSourceKey(source, index) {
   return (
@@ -376,32 +336,10 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
           aria-label="Прокручиваемый список уязвимостей"
         >
           <table className="asset-vulnerability-table">
-            <thead>
-              <tr>
-                <SortableHeader
-                  column="name"
-                  sort={tableSort}
-                  onSort={toggleTableSort}
-                >
-                  Уязвимости
-                </SortableHeader>
-                <SortableHeader
-                  column="cvss_score"
-                  sort={tableSort}
-                  onSort={toggleTableSort}
-                  initialDirection="desc"
-                >
-                  Интегральная уязвимость
-                </SortableHeader>
-                <SortableHeader
-                  column="cve_name"
-                  sort={tableSort}
-                  onSort={toggleTableSort}
-                >
-                  CVE
-                </SortableHeader>
-              </tr>
-            </thead>
+            <AssetVulnerabilityTableHeader
+              sort={tableSort}
+              onSort={toggleTableSort}
+            />
             <tbody>
               {sources.map((source, sourceIndex) => {
                 const sourceKey = assetSourceKey(source, sourceIndex);
@@ -535,78 +473,16 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
                                         </tr>
                                       );
                                     }
-                                    const passports =
-                                      assetFindingPassports(finding);
-                                    const passport = passports[0];
                                     return (
-                                      <tr
-                                        className={
-                                          source.source === "docker"
-                                            ? "asset-vulnerability-finding asset-docker-finding"
-                                            : "asset-vulnerability-finding"
-                                        }
+                                      <AssetVulnerabilityFindingRow
                                         key={
                                           finding.vulnerability_instance_id ||
                                           `${group.collection_id}-${findingIndex}`
                                         }
-                                      >
-                                        <td>
-                                          <span className="asset-vulnerability-leaf">
-                                            •
-                                          </span>
-                                          <span>
-                                            {finding.name ||
-                                              finding.cve_name ||
-                                              "Уязвимость без названия"}
-                                          </span>
-                                          {source.source === "docker" &&
-                                          finding.status ? (
-                                            <small className="asset-docker-package-meta">
-                                              Статус: {finding.status}
-                                            </small>
-                                          ) : null}
-                                          {source.source === "docker" &&
-                                          finding.how_to_fix ? (
-                                            <details className="asset-docker-package-meta">
-                                              <summary>Как исправить</summary>
-                                              <span>{finding.how_to_fix}</span>
-                                            </details>
-                                          ) : null}
-                                        </td>
-                                        <td>
-                                          {formatVulnerabilityScore(
-                                            finding.cvss_score,
-                                          )}
-                                        </td>
-                                        <td>
-                                          {passport ? (
-                                            <span className="asset-vulnerability-passport-auto">
-                                              <button
-                                                type="button"
-                                                className="asset-vulnerability-passport-link"
-                                                onClick={() =>
-                                                  onOpenPassport?.(passport)
-                                                }
-                                                title={`Открыть паспорт ${assetPassportLabel(passport)}`}
-                                              >
-                                                {finding.cve_name ||
-                                                  "Открыть паспорт"}
-                                              </button>
-                                              {assetPassportMatchLabel(
-                                                passport,
-                                              ) ? (
-                                                <small>
-                                                  {assetPassportMatchLabel(
-                                                    passport,
-                                                  )}
-                                                </small>
-                                              ) : null}
-                                            </span>
-                                          ) : (
-                                            finding.cve_name || "—"
-                                          )}
-                                        </td>
-                                      </tr>
+                                        finding={finding}
+                                        docker={source.source === "docker"}
+                                        onOpenPassport={onOpenPassport}
+                                      />
                                     );
                                   })
                                 : null}
@@ -668,12 +544,4 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       </div>
     </section>
   );
-}
-
-function formatVulnerabilityScore(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const number = Number(value);
-  return Number.isFinite(number)
-    ? number.toLocaleString("ru-RU", { maximumFractionDigits: 1 })
-    : String(value);
 }
