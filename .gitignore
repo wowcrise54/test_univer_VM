@@ -45,6 +45,7 @@ output/playwright-report/
 output/junit*.xml
 
 # Local tool artifacts
+/.mimosa/
 /.tools/
 .superdesign/tmp/
 .audit_dupes.py
