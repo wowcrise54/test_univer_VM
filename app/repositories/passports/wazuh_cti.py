@@ -83,12 +83,27 @@ def snapshot_applied(offset: int, scope: str) -> bool:
             """
             SELECT 1 FROM operations
             WHERE kind = 'passport_catalog_refresh' AND status = 'completed'
-              AND request_json::jsonb ->> 'source' = 'wazuh-cti'
+              AND request_json::jsonb ->> 'source' IN ('wazuh-cti', 'wazuh-cti-upload')
               AND result_json::jsonb #>> '{snapshot,offset}' = %s
               AND result_json::jsonb #>> '{snapshot,scope}' = %s
             LIMIT 1
             """,
             (str(offset), scope),
+        ).fetchone()
+    return row is not None
+
+
+def newer_snapshot_recorded(offset: int) -> bool:
+    with connection.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM operations
+            WHERE kind = 'passport_catalog_refresh'
+              AND request_json::jsonb ->> 'source' IN ('wazuh-cti', 'wazuh-cti-upload')
+              AND (result_json::jsonb #>> '{snapshot,offset}')::bigint > %s
+            LIMIT 1
+            """,
+            (offset,),
         ).fetchone()
     return row is not None
 

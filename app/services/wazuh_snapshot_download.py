@@ -63,6 +63,7 @@ def download_snapshot(
                     raise SnapshotUnavailable("Сервер вернул ZIP с неожиданным кодированием.")
                 validator = _validator(response)
                 if response.status_code == 206 and offset:
+                    assert isinstance(size, int)
                     part = CONTENT_RANGE.fullmatch(response.headers.get("Content-Range", ""))
                     if (part is None or int(part[1]) != offset or int(part[2]) != size - 1
                             or int(part[3]) != size or (validator and validator != state["validator"])):

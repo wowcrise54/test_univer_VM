@@ -5,11 +5,11 @@ import io
 import os
 import uuid
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Annotated, Any, BinaryIO, Literal
 
 import psycopg
 import requests
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .. import db
@@ -40,6 +40,20 @@ def query_vulnerability_passports(
 def create_vulnerability_passport_refresh_job(
     background_tasks: BackgroundTasks, source: Literal["mpvm", "wazuh-cti"] = "mpvm",
 ) -> dict[str, Any]:
+    return _create_passport_refresh_job(background_tasks, source)
+
+
+@passports_router.post("/api/vulnerability-passports/refresh-jobs/wazuh-snapshot", status_code=202)
+def upload_wazuh_snapshot(
+    background_tasks: BackgroundTasks, file: Annotated[UploadFile, File()],
+    offset: Annotated[int, Form(ge=0, le=9_007_199_254_740_991)],
+) -> dict[str, Any]:
+    return _create_passport_refresh_job(background_tasks, "wazuh-cti-upload", (offset, file.file))
+
+
+def _create_passport_refresh_job(
+    background_tasks: BackgroundTasks, source: str, upload: tuple[int, BinaryIO] | None = None,
+) -> dict[str, Any]:
     if source == "mpvm":
         host.require_mpvm()
     active_detail = db.get_active_vulnerability_passport_detail_job()
@@ -51,17 +65,18 @@ def create_vulnerability_passport_refresh_job(
         limit=None, batch_size=5000, save_to_db=True, load_details=True,
     ) if source == "mpvm" else None
     operation_id = str(uuid.uuid4())
+    request = payload.model_dump() if payload else {"source": source}
+    if upload is not None:
+        request["offset"] = upload[0]
     try:
-        operation = passport_refresh.create(
-            operation_id, payload.model_dump() if payload else {"source": source},
-        )
+        operation = passport_refresh.create(operation_id, request)
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=409, detail={"message": "Обновление паспортов уже выполняется.", "job": passport_refresh.latest()}) from exc
     cancel_event = host.CONTAINER.operation_runner.cancellations.register("passport-refresh", operation_id)
     if payload:
         background_tasks.add_task(run_vulnerability_passport_refresh_job, operation_id, payload, cancel_event)
     else:
-        background_tasks.add_task(run_wazuh_cti_passport_refresh_job, operation_id, cancel_event)
+        background_tasks.add_task(run_wazuh_cti_passport_refresh_job, operation_id, cancel_event, upload)
     return {"job": operation}
 
 
@@ -191,8 +206,8 @@ def vulnerability_passport(passport_id: str) -> dict[str, Any]:
     if wazuh_cti.PASSPORT_ID.fullmatch(passport_id):
         if not local:
             raise HTTPException(status_code=404, detail="Паспорт Wazuh CTI не найден.")
-        saved = wazuh_cti.refresh_passport(passport_id)
-        return {"id": passport_id, "raw": saved["raw_detail"], "source": "wazuh-cti", "passport": saved}
+        wazuh_passport = wazuh_cti.refresh_passport(passport_id)
+        return {"id": passport_id, "raw": wazuh_passport["raw_detail"], "source": "wazuh-cti", "passport": wazuh_passport}
 
     client, token = host.require_mpvm()
     try:
@@ -208,10 +223,10 @@ def update_vulnerability_passport(passport_id: str) -> dict[str, Any]:
     if not db.get_vulnerability_passport(passport_id):
         raise HTTPException(status_code=404, detail="Vulnerability passport not found in local DB.")
     if wazuh_cti.PASSPORT_ID.fullmatch(passport_id):
-        saved = wazuh_cti.refresh_passport(passport_id)
+        wazuh_passport = wazuh_cti.refresh_passport(passport_id)
         return {
-            "id": passport_id, "raw": saved["raw_detail"], "source": "wazuh-cti",
-            "passport": saved, "updated": True,
+            "id": passport_id, "raw": wazuh_passport["raw_detail"], "source": "wazuh-cti",
+            "passport": wazuh_passport, "updated": True,
         }
 
     client, token = host.require_mpvm()

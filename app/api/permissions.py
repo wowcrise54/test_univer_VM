@@ -168,6 +168,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/vulnerability-passports/detail-jobs/{job_id}/cancel"): "passports.manage",
     ("POST", "/api/vulnerability-passports/query"): "passports.manage",
     ("POST", "/api/vulnerability-passports/refresh-jobs"): "passports.manage",
+    ("POST", "/api/vulnerability-passports/refresh-jobs/wazuh-snapshot"): "passports.manage",
     ("POST", "/api/vulnerability-passports/refresh-jobs/{operation_id}/cancel"): "passports.manage",
     ("POST", "/api/vulnerability-passports/trending/refresh"): "passports.manage",
     ("PUT", "/api/asset-cards/{asset_id}"): "asset_cards.manage",
