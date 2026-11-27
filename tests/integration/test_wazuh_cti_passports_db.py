@@ -114,6 +114,32 @@ def test_bulk_snapshot_updates_local_passports_once_and_reports_invalid_records(
     assert fallback_job["result"]["wazuh_cti"]["updated"] == 2
     assert len(fallback_requests) == 2
 
+    payload["containers"]["cna"]["affected"][0]["versions"][0]["lessThan"] = "3"
+    with ZipFile(archive_bytes := io.BytesIO(), "w") as archive:
+        archive.writestr("snapshot.json", json.dumps(records[0]))
+    client = TestClient(main.app)
+    path = "/api/vulnerability-passports/refresh-jobs/wazuh-snapshot"
+
+    def upload(offset, content):
+        return client.post(path, data={"offset": str(offset)}, files={"file": ("snapshot.zip", content)})
+
+    with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "viewer"}):
+        assert upload(4, archive_bytes.getvalue()).status_code == 403
+    with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}):
+        response = upload(4, archive_bytes.getvalue())
+        assert response.status_code == 202
+        job = passport_refresh.get(response.json()["job"]["operation_id"])
+        assert job["status"] == "completed"
+        assert job["result"]["snapshot"]["offset"] == 4
+        assert job["result"]["wazuh_cti"]["updated"] == 1
+        for offset, content in [(1, archive_bytes.getvalue()), (5, b"invalid zip")]:
+            response = upload(offset, content)
+            assert response.status_code == 202
+            job = passport_refresh.get(response.json()["job"]["operation_id"])
+            assert job["status"] == "failed"
+    assert len(fallback_requests) == 2
+    assert len(downloads) == 2
+
 
 class FakeResponse:
     status_code = 200

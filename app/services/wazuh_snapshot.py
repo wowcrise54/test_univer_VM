@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Event
 from time import monotonic
-from typing import BinaryIO
+from typing import IO, Any, BinaryIO
 from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 from zlib import error as ZipDecodeError
@@ -22,12 +22,13 @@ from ..diagnostics import log_event
 from ..repositories import passport_refresh
 from ..repositories.asset_cards.wazuh_match import inventory_package_names
 from ..repositories.passports.wazuh_cti import (
+    newer_snapshot_recorded,
     record_refresh_failures,
     save_snapshot_batch,
     snapshot_applied,
     snapshot_targets,
 )
-from .wazuh_asset_match import PLATFORMS, platform_for
+from .wazuh_asset_match import PLATFORMS, PackageRule, platform_for
 from .wazuh_cti import summarize_record
 from .wazuh_cti_fallback import refresh_local_passports as refresh_per_cve
 from .wazuh_snapshot_download import SnapshotCancelled, SnapshotUnavailable, download_snapshot
@@ -39,13 +40,13 @@ SNAPSHOT_CACHE = Path("output/wazuh-cti")
 
 
 def collect_snapshot(
-    stream: BinaryIO,
+    stream: IO[bytes],
     targets: dict[str, bool],
     inventory: set[tuple[str, str, str]],
     cancel: Event,
     tick: Callable[[], None],
 ):
-    records = {}
+    records: dict[str, tuple[str, dict[str, Any], list[PackageRule]]] = {}
     failures = {}
     observed = set()
     found_schema = False
@@ -106,9 +107,11 @@ def snapshot_metadata(session: requests.Session) -> tuple[int, str]:
     return offset, url
 
 
-def refresh_local_passports(operation_id: str, cancel: Event) -> None:
+def refresh_local_passports(
+    operation_id: str, cancel: Event, upload: tuple[int, BinaryIO] | None = None,
+) -> None:
     counts = {"total": 0, "updated": 0, "failed": 0, "unchanged": 0, "outside_scope": 0, "not_in_snapshot": 0}
-    checkpoint = {}
+    checkpoint: dict[str, int | str] = {}
     progress = 0
     last_report = 0.0
 
@@ -122,16 +125,19 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
             last_report = now
             passport_refresh.update(
                 operation_id, status="running", stage=stage, percent=progress, message=message,
-                result={"wazuh_cti": counts},
+                result={"wazuh_cti": counts, "snapshot": checkpoint},
             )
 
-    def apply_snapshot() -> str:
-        targets = snapshot_targets()
-        counts["total"] = len(targets)
-        if not targets:
-            return "Локальных паспортов Wazuh CTI нет."
+    def check_offset(offset: int, scope: str) -> bool:
+        if newer_snapshot_recorded(offset):
+            raise SnapshotUnavailable("Более свежий снимок Wazuh CTI уже применён или начал применяться.")
+        if snapshot_applied(offset, scope):
+            checkpoint.update(offset=offset, scope=scope)
+            return False
+        return True
+
+    def fetch_snapshot(scope: str) -> tuple[int, Path | None]:
         report(1, "snapshot", "Проверка версии снимка Wazuh CTI.", force=True)
-        scope = sha256(json.dumps([list(targets), sorted(PLATFORMS.items())]).encode()).hexdigest()
         with requests.Session() as session:
             session.mount("https://", HTTPAdapter(max_retries=Retry(
                 total=2, allowed_methods={"GET"}, status_forcelist=(408, 500, 502, 503, 504),
@@ -141,12 +147,11 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
                 offset, url = snapshot_metadata(session)
             except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
                 raise SnapshotUnavailable("Не удалось получить метаданные снимка Wazuh CTI.") from exc
-            checkpoint.update(offset=offset, scope=scope)
-            if snapshot_applied(offset, scope):
-                return f"Снимок Wazuh CTI {offset} уже применён к этому набору паспортов."
+            if not check_offset(offset, scope):
+                return offset, None
             report(3, "snapshot", "Загрузка снимка Wazuh CTI.", force=True)
             try:
-                downloaded = download_snapshot(
+                return offset, download_snapshot(
                     session, url, SNAPSHOT_CACHE, cancel,
                     lambda done, total: report(
                         3 + 36 * done // total, "snapshot",
@@ -155,25 +160,41 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
                 )
             except OSError as exc:
                 raise SnapshotUnavailable("Не удалось сохранить ZIP Wazuh CTI.") from exc
-            report(40, "filter", "Отбор CVE для Ubuntu и Debian.", force=True)
-            inventory = {
-                (*platform, row["package"])
-                for row in inventory_package_names() if row["package"]
-                if (platform := platform_for(row["os_name"], row["os_version"]))
-            }
-            try:
-                with ZipFile(downloaded) as archive:
-                    members = [name for name in archive.namelist() if name.endswith(".json")]
-                    if len(members) != 1:
-                        raise ValueError("Снимок должен содержать один JSON-файл.")
-                    with archive.open(members[0]) as stream:
-                        entries, seen, failures = collect_snapshot(
-                            stream, targets, inventory, cancel,
-                            lambda: report(40, "filter", "Чтение и отбор CVE из снимка Wazuh CTI."),
-                        )
-            except (BadZipFile, ZipDecodeError, EOFError, ValueError) as exc:
-                downloaded.unlink(missing_ok=True)
-                raise SnapshotUnavailable("ZIP Wazuh CTI повреждён или имеет неожиданный формат.") from exc
+
+    def apply_snapshot() -> str:
+        targets = snapshot_targets()
+        counts["total"] = len(targets)
+        if not targets:
+            return "Локальных паспортов Wazuh CTI нет."
+        scope = sha256(json.dumps([list(targets), sorted(PLATFORMS.items())]).encode()).hexdigest()
+        archive_source: Path | BinaryIO | None
+        if upload is None:
+            offset, archive_source = fetch_snapshot(scope)
+        else:
+            offset, file = upload
+            archive_source = file if check_offset(offset, scope) else None
+        if archive_source is None:
+            return f"Снимок Wazuh CTI {offset} уже применён к этому набору паспортов."
+        report(40, "filter", "Отбор CVE для Ubuntu и Debian.", force=True)
+        inventory = {
+            (*platform, row["package"])
+            for row in inventory_package_names() if row["package"]
+            if (platform := platform_for(row["os_name"], row["os_version"]))
+        }
+        try:
+            with ZipFile(archive_source) as archive:
+                members = [name for name in archive.namelist() if name.endswith(".json")]
+                if len(members) != 1:
+                    raise ValueError("Снимок должен содержать один JSON-файл.")
+                with archive.open(members[0]) as stream:
+                    entries, seen, failures = collect_snapshot(
+                        stream, targets, inventory, cancel,
+                        lambda: report(40, "filter", "Чтение и отбор CVE из снимка Wazuh CTI."),
+                    )
+        except (BadZipFile, ZipDecodeError, EOFError, ValueError, RuntimeError) as exc:
+            if isinstance(archive_source, Path):
+                archive_source.unlink(missing_ok=True)
+            raise SnapshotUnavailable("ZIP Wazuh CTI повреждён или имеет неожиданный формат.") from exc
         counts["not_in_snapshot"] = len(targets) - seen
         counts["outside_scope"] = seen - len(entries) - len(failures)
         for start in range(0, len(failures), BATCH_SIZE):
@@ -182,6 +203,7 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
             batch = failures[start : start + BATCH_SIZE]
             record_refresh_failures(operation_id, batch)
             counts["failed"] += len(batch)
+        checkpoint.update(offset=offset, scope=scope)
         report(60, "save", f"Отобрано {len(entries)} паспортов для записи правил.", force=True)
         for start in range(0, len(entries), BATCH_SIZE):
             if cancel.is_set():
@@ -213,12 +235,15 @@ def refresh_local_passports(operation_id: str, cancel: Event) -> None:
                 message="Обновление Wazuh CTI остановлено.", result={"wazuh_cti": counts},
             )
             return
-        passport_refresh.update(
-            operation_id, status="running", stage="wazuh-cti-fallback", percent=progress,
-            message=f"{exc} Переключение на per-CVE.", result={"wazuh_cti": counts, "mode": "per-cve"},
-        )
-        refresh_per_cve(operation_id, cancel)
-        return
+        if upload is None:
+            passport_refresh.update(
+                operation_id, status="running", stage="wazuh-cti-fallback", percent=progress,
+                message=f"{exc} Переключение на per-CVE.", result={"wazuh_cti": counts, "mode": "per-cve"},
+            )
+            refresh_per_cve(operation_id, cancel)
+            return
+        status = "failed"
+        message = str(exc)
     except Exception as exc:
         log_event("passport-sync", "wazuh-cti.snapshot.failed", level=logging.ERROR,
                   operation_id=operation_id, error_type=type(exc).__name__)
