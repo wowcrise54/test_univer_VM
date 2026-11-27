@@ -2,15 +2,18 @@ import io
 import json
 from asyncio import run
 from threading import Event
+from unittest.mock import patch
 from zipfile import ZipFile
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from fastapi.testclient import TestClient
 
-from app import db
+from app import db, main
 from app.api.asset_cards import local_asset_wazuh_cti_matches
 from app.api.passports import create_vulnerability_passport_refresh_job, export_wazuh_refresh_errors
 from app.repositories import passport_refresh
+from app.repositories.vulnerabilities import VulnerabilityAnalyticsRepository
 from app.repositories.passports.wazuh_cti import create_passports, iter_refresh_failures
 from app.services import wazuh_cti, wazuh_snapshot
 from app.services.wazuh_asset_match import assess_asset
@@ -199,9 +202,26 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     assert saved_result["checked_at"]
     assert saved_result["matches"] == result["matches"]
     assert saved_result["passports"][passport_id]["cvss_score"] == "9.1"
+    analytics = VulnerabilityAnalyticsRepository()
+    listing = analytics.list(q=cve)
+    assert listing["total"] == 1
+    finding = listing["rows"][0]
+    assert finding["cve"] == cve
+    assert finding["sources"] == ["wazuh"]
+    assert finding["passports"][0]["internal_id"] == passport_id
+    assert analytics.list()["total"] == 1
+    assert analytics.list(source="software")["total"] == 0
+    assert analytics.list(q=cve, has_fix="no", sort_by="how_to_fix")["total"] == 1
+    assert analytics.summary(q=cve, source="wazuh")["totals"]["affected_hosts"] == 1
+    assert analytics.hosts(selector=finding["selector"])["rows"][0]["asset_id"] == "linux-test"
+    with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "viewer"}):
+        response = TestClient(main.app).get("/api/vulnerabilities", params={"q": cve, "source": "wazuh"})
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["selector"] == finding["selector"]
 
     refreshed_card = db.upsert_asset_card(card)
     assert local_asset_wazuh_cti_matches("linux-test")["pending"]
+    assert analytics.list(q=cve)["total"] == 0
     stopped = Event()
     stopped.set()
     reconcile_due_assets(stopped)
@@ -227,6 +247,7 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     assert assess_asset("linux-test", additional_only=True)["matches"] == []
     assert assess_asset("linux-test")["matches"] == result["matches"]
     assert local_asset_wazuh_cti_matches("linux-test", additional_only=True)["matches"] == []
+    assert analytics.list(q=cve, source="wazuh")["total"] == 0
 
     with db.connect() as conn:
         conn.execute("DELETE FROM wazuh_cti_package_rules WHERE passport_id = %s", (passport_id,))

@@ -53,6 +53,7 @@ const SOURCE_LABELS = {
   os: "Операционная система",
   software: "Установленное ПО",
   docker: "Docker-контейнеры",
+  wazuh: "Wazuh CTI",
 };
 
 export function VulnerabilitiesDashboard({
@@ -488,7 +489,9 @@ export function VulnerabilitiesDashboard({
                   error={hostsQuery.error}
                   headingRef={hostHeadingRef}
                   canReadRemediation={canReadRemediation}
-                  canManageRemediation={canManageRemediation}
+                  canManageRemediation={
+                    canManageRemediation && !selected.sources?.includes("wazuh")
+                  }
                   canManageAssetGroups={canManageAssetGroups}
                   assetGroupBusy={assetGroupBusy}
                   remediationBusyAssetId={remediationBusyAssetId}
@@ -532,7 +535,9 @@ export function VulnerabilitiesDashboard({
               selected={selected}
               row={hostFinding}
               canReadRemediation={canReadRemediation}
-              canManageRemediation={canManageRemediation}
+              canManageRemediation={
+                canManageRemediation && !hostFinding.sources?.includes("wazuh")
+              }
               busy={remediationBusyAssetId === hostFinding.asset_id}
               onStartRemediation={startRemediation}
               onClose={() => setHostFinding(null)}
@@ -989,6 +994,7 @@ function VulnerabilityFilters({
               <option value="os">Операционная система</option>
               <option value="software">Установленное ПО</option>
               <option value="docker">Docker-контейнеры</option>
+              <option value="wazuh">Wazuh CTI</option>
             </select>
           </Field>
           <Field label="Наличие исправления">
