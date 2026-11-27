@@ -25,7 +25,7 @@ describe("reliability UI", () => {
     api.mockResolvedValue({ rows: [] });
   });
 
-  it("reads saved Wazuh findings and groups packages by CVE", async () => {
+  it("expands and collapses Wazuh findings by package and version", async () => {
     const path =
       "/api/asset-cards/asset-1/vulnerabilities/wazuh-cti?additional_only=true";
     const cve = "CVE-2025-49796";
@@ -61,13 +61,26 @@ describe("reliability UI", () => {
     fireEvent.click(
       screen.getByRole("tab", { name: "Уязвимости, найденные Wazuh" }),
     );
-    fireEvent.click(await screen.findByRole("button", { name: cve }));
+    const firstPackage = await screen.findByRole("button", {
+      name: /lib-a 1.0/,
+    });
+    const secondPackage = screen.getByRole("button", { name: /lib-b 1.0/ });
+    expect(firstPackage).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: cve })).toBeNull();
+    fireEvent.click(firstPackage);
+    expect(firstPackage).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: cve }));
     expect(api).toHaveBeenCalledWith(path);
     expect(screen.getAllByRole("columnheader")).toHaveLength(3);
     expect(screen.getByRole("cell", { name: "9,1" })).toBeVisible();
     expect(screen.getByText("Уязвимость пакета")).toBeVisible();
-    expect(screen.getByText("lib-a · 1.0, lib-b · 1.0")).toBeVisible();
     expect(openPassport).toHaveBeenCalledWith({ internal_id: passportId });
+    fireEvent.click(secondPackage);
+    expect(screen.getAllByRole("button", { name: cve })).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Дополнительных CVE: 1");
+    fireEvent.click(firstPackage);
+    expect(firstPackage).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getAllByRole("button", { name: cve })).toHaveLength(1);
   });
 
   it("keeps a two-day-old asset card fresh with a fourteen-day window", () => {

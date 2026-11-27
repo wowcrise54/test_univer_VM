@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client.js";
+import { formatCount } from "../../shared/format.js";
 import { sortRows, useTableSort } from "../../shared/table.jsx";
 import { Button } from "../../shared/ui.jsx";
 import { formatDateTime } from "../../shared/values.js";
@@ -16,6 +17,7 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [page, setPage] = useState(0);
+  const [expandedPackages, setExpandedPackages] = useState(new Set());
   const [sort, toggleSort] = useTableSort("cve_name");
 
   useEffect(() => {
@@ -48,28 +50,43 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
     };
   }, [assetId]);
 
-  const byCve = new Map();
+  const uniqueCves = new Set();
+  const byPackage = new Map();
   for (const match of result?.matches || []) {
-    if (!byCve.has(match.cve)) {
-      const passport = result.passports?.[match.passport_id];
-      byCve.set(match.cve, {
-        cve_name: match.cve,
-        name: passport?.name || match.cve,
-        cvss_score: passport?.cvss_score ?? null,
-        passport_ids: [match.passport_id],
-        packages: [],
+    uniqueCves.add(match.cve);
+    const key = JSON.stringify([match.package, match.version]);
+    if (!byPackage.has(key)) {
+      byPackage.set(key, {
+        key,
+        label: `${match.package} ${match.version}`,
+        findings: new Map(),
       });
     }
-    byCve.get(match.cve).packages.push(`${match.package} · ${match.version}`);
+    const passport = result.passports?.[match.passport_id];
+    byPackage.get(key).findings.set(match.cve, {
+      cve_name: match.cve,
+      name: passport?.name || match.cve,
+      cvss_score: passport?.cvss_score ?? null,
+      passport_ids: [match.passport_id],
+    });
   }
-  const findings = sortRows([...byCve.values()], sort, {
-    cvss_score: (finding) =>
-      finding.cvss_score === null ? null : Number(finding.cvss_score),
+  const packages = sortRows([...byPackage.values()], {
+    key: "label",
+    direction: "asc",
   });
   const visiblePage = Math.min(
     page,
-    Math.max(0, Math.ceil(findings.length / PAGE_SIZE) - 1),
+    Math.max(0, Math.ceil(packages.length / PAGE_SIZE) - 1),
   );
+
+  function togglePackage(key) {
+    setExpandedPackages((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   return (
     <section
@@ -88,7 +105,7 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
         <>
           <p role="status">
             {result.platform
-              ? `Проверено по локальным правилам: ${result.evaluated_packages} из ${result.packages} пакетов. Дополнительных CVE: ${findings.length}.`
+              ? `Проверено по локальным правилам: ${result.evaluated_packages} из ${result.packages} пакетов. Дополнительных CVE: ${uniqueCves.size}.`
               : "Для выпуска этой ОС локальное сопоставление недоступно."}
             {result.platform && !result.inventory_complete
               ? " Инвентарь пакетов неполный."
@@ -104,28 +121,50 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
               : ""}
           </p>
           <table className="asset-vulnerability-table">
-            <AssetVulnerabilityTableHeader
-              sort={sort}
-              onSort={(column, direction) => {
-                setPage(0);
-                toggleSort(column, direction);
-              }}
-            />
+            <AssetVulnerabilityTableHeader sort={sort} onSort={toggleSort} />
             <tbody>
-              {findings.length ? (
-                findings
+              {packages.length ? (
+                packages
                   .slice(visiblePage * PAGE_SIZE, (visiblePage + 1) * PAGE_SIZE)
-                  .map((finding) => (
-                    <AssetVulnerabilityFindingRow
-                      key={finding.cve_name}
-                      finding={finding}
-                      onOpenPassport={onOpenPassport}
-                    >
-                      <small className="asset-docker-package-meta">
-                        {finding.packages.join(", ")}
-                      </small>
-                    </AssetVulnerabilityFindingRow>
-                  ))
+                  .map(({ key, label, findings }) => {
+                    const expanded = expandedPackages.has(key);
+                    return (
+                      <Fragment key={key}>
+                        <tr className="asset-vulnerability-group">
+                          <td colSpan={3}>
+                            <button
+                              type="button"
+                              className="asset-vulnerability-toggle"
+                              aria-expanded={expanded}
+                              onClick={() => togglePackage(key)}
+                            >
+                              <span
+                                className="asset-vulnerability-caret"
+                                aria-hidden="true"
+                              >
+                                {expanded ? "⌄" : "›"}
+                              </span>
+                              <span>{label}</span>
+                              <small>{formatCount(findings.size)} CVE</small>
+                            </button>
+                          </td>
+                        </tr>
+                        {expanded &&
+                          sortRows([...findings.values()], sort, {
+                            cvss_score: (finding) =>
+                              finding.cvss_score === null
+                                ? null
+                                : Number(finding.cvss_score),
+                          }).map((finding) => (
+                            <AssetVulnerabilityFindingRow
+                              key={finding.cve_name}
+                              finding={finding}
+                              onOpenPassport={onOpenPassport}
+                            />
+                          ))}
+                      </Fragment>
+                    );
+                  })
               ) : (
                 <tr>
                   <td colSpan={3} className="empty-cell">
@@ -135,7 +174,7 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
               )}
             </tbody>
           </table>
-          {findings.length > PAGE_SIZE ? (
+          {packages.length > PAGE_SIZE ? (
             <div>
               <Button
                 disabled={visiblePage === 0}
@@ -144,7 +183,7 @@ export function AssetWazuhMatches({ assetId, onOpenPassport }) {
                 Назад
               </Button>
               <Button
-                disabled={(visiblePage + 1) * PAGE_SIZE >= findings.length}
+                disabled={(visiblePage + 1) * PAGE_SIZE >= packages.length}
                 onClick={() => setPage(visiblePage + 1)}
               >
                 Далее
