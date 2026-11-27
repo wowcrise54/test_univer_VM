@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from contextlib import AbstractAsyncContextManager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+
+Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    # The built SPA loads only its own bundle: no inline scripts, no CDNs.
+    # Inline styles stay allowed for React style props and third-party widgets.
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    ),
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+HSTS_HEADER = ("Strict-Transport-Security", "max-age=31536000")
+
+
+def create_app(
+    *,
+    static_dir: Path,
+    lifespan: Lifespan | None = None,
+    cors_origins: Sequence[str] = (),
+    api_docs: bool = False,
+    hsts: bool = False,
+) -> FastAPI:
+    # /docs, /redoc and /openapi.json live outside /api/ and therefore outside
+    # the session check: publishing them would hand the whole API map to anyone
+    # who can reach the port. They are opt-in for development only.
+    app = FastAPI(
+        title="MP VM REST API Client",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if api_docs else None,
+        redoc_url="/redoc" if api_docs else None,
+        openapi_url="/openapi.json" if api_docs else None,
+    )
+    headers = dict(SECURITY_HEADERS)
+    if hsts:
+        headers[HSTS_HEADER[0]] = HSTS_HEADER[1]
+    if api_docs:
+        # Swagger UI pulls its bundle from a CDN and runs an inline bootstrap script.
+        headers.pop("Content-Security-Policy")
+    # The SPA is served from the same origin (Vite proxies /api in dev), so CORS
+    # is opt-in. A wildcard together with credentials would let any page that
+    # receives the session cookie read the API on the user's behalf.
+    origins = [origin for origin in cors_origins if origin and origin != "*"]
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["X-Trace-ID", "X-Request-ID", "Server-Timing", "ETag"],
+        )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    @app.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+        for name, value in headers.items():
+            response.headers.setdefault(name, value)
+        return response
+
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    return app

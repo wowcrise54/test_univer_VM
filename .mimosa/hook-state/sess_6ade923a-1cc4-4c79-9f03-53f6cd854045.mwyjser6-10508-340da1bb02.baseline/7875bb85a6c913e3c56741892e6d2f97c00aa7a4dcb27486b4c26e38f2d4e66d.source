@@ -1,0 +1,325 @@
+import { AssetCardsPage } from "../pages/AssetCardsPage.jsx";
+import { AssetQueryPage } from "../pages/AssetQueryPage.jsx";
+import { ConnectionPage } from "../pages/ConnectionPage.jsx";
+import { ExportPage } from "../pages/ExportPage.jsx";
+import { PassportsPage } from "../pages/PassportsPage.jsx";
+import { OperationsPage } from "../pages/OperationsPage.jsx";
+import { AutomationsPage } from "../pages/AutomationsPage.jsx";
+import { TasksPage } from "../pages/TasksPage.jsx";
+import { DashboardsPage } from "../pages/DashboardsPage.jsx";
+import { VulnerabilitiesPage } from "../pages/VulnerabilitiesPage.jsx";
+import { RemediationPage } from "../pages/RemediationPage.jsx";
+import { AlertStack, Sidebar, SystemBanner, Topbar } from "./layout.jsx";
+import { AppDataProvider, useAppDataContext } from "./AppDataContext.jsx";
+import { useEffect, useState } from "react";
+import { useRouter } from "./router.js";
+import { useTheme } from "./theme.jsx";
+import { AuthGate } from "../features/auth/AuthGate.jsx";
+import { UsersPage } from "../features/auth/UsersPage.jsx";
+import { VmManagementPage } from "../pages/VmManagementPage.jsx";
+import { AssetGroupsPage } from "../pages/AssetGroupsPage.jsx";
+import { TeamTasksPage } from "../features/team-tasks/TeamTasksPage.jsx";
+import { TaskPresetsPage } from "../features/task-presets/TaskPresetsPage.jsx";
+import { defaultRoutePath, landingPathForUser } from "./navigation.js";
+
+export function App() {
+  return <AuthGate>{(auth) => <AuthenticatedApp auth={auth} />}</AuthGate>;
+}
+
+function AuthenticatedApp({ auth }) {
+  const [openedAtRoot] = useState(
+    () => typeof window !== "undefined" && window.location.pathname === "/",
+  );
+  const { navigate, path, search, route } = useRouter();
+  const routeAllowed = !route || canAccessRoute(route, auth.user);
+  const landingPath = landingPathForUser(auth.user);
+  useEffect(() => {
+    if (
+      openedAtRoot &&
+      path === defaultRoutePath &&
+      landingPath !== defaultRoutePath
+    ) {
+      navigate(landingPath);
+    }
+    // Only the first screen after login is redirected.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openedAtRoot, landingPath]);
+  return (
+    <AppDataProvider routeId={routeAllowed ? route?.id : "forbidden"}>
+      <AppShell
+        navigate={navigate}
+        path={path}
+        search={search}
+        route={route}
+        auth={auth}
+      />
+    </AppDataProvider>
+  );
+}
+
+function AppShell({ navigate, path, search, route, auth }) {
+  const appData = useAppDataContext();
+  const { theme, toggleTheme } = useTheme();
+  const routeAllowed = !route || canAccessRoute(route, auth.user);
+  const visibleRoute = routeAllowed
+    ? route
+    : {
+        id: "forbidden",
+        title: "Нет доступа",
+      };
+  const activeRouteId = routeAllowed ? route?.id : "forbidden";
+
+  return (
+    <div className="app-shell">
+      <Sidebar
+        systemStatus={appData.systemStatus}
+        activeOperations={
+          appData.operationSummary?.active ??
+          appData.operations.filter((item) =>
+            ["queued", "running", "cancelling", "recovering"].includes(
+              item.status,
+            ),
+          ).length
+        }
+        activePath={path}
+        onNavigate={navigate}
+        currentUser={auth.user}
+      />
+      <main className="workspace">
+        <Topbar
+          session={appData.session}
+          route={visibleRoute}
+          onNavigate={navigate}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          currentUser={auth.user}
+          onLogout={auth.logout}
+        />
+        <SystemBanner
+          status={appData.systemStatus}
+          stale={appData.operationsStale}
+          onRetry={appData.refreshSystemStatus}
+          onNavigate={navigate}
+          currentUser={auth.user}
+        />
+        <AlertStack alerts={appData.alerts} onDismiss={appData.dismissAlert} />
+        <ActivePage
+          key={`${activeRouteId}:${search}`}
+          routeId={activeRouteId}
+          onNavigate={navigate}
+          currentUser={auth.user}
+          {...appData}
+        />
+      </main>
+    </div>
+  );
+}
+
+function canAccessRoute(route, user) {
+  const permissions = new Set(user?.permissions || []);
+  if (route.requiredPermission && !permissions.has(route.requiredPermission)) {
+    return false;
+  }
+  if (
+    route.requiredAnyPermission &&
+    !route.requiredAnyPermission.some((permission) =>
+      permissions.has(permission),
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function ActivePage({ routeId, ...props }) {
+  if (routeId === "forbidden") {
+    return (
+      <section className="panel">
+        <div className="panel__header">
+          <div>
+            <h2>Раздел недоступен</h2>
+            <p>Выберите раздел в меню.</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+  if (routeId === "vm") {
+    return (
+      <VmManagementPage
+        session={props.session}
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+  if (routeId === "scans") {
+    return (
+      <TeamTasksPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "task-presets") {
+    return <TaskPresetsPage showAlert={props.showAlert} />;
+  }
+  if (routeId === "users") {
+    return (
+      <UsersPage currentUser={props.currentUser} showAlert={props.showAlert} />
+    );
+  }
+  if (routeId === "connection") {
+    return (
+      <ConnectionPage
+        connectionDraft={props.connectionDraft}
+        defaults={props.defaults}
+        session={props.session}
+        setSession={props.setSession}
+        lookups={props.lookups}
+        lookupsError={props.lookupsError}
+        lookupsUpdatedAt={props.lookupsUpdatedAt}
+        refreshLookups={props.refreshLookups}
+        setLookups={props.setLookups}
+        setConnectionDraft={props.setConnectionDraft}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+  if (routeId === "tasks") {
+    return (
+      <TasksPage
+        currentUser={props.currentUser}
+        defaults={props.defaults}
+        lookups={props.lookups}
+        tasks={props.tasks}
+        loading={props.tasksLoading}
+        error={props.tasksError}
+        selectedTask={props.selectedTask}
+        selectedTaskId={props.selectedTaskId}
+        setSelectedTaskId={props.setSelectedTaskId}
+        refreshTasks={props.refreshTasks}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+        session={props.session}
+        systemStatus={props.systemStatus}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+  if (routeId === "asset-groups") {
+    return (
+      <AssetGroupsPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "operations") {
+    return (
+      <OperationsPage
+        currentUser={props.currentUser}
+        operations={props.operations}
+        total={props.operationsTotal}
+        updatedAt={props.operationsUpdatedAt}
+        stale={props.operationsStale}
+        loading={props.operationsLoading}
+        error={props.operationsError}
+        summary={props.operationSummary}
+        refreshOperations={props.refreshOperations}
+        refreshOperationSummary={props.refreshOperationSummary}
+        runBusy={props.runBusy}
+        busy={props.busy}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "automations") {
+    return <AutomationsPage showAlert={props.showAlert} />;
+  }
+  if (routeId === "dashboards") {
+    return (
+      <DashboardsPage
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+  if (routeId === "vulnerabilities") {
+    return (
+      <VulnerabilitiesPage
+        onNavigate={props.onNavigate}
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "remediation") {
+    return (
+      <RemediationPage
+        showAlert={props.showAlert}
+        onNavigate={props.onNavigate}
+      />
+    );
+  }
+  if (routeId === "export") {
+    return (
+      <ExportPage
+        defaults={props.defaults}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        refreshAssets={props.refreshAssets}
+        showAlert={props.showAlert}
+        currentUser={props.currentUser}
+      />
+    );
+  }
+  if (routeId === "asset-cards") {
+    return (
+      <AssetCardsPage
+        defaults={props.defaults}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        currentUser={props.currentUser}
+        showAlert={props.showAlert}
+      />
+    );
+  }
+  if (routeId === "asset-query") {
+    return (
+      <AssetQueryPage
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+        currentUser={props.currentUser}
+      />
+    );
+  }
+  if (routeId === "passports") {
+    return (
+      <PassportsPage
+        defaults={props.defaults}
+        busy={props.busy}
+        runBusy={props.runBusy}
+        showAlert={props.showAlert}
+        currentUser={props.currentUser}
+      />
+    );
+  }
+  return (
+    <section className="panel">
+      <div className="panel__header">
+        <div>
+          <h2>Раздел не найден</h2>
+          <p>Выберите раздел в меню.</p>
+        </div>
+      </div>
+    </section>
+  );
+}

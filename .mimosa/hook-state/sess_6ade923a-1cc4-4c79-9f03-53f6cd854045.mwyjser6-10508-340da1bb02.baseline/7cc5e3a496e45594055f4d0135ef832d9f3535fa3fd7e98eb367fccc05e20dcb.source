@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    """Validated process configuration loaded from ``MPVM_*`` variables."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="MPVM_",
+        env_file=ROOT_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    api_url: str = ""
+    token_url: str = ""
+    username: str = ""
+    password: str = Field(default="", repr=False)
+    client_id: str = "mpx"
+    client_secret: str = Field(default="", repr=False)
+    scope: str = "authorization offline_access mpx.api ptkb.api"
+    access_token: str = Field(default="", repr=False)
+    insecure: bool = False
+    timeout: int = 120
+
+    database_url: str = "postgresql://mpvm:mpvm@localhost:5432/mpvm"
+    exports_dir: Path = Path("exports")
+    # Keep aggregate MP VM concurrency below the remote connection-pool default
+    # (25), including when several asset-card builds run concurrently.
+    background_request_limit: int = 12
+    asset_card_request_workers: int = 12
+    asset_card_refresh_workers: int = 10
+    scan_postprocess_workers: int = 10
+    scan_asset_process_workers: int = 4
+    scan_target_resolution_workers: int = 3
+    reconciliation_workers: int = 3
+    passport_detail_workers: int = 10
+    passport_detail_ttl_hours: int = 24
+    asset_metadata_ttl_seconds: int = 3600
+    scan_asset_resolution_timeout_seconds: int = 600
+    scan_asset_resolution_poll_seconds: int = 15
+    scan_asset_removal_timeout_seconds: int = 1800
+    scan_asset_removal_poll_seconds: int = 10
+    docker_dynamic_group_iterations: int = 3
+    docker_dynamic_group_settle_seconds: int = 10
+    docker_dynamic_group_timeout_seconds: int = 120
+    docker_dynamic_group_poll_seconds: int = 5
+    docker_dynamic_group_retention_seconds: int = 600
+    automation_scheduler_poll_seconds: int = 30
+    automation_webhook_url: str = ""
+    automation_webhook_secret: str = Field(default="", repr=False)
+    coverage_stale_days: int = 14
+    bootstrap_admin_username: str = "admin"
+    bootstrap_admin_password: str = Field(default="", repr=False)
+    bootstrap_admin_display_name: str = "Administrator"
+    auth_session_hours: int = 12
+    auth_cookie_secure: bool = False
+    # Comma-separated list of extra origins allowed to call the API with
+    # credentials. Empty (default) disables CORS: the SPA is same-origin.
+    cors_allowed_origins: str = ""
+    import_max_upload_mb: int = 512
+    attention_search_enabled: bool = True
+    # LDAP (corporate directory) login. Local login is always tried first;
+    # LDAP is consulted only when it fails and automatically provisions the
+    # local user record on first successful login.
+    ldap_enabled: bool = False
+    ldap_url: str = ""
+    ldap_base_dn: str = ""
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = Field(default="", repr=False)
+    ldap_user_filter: str = "(sAMAccountName={username})"
+    ldap_display_name_attribute: str = "displayName"
+    ldap_admin_group_dn: str = ""
+    ldap_default_role: str = "viewer"
+    # Restrict LDAP application access to accounts in this OU. Empty disables
+    # the restriction, but the secure default allows only OU=t1 accounts.
+    ldap_required_ou: str = "t1"
+    ldap_connect_timeout_seconds: int = 10
+
+    @field_validator(
+        "timeout",
+        "background_request_limit",
+        "asset_card_request_workers",
+        "asset_card_refresh_workers",
+        "scan_postprocess_workers",
+        "scan_asset_process_workers",
+        "scan_target_resolution_workers",
+        "reconciliation_workers",
+        "passport_detail_workers",
+        "scan_asset_resolution_timeout_seconds",
+        "scan_asset_resolution_poll_seconds",
+        "scan_asset_removal_timeout_seconds",
+        "scan_asset_removal_poll_seconds",
+        "docker_dynamic_group_timeout_seconds",
+        "docker_dynamic_group_retention_seconds",
+        "automation_scheduler_poll_seconds",
+        "coverage_stale_days",
+        "auth_session_hours",
+        "ldap_connect_timeout_seconds",
+        "import_max_upload_mb",
+    )
+    @classmethod
+    def positive_integer(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("must be greater than zero")
+        return value
+
+    @field_validator(
+        "passport_detail_ttl_hours",
+        "asset_metadata_ttl_seconds",
+        "docker_dynamic_group_iterations",
+        "docker_dynamic_group_settle_seconds",
+        "docker_dynamic_group_retention_seconds",
+    )
+    @classmethod
+    def non_negative_integer(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("must not be negative")
+        return value
+
+    @field_validator("bootstrap_admin_password")
+    @classmethod
+    def strong_bootstrap_password(cls, value: str) -> str:
+        if value and len(value) < 12:
+            raise ValueError("must contain at least 12 characters when configured")
+        return value
+
+    @field_validator("automation_webhook_url")
+    @classmethod
+    def secure_webhook_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.lower().startswith("https://"):
+            raise ValueError("automation webhook URL must use HTTPS")
+        return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

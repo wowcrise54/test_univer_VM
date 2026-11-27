@@ -1,0 +1,23 @@
+import psycopg
+from unittest.mock import patch
+from app import db
+
+with psycopg.connect('postgresql://postgres@127.0.0.1/postgres', autocommit=True) as conn:
+    conn.execute('CREATE TABLE asset_cards (asset_id text, display_name text, hostname text, fqdn text, last_seen text)')
+    conn.execute('CREATE TABLE asset_card_software_inventory (asset_id text, entity_path text, soft_name text, soft_name_normalized text, soft_version text, soft_version_normalized text, vendor text, architecture text, install_path text, is_windows boolean)')
+    conn.execute("INSERT INTO asset_cards VALUES ('host', 'host', 'host', NULL, NULL)")
+    for path, name in [('asset.Host.Softs[0]', 'OpenSSL'), ('asset.Host.Softs[0].Containers[0]', 'container'), ('asset.Host.Softs[0].Services[0]', 'service'), ('asset.Host.Users[0]', 'user')]:
+        conn.execute('INSERT INTO asset_card_software_inventory VALUES (%s,%s,%s,%s,%s,%s,NULL,NULL,NULL,FALSE)', ['host',path,name,name.lower(),'3.2','3.2'])
+    rows = conn.execute(db.ASSET_SOFTWARE_ROWS_CTE + ' SELECT soft_name FROM software_rows', [False]).fetchall()
+    assert rows == [('OpenSSL',)], rows
+    rows = conn.execute(db.ASSET_SOFTWARE_ROWS_CTE + ' SELECT soft_name FROM software_rows', [True]).fetchall()
+    assert rows == [], rows
+with patch.object(db, 'init_db'), patch.object(db, 'asset_card_search_index_coverage', return_value={}), patch.object(db, 'connect', side_effect=lambda: psycopg.connect('postgresql://postgres@127.0.0.1/postgres', row_factory=psycopg.rows.dict_row)):
+    for preset in db.ASSET_CARD_QUERY_PRESETS.values():
+        if preset['kind'] != 'software':
+            continue
+        result = db.query_asset_card_preset(preset['id'], software_name='OpenSSL', software_version_like='3.%')
+        assert result['total'] == (0 if preset.get('windows_only') else 1), result
+        result = db.query_asset_card_preset(preset['id'], software_name='Missing', software_version_like='3.%')
+        assert result['total'] == 0, result
+print('PostgreSQL 16: stale nested rows excluded; Windows scope and filters verified for all 7 software presets')

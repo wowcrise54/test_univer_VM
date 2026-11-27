@@ -1,0 +1,311 @@
+# Instructions
+
+- Following Playwright test failed.
+- Explain why, be concise, respect Playwright best practices.
+- Provide a snippet of code with the fix, if possible.
+
+# Test info
+
+- Name: shell.spec.js >> engineer creates and starts a preset task at 390px
+- Location: tests/e2e/shell.spec.js:1383:3
+
+# Error details
+
+```
+Test timeout of 60000ms exceeded.
+```
+
+```
+Error: locator.check: Test timeout of 60000ms exceeded.
+Call log:
+  - waiting for getByRole('dialog', { name: 'Windows. Аудит (WMI/RPC)' }).getByLabel('Root / Windows / Servers')
+
+```
+
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - navigation [ref=e5]:
+        - generic [ref=e6]:
+          - link [ref=e7] [cursor=pointer]:
+            - /url: /vm
+            - generic [ref=e8]: Обзор
+          - link [ref=e9] [cursor=pointer]:
+            - /url: /scans
+            - generic [ref=e10]: Сканирование
+        - group [ref=e11]:
+          - generic [ref=e12] [cursor=pointer]: Ещё
+        - generic: ›
+    - main [ref=e13]:
+      - generic [ref=e14]:
+        - heading [level=1] [ref=e16]: Сканирование
+        - generic [ref=e17]:
+          - generic [ref=e18]:
+            - generic [ref=e19]: Поиск
+            - searchbox [ref=e20]
+          - button [ref=e21] [cursor=pointer]:
+            - img [ref=e22]
+          - group [ref=e24]:
+            - generic [ref=e25] [cursor=pointer]: Windows Engineer
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - heading [level=2] [ref=e30]: Пресеты
+            - generic [ref=e32]:
+              - generic [ref=e33]: ОС
+              - combobox [ref=e34] [cursor=pointer]
+          - article [ref=e36]:
+            - generic [ref=e37]: Windows
+            - heading [level=3] [ref=e38]: Windows. Аудит (WMI/RPC)
+            - paragraph [ref=e39]: Доменная учётка аудита, разовый запуск.
+            - generic [ref=e41]:
+              - term [ref=e42]: Запуск
+              - definition [ref=e43]: Разовый
+            - button [ref=e44] [cursor=pointer]: Создать задачу
+        - generic [ref=e45]:
+          - generic [ref=e46]:
+            - heading [level=2] [ref=e48]: Задачи команды
+            - button [ref=e50] [cursor=pointer]: Обновить
+          - table [ref=e52]:
+            - rowgroup [ref=e53]:
+              - row [ref=e54]:
+                - columnheader [ref=e55]: Задача
+                - columnheader [ref=e56]: Пресет
+                - columnheader [ref=e57]: Цели
+                - columnheader [ref=e58]: Автор
+                - columnheader [ref=e59]: Состояние
+                - columnheader [ref=e60]:
+                  - generic [ref=e61]: Действия
+            - rowgroup [ref=e62]:
+              - row [ref=e63]:
+                - cell [ref=e64]: Задач пока нет.
+  - dialog "Windows. Аудит (WMI/RPC)" [ref=e65]:
+    - heading "Windows. Аудит (WMI/RPC)" [level=2] [ref=e66]
+    - paragraph [ref=e67]: Доменная учётка аудита, разовый запуск.
+    - group "IP-адреса, подсети и FQDN · указано 0" [ref=e68]:
+      - generic [ref=e69]: IP-адреса, подсети и FQDN · указано 0
+      - textbox "IP-адреса, подсети и FQDN для сканирования" [active] [ref=e70]:
+        - /placeholder: "10.0.0.15\n10.0.1.0/24\nsrv01.corp.local"
+      - generic [ref=e71]: По одному в строке.
+    - generic [ref=e72]:
+      - generic [ref=e73]: Название
+      - textbox "Название" [ref=e74]:
+        - /placeholder: По умолчанию — группы, адреса и дата
+    - generic [ref=e75]:
+      - generic [ref=e76]: Комментарий
+      - textbox "Комментарий" [ref=e77]
+    - generic [ref=e78]:
+      - button "Отмена" [ref=e79] [cursor=pointer]
+      - button "Создать" [disabled] [ref=e80]
+      - button "Создать и запустить" [disabled] [ref=e81]
+```
+
+# Test source
+
+```ts
+  1297 |       return route.fulfill({
+  1298 |         json: defaultApiResponse("/api/vulnerabilities/summary"),
+  1299 |       });
+  1300 |     },
+  1301 |   });
+  1302 |   await page.goto("/vulnerabilities");
+  1303 |   await expect(
+  1304 |     page.getByRole("button", { name: "Применить фильтры" }),
+  1305 |   ).toBeVisible();
+  1306 |   await expect(page.getByText("История риска", { exact: true })).toHaveCount(0);
+  1307 |   expect(selections).toEqual([]);
+  1308 |   await page.getByText("Ещё фильтры", { exact: true }).click();
+  1309 |   await page.getByLabel("Актив", { exact: true }).fill("host-e2e-1");
+  1310 |   await page.getByRole("button", { name: "Применить фильтры" }).click();
+  1311 |   await expect.poll(() => selections).toEqual(["host-e2e-1"]);
+  1312 | });
+  1313 | 
+  1314 | const ENGINEER_PRESET = {
+  1315 |   preset_id: "preset-win",
+  1316 |   name: "Windows. Аудит (WMI/RPC)",
+  1317 |   description: "Доменная учётка аудита, разовый запуск.",
+  1318 |   os_family: "windows",
+  1319 |   max_groups_per_task: 5,
+  1320 |   max_active_tasks: 3,
+  1321 |   trigger_parameters: null,
+  1322 |   is_active: true,
+  1323 |   version: 1,
+  1324 |   role_ids: [10],
+  1325 |   allowed_asset_groups: [
+  1326 |     { id: "g-servers", name: "Servers", path: "Root / Windows / Servers" },
+  1327 |     { id: "g-dc", name: "DC", path: "Root / Windows / DC" },
+  1328 |   ],
+  1329 | };
+  1330 | 
+  1331 | function engineerApiOverrides(created) {
+  1332 |   return {
+  1333 |     "/api/auth/me": (route) =>
+  1334 |       route.fulfill({
+  1335 |         json: {
+  1336 |           user: {
+  1337 |             id: 7,
+  1338 |             username: "win.eng",
+  1339 |             display_name: "Windows Engineer",
+  1340 |             role: "Инженер Windows",
+  1341 |             roles: [
+  1342 |               { id: 10, key: "engineer_windows", name: "Инженер Windows" },
+  1343 |             ],
+  1344 |             permissions: [
+  1345 |               "system.read",
+  1346 |               "task_presets.read",
+  1347 |               "tasks.team",
+  1348 |               "operations.read",
+  1349 |               "notifications.read",
+  1350 |               "notifications.manage",
+  1351 |               "diagnostics.write",
+  1352 |             ],
+  1353 |           },
+  1354 |         },
+  1355 |       }),
+  1356 |     "/api/task-presets": (route) =>
+  1357 |       route.fulfill({ json: { rows: [ENGINEER_PRESET] } }),
+  1358 |     "GET /api/team-tasks": (route) =>
+  1359 |       route.fulfill({ json: { rows: created.rows } }),
+  1360 |     "POST /api/team-tasks": async (route) => {
+  1361 |       created.request = route.request().postDataJSON();
+  1362 |       const task = {
+  1363 |         mp_task_id: "task-new",
+  1364 |         name: "Servers 2026-10-24",
+  1365 |         preset_name: ENGINEER_PRESET.name,
+  1366 |         preset_is_active: true,
+  1367 |         os_family: "windows",
+  1368 |         status: "started",
+  1369 |         created_by: "win.eng",
+  1370 |         preset_asset_groups: [ENGINEER_PRESET.allowed_asset_groups[0]],
+  1371 |         postprocess: { status: "monitoring" },
+  1372 |       };
+  1373 |       created.rows = [task];
+  1374 |       await route.fulfill({
+  1375 |         status: 201,
+  1376 |         json: { task, start: { status: "started" }, idempotent_replay: false },
+  1377 |       });
+  1378 |     },
+  1379 |   };
+  1380 | }
+  1381 | 
+  1382 | for (const width of [1440, 768, 390]) {
+  1383 |   test(`engineer creates and starts a preset task at ${width}px`, async ({
+  1384 |     page,
+  1385 |   }) => {
+  1386 |     await page.setViewportSize({ width, height: 900 });
+  1387 |     const pageErrors = collectPageErrors(page);
+  1388 |     const created = { rows: [], request: null };
+  1389 |     await installApiMock(page, engineerApiOverrides(created));
+  1390 | 
+  1391 |     await page.goto("/");
+  1392 |     await expectRoute(page, "/scans");
+  1393 |     await expect(page.locator('.nav a[href="/tasks"]')).toHaveCount(0);
+  1394 | 
+  1395 |     await page.getByRole("button", { name: "Создать задачу" }).click();
+  1396 |     const dialog = page.getByRole("dialog", { name: ENGINEER_PRESET.name });
+> 1397 |     await dialog.getByLabel("Root / Windows / Servers").check();
+       |                                                         ^ Error: locator.check: Test timeout of 60000ms exceeded.
+  1398 |     await dialog.getByRole("button", { name: "Создать и запустить" }).click();
+  1399 | 
+  1400 |     await expect(dialog).toHaveCount(0);
+  1401 |     await expect(
+  1402 |       page.getByRole("cell", { name: /Servers 2026-10-24/ }),
+  1403 |     ).toBeVisible();
+  1404 |     await expect(page.getByText("Сканирование идёт")).toBeVisible();
+  1405 |     expect(created.request).toEqual({
+  1406 |       preset_id: "preset-win",
+  1407 |       asset_group_ids: ["g-servers"],
+  1408 |       targets: [],
+  1409 |       name: null,
+  1410 |       description: null,
+  1411 |       start_now: true,
+  1412 |     });
+  1413 |     const overflow = await page.evaluate(
+  1414 |       () => document.documentElement.scrollWidth > window.innerWidth + 1,
+  1415 |     );
+  1416 |     expect(overflow).toBe(false);
+  1417 |     expect(pageErrors).toEqual([]);
+  1418 |   });
+  1419 | }
+  1420 | 
+  1421 | const PRESET_TEMPLATES = {
+  1422 |   rows: [
+  1423 |     {
+  1424 |       template_id: "windows-vulnerabilities",
+  1425 |       os_family: "windows",
+  1426 |       name: "Windows. Поиск уязвимостей",
+  1427 |       purpose:
+  1428 |         "Регулярный поиск уязвимостей: собирает только сведения об ОС и приложениях.",
+  1429 |       module: "Audit",
+  1430 |       profile_names: ["Windows Audit Vulnerabilities Discovery"],
+  1431 |       credential: "required",
+  1432 |       credential_hint:
+  1433 |         "Доменная учётная запись из группы локальных администраторов (WMI/RPC).",
+  1434 |       precheck_enabled: true,
+  1435 |       max_groups_per_task: 5,
+  1436 |       max_active_tasks: 3,
+  1437 |       notes: ["Не предназначен для узлов АСУ ТП."],
+  1438 |     },
+  1439 |     {
+  1440 |       template_id: "linux-audit",
+  1441 |       os_family: "linux",
+  1442 |       name: "Linux. Полный аудит",
+  1443 |       purpose:
+  1444 |         "Полная конфигурация ОС семейства Unix и установленного ПО для поиска уязвимостей и политик.",
+  1445 |       module: "Audit",
+  1446 |       profile_names: ["Unix SSH Audit"],
+  1447 |       credential: "required",
+  1448 |       credential_hint:
+  1449 |         "SSH-учётная запись с sudo: ALL=(ALL) ALL или sudo-обёртки из audit_sudo_wrappers.zip.",
+  1450 |       precheck_enabled: true,
+  1451 |       max_groups_per_task: 3,
+  1452 |       max_active_tasks: 2,
+  1453 |       notes: ["Узлы с ядром Linux 2.6.38 и ниже не будут добавлены."],
+  1454 |     },
+  1455 |   ],
+  1456 |   avoid: [
+  1457 |     {
+  1458 |       profile: "Unsafe PenTest",
+  1459 |       reason: "DoS-проверки могут сделать службы и узлы недоступными.",
+  1460 |     },
+  1461 |   ],
+  1462 |   docs_url:
+  1463 |     "https://help.ptsecurity.com/ru-RU/projects/vm/28.0/help/7723547531",
+  1464 | };
+  1465 | 
+  1466 | function presetAdminApiOverrides() {
+  1467 |   return {
+  1468 |     "/api/auth/me": (route) => {
+  1469 |       const response = defaultApiResponse("/api/auth/me");
+  1470 |       response.user.permissions.push(
+  1471 |         "task_presets.read",
+  1472 |         "task_presets.manage",
+  1473 |       );
+  1474 |       return route.fulfill({ json: response });
+  1475 |     },
+  1476 |     "/api/task-presets": (route) => route.fulfill({ json: { rows: [] } }),
+  1477 |     "/api/task-presets/templates": (route) =>
+  1478 |       route.fulfill({ json: PRESET_TEMPLATES }),
+  1479 |     "/api/auth/roles": (route) =>
+  1480 |       route.fulfill({
+  1481 |         json: {
+  1482 |           rows: [{ id: 11, key: "engineer_linux", name: "Инженер Linux" }],
+  1483 |         },
+  1484 |       }),
+  1485 |     "/api/task-presets/lookups": (route) =>
+  1486 |       route.fulfill({
+  1487 |         json: {
+  1488 |           scopes: [{ id: "scope-1", name: "Main" }],
+  1489 |           scanner_profiles: [{ id: "profile-unix", name: "Unix SSH Audit" }],
+  1490 |           credentials: [{ id: "cred-ssh", name: "ssh-audit" }],
+  1491 |           agents: [],
+  1492 |         },
+  1493 |       }),
+  1494 |     "/api/task-presets/asset-groups": (route) =>
+  1495 |       route.fulfill({
+  1496 |         json: {
+  1497 |           rows: [{ id: "g-linux", name: "Linux", path: "Root / Linux" }],
+```

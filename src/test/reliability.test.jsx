@@ -4,6 +4,7 @@ import { SystemBanner } from "../app/layout.jsx";
 import { api, normalizeApiError } from "../api/client.js";
 import { ActionMenu, Button, ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
+import { AssetVulnerabilitiesTabPaged } from "../features/asset-cards/AssetVulnerabilitiesTab.jsx";
 import {
   AssetCard,
   AssetCardsPanel,
@@ -22,6 +23,45 @@ describe("reliability UI", () => {
   beforeEach(() => {
     api.mockReset();
     api.mockResolvedValue({ rows: [] });
+  });
+
+  it("reads saved Wazuh findings and groups packages by CVE", async () => {
+    const path =
+      "/api/asset-cards/asset-1/vulnerabilities/wazuh-cti?additional_only=true";
+    const cve = "CVE-2025-49796";
+    const passportId = `wazuh-cti:${cve}`;
+    const openPassport = vi.fn();
+    api.mockImplementation(async (url) =>
+      url === path
+        ? {
+            platform: ["debian", "bookworm"],
+            inventory_complete: true,
+            evaluated_packages: 2,
+            packages: 2,
+            pending: false,
+            matches: ["lib-a", "lib-b"].map((name) => ({
+              cve,
+              passport_id: passportId,
+              package: name,
+              version: "1.0",
+            })),
+          }
+        : { header: {}, sources: [] },
+    );
+    render(
+      <AssetVulnerabilitiesTabPaged
+        assetId="asset-1"
+        onOpenPassport={openPassport}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Уязвимости, найденные Wazuh" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: cve }));
+    expect(api).toHaveBeenCalledWith(path);
+    expect(screen.getByText("lib-a · 1.0, lib-b · 1.0")).toBeVisible();
+    expect(openPassport).toHaveBeenCalledWith({ internal_id: passportId });
   });
 
   it("keeps a two-day-old asset card fresh with a fourteen-day window", () => {

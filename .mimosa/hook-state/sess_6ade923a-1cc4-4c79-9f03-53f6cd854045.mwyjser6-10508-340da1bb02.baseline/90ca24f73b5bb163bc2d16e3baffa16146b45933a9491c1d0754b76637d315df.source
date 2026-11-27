@@ -1,0 +1,28 @@
+---
+type: "query"
+date: "2026-08-28T10:25:41.605013+00:00"
+question: "При клике на задачу увидеть её результаты: для precheck успешные и неуспешные проверки, для обычной задачи успешность сканирования, всё в отдельном окне."
+contributor: "graphify"
+outcome: "useful"
+source_nodes: ["TasksPage", "TaskListPanel", "run_precheck_for_scanner_task", "record_scan_task", "get_scan_task", "update_scan_task_status", "OperationDetail"]
+---
+
+# Q: При клике на задачу увидеть её результаты: для precheck успешные и неуспешные проверки, для обычной задачи успешность сканирования, всё в отдельном окне.
+
+## Answer
+
+Expanded from original query via vocab: [task, precheck, scan, result, results, status, details, modal, dialog, history, check]. Feasible. Current graph confirms TasksPage and TaskListPanel, local scan-task persistence through record_scan_task/get_scan_task/list_scan_tasks/update_scan_task_status, and a precheck workflow that creates and updates a scan-task record. Existing UI patterns include OperationDetail and dialog accessibility primitives. The graph does not confirm that structured per-check outcomes are already persisted. Recommended design: clicking a task opens a detail modal; common header shows task, type, target, start/end and final status; precheck body shows each check with success/failure and error details; regular scan body shows final success/failure and available scanner error/summary. Likely change boundary: persisted result payload, task-detail API, clickable TaskListPanel row, modal component and tests.
+
+## Outcome
+
+- Signal: useful
+
+## Source Nodes
+
+- TasksPage
+- TaskListPanel
+- run_precheck_for_scanner_task
+- record_scan_task
+- get_scan_task
+- update_scan_task_status
+- OperationDetail

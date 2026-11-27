@@ -1,17 +1,20 @@
 import io
 import json
 from asyncio import run
+from threading import Event
 from zipfile import ZipFile
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app import db
+from app.api.asset_cards import local_asset_wazuh_cti_matches
 from app.api.passports import create_vulnerability_passport_refresh_job, export_wazuh_refresh_errors
 from app.repositories import passport_refresh
 from app.repositories.passports.wazuh_cti import create_passports, iter_refresh_failures
 from app.services import wazuh_cti, wazuh_snapshot
 from app.services.wazuh_asset_match import assess_asset
+from app.services.wazuh_asset_scheduler import reconcile_due_assets
 
 pytestmark = pytest.mark.integration
 
@@ -171,7 +174,7 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     assert saved["raw_detail"]["references"] == ["https://example.com/advisory"]
     assert saved["raw_detail"]["description"] == "Test description."
     assert saved["score"] == "9.1"
-    db.upsert_asset_card({
+    card = {
         "asset_id": "linux-test",
         "root": {"objectId": "linux-test", "data": {"osName": "Debian", "osVersion": "12.15"}},
         "collections": [{
@@ -183,11 +186,55 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
                 for version in ("2.0-1", "2.0-2")
             ],
         }],
-    })
+    }
+    db.upsert_asset_card(card)
     result = assess_asset("linux-test")
     assert result["inventory_complete"]
     assert result["evaluated_packages"] == 2
     assert [(item["passport_id"], item["version"]) for item in result["matches"]] == [(passport_id, "2.0-1")]
+    assert assess_asset("linux-test", additional_only=True)["matches"] == result["matches"]
+    assert local_asset_wazuh_cti_matches("linux-test")["pending"]
+    reconcile_due_assets(Event())
+    saved_result = local_asset_wazuh_cti_matches("linux-test", additional_only=True)
+    assert saved_result["checked_at"]
+    assert saved_result["matches"] == result["matches"]
+
+    refreshed_card = db.upsert_asset_card(card)
+    assert local_asset_wazuh_cti_matches("linux-test")["pending"]
+    stopped = Event()
+    stopped.set()
+    reconcile_due_assets(stopped)
+    assert local_asset_wazuh_cti_matches("linux-test")["pending"]
+    reconcile_due_assets(Event())
+    assert local_asset_wazuh_cti_matches("linux-test")["inventory_at"] == refreshed_card["last_seen"]
+    with db.connect() as conn:
+        group = conn.execute(
+            """
+            INSERT INTO asset_card_vulnerability_groups
+                (asset_id, source_type, collection_type, collection_id, group_order, updated_at)
+            VALUES ('linux-test', 'docker', 'docker', 'containers', 0, 'test')
+            RETURNING id
+            """
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO asset_card_vulnerabilities (asset_id, group_id, cve_name, updated_at)
+            VALUES ('linux-test', %s, %s, 'test')
+            """,
+            (group["id"], f" {cve.lower()} "),
+        )
+    assert assess_asset("linux-test", additional_only=True)["matches"] == []
+    assert assess_asset("linux-test")["matches"] == result["matches"]
+    assert local_asset_wazuh_cti_matches("linux-test", additional_only=True)["matches"] == []
+
+    with db.connect() as conn:
+        conn.execute("DELETE FROM wazuh_cti_package_rules WHERE passport_id = %s", (passport_id,))
+        conn.execute(
+            "UPDATE wazuh_asset_assessments SET checked_at = now() - interval '2 hours' WHERE asset_id = 'linux-test'"
+        )
+    assert local_asset_wazuh_cti_matches("linux-test")["matches"] == result["matches"]
+    reconcile_due_assets(Event())
+    assert local_asset_wazuh_cti_matches("linux-test")["matches"] == []
 
     def unavailable(*args, **kwargs):
         raise wazuh_cti.requests.Timeout

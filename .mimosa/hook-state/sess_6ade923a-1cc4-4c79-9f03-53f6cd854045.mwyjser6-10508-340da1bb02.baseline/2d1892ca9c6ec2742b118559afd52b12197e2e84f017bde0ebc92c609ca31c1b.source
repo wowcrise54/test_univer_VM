@@ -1,0 +1,14 @@
+-r requirements.txt
+-r requirements-mcp.txt
+httpcore2==2.12.0
+httpx2==2.12.0
+mypy==1.17.1
+pytest==9.1.1
+pytest-cov==6.2.1
+pytest-timeout==2.4.0
+pypdf==6.21.4
+ruff==0.12.8
+types-requests==2.32.4.20250611
+types-openpyxl==3.1.5.20260827
+types-reportlab==5.0.0.20260911
+pip-audit==2.10.1

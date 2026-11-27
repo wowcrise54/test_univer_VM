@@ -1,0 +1,8 @@
+import config from './playwright.config.js';
+export default {
+  ...config,
+  workers: 2,
+  outputDir: '/verification/playwright/results',
+  reporter: [['list'], ['html', {outputFolder: '/verification/playwright/report', open: 'never'}]],
+  use: {...config.use, launchOptions: {executablePath: '/usr/bin/chromium', args: ['--no-sandbox']}},
+};

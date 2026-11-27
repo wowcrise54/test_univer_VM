@@ -1,0 +1,28 @@
+---
+type: "query"
+date: "2026-08-28T10:32:37.729918+00:00"
+question: "Уточнение UI результатов задач по примерам MP VM jobs для обычного скана и precheck."
+contributor: "graphify"
+outcome: "useful"
+source_nodes: ["TaskListPanel", "MpVmClient", "get_run_jobs", "get_all_run_jobs", "get_task_runs", "wait_for_connection_check_targets", "split_successful_run_jobs"]
+---
+
+# Q: Уточнение UI результатов задач по примерам MP VM jobs для обычного скана и precheck.
+
+## Answer
+
+Expanded from original query via graph vocab: [job, jobs, run, runs, page, pages, pagination, limit, connection, check, results, target, targets, agent, profile, transport, errors, scanner]. User clarified that task details must be sourced from MP VM GET /api/scanning/v2/runs/{run_id}/jobs. Ordinary scan modal is a jobs table with final status/errorStatus, start/end, duration, agent, targets and profile. Precheck modal uses the same job rows and additionally shows passed/total connection checks derived from connectionCheckResults, with per-transport status and errors in row detail. The project already has MpVmClient.get_run_jobs and get_all_run_jobs; the latter should be reused for counts above a single page instead of duplicating paging. TaskListPanel opens the modal and backend resolves the related run then returns normalized jobs.
+
+## Outcome
+
+- Signal: useful
+
+## Source Nodes
+
+- TaskListPanel
+- MpVmClient
+- get_run_jobs
+- get_all_run_jobs
+- get_task_runs
+- wait_for_connection_check_targets
+- split_successful_run_jobs

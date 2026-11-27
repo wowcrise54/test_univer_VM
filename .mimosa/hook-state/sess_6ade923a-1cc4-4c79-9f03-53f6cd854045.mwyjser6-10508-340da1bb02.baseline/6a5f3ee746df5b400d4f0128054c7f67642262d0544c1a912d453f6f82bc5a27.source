@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import asyncio
+
+import httpx2
+
+from mcp_server import vulnerabilities as vuln
+from mcp_server.client import AppClient
+from tests.mcp_server.fakes import FakeApi, host_row, iso_ago, make_settings, vuln_row
+
+
+def test_match_rows_prefers_exact_cve_over_substring_hits():
+    rows = [
+        vuln_row("id:1", vulnerability_id="V-1", cve="CVE-2024-1"),
+        vuln_row("cve:CVE-2024-10", cve="CVE-2024-10"),
+        vuln_row("id:3", vulnerability_id="V-3", cve="CVE-2024-1, CVE-2024-99"),
+    ]
+    matched, kind = vuln.match_rows(rows, " cve-2024-1 ")
+    assert kind == "exact"
+    assert [row["selector"] for row in matched] == ["id:1", "id:3"]
+
+
+def test_match_rows_by_vulnerability_id_and_name_and_partial_fallback():
+    rows = [vuln_row("id:1", vulnerability_id="PT-2024-77", cve="CVE-1", name="OpenSSL overflow")]
+    assert vuln.match_rows(rows, "pt-2024-77")[1] == "exact"
+    assert vuln.match_rows(rows, "openssl overflow")[1] == "exact"
+    matched, kind = vuln.match_rows(rows, "openssl")
+    assert (kind, len(matched)) == ("partial", 1)
+    assert vuln.match_rows([], "anything") == ([], "none")
+
+
+def test_fix_info_tells_apart_available_not_described_and_unknown():
+    available = vuln.fix_info({"has_fix": True, "how_to_fix": "Update to 1.2.3", "passports": [{"external_id": "P1"}]})
+    assert (available["status"], available["has_fix"]) == ("available", True)
+    assert available["how_to_fix"] == "Update to 1.2.3"
+
+    described = vuln.fix_info({"has_fix": False, "passports": [{"external_id": "P1", "has_detail": True}]})
+    assert (described["status"], described["has_fix"]) == ("not_described", False)
+
+    pending = vuln.fix_info({"has_fix": False, "passports": [{"external_id": "P1", "has_detail": False}]})
+    assert (pending["status"], pending["has_fix"]) == ("unknown", None)
+    assert "not loaded" in pending["reason"]
+
+    unlinked = vuln.fix_info({"has_fix": False, "passports": []})
+    assert (unlinked["status"], unlinked["has_fix"]) == ("unknown", None)
+    assert "no vulnerability passport" in unlinked["reason"]
+
+
+def test_fix_info_truncates_long_text():
+    info = vuln.fix_info({"has_fix": True, "how_to_fix": "x" * (vuln.MAX_FIX_TEXT_CHARS + 50)})
+    assert len(info["how_to_fix"]) == vuln.MAX_FIX_TEXT_CHARS
+    assert info["how_to_fix_truncated"] is True
+
+
+def test_host_staleness():
+    assert vuln.host_staleness(iso_ago(1), stale_days=14)[1] is False
+    age, stale = vuln.host_staleness(iso_ago(30), stale_days=14)
+    assert stale is True and age is not None and age > 29
+    assert vuln.host_staleness("not a date", stale_days=14) == (None, None)
+    assert vuln.host_staleness("2026-01-01 10:00:00", stale_days=14)[1] is True
+
+
+def _find(api: FakeApi, **kwargs):
+    async def run():
+        client = AppClient(make_settings(), transport=api.transport())
+        try:
+            return await vuln.find_hosts_by_vulnerability(client, vuln.CoverageProbe(client), stale_days=14, **kwargs)
+        finally:
+            await client.aclose()
+
+    return asyncio.run(run())
+
+
+def _api_for_cve() -> FakeApi:
+    api = FakeApi()
+    api.json(
+        "/api/vulnerabilities",
+        {
+            "total": 3,
+            "rows": [
+                vuln_row("id:100", vulnerability_id="V-100", cve="CVE-2024-3094", how_to_fix="Upgrade xz", has_fix=True),
+                vuln_row("cve:CVE-2024-3094|source:docker", cve="CVE-2024-3094", sources=["docker"]),
+                vuln_row("cve:CVE-2024-30940", cve="CVE-2024-30940"),
+            ],
+        },
+    )
+
+    def hosts(request: httpx2.Request) -> httpx2.Response:
+        selector = request.url.params["selector"]
+        rows = {
+            "id:100": [
+                host_row("a", severity="high", remediation={"case_id": "c1", "status": "in_progress", "overdue": True}),
+                host_row("b", severity="critical", cvss_score=9.8, last_seen=iso_ago(40)),
+            ],
+            "cve:CVE-2024-3094|source:docker": [host_row("b", sources=["docker"]), host_row("c", severity="medium")],
+        }[selector]
+        return httpx2.Response(200, json={"total": len(rows), "rows": rows, "limit": 500, "offset": 0})
+
+    api.routes["/api/vulnerabilities/hosts"] = hosts
+    api.json("/api/vulnerabilities/summary", {"coverage": {"complete": True, "freshest_at": "2026-11-02T10:00:00Z"}})
+    return api
+
+
+def test_find_hosts_unions_selectors_and_ignores_substring_matches():
+    result = _find(_api_for_cve(), query="CVE-2024-3094")
+
+    assert result["match"] == "exact"
+    assert [v["selector"] for v in result["vulnerabilities"]] == ["id:100", "cve:CVE-2024-3094|source:docker"]
+    assert result["vulnerabilities"][0]["fix"]["status"] == "available"
+    assert result["vulnerabilities"][1]["fix"]["status"] == "unknown"
+
+    hosts = {h["asset_id"]: h for h in result["hosts"]}
+    assert result["total_hosts"] == 3 and set(hosts) == {"a", "b", "c"}
+    assert [h["asset_id"] for h in result["hosts"]] == ["b", "a", "c"]  # critical, high, medium
+    assert sorted(hosts["b"]["selectors"]) == ["cve:CVE-2024-3094|source:docker", "id:100"]
+    assert hosts["b"]["sources"] == ["docker", "software"]
+    assert hosts["b"]["stale"] is True and hosts["a"]["stale"] is False
+    assert result["stale_hosts"] == 1
+    assert hosts["a"]["remediation"][0]["status"] == "in_progress"
+    source = result["data_source"]
+    assert "coverage" not in source  # the global summary is slow, so it is opt-in
+    assert source["hosts_oldest_last_seen"] < source["hosts_freshest_last_seen"]
+    assert "not from a live MP VM" in source["note"]
+    assert result["truncated"] is False
+
+
+def test_find_hosts_does_not_call_the_slow_summary_unless_asked():
+    api = _api_for_cve()
+    _find(api, query="CVE-2024-3094")
+    assert "/api/vulnerabilities/summary" not in {r.url.path for r in api.data_requests()}
+
+    result = _find(api, query="CVE-2024-3094", include_coverage=True)
+    assert result["data_source"]["coverage"] == {"complete": True, "freshest_at": "2026-11-02T10:00:00Z"}
+    assert "/api/vulnerabilities/summary" in {r.url.path for r in api.data_requests()}
+
+
+def test_coverage_probe_caches_shares_one_fetch_and_gives_up_on_timeout():
+    calls: list[str] = []
+
+    class Slow:
+        async def get(self, path: str, **params):
+            calls.append(path)
+            await asyncio.sleep(0.2)
+            return {"coverage": {"complete": True}}
+
+    async def run():
+        probe = vuln.CoverageProbe(Slow(), ttl_seconds=60, timeout_seconds=1)
+        first = await asyncio.gather(probe.get(), probe.get(), probe.get())  # one shared fetch
+        again = await probe.get()  # served from the cache
+        impatient = vuln.CoverageProbe(Slow(), ttl_seconds=60, timeout_seconds=0.01)
+        gave_up = await impatient.get()
+        await asyncio.sleep(0.3)  # the abandoned fetch still finishes and fills the cache
+        return first, again, gave_up, await impatient.get()
+
+    first, again, gave_up, later = asyncio.run(run())
+    assert first == [{"complete": True}] * 3 and again == {"complete": True}
+    assert gave_up is None and later == {"complete": True}
+    assert len(calls) == 2
+
+
+def test_coverage_probe_survives_api_errors():
+    class Broken:
+        async def get(self, path: str, **params):
+            raise vuln.ApiError(500, "BOOM", "summary failed")
+
+    assert asyncio.run(vuln.CoverageProbe(Broken()).get()) is None
+
+
+def test_find_hosts_fetches_selectors_concurrently():
+    api = _api_for_cve()
+    state = {"now": 0, "peak": 0}
+
+    async def run():
+        client = AppClient(make_settings(), transport=api.transport())
+        original = client.get
+
+        async def tracked(path, **params):
+            if path.endswith("/hosts"):
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+                await asyncio.sleep(0.05)
+                try:
+                    return await original(path, **params)
+                finally:
+                    state["now"] -= 1
+            return await original(path, **params)
+
+        client.get = tracked  # type: ignore[method-assign]
+        try:
+            return await vuln.find_hosts_by_vulnerability(client, vuln.CoverageProbe(client), stale_days=14, query="CVE-2024-3094")
+        finally:
+            await client.aclose()
+
+    result = asyncio.run(run())
+    assert state["peak"] == 2 and result["total_hosts"] == 3  # two selectors, fetched together
+
+
+def test_host_rows_are_trimmed_to_what_carries_information():
+    api = FakeApi()
+    api.json("/api/vulnerabilities", {"total": 1, "rows": [vuln_row("id:1", vulnerability_id="V-1", cve="CVE-2026-1")]})
+    api.json(
+        "/api/vulnerabilities/hosts",
+        {"total": 2, "rows": [host_row("a", fqdn="", hostname="host-a", objects=[], docker_images=None), host_row("b")]},
+    )
+    result = _find(api, query="CVE-2026-1")
+    host = next(h for h in result["hosts"] if h["asset_id"] == "a")
+    assert "hostname" not in host  # same as display_name
+    assert not {"fqdn", "objects", "docker_images", "remediation", "selectors"} & host.keys()
+    assert host["stale"] is False  # False is an answer, not an empty field
+    assert result["hosts_by_severity"] == {"high": 2}
+
+
+def test_find_hosts_pages_the_result_after_merging():
+    result = _find(_api_for_cve(), query="CVE-2024-3094", limit=2, offset=2)
+    assert result["total_hosts"] == 3 and result["returned"] == 1
+    assert [h["asset_id"] for h in result["hosts"]] == ["c"]
+
+
+def test_find_hosts_passes_filters_and_only_reads():
+    api = _api_for_cve()
+    _find(api, query="CVE-2024-3094", severity="high", source="software", host_q="web")
+    for request in api.data_requests():
+        assert request.method == "GET"
+    hosts_request = next(r for r in api.data_requests() if r.url.path.endswith("/hosts"))
+    assert api.params(hosts_request)["host_q"] == "web"
+    assert api.params(hosts_request)["severity"] == "high"
+    assert api.params(hosts_request)["source"] == "software"
+
+
+def test_find_hosts_with_no_match_returns_empty_answer():
+    api = FakeApi()
+    api.json("/api/vulnerabilities", {"total": 0, "rows": []})
+    api.json("/api/vulnerabilities/summary", {"coverage": None})
+    result = _find(api, query="CVE-1999-0001")
+    assert (result["match"], result["total_hosts"], result["hosts"]) == ("none", 0, [])
+    assert result["data_source"]["hosts_freshest_last_seen"] is None
+
+
+def test_collect_hosts_follows_pagination():
+    api = FakeApi()
+    pages = {0: [host_row(f"h{i}") for i in range(500)], 500: [host_row(f"h{i}") for i in range(500, 620)]}
+
+    def hosts(request: httpx2.Request) -> httpx2.Response:
+        offset = int(request.url.params["offset"])
+        return httpx2.Response(200, json={"total": 620, "rows": pages[offset]})
+
+    api.routes["/api/vulnerabilities/hosts"] = hosts
+
+    async def run():
+        client = AppClient(make_settings(), transport=api.transport())
+        try:
+            return await vuln.collect_hosts(client, "id:1")
+        finally:
+            await client.aclose()
+
+    rows, total, truncated = asyncio.run(run())
+    assert (len(rows), total, truncated) == (620, 620, False)
+
+
+def test_get_fix_info_reports_status_per_vulnerability():
+    api = _api_for_cve()
+
+    async def run():
+        client = AppClient(make_settings(), transport=api.transport())
+        try:
+            return await vuln.get_fix_info(client, query="CVE-2024-3094")
+        finally:
+            await client.aclose()
+
+    result = asyncio.run(run())
+    assert [v["fix"]["status"] for v in result["vulnerabilities"]] == ["available", "unknown"]
+    assert "no fix is applied" in result["note"]

@@ -1,0 +1,12 @@
+import { VulnerabilitiesDashboard } from "../features/vulnerabilities/index.jsx";
+
+export function VulnerabilitiesPage({ currentUser, showAlert, onNavigate }) {
+  return (
+    <VulnerabilitiesDashboard
+      mode="vulnerabilities"
+      currentUser={currentUser}
+      showAlert={showAlert}
+      onNavigate={onNavigate}
+    />
+  );
+}

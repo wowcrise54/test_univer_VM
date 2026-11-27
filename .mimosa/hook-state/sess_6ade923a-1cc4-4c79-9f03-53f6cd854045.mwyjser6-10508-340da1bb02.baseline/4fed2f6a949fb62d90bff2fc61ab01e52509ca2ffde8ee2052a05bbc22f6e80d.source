@@ -1,0 +1,26 @@
+---
+type: "query"
+date: "2026-08-25T04:45:15.695979+00:00"
+question: "Почему MpVmClient соединяет 13 функциональных сообществ проекта?"
+contributor: "graphify"
+outcome: "useful"
+source_nodes: ["MpVmClient", "AssetCardRequestExecutor", "build_asset_vulnerability_snapshot", "run_scan_postprocess", "start_scanner_task_impl"]
+---
+
+# Q: Почему MpVmClient соединяет 13 функциональных сообществ проекта?
+
+## Answer
+
+Expanded from original query via vocab: [client, transport, asset, request, snapshot, scanner, runtime, error, database, diagnostic, payload, connection]. MpVmClient является интеграционной границей MaxPatrol VM: 49 его методов покрывают HTTP, активы, группы, сканер, задания и уязвимости; app/main.py использует его в постобработке сканирования, построении снимков, исполнении запросов и очистке. Подтвержденные связи calls/imports/method составляют ядро; связи uses помечены INFERRED и требуют проверки.
+
+## Outcome
+
+- Signal: useful
+
+## Source Nodes
+
+- MpVmClient
+- AssetCardRequestExecutor
+- build_asset_vulnerability_snapshot
+- run_scan_postprocess
+- start_scanner_task_impl

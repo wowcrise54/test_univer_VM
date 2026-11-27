@@ -1,0 +1,142 @@
+"""Regression tests for the repository security review (2026-10-27)."""
+
+from __future__ import annotations
+
+import csv
+import io
+import ssl
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import auth, ldap, main
+from app.factory import create_app
+
+ADMIN = {"id": 1, "username": "admin", "display_name": "Admin", "role": "admin", "is_active": True}
+
+
+def test_api_docs_and_schema_are_not_published_by_default(tmp_path):
+    client = TestClient(create_app(static_dir=tmp_path))
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404
+    assert main.app.docs_url is None and main.app.redoc_url is None and main.app.openapi_url is None
+
+
+def test_api_docs_can_be_enabled_for_development(tmp_path):
+    client = TestClient(create_app(static_dir=tmp_path, api_docs=True))
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    assert "openapi" in response.json()
+
+
+def test_security_headers_include_csp_and_optional_hsts(tmp_path):
+    response = TestClient(create_app(static_dir=tmp_path)).get("/missing")
+    policy = response.headers["content-security-policy"]
+    assert "script-src 'self'" in policy and "frame-ancestors 'none'" in policy and "object-src 'none'" in policy
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    assert "strict-transport-security" not in response.headers
+
+    secure = TestClient(create_app(static_dir=tmp_path, hsts=True)).get("/missing")
+    assert secure.headers["strict-transport-security"].startswith("max-age=")
+
+
+def _fake_connect(row):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = row
+
+    @contextmanager
+    def connect():
+        yield conn
+
+    return connect
+
+
+@pytest.mark.parametrize("row", [None, {"id": 7, "is_active": False, "password_hash": "scrypt$stored"}])
+def test_login_spends_a_password_hash_for_unknown_and_disabled_users(row):
+    with patch.object(auth.db, "connect", _fake_connect(row)), \
+         patch.object(auth, "verify_password", return_value=True) as verify:
+        assert auth.authenticate("ghost", "password") is None
+    verify.assert_called_once_with("password", auth._DUMMY_PASSWORD_HASH)
+
+
+def test_dummy_password_hash_never_matches_user_input():
+    assert auth._DUMMY_PASSWORD_HASH.startswith("scrypt$")
+    assert auth.verify_password("", auth._DUMMY_PASSWORD_HASH) is False
+
+
+def _ldap_settings(**overrides):
+    values = {
+        "ldap_url": "ldaps://directory.example",
+        "ldap_bind_dn": "",
+        "ldap_connect_timeout_seconds": 5,
+        "ldap_tls_ca_file": "",
+        "ldap_tls_insecure": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_ldaps_verifies_the_directory_certificate_with_an_optional_ca_bundle(monkeypatch):
+    server, tls = MagicMock(), MagicMock()
+    monkeypatch.setattr("ldap3.Server", server)
+    monkeypatch.setattr("ldap3.Connection", MagicMock())
+    monkeypatch.setattr("ldap3.Tls", tls)
+
+    ldap._build_connection(_ldap_settings(ldap_tls_ca_file=" /certs/corp-ca.pem "))
+
+    tls.assert_called_once_with(validate=ssl.CERT_REQUIRED, ca_certs_file="/certs/corp-ca.pem")
+    assert server.call_args.kwargs["tls"] is tls.return_value
+
+
+def test_ldaps_certificate_check_is_disabled_only_on_explicit_opt_out(monkeypatch):
+    tls = MagicMock()
+    monkeypatch.setattr("ldap3.Server", MagicMock())
+    monkeypatch.setattr("ldap3.Connection", MagicMock())
+    monkeypatch.setattr("ldap3.Tls", tls)
+
+    ldap._build_connection(_ldap_settings(ldap_tls_insecure=True))
+
+    tls.assert_called_once_with(validate=ssl.CERT_NONE)
+
+
+def test_plain_ldap_does_not_configure_tls(monkeypatch):
+    server = MagicMock()
+    monkeypatch.setattr("ldap3.Server", server)
+    monkeypatch.setattr("ldap3.Connection", MagicMock())
+
+    ldap._build_connection(_ldap_settings(ldap_url="ldap://directory.example"))
+
+    assert "tls" not in server.call_args.kwargs
+
+
+def test_asset_query_export_neutralizes_spreadsheet_formulas():
+    page = {
+        "total": 1,
+        "rows": [{
+            "asset_id": "asset-1",
+            "display_name": '=HYPERLINK("https://evil.example","open")',
+            "ip_address": "10.0.0.1",
+            "fqdn": "@SUM(1+1)",
+            "os_name": "+cmd|' /C calc'!A0",
+            "last_seen": None,
+            "matches": [{"entity_path": "soft[0]", "field_path": "soft.name", "value": "\t-2+3"}],
+        }],
+    }
+    with patch.object(auth, "get_session_user", return_value=ADMIN), \
+         patch.object(main.db, "query_asset_cards_by_fields", return_value=page):
+        response = TestClient(main.app).post(
+            "/api/asset-card-query/export",
+            json={"query": {"field_path": "soft.name", "operator": "contains", "value": "x"}},
+        )
+    assert response.status_code == 200
+    rows = list(csv.reader(io.StringIO(response.text.lstrip("﻿"))))
+    exported = dict(zip(rows[0], rows[1], strict=True))
+    assert exported["display_name"].startswith("'=")
+    assert exported["fqdn"] == "'@SUM(1+1)"
+    assert exported["os_name"].startswith("'+")
+    assert exported["value"] == "'\t-2+3"
+    assert exported["ip_address"] == "10.0.0.1"

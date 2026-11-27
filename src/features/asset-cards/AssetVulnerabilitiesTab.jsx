@@ -264,11 +264,6 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
       className="asset-vulnerability-pane"
       aria-label="Уязвимости актива"
     >
-      <AssetWazuhMatches
-        key={assetId}
-        assetId={assetId}
-        onOpenPassport={onOpenPassport}
-      />
       <div
         className="asset-vulnerability-subtabs"
         role="tablist"
@@ -292,359 +287,384 @@ export function AssetVulnerabilitiesTabPaged({ assetId, onOpenPassport }) {
         >
           Docker-контейнеры · {formatCount(dockerCount)}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={vulnerabilityView === "wazuh"}
+          className={vulnerabilityView === "wazuh" ? "is-active" : ""}
+          onClick={() => setVulnerabilityView("wazuh")}
+        >
+          Уязвимости, найденные Wazuh
+        </button>
       </div>
-      <div className="asset-vulnerability-toolbar">
-        {sources.map((source, index) => (
-          <span key={assetSourceKey(source, index)}>
-            {source.source === "os"
-              ? "Уязвимости ОС"
-              : source.source === "docker"
-                ? "Docker-контейнеры"
-                : "Уязвимости ПО"}
-            : <strong>{formatCount(sourceCount(source))}</strong>
-          </span>
-        ))}
-        {vulnerabilityView === "regular" ? (
-          <span>
-            Сетевые сервисы:{" "}
-            <strong>
-              {formatCount(header.network_services_vulnerabilities_count || 0)}
-            </strong>
-          </span>
-        ) : null}
-      </div>
-      <div className="asset-vulnerability-heading">
-        <div>
-          <strong>
-            {vulnerabilityView === "docker"
-              ? "Уязвимости Docker-контейнеров"
-              : "Уязвимости"}
-          </strong>
-          <span>
-            Загружено {formatCount(loadedFindingCount)} из{" "}
-            {formatCount(
-              vulnerabilityView === "docker"
-                ? dockerCount
-                : header.os_soft_vulnerabilities_count || loadedFindingCount,
-            )}{" "}
-            уязвимостей.
-          </span>
-          {vulnerabilityView === "docker" &&
-          dockerSource?.status === "fallback" ? (
-            <span className="asset-docker-source-status">
-              Docker-PDQL недоступен — использованы структурированные данные
-              карточки.
+      {vulnerabilityView === "wazuh" ? (
+        <AssetWazuhMatches
+          key={assetId}
+          assetId={assetId}
+          onOpenPassport={onOpenPassport}
+        />
+      ) : null}
+      <div
+        className="asset-vulnerability-mpvm"
+        hidden={vulnerabilityView === "wazuh"}
+      >
+        <div className="asset-vulnerability-toolbar">
+          {sources.map((source, index) => (
+            <span key={assetSourceKey(source, index)}>
+              {source.source === "os"
+                ? "Уязвимости ОС"
+                : source.source === "docker"
+                  ? "Docker-контейнеры"
+                  : "Уязвимости ПО"}
+              : <strong>{formatCount(sourceCount(source))}</strong>
+            </span>
+          ))}
+          {vulnerabilityView === "regular" ? (
+            <span>
+              Сетевые сервисы:{" "}
+              <strong>
+                {formatCount(
+                  header.network_services_vulnerabilities_count || 0,
+                )}
+              </strong>
             </span>
           ) : null}
         </div>
-        {sourceKeys.length ? (
-          <div className="asset-vulnerability-controls">
-            <button type="button" onClick={expandAll}>
-              Развернуть все
-            </button>
-            <button type="button" onClick={collapseAll}>
-              Свернуть все
-            </button>
+        <div className="asset-vulnerability-heading">
+          <div>
+            <strong>
+              {vulnerabilityView === "docker"
+                ? "Уязвимости Docker-контейнеров"
+                : "Уязвимости"}
+            </strong>
+            <span>
+              Загружено {formatCount(loadedFindingCount)} из{" "}
+              {formatCount(
+                vulnerabilityView === "docker"
+                  ? dockerCount
+                  : header.os_soft_vulnerabilities_count || loadedFindingCount,
+              )}{" "}
+              уязвимостей.
+            </span>
+            {vulnerabilityView === "docker" &&
+            dockerSource?.status === "fallback" ? (
+              <span className="asset-docker-source-status">
+                Docker-PDQL недоступен — использованы структурированные данные
+                карточки.
+              </span>
+            ) : null}
+          </div>
+          {sourceKeys.length ? (
+            <div className="asset-vulnerability-controls">
+              <button type="button" onClick={expandAll}>
+                Развернуть все
+              </button>
+              <button type="button" onClick={collapseAll}>
+                Свернуть все
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {error ? (
+          <div className="passport-load-error" role="alert">
+            {error}
           </div>
         ) : null}
-      </div>
-      {error ? (
-        <div className="passport-load-error" role="alert">
-          {error}
-        </div>
-      ) : null}
-      <div
-        className="asset-vulnerability-table-shell"
-        tabIndex="0"
-        aria-label="Прокручиваемый список уязвимостей"
-      >
-        <table className="asset-vulnerability-table">
-          <thead>
-            <tr>
-              <SortableHeader
-                column="name"
-                sort={tableSort}
-                onSort={toggleTableSort}
-              >
-                Уязвимости
-              </SortableHeader>
-              <SortableHeader
-                column="cvss_score"
-                sort={tableSort}
-                onSort={toggleTableSort}
-                initialDirection="desc"
-              >
-                Интегральная уязвимость
-              </SortableHeader>
-              <SortableHeader
-                column="cve_name"
-                sort={tableSort}
-                onSort={toggleTableSort}
-              >
-                CVE
-              </SortableHeader>
-            </tr>
-          </thead>
-          <tbody>
-            {sources.map((source, sourceIndex) => {
-              const sourceKey = assetSourceKey(source, sourceIndex);
-              const sourceCollapsed = collapsedSourceSet.has(sourceKey);
-              const groups = sortRows(source.groups || [], tableSort, {
-                name: (group) => group.name,
-                cve_name: (group) => group.name,
-              });
-              return (
-                <React.Fragment key={sourceKey}>
-                  <tr className="asset-vulnerability-source">
-                    <td colSpan={3}>
-                      <button
-                        type="button"
-                        className="asset-vulnerability-toggle"
-                        aria-expanded={!sourceCollapsed}
-                        onClick={() => toggleSource(sourceKey)}
-                      >
-                        <span
-                          className="asset-vulnerability-caret"
-                          aria-hidden="true"
+        <div
+          className="asset-vulnerability-table-shell"
+          tabIndex="0"
+          aria-label="Прокручиваемый список уязвимостей"
+        >
+          <table className="asset-vulnerability-table">
+            <thead>
+              <tr>
+                <SortableHeader
+                  column="name"
+                  sort={tableSort}
+                  onSort={toggleTableSort}
+                >
+                  Уязвимости
+                </SortableHeader>
+                <SortableHeader
+                  column="cvss_score"
+                  sort={tableSort}
+                  onSort={toggleTableSort}
+                  initialDirection="desc"
+                >
+                  Интегральная уязвимость
+                </SortableHeader>
+                <SortableHeader
+                  column="cve_name"
+                  sort={tableSort}
+                  onSort={toggleTableSort}
+                >
+                  CVE
+                </SortableHeader>
+              </tr>
+            </thead>
+            <tbody>
+              {sources.map((source, sourceIndex) => {
+                const sourceKey = assetSourceKey(source, sourceIndex);
+                const sourceCollapsed = collapsedSourceSet.has(sourceKey);
+                const groups = sortRows(source.groups || [], tableSort, {
+                  name: (group) => group.name,
+                  cve_name: (group) => group.name,
+                });
+                return (
+                  <React.Fragment key={sourceKey}>
+                    <tr className="asset-vulnerability-source">
+                      <td colSpan={3}>
+                        <button
+                          type="button"
+                          className="asset-vulnerability-toggle"
+                          aria-expanded={!sourceCollapsed}
+                          onClick={() => toggleSource(sourceKey)}
                         >
-                          {sourceCollapsed ? "›" : "⌄"}
-                        </span>
-                        <span>
-                          {source.source === "docker"
-                            ? "Docker-контейнеры"
-                            : source.title ||
-                              (source.source === "os"
-                                ? "Уязвимости ОС"
-                                : "Уязвимости программного обеспечения")}{" "}
-                          ({formatCount(sourceCount(source))})
-                        </span>
-                      </button>
-                    </td>
-                  </tr>
-                  {!sourceCollapsed
-                    ? groups.map((group, groupIndex) => {
-                        const key = assetGroupKey(source, group, groupIndex);
-                        const expanded = expandedGroupSet.has(key);
-                        const page = findingsByGroup[key] || {
-                          rows: [],
-                          total: Number(group.vulnerabilities_count) || 0,
-                          has_more: false,
-                        };
-                        const rows = sortRows(page.rows || [], tableSort, {
-                          name: (finding) => finding.name || finding.cve_name,
-                        });
-                        const displayedRows =
-                          source.source === "docker"
-                            ? dockerPackageSections(rows).flatMap((section) => [
-                                { ...section, __dockerPackage: true },
-                                ...section.rows,
-                              ])
-                            : rows;
-                        return (
-                          <React.Fragment key={key}>
-                            <tr className="asset-vulnerability-group">
-                              <td>
-                                <button
-                                  type="button"
-                                  className="asset-vulnerability-toggle"
-                                  aria-expanded={expanded}
-                                  onClick={() =>
-                                    toggleGroup(source, group, groupIndex)
-                                  }
-                                >
-                                  <span
-                                    className="asset-vulnerability-caret"
-                                    aria-hidden="true"
+                          <span
+                            className="asset-vulnerability-caret"
+                            aria-hidden="true"
+                          >
+                            {sourceCollapsed ? "›" : "⌄"}
+                          </span>
+                          <span>
+                            {source.source === "docker"
+                              ? "Docker-контейнеры"
+                              : source.title ||
+                                (source.source === "os"
+                                  ? "Уязвимости ОС"
+                                  : "Уязвимости программного обеспечения")}{" "}
+                            ({formatCount(sourceCount(source))})
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                    {!sourceCollapsed
+                      ? groups.map((group, groupIndex) => {
+                          const key = assetGroupKey(source, group, groupIndex);
+                          const expanded = expandedGroupSet.has(key);
+                          const page = findingsByGroup[key] || {
+                            rows: [],
+                            total: Number(group.vulnerabilities_count) || 0,
+                            has_more: false,
+                          };
+                          const rows = sortRows(page.rows || [], tableSort, {
+                            name: (finding) => finding.name || finding.cve_name,
+                          });
+                          const displayedRows =
+                            source.source === "docker"
+                              ? dockerPackageSections(rows).flatMap(
+                                  (section) => [
+                                    { ...section, __dockerPackage: true },
+                                    ...section.rows,
+                                  ],
+                                )
+                              : rows;
+                          return (
+                            <React.Fragment key={key}>
+                              <tr className="asset-vulnerability-group">
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="asset-vulnerability-toggle"
+                                    aria-expanded={expanded}
+                                    onClick={() =>
+                                      toggleGroup(source, group, groupIndex)
+                                    }
                                   >
-                                    {expanded ? "⌄" : "›"}
-                                  </span>
-                                  <span>
-                                    <strong>
-                                      {group.container_name ||
-                                        group.name ||
-                                        group.container_id ||
-                                        "Без названия"}
-                                    </strong>{" "}
-                                    (
-                                    {formatCount(
-                                      group.vulnerabilities_count ||
-                                        page.total ||
-                                        0,
-                                    )}
-                                    )
-                                  </span>
-                                  {group.truncated ? (
-                                    <small>Показана неполная коллекция</small>
-                                  ) : null}
-                                  {source.source === "docker" ? (
-                                    <small className="asset-docker-image-meta">
-                                      {dockerGroupMetadata(group)}
-                                    </small>
-                                  ) : null}
-                                </button>
-                              </td>
-                              <td>
-                                {formatVulnerabilityScore(group.cvss_score)}
-                              </td>
-                              <td />
-                            </tr>
-                            {expanded
-                              ? displayedRows.map((finding, findingIndex) => {
-                                  if (finding.__dockerPackage) {
+                                    <span
+                                      className="asset-vulnerability-caret"
+                                      aria-hidden="true"
+                                    >
+                                      {expanded ? "⌄" : "›"}
+                                    </span>
+                                    <span>
+                                      <strong>
+                                        {group.container_name ||
+                                          group.name ||
+                                          group.container_id ||
+                                          "Без названия"}
+                                      </strong>{" "}
+                                      (
+                                      {formatCount(
+                                        group.vulnerabilities_count ||
+                                          page.total ||
+                                          0,
+                                      )}
+                                      )
+                                    </span>
+                                    {group.truncated ? (
+                                      <small>Показана неполная коллекция</small>
+                                    ) : null}
+                                    {source.source === "docker" ? (
+                                      <small className="asset-docker-image-meta">
+                                        {dockerGroupMetadata(group)}
+                                      </small>
+                                    ) : null}
+                                  </button>
+                                </td>
+                                <td>
+                                  {formatVulnerabilityScore(group.cvss_score)}
+                                </td>
+                                <td />
+                              </tr>
+                              {expanded
+                                ? displayedRows.map((finding, findingIndex) => {
+                                    if (finding.__dockerPackage) {
+                                      return (
+                                        <tr
+                                          className="asset-docker-package"
+                                          key={`package-${finding.key}`}
+                                        >
+                                          <td colSpan={3}>
+                                            <span className="asset-vulnerability-leaf">
+                                              ›
+                                            </span>
+                                            <strong>
+                                              {finding.package_name}
+                                            </strong>
+                                            {finding.package_version
+                                              ? ` ${finding.package_version}`
+                                              : ""}
+                                            {finding.fixed_version
+                                              ? ` → ${finding.fixed_version}`
+                                              : ""}
+                                            <small>
+                                              {formatCount(finding.rows.length)}
+                                            </small>
+                                          </td>
+                                        </tr>
+                                      );
+                                    }
+                                    const passports =
+                                      assetFindingPassports(finding);
+                                    const passport = passports[0];
                                     return (
                                       <tr
-                                        className="asset-docker-package"
-                                        key={`package-${finding.key}`}
+                                        className={
+                                          source.source === "docker"
+                                            ? "asset-vulnerability-finding asset-docker-finding"
+                                            : "asset-vulnerability-finding"
+                                        }
+                                        key={
+                                          finding.vulnerability_instance_id ||
+                                          `${group.collection_id}-${findingIndex}`
+                                        }
                                       >
-                                        <td colSpan={3}>
+                                        <td>
                                           <span className="asset-vulnerability-leaf">
-                                            ›
+                                            •
                                           </span>
-                                          <strong>
-                                            {finding.package_name}
-                                          </strong>
-                                          {finding.package_version
-                                            ? ` ${finding.package_version}`
-                                            : ""}
-                                          {finding.fixed_version
-                                            ? ` → ${finding.fixed_version}`
-                                            : ""}
-                                          <small>
-                                            {formatCount(finding.rows.length)}
-                                          </small>
+                                          <span>
+                                            {finding.name ||
+                                              finding.cve_name ||
+                                              "Уязвимость без названия"}
+                                          </span>
+                                          {source.source === "docker" &&
+                                          finding.status ? (
+                                            <small className="asset-docker-package-meta">
+                                              Статус: {finding.status}
+                                            </small>
+                                          ) : null}
+                                          {source.source === "docker" &&
+                                          finding.how_to_fix ? (
+                                            <details className="asset-docker-package-meta">
+                                              <summary>Как исправить</summary>
+                                              <span>{finding.how_to_fix}</span>
+                                            </details>
+                                          ) : null}
+                                        </td>
+                                        <td>
+                                          {formatVulnerabilityScore(
+                                            finding.cvss_score,
+                                          )}
+                                        </td>
+                                        <td>
+                                          {passport ? (
+                                            <span className="asset-vulnerability-passport-auto">
+                                              <button
+                                                type="button"
+                                                className="asset-vulnerability-passport-link"
+                                                onClick={() =>
+                                                  onOpenPassport?.(passport)
+                                                }
+                                                title={`Открыть паспорт ${assetPassportLabel(passport)}`}
+                                              >
+                                                {finding.cve_name ||
+                                                  "Открыть паспорт"}
+                                              </button>
+                                              {assetPassportMatchLabel(
+                                                passport,
+                                              ) ? (
+                                                <small>
+                                                  {assetPassportMatchLabel(
+                                                    passport,
+                                                  )}
+                                                </small>
+                                              ) : null}
+                                            </span>
+                                          ) : (
+                                            finding.cve_name || "—"
+                                          )}
                                         </td>
                                       </tr>
                                     );
-                                  }
-                                  const passports =
-                                    assetFindingPassports(finding);
-                                  const passport = passports[0];
-                                  return (
-                                    <tr
-                                      className={
-                                        source.source === "docker"
-                                          ? "asset-vulnerability-finding asset-docker-finding"
-                                          : "asset-vulnerability-finding"
-                                      }
-                                      key={
-                                        finding.vulnerability_instance_id ||
-                                        `${group.collection_id}-${findingIndex}`
+                                  })
+                                : null}
+                              {expanded && loadingFindings[key] ? (
+                                <tr>
+                                  <td colSpan={3} className="empty-cell">
+                                    Загрузка...
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {expanded && page.has_more ? (
+                                <tr>
+                                  <td colSpan={3} className="table-footer">
+                                    <Button
+                                      variant="tiny"
+                                      busy={loadingFindings[key]}
+                                      onClick={() =>
+                                        loadFindings(
+                                          source,
+                                          group,
+                                          page.rows.length,
+                                        )
                                       }
                                     >
-                                      <td>
-                                        <span className="asset-vulnerability-leaf">
-                                          •
-                                        </span>
-                                        <span>
-                                          {finding.name ||
-                                            finding.cve_name ||
-                                            "Уязвимость без названия"}
-                                        </span>
-                                        {source.source === "docker" &&
-                                        finding.status ? (
-                                          <small className="asset-docker-package-meta">
-                                            Статус: {finding.status}
-                                          </small>
-                                        ) : null}
-                                        {source.source === "docker" &&
-                                        finding.how_to_fix ? (
-                                          <details className="asset-docker-package-meta">
-                                            <summary>Как исправить</summary>
-                                            <span>{finding.how_to_fix}</span>
-                                          </details>
-                                        ) : null}
-                                      </td>
-                                      <td>
-                                        {formatVulnerabilityScore(
-                                          finding.cvss_score,
-                                        )}
-                                      </td>
-                                      <td>
-                                        {passport ? (
-                                          <span className="asset-vulnerability-passport-auto">
-                                            <button
-                                              type="button"
-                                              className="asset-vulnerability-passport-link"
-                                              onClick={() =>
-                                                onOpenPassport?.(passport)
-                                              }
-                                              title={`Открыть паспорт ${assetPassportLabel(passport)}`}
-                                            >
-                                              {finding.cve_name ||
-                                                "Открыть паспорт"}
-                                            </button>
-                                            {assetPassportMatchLabel(
-                                              passport,
-                                            ) ? (
-                                              <small>
-                                                {assetPassportMatchLabel(
-                                                  passport,
-                                                )}
-                                              </small>
-                                            ) : null}
-                                          </span>
-                                        ) : (
-                                          finding.cve_name || "—"
-                                        )}
-                                      </td>
-                                    </tr>
-                                  );
-                                })
-                              : null}
-                            {expanded && loadingFindings[key] ? (
-                              <tr>
-                                <td colSpan={3} className="empty-cell">
-                                  Загрузка...
-                                </td>
-                              </tr>
-                            ) : null}
-                            {expanded && page.has_more ? (
-                              <tr>
-                                <td colSpan={3} className="table-footer">
-                                  <Button
-                                    variant="tiny"
-                                    busy={loadingFindings[key]}
-                                    onClick={() =>
-                                      loadFindings(
-                                        source,
-                                        group,
-                                        page.rows.length,
-                                      )
-                                    }
-                                  >
-                                    Загрузить ещё
-                                  </Button>
-                                </td>
-                              </tr>
-                            ) : null}
-                          </React.Fragment>
-                        );
-                      })
-                    : null}
-                </React.Fragment>
-              );
-            })}
-            {loadingGroups ? (
-              <tr>
-                <td colSpan={3} className="empty-cell">
-                  Загрузка...
-                </td>
-              </tr>
-            ) : null}
-            {!loadingGroups &&
-            !sources.some((source) => (source.groups || []).length) ? (
-              <tr>
-                <td colSpan={3} className="empty-cell">
-                  {vulnerabilityView === "docker"
-                    ? dockerSource?.status === "unavailable"
-                      ? "Docker-PDQL недоступен, структурированные данные о контейнерах не найдены."
-                      : "Уязвимости Docker-контейнеров для этого актива не найдены."
-                    : "Уязвимостей в сохранённом снимке нет."}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+                                      Загрузить ещё
+                                    </Button>
+                                  </td>
+                                </tr>
+                              ) : null}
+                            </React.Fragment>
+                          );
+                        })
+                      : null}
+                  </React.Fragment>
+                );
+              })}
+              {loadingGroups ? (
+                <tr>
+                  <td colSpan={3} className="empty-cell">
+                    Загрузка...
+                  </td>
+                </tr>
+              ) : null}
+              {!loadingGroups &&
+              !sources.some((source) => (source.groups || []).length) ? (
+                <tr>
+                  <td colSpan={3} className="empty-cell">
+                    {vulnerabilityView === "docker"
+                      ? dockerSource?.status === "unavailable"
+                        ? "Docker-PDQL недоступен, структурированные данные о контейнерах не найдены."
+                        : "Уязвимости Docker-контейнеров для этого актива не найдены."
+                      : "Уязвимостей в сохранённом снимке нет."}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );

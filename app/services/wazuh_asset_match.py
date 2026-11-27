@@ -3,9 +3,14 @@
 import re
 import subprocess
 from collections import defaultdict
+from datetime import datetime
 from functools import lru_cache
+from threading import Event
 from typing import Any
 
+import psycopg
+
+from ..persistence import connection, schema
 from ..repositories.asset_cards import wazuh_match
 
 PLATFORMS = {
@@ -33,6 +38,8 @@ def extract_rules(providers: list[Any]) -> list[PackageRule]:
             continue
         metadata = provider.get("providerMetadata")
         vendor = metadata.get("shortName") if isinstance(metadata, dict) else None
+        if not isinstance(vendor, str):
+            continue
         allowed = {release for source, release in PLATFORMS.values() if source == vendor}
         if not allowed:
             continue
@@ -96,8 +103,19 @@ def applies_to_version(version: str, default: str, rules: list[dict[str, Any]]) 
     return STATUSES[default]
 
 
-def assess_asset(asset_id: str) -> dict[str, Any] | None:
-    inventory = wazuh_match.read_inventory(asset_id)
+def assess_asset(asset_id: str, *, additional_only: bool = False) -> dict[str, Any] | None:
+    schema.init_db()
+    with connection.connect() as conn:
+        result = _assess_asset(conn, asset_id)
+        if additional_only and result:
+            _exclude_existing(conn, asset_id, result)
+        return result
+
+
+def _assess_asset(
+    conn: psycopg.Connection[dict[str, Any]], asset_id: str, stop: Event | None = None,
+) -> dict[str, Any] | None:
+    inventory = wazuh_match.read_inventory(conn, asset_id)
     if inventory is None:
         return None
     platform = platform_for(inventory["os_name"], inventory["os_version"])
@@ -105,7 +123,7 @@ def assess_asset(asset_id: str) -> dict[str, Any] | None:
     for name, version in inventory["packages"] or []:
         if name and version:
             packages[name].add(version)
-    rules = wazuh_match.read_rules(*platform, sorted(packages)) if platform and packages else []
+    rules = wazuh_match.read_rules(conn, *platform, sorted(packages)) if platform and packages else []
     by_package = defaultdict(list)
     for rule in rules:
         by_package[rule["package_name"], rule["passport_id"]].append(rule)
@@ -113,6 +131,8 @@ def assess_asset(asset_id: str) -> dict[str, Any] | None:
     evaluated = set()
     unknown = 0
     for (package, passport_id), applicable in by_package.items():
+        if stop is not None and stop.is_set():
+            return None
         for version in sorted(packages[package]):
             outcomes = {applies_to_version(version, row["default_status"], row["versions"]) for row in applicable}
             if outcomes == {True}:
@@ -130,3 +150,39 @@ def assess_asset(asset_id: str) -> dict[str, Any] | None:
         "inventory_complete": bool(inventory["complete"]), "packages": sum(map(len, packages.values())),
         "evaluated_packages": len(evaluated), "unknown_assessments": unknown, "matches": matches,
     }
+
+
+def _exclude_existing(conn: psycopg.Connection[dict[str, Any]], asset_id: str, result: dict[str, Any]) -> None:
+    if result["matches"]:
+        existing_cves = wazuh_match.read_existing_cves(conn, asset_id)
+        result["matches"] = [match for match in result["matches"] if match["cve"].upper() not in existing_cves]
+
+
+def reconcile_asset(asset_id: str, cutoff: datetime, stop: Event) -> None:
+    with connection.connect() as conn:
+        if not wazuh_match.claim_due_asset(conn, asset_id, cutoff):
+            return
+        result = _assess_asset(conn, asset_id, stop)
+        if result is not None and not stop.is_set():
+            wazuh_match.save_assessment(conn, asset_id, result)
+
+
+def load_asset_assessment(asset_id: str, *, additional_only: bool = False) -> dict[str, Any] | None:
+    schema.init_db()
+    with connection.connect() as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        saved = wazuh_match.read_assessment(conn, asset_id)
+        if saved is None:
+            return None
+        result = saved["result"]
+        if result is None:
+            platform = platform_for(saved["os_name"], saved["os_version"])
+            return {
+                "source": "wazuh-cti", "platform": platform, "inventory_at": saved["last_seen"],
+                "inventory_complete": False, "packages": 0, "evaluated_packages": 0,
+                "unknown_assessments": 0, "matches": [], "pending": platform is not None,
+                "checked_at": None,
+            }
+        if additional_only:
+            _exclude_existing(conn, asset_id, result)
+        return {**result, "checked_at": saved["checked_at"], "pending": False}

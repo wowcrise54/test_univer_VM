@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+import csv
+import io
+import unittest
+from unittest.mock import patch
+
+from openpyxl import load_workbook
+
+from pydantic import ValidationError
+
+from app import db, main
+from app.api.schemas import VulnerabilityReportRequest
+from app.reports.vulnerability import render_vulnerability_xlsx
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.calls = 0
+
+    def fetchmany(self, size):
+        self.calls += 1
+        if not self.rows:
+            return []
+        batch, self.rows = self.rows[:size], self.rows[size:]
+        return batch
+
+
+class FakeConnection:
+    def __init__(self, rows):
+        self.cursor = FakeCursor(rows)
+        self.execute_calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, sql, params):
+        self.execute_calls.append((sql, params))
+        return self.cursor
+
+
+class VulnerabilityReportTests(unittest.TestCase):
+    def test_xlsx_has_requested_sheets_and_asset_summary(self):
+        asset = {
+            "asset_id": "asset-1",
+            "display_name": "server-1",
+            "hostname": "server-1",
+            "ip_address": "10.0.0.1",
+            "os_name": "Linux",
+        }
+        content = render_vulnerability_xlsx(
+            asset,
+            [{"asset_id": "asset-1", "vulnerability_name": "=BAD()"}],
+            [],
+            [],
+        )
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+        self.assertEqual(
+            workbook.sheetnames,
+            ["Актив", "Уязвимости ОС", "Уязвимости ПО", "Уязвимости Docker"],
+        )
+        self.assertEqual(workbook["Актив"]["B2"].value, "asset-1")
+        self.assertEqual(workbook["Уязвимости ОС"]["H2"].value, "'=BAD()")
+
+    def test_xlsx_endpoint_uses_saved_asset_and_local_rows(self):
+        asset = {"asset_id": "asset-1", "display_name": "server-1"}
+        with (
+            patch.object(main.db, "get_asset_card", return_value=asset),
+            patch.object(main.db, "iter_vulnerability_report_rows", side_effect=[iter([]), iter([])]) as findings,
+            patch.object(main.db, "iter_docker_vulnerability_report_rows", return_value=iter([])),
+        ):
+            response = main.export_vulnerability_xlsx(main.VulnerabilityXlsxReportRequest(asset_id=" asset-1 "))
+        self.assertEqual(findings.call_args_list[0].args, ("os", ["asset-1"]))
+        self.assertEqual(findings.call_args_list[1].args, ("software", ["asset-1"]))
+        self.assertIn(".xlsx", response.headers["content-disposition"])
+
+    def test_request_deduplicates_asset_ids_before_enforcing_limit(self):
+        payload = VulnerabilityReportRequest(asset_ids=[" asset-1 ", "asset-1", "", "asset-2"])
+        self.assertEqual(payload.asset_ids, ["asset-1", "asset-2"])
+
+    def test_request_rejects_more_than_5000_unique_asset_ids(self):
+        with self.assertRaises(ValidationError):
+            VulnerabilityReportRequest(asset_ids=[f"asset-{index}" for index in range(5001)])
+
+    def test_request_rejects_non_string_asset_ids(self):
+        with self.assertRaises(ValidationError):
+            VulnerabilityReportRequest(asset_ids=[123])
+
+    def test_repository_uses_one_query_and_filters_by_source_and_assets(self):
+        connection = FakeConnection([{"asset_id": "asset-1"}, {"asset_id": "asset-2"}])
+        with patch.object(db, "init_db"), patch.object(db, "connect", return_value=connection):
+            rows = list(db.iter_vulnerability_report_rows("software", ["asset-1", "asset-1"], batch_size=1))
+        self.assertEqual(rows, [{"asset_id": "asset-1"}, {"asset_id": "asset-2"}])
+        self.assertEqual(len(connection.execute_calls), 1)
+        sql, params = connection.execute_calls[0]
+        self.assertIn("vulnerability_group.source_type = %s", sql)
+        self.assertEqual(params, ("software", ["asset-1"], ["asset-1"]))
+
+    def test_docker_repository_uses_one_query_and_filters_selected_assets(self):
+        connection = FakeConnection([{"asset_id": "asset-1"}])
+        with patch.object(db, "init_db"), patch.object(db, "connect", return_value=connection):
+            rows = list(
+                db.iter_docker_vulnerability_report_rows(
+                    ["asset-1", "asset-1"], batch_size=1,
+                ),
+            )
+        self.assertEqual(rows, [{"asset_id": "asset-1"}])
+        self.assertEqual(len(connection.execute_calls), 1)
+        sql, params = connection.execute_calls[0]
+        self.assertIn("vulnerability_group.source_type = 'docker'", sql)
+        self.assertIn("{docker_image,image_name}", sql)
+        self.assertIn("resolved_findings AS", sql)
+        self.assertIn("FROM resolved_findings", sql)
+        self.assertEqual(params, (["asset-1"], ["asset-1"]))
+
+    def test_os_csv_is_excel_compatible_and_escapes_formulas(self):
+        rows = [{
+            "asset_id": "asset-1",
+            "ip_address": "10.0.0.1",
+            "fqdn": "host.example",
+            "hostname": "host",
+            "os_name": "Windows; Server",
+            "os_version": "2025",
+            "cve_name": "CVE-2026-0001",
+            "vulnerability_name": "=HYPERLINK(\"bad\")\nОписание",
+            "severity": "critical",
+            "cvss_score": 9.8,
+            "last_seen": "2026-07-10T10:00:00+00:00",
+        }]
+        text = "".join(main.stream_vulnerability_report_csv("os", rows))
+        self.assertTrue(text.startswith("\ufeff"))
+        parsed = list(csv.reader(io.StringIO(text.removeprefix("\ufeff")), delimiter=";"))
+        self.assertEqual(parsed[0], main.VULNERABILITY_REPORT_HEADERS["os"])
+        self.assertEqual(parsed[1][4], "Windows; Server")
+        self.assertEqual(parsed[1][7], "'=HYPERLINK(\"bad\")\nОписание")
+        self.assertEqual(parsed[1][9], "9.8")
+
+    def test_empty_report_contains_only_the_header(self):
+        text = "".join(main.stream_vulnerability_report_csv("software", []))
+        parsed = list(csv.reader(io.StringIO(text.removeprefix("\ufeff")), delimiter=";"))
+        self.assertEqual(parsed, [main.VULNERABILITY_REPORT_HEADERS["software"]])
+
+    def test_docker_csv_contains_container_image_package_and_fix_fields(self):
+        rows = [{
+            "asset_id": "asset-1",
+            "ip_address": "10.0.0.1",
+            "fqdn": "host.example",
+            "hostname": "host",
+            "docker_engine": "Docker 27",
+            "container_name": "api",
+            "container_id": "container-1",
+            "image_name": "registry.example/team/api:1.2.3",
+            "image_id": "sha256:image-1",
+            "registry": "registry.example",
+            "repository": "team/api",
+            "tag": "1.2.3",
+            "package_name": "openssl",
+            "package_version": "3.0.0",
+            "cve_name": "CVE-2026-0002",
+            "vulnerability_name": "OpenSSL vulnerability",
+            "vulnerability_id": "vuln-1",
+            "severity": "high",
+            "cvss_score": 8.1,
+            "vulnerability_status": "Active",
+            "fixed_version": "3.0.1",
+            "how_to_fix": "=RUN-COMMAND()",
+            "last_seen": "2026-07-20T10:00:00+00:00",
+        }]
+        report = "".join(main.stream_vulnerability_report_csv("docker", rows))
+        parsed = list(csv.reader(io.StringIO(report.removeprefix("\ufeff")), delimiter=";"))
+        self.assertEqual(parsed[0], main.VULNERABILITY_REPORT_HEADERS["docker"])
+        self.assertEqual(parsed[1][5:9], [
+            "api", "container-1", "registry.example/team/api:1.2.3", "sha256:image-1",
+        ])
+        self.assertEqual(parsed[1][12:15], ["openssl", "3.0.0", "CVE-2026-0002"])
+        self.assertEqual(parsed[1][20], "3.0.1")
+        self.assertEqual(parsed[1][21], "'=RUN-COMMAND()")
+
+    def test_endpoint_sets_download_filename_and_streams_selected_assets(self):
+        captured = {}
+
+        def report_rows(source, asset_ids):
+            captured.update(source=source, asset_ids=asset_ids)
+            return iter([])
+
+        with patch.object(main.db, "iter_vulnerability_report_rows", side_effect=report_rows):
+            response = main.export_vulnerability_report(
+                "software", VulnerabilityReportRequest(asset_ids=["asset-2"]),
+            )
+
+        async def collect_body():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        body = asyncio.run(collect_body())
+        self.assertEqual(captured, {"source": "software", "asset_ids": ["asset-2"]})
+        self.assertRegex(
+            response.headers["content-disposition"],
+            r'^attachment; filename="host_software_vulnerabilities_\d{8}_\d{6}\.csv"$',
+        )
+        self.assertTrue(body.startswith("\ufeff"))
+
+    def test_docker_endpoint_uses_docker_rows_and_filename(self):
+        captured = {}
+
+        def report_rows(asset_ids):
+            captured["asset_ids"] = asset_ids
+            return iter([])
+
+        with patch.object(
+            main.db,
+            "iter_docker_vulnerability_report_rows",
+            side_effect=report_rows,
+        ):
+            response = main.export_vulnerability_report(
+                "docker", VulnerabilityReportRequest(asset_ids=["asset-3"]),
+            )
+
+        async def collect_body():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        body = asyncio.run(collect_body())
+        self.assertEqual(captured, {"asset_ids": ["asset-3"]})
+        self.assertRegex(
+            response.headers["content-disposition"],
+            r'^attachment; filename="host_docker_vulnerabilities_\d{8}_\d{6}\.csv"$',
+        )
+        self.assertTrue(body.startswith("\ufeff"))
+
+
+if __name__ == "__main__":
+    unittest.main()

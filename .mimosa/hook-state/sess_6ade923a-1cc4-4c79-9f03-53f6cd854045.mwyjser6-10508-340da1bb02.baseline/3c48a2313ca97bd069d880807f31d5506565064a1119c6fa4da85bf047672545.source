@@ -1,0 +1,32 @@
+export const DRAFT_KEY = "mpvm.task-draft.v1";
+export const EDIT_DRAFT_KEY = `${DRAFT_KEY}.edits`;
+const DRAFT_OWNER_KEY = `${DRAFT_KEY}.owner`;
+
+function removeDrafts(storage) {
+  storage.removeItem(DRAFT_KEY);
+  storage.removeItem(EDIT_DRAFT_KEY);
+}
+
+// Unsaved drafts live in origin-wide browser storage, so they are bound to the
+// account that wrote them: another account in the same profile starts clean.
+// Call before the task editor mounts, because it hydrates during render.
+export function claimTaskDrafts(userId) {
+  try {
+    const storage = window.localStorage;
+    const owner = String(userId);
+    if (storage.getItem(DRAFT_OWNER_KEY) === owner) return;
+    removeDrafts(storage);
+    storage.setItem(DRAFT_OWNER_KEY, owner);
+  } catch (_error) {
+    // Without storage there are no persisted drafts to protect.
+  }
+}
+
+export function clearTaskDrafts() {
+  try {
+    removeDrafts(window.localStorage);
+    window.localStorage.removeItem(DRAFT_OWNER_KEY);
+  } catch (_error) {
+    // Without storage there are no persisted drafts to clear.
+  }
+}
