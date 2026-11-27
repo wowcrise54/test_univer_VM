@@ -9,7 +9,7 @@ from typing import Any, Literal
 from ..persistence import connection, schema
 from ..persistence.codecs import decimal_to_number, json_loads
 
-VulnerabilitySource = Literal["os", "software", "docker"]
+VulnerabilitySource = Literal["os", "software", "docker", "wazuh"]
 VULNERABILITY_SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 VULNERABILITY_TRENDS_SCOPE = "all_asset_cards"
 VULNERABILITY_TRENDS_RETENTION_DAYS = 90
@@ -75,6 +75,9 @@ WITH findings AS (
         NULLIF(TRIM(finding.name), ''),
         NULLIF(TRIM(finding.vulnerability_instance_id), '')
     ) IS NOT NULL
+    UNION ALL
+    SELECT selector, asset_id, cve_name, {_normalized_severity("severity")}, {_severity_rank("severity")}
+    FROM wazuh_analytics_findings
 ),
 coverage AS (
     SELECT
@@ -234,41 +237,27 @@ def _passport_fix_sql(passport_alias: str) -> str:
     return "COALESCE(\n    " + ",\n    ".join(parts) + "\n)"
 
 
-def _has_fix_exists_sql(fix_text: str | None = None) -> tuple[str, list[Any]]:
+def _has_fix_exists_sql(fix_text: str | None = None, *, wazuh: bool = False) -> tuple[str, list[Any]]:
     text_filter = ""
     params: list[Any] = []
     if fix_text:
         text_filter = f"\n      AND {_passport_fix_sql('fix_passport')} ILIKE %s"
         params.append(f"%{fix_text.strip()}%")
+    lookup = (
+        "FROM vulnerability_passports AS fix_passport WHERE fix_passport.internal_id = finding.passport_id"
+        if wazuh else
+        "FROM asset_card_vulnerability_passports AS fix_link "
+        "JOIN vulnerability_passports AS fix_passport ON fix_passport.internal_id = fix_link.passport_internal_id "
+        "WHERE fix_link.asset_vulnerability_id = finding.id"
+    )
     return (
-        "EXISTS (\n"
-        "    SELECT 1\n"
-        "    FROM asset_card_vulnerability_passports AS fix_link\n"
-        "    JOIN vulnerability_passports AS fix_passport\n"
-        "        ON fix_passport.internal_id = fix_link.passport_internal_id\n"
-        "    WHERE fix_link.asset_vulnerability_id = finding.id\n"
+        f"EXISTS (SELECT 1 {lookup}\n"
         f"      AND {_passport_fix_sql('fix_passport')} IS NOT NULL{text_filter}\n"
         ")"
     ), params
 
 
-def _fix_rollup_cte(
-    selector_params: list[Any] | None = None,
-    restrict_to_filtered: bool = False,
-) -> str:
-    selector_filter = ""
-    if selector_params is not None:
-        placeholders = ", ".join(["%s"] * len(selector_params))
-        if placeholders:
-            selector_filter = f"\n        AND {VULNERABILITY_SELECTOR_SQL} IN ({placeholders})"
-        else:
-            selector_filter = "\n        AND 1 = 0"
-    elif restrict_to_filtered:
-        # The filter sits in the inner query, where only ``finding`` is in scope.
-        selector_filter = (
-            f"\n        AND {VULNERABILITY_SELECTOR_SQL} IN "
-            "(SELECT DISTINCT selector FROM filtered_findings)"
-        )
+def _fix_rollup_cte() -> str:
     return (
         ", fix_rollup AS (\n"
         "    SELECT\n"
@@ -292,7 +281,12 @@ def _fix_rollup_cte(
         "            NULLIF(TRIM(finding.name), ''),\n"
         "            NULLIF(TRIM(finding.vulnerability_instance_id), '')\n"
         "        ) IS NOT NULL"
-        f"{selector_filter}\n"
+        f"\n        AND {VULNERABILITY_SELECTOR_SQL} IN (SELECT DISTINCT selector FROM filtered_findings)\n"
+        "        UNION ALL\n"
+        "        SELECT 'id:' || finding.internal_id, "
+        f"{_passport_fix_sql('finding')}\n"
+        "        FROM vulnerability_passports AS finding\n"
+        "        WHERE finding.internal_id IN (SELECT DISTINCT passport_id FROM filtered_findings)\n"
         "    ) AS fix_findings\n"
         "    GROUP BY fix_findings.selector\n"
         ")"
@@ -304,6 +298,18 @@ def _fix_text_query(selectors: list[Any]) -> tuple[str, list[Any]]:
     unique_selectors = [value for value in dict.fromkeys(selectors) if value]
     if not unique_selectors:
         return "", []
+    wazuh_passport_ids = [
+        selector.removeprefix("id:")
+        for selector in unique_selectors
+        if isinstance(selector, str) and selector.startswith("id:wazuh-cti:")
+    ]
+    wazuh_lookup = (
+        "            UNION ALL\n"
+        "            SELECT 'id:' || fix_passport.internal_id, "
+        + _passport_fix_sql("fix_passport")
+        + "\n            FROM vulnerability_passports AS fix_passport\n"
+        "            WHERE fix_passport.internal_id = ANY(%s)\n"
+    ) if wazuh_passport_ids else ""
     placeholders = ", ".join(["%s"] * len(unique_selectors))
     return (
         """
@@ -335,9 +341,10 @@ def _fix_text_query(selectors: list[Any]) -> tuple[str, list[Any]]:
               AND """
         + VULNERABILITY_SELECTOR_SQL
         + f" IN ({placeholders})\n"
-        "        ) AS fix_findings\n"
+        + wazuh_lookup
+        + "        ) AS fix_findings\n"
         "        GROUP BY fix_findings.selector\n"
-    ), unique_selectors
+    ), unique_selectors + ([wazuh_passport_ids] if wazuh_passport_ids else [])
 
 
 def _attach_fix_text(
@@ -369,18 +376,22 @@ def _filtered_findings_cte(
     selector: str | None = None,
     include_details: bool = True,
 ) -> tuple[str, list[Any]]:
-    filters = [
+    native_filters = [
         "COALESCE(NULLIF(TRIM(finding.vulnerability_id), ''), "
         "NULLIF(TRIM(finding.cve_name), ''), NULLIF(TRIM(finding.name), ''), "
         "NULLIF(TRIM(finding.vulnerability_instance_id), '')) IS NOT NULL"
     ]
+    filters: list[str] = []
     params: list[Any] = []
+    native_params: list[Any] = []
+    wazuh_filters: list[str] = []
+    wazuh_params: list[Any] = []
     if q:
         like = f"%{q.strip()}%"
         # One UNION branch per searched column: an OR that spans finding and
         # group columns cannot use any index, while each branch can use its own
         # trigram index (migration 0035). Matches exactly the same findings.
-        filters.append(
+        native_filters.append(
             "finding.id IN ("
             "SELECT id FROM asset_card_vulnerabilities WHERE vulnerability_id ILIKE %s "
             "UNION SELECT id FROM asset_card_vulnerabilities WHERE cve_name ILIKE %s "
@@ -389,7 +400,12 @@ def _filtered_findings_cte(
             "JOIN asset_card_vulnerabilities AS matched ON matched.group_id = matched_group.id "
             "WHERE matched_group.name ILIKE %s)"
         )
-        params.extend([like, like, like, like])
+        native_params.extend([like, like, like, like])
+        wazuh_filters.append(
+            "(finding.passport_id ILIKE %s OR finding.cve_name ILIKE %s "
+            "OR finding.name ILIKE %s OR finding.object_name ILIKE %s)"
+        )
+        wazuh_params.extend([like, like, like, like])
     if host_q:
         like = f"%{host_q.strip()}%"
         filters.append(
@@ -412,28 +428,28 @@ def _filtered_findings_cte(
         normalized = normalized if normalized in {"critical", "high", "medium", "low"} else "unknown"
         filters.append(f"{_normalized_severity('finding.severity')} = %s")
         params.append(normalized)
-    if source:
-        filters.append("vulnerability_group.source_type = %s")
-        params.append(source)
+    if source and source != "wazuh":
+        native_filters.append("vulnerability_group.source_type = %s")
+        native_params.append(source)
     if has_fix:
         normalized = has_fix.strip().lower()
         if normalized not in HAS_FIX_FILTER_VALUES:
             raise ValueError(f"Unsupported has_fix filter: {has_fix}")
-        if normalized == "yes":
+        if normalized in {"yes", "no"}:
+            prefix = "NOT " if normalized == "no" else ""
             sql, fix_params = _has_fix_exists_sql(fix_q)
-            filters.append(sql)
-            params.extend(fix_params)
-        elif normalized == "no":
-            sql, fix_params = _has_fix_exists_sql(fix_q)
-            filters.append(f"NOT {sql}")
-            params.extend(fix_params)
+            native_filters.append(prefix + sql)
+            native_params.extend(fix_params)
+            sql, fix_params = _has_fix_exists_sql(fix_q, wazuh=True)
+            wazuh_filters.append(prefix + sql)
+            wazuh_params.extend(fix_params)
     if selector:
         filters.append(f"({VULNERABILITY_SELECTOR_SQL}) = %s")
         params.append(selector)
 
-    where = " AND ".join(filters)
     detail_columns = f""",
                 finding.id AS finding_id,
+                NULL::text AS passport_id,
                 finding.vulnerability_id,
                 finding.vulnerability_instance_id,
                 finding.cve_name AS cve,
@@ -442,7 +458,7 @@ def _filtered_findings_cte(
                 {_severity_rank("finding.severity")} AS severity_rank,
                 finding.cvss_score,
                 finding.updated_at,
-                vulnerability_group.id AS group_id,
+                vulnerability_group.id::text AS group_id,
                 vulnerability_group.source_type,
                 vulnerability_group.collection_id,
                 vulnerability_group.name AS object_name,
@@ -475,8 +491,11 @@ def _filtered_findings_cte(
                 card.asset_type,
                 card.last_seen
     """ if include_details else ""
-    cte = f"""
-        WITH filtered_findings AS (
+    branches = []
+    query_params: list[Any] = []
+    if source != "wazuh":
+        where = " AND ".join([*native_filters, *filters])
+        branches.append(f"""
             SELECT
                 {VULNERABILITY_SELECTOR_SQL} AS selector
                 {detail_columns}
@@ -486,9 +505,34 @@ def _filtered_findings_cte(
             JOIN asset_cards AS card
                 ON card.asset_id = finding.asset_id
             WHERE {where}
-        )
-    """
-    return cte, params
+        """)
+        query_params.extend([*native_params, *params])
+    if source in (None, "wazuh"):
+        where = " AND ".join([*wazuh_filters, *filters]) or "TRUE"
+        wazuh_details = f""",
+                NULL::bigint, finding.passport_id, finding.passport_id, NULL::text,
+                finding.cve_name, finding.name,
+                {_normalized_severity("finding.severity")}, {_severity_rank("finding.severity")},
+                finding.cvss_score, finding.updated_at, finding.group_id, 'wazuh',
+                NULL::text, finding.object_name, FALSE, NULL::text, NULL::text,
+                card.asset_id, card.display_name, card.hostname, card.fqdn, card.ip_address,
+                card.os_name, card.os_version, card.asset_type, card.last_seen
+        """ if include_details else ""
+        branches.append(f"""
+            SELECT finding.selector {wazuh_details}
+            FROM wazuh_analytics_findings AS finding
+            JOIN asset_cards AS card ON card.asset_id = finding.asset_id
+            WHERE {where}
+        """)
+        query_params.extend([*wazuh_params, *params])
+    columns = (
+        "selector, finding_id, passport_id, vulnerability_id, vulnerability_instance_id, cve, name, "
+        "severity, severity_rank, cvss_score, updated_at, group_id, source_type, collection_id, "
+        "object_name, truncated, container_name, image_name, asset_id, display_name, hostname, fqdn, "
+        "ip_address, os_name, os_version, asset_type, last_seen"
+        if include_details else "selector"
+    )
+    return f"WITH filtered_findings ({columns}) AS ({' UNION ALL '.join(branches)})", query_params
 
 
 def _decode_vulnerability(row: dict[str, Any]) -> dict[str, Any]:
@@ -737,10 +781,10 @@ _PASSPORT_PAGE_CTES = """, mapped_passports AS (
                 FROM paged
                 JOIN filtered_findings
                     ON filtered_findings.selector = paged.selector
-                JOIN asset_card_vulnerability_passports AS link
+                LEFT JOIN asset_card_vulnerability_passports AS link
                     ON link.asset_vulnerability_id = filtered_findings.finding_id
                 JOIN vulnerability_passports AS passport
-                    ON passport.internal_id = link.passport_internal_id
+                    ON passport.internal_id = COALESCE(filtered_findings.passport_id, link.passport_internal_id)
                 GROUP BY
                     paged.selector,
                     passport.internal_id,
@@ -781,6 +825,19 @@ _PASSPORT_PAGE_CTES = """, mapped_passports AS (
 ROLLUP_ENABLED = os.getenv("MPVM_VULNERABILITY_ROLLUP_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 # Sorts that need data the rollup does not hold go through the live aggregate.
 _ROLLUP_SORTS = {None, "", "affected_hosts", "findings", "severity", "cvss_score", "max_cvss", "name", "cve"}
+
+
+def _has_current_wazuh_matches(conn: Any) -> bool:
+    row = conn.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM wazuh_asset_assessments AS assessment
+            JOIN asset_cards AS card
+              ON card.asset_id = assessment.asset_id AND card.last_seen = assessment.inventory_at
+            WHERE jsonb_array_length(assessment.result->'matches') > 0
+        ) AS present
+    """).fetchone()
+    return bool(row and row["present"])
 
 
 class VulnerabilityAnalyticsRepository:
@@ -1000,6 +1057,8 @@ class VulnerabilityAnalyticsRepository:
                                 NULLIF(TRIM(finding.name), ''),
                                 NULLIF(TRIM(finding.vulnerability_instance_id), '')
                               ) IS NOT NULL
+                        ) OR card.asset_id IN (
+                            SELECT asset_id FROM wazuh_analytics_findings
                         )) AS cards_with_findings,
                         (
                             SELECT COUNT(*)
@@ -1014,7 +1073,7 @@ class VulnerabilityAnalyticsRepository:
                 ).fetchone()
                 or {}
             )
-            if use_rollup:
+            if use_rollup and not _has_current_wazuh_matches(conn):
                 (
                     totals_row,
                     severity_rows,
@@ -1405,7 +1464,7 @@ class VulnerabilityAnalyticsRepository:
             fix_q=fix_q,
         )
         if sort_by_fix_columns:
-            cte = f"{cte}{_fix_rollup_cte(restrict_to_filtered=True)}"
+            cte = f"{cte}{_fix_rollup_cte()}"
         aggregate = """
             , aggregated AS (
                 SELECT
@@ -1449,7 +1508,7 @@ class VulnerabilityAnalyticsRepository:
         """ + _PASSPORT_PAGE_CTES
         with connection.connect() as conn:
             total = 0
-            if use_rollup:
+            if use_rollup and not _has_current_wazuh_matches(conn):
                 total, rows = self._rollup_page(
                     conn,
                     expression=expression,
@@ -1715,7 +1774,7 @@ class VulnerabilityAnalyticsRepository:
                     LIMIT %s OFFSET %s
                 ) AS page_rows
             ), filtered_findings AS (
-                SELECT finding.selector AS selector, finding.id AS finding_id
+                SELECT finding.selector AS selector, finding.id AS finding_id, NULL::text AS passport_id
                 FROM asset_card_vulnerabilities AS finding
                 WHERE finding.selector IN (SELECT selector FROM paged) AND {_VALID_FINDING_SQL}
             )

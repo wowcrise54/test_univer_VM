@@ -277,6 +277,7 @@ from .services.vulnerability_passport_jobs import (
     unregister_vulnerability_passport_detail_job,
 )
 from .services.passport_scheduler import PassportSyncScheduler
+from .services.wazuh_asset_scheduler import WazuhAssetScheduler
 from .services.scanner_task_launch import (
     _start_scanner_task_request,
     chunks,
@@ -566,6 +567,7 @@ PASSPORT_SYNC_SCHEDULER = PassportSyncScheduler(
     ready=mpvm_session_connected,
     execute=run_periodic_vulnerability_passport_refresh_job,
 )
+WAZUH_ASSET_SCHEDULER = WazuhAssetScheduler(CONTAINER.operation_runner)
 
 
 def shutdown() -> None:
@@ -573,6 +575,7 @@ def shutdown() -> None:
     if AUTOMATION_SERVICE is not None:
         AUTOMATION_SERVICE.stop_scheduler()
     PASSPORT_SYNC_SCHEDULER.stop()
+    WAZUH_ASSET_SCHEDULER.stop()
     CONTAINER.shutdown()
     db.close_connection_pool()
     log_event("app", "app.shutdown.completed", active_operations=CONTAINER.operation_runner.active_count())

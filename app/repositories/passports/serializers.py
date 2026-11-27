@@ -12,6 +12,8 @@ def decode_vulnerability_passport(row: dict[str, Any]) -> dict[str, Any]:
     metrics = json_loads(row.get("metrics_json"), {})
     raw_record = json_loads(row.get("raw_record_json"), {})
     raw_detail = json_loads(row.get("raw_detail_json"), None)
+    if isinstance(raw_detail, dict) and raw_detail.get("source") == "wazuh-cti":
+        raw_detail.pop("record", None)
     return {
         "id": row.get("id"),
         "internal_id": row.get("internal_id"),

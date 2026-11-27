@@ -5,6 +5,8 @@ import { severityLabel } from "../../shared/labels.js";
 import { Button, useDialogAccessibility } from "../../shared/ui.jsx";
 import { firstFilled } from "../../shared/values.js";
 
+const EMPTY_PASSPORT_DETAIL = {};
+
 export function PassportModal({
   children,
   onClose,
@@ -42,7 +44,7 @@ export function PassportModal({
 }
 
 export function PassportCard({ row, detail, loading }) {
-  const raw = detail || row?.raw_detail || row?.raw_record || {};
+  const raw = detail || row?.raw_detail || row?.raw_record || EMPTY_PASSPORT_DETAIL;
   const model = useMemo(() => buildPassportModel(row, raw), [row, raw]);
 
   if (!row && !detail) {

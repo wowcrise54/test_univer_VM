@@ -40,9 +40,9 @@ def upsert_asset_card(card: dict[str, Any]) -> dict[str, Any] | None:
     hostname = clean_value(data.get("hostname"))
     ip_address = clean_value(data.get("ipAddress"))
 
-    current = codecs.now_utc()
     with connection.connect() as conn:
         locks._lock_vulnerability_passport_writes(conn)
+        current = datetime.now(UTC).isoformat(timespec="microseconds")
         asset_id = canonical_asset_card_id(
             conn,
             remote_asset_id=remote_asset_id,

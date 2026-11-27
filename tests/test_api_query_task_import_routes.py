@@ -280,7 +280,7 @@ def test_csv_imports(client, tmp_path):
     assert imported.call_args.kwargs["source"] == "sample_csv"
 
 
-@pytest.mark.parametrize("report_type", ["os", "software", "docker"])
+@pytest.mark.parametrize("report_type", ["os", "software", "docker", "wazuh"])
 def test_vulnerability_csv_reports_pick_the_right_row_source(client, report_type):
     with (
         patch.object(db, "iter_vulnerability_report_rows", return_value=iter([])) as rows,

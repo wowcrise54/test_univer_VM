@@ -4,6 +4,7 @@ import { SystemBanner } from "../app/layout.jsx";
 import { api, normalizeApiError } from "../api/client.js";
 import { ActionMenu, Button, ConfirmDialog } from "../shared/ui.jsx";
 import { OperationsPage } from "../pages/OperationsPage.jsx";
+import { AssetVulnerabilitiesTabPaged } from "../features/asset-cards/AssetVulnerabilitiesTab.jsx";
 import {
   AssetCard,
   AssetCardsPanel,
@@ -22,6 +23,64 @@ describe("reliability UI", () => {
   beforeEach(() => {
     api.mockReset();
     api.mockResolvedValue({ rows: [] });
+  });
+
+  it("expands and collapses Wazuh findings by package and version", async () => {
+    const path =
+      "/api/asset-cards/asset-1/vulnerabilities/wazuh-cti?additional_only=true";
+    const cve = "CVE-2025-49796";
+    const passportId = `wazuh-cti:${cve}`;
+    const openPassport = vi.fn();
+    api.mockImplementation(async (url) =>
+      url === path
+        ? {
+            platform: ["debian", "bookworm"],
+            inventory_complete: true,
+            evaluated_packages: 2,
+            packages: 2,
+            pending: false,
+            passports: {
+              [passportId]: { name: "Уязвимость пакета", cvss_score: "9.1" },
+            },
+            matches: ["lib-a", "lib-b"].map((name) => ({
+              cve,
+              passport_id: passportId,
+              package: name,
+              version: "1.0",
+            })),
+          }
+        : { header: {}, sources: [] },
+    );
+    render(
+      <AssetVulnerabilitiesTabPaged
+        assetId="asset-1"
+        onOpenPassport={openPassport}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Уязвимости, найденные Wazuh" }),
+    );
+    const firstPackage = await screen.findByRole("button", {
+      name: /lib-a 1.0/,
+    });
+    const secondPackage = screen.getByRole("button", { name: /lib-b 1.0/ });
+    expect(firstPackage).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: cve })).toBeNull();
+    fireEvent.click(firstPackage);
+    expect(firstPackage).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: cve }));
+    expect(api).toHaveBeenCalledWith(path);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3);
+    expect(screen.getByRole("cell", { name: "9,1" })).toBeVisible();
+    expect(screen.getByText("Уязвимость пакета")).toBeVisible();
+    expect(openPassport).toHaveBeenCalledWith({ internal_id: passportId });
+    fireEvent.click(secondPackage);
+    expect(screen.getAllByRole("button", { name: cve })).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Дополнительных CVE: 1");
+    fireEvent.click(firstPackage);
+    expect(firstPackage).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getAllByRole("button", { name: cve })).toHaveLength(1);
   });
 
   it("keeps a two-day-old asset card fresh with a fourteen-day window", () => {
