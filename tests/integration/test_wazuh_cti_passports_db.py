@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 from asyncio import run
@@ -8,6 +9,7 @@ from zipfile import ZipFile
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from app import db, main
 from app.api.asset_cards import local_asset_wazuh_cti_matches
@@ -218,10 +220,27 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
         response = TestClient(main.app).get("/api/vulnerabilities", params={"q": cve, "source": "wazuh"})
     assert response.status_code == 200
     assert response.json()["rows"][0]["selector"] == finding["selector"]
+    with patch.object(main.app_auth, "get_session_user", return_value={"id": 1, "role": "admin"}):
+        client = TestClient(main.app)
+        report = client.post("/api/reports/vulnerabilities/xlsx", json={"asset_id": "linux-test"})
+        export = client.post("/api/reports/vulnerabilities/wazuh/csv", json={"asset_ids": ["linux-test"]})
+    assert report.status_code == export.status_code == 200
+    with io.BytesIO(report.content) as buffer:
+        workbook = load_workbook(buffer, read_only=True, data_only=True)
+        try:
+            assert cve in [cell.value for cell in workbook["Уязвимости Wazuh"][2]]
+        finally:
+            workbook.close()
+    csv_rows = list(csv.DictReader(io.StringIO(export.content.decode("utf-8-sig")), delimiter=";"))
+    assert [(row["Asset ID"], row["Пакет и версия"], row["CVE"]) for row in csv_rows] == [
+        ("linux-test", "example 2.0-1", cve),
+    ]
+    assert list(db.iter_vulnerability_report_rows("wazuh", ["another-asset"])) == []
 
     refreshed_card = db.upsert_asset_card(card)
     assert local_asset_wazuh_cti_matches("linux-test")["pending"]
     assert analytics.list(q=cve)["total"] == 0
+    assert list(db.iter_vulnerability_report_rows("wazuh", ["linux-test"])) == []
     stopped = Event()
     stopped.set()
     reconcile_due_assets(stopped)
@@ -248,6 +267,7 @@ def test_wazuh_passport_is_unique_and_caches_cti(test_db, monkeypatch):
     assert assess_asset("linux-test")["matches"] == result["matches"]
     assert local_asset_wazuh_cti_matches("linux-test", additional_only=True)["matches"] == []
     assert analytics.list(q=cve, source="wazuh")["total"] == 0
+    assert list(db.iter_vulnerability_report_rows("wazuh", ["linux-test"])) == []
 
     with db.connect() as conn:
         conn.execute("DELETE FROM wazuh_cti_package_rules WHERE passport_id = %s", (passport_id,))

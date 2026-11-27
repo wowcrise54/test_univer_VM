@@ -120,7 +120,7 @@ def import_sample() -> dict[str, Any]:
 
 @imports_router.post("/api/reports/vulnerabilities/{report_type}/csv")
 def export_vulnerability_report(
-    report_type: Literal["os", "software", "docker"],
+    report_type: Literal["os", "software", "docker", "wazuh"],
     payload: VulnerabilityReportRequest,
 ) -> StreamingResponse:
     rows = (
@@ -149,6 +149,7 @@ def export_vulnerability_xlsx(payload: VulnerabilityXlsxReportRequest) -> Stream
         db.iter_vulnerability_report_rows("os", asset_ids),
         db.iter_vulnerability_report_rows("software", asset_ids),
         db.iter_docker_vulnerability_report_rows(asset_ids),
+        db.iter_vulnerability_report_rows("wazuh", asset_ids),
     )
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     filename = f"asset_{payload.asset_id}_vulnerabilities_{timestamp}.xlsx"

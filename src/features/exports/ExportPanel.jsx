@@ -134,10 +134,13 @@ export function ExportPanel({
 
   const downloadVulnerabilityXlsx = () =>
     runBusy("report-xlsx", async () => {
-      const report = await downloadApiFile("/api/reports/vulnerabilities/xlsx", {
-        method: "POST",
-        body: JSON.stringify({ asset_id: selectedReportAssetId }),
-      });
+      const report = await downloadApiFile(
+        "/api/reports/vulnerabilities/xlsx",
+        {
+          method: "POST",
+          body: JSON.stringify({ asset_id: selectedReportAssetId }),
+        },
+      );
       showAlert(`XLSX-отчёт сформирован: ${report.filename}`, "success");
     });
 
@@ -197,7 +200,9 @@ export function ExportPanel({
               aria-label="Asset ID для отчёта"
               rows={2}
               value={form.report_asset_ids}
-              onChange={(event) => update("report_asset_ids", event.target.value)}
+              onChange={(event) =>
+                update("report_asset_ids", event.target.value)
+              }
               placeholder="ID через запятую"
             />
           </Field>
@@ -236,6 +241,14 @@ export function ExportPanel({
           >
             Docker
           </Button>
+          <Button
+            variant="secondary"
+            aria-label="Скачать уязвимости Wazuh"
+            busy={busy["report-wazuh"]}
+            onClick={() => downloadVulnerabilityReport("wazuh")}
+          >
+            Wazuh CTI
+          </Button>
         </div>
       </Panel>
       {canManageExports ? (
@@ -245,9 +258,7 @@ export function ExportPanel({
               form.delete_assets_after_export ? "disclosure--danger" : ""
             }
             title="PDQL-выгрузка"
-            meta={
-              form.delete_assets_after_export ? "Удаление в MP VM" : null
-            }
+            meta={form.delete_assets_after_export ? "Удаление в MP VM" : null}
           >
             <Field label="PDQL запрос">
               <textarea

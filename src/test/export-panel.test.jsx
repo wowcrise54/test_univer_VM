@@ -89,7 +89,7 @@ describe("ExportPanel vulnerability reports", () => {
     ).toBeInTheDocument();
   });
 
-  it("downloads separate OS, software, and Docker reports with unique asset IDs", async () => {
+  it("downloads separate vulnerability reports with unique asset IDs", async () => {
     const { runBusy, showAlert } = renderPanel();
     openReports();
     fireEvent.change(
@@ -138,6 +138,18 @@ describe("ExportPanel vulnerability reports", () => {
       ),
     );
     expect(runBusy).toHaveBeenCalledWith("report-docker", expect.any(Function));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Скачать уязвимости Wazuh" }),
+    );
+    await waitFor(() =>
+      expect(downloadApiFile).toHaveBeenLastCalledWith(
+        "/api/reports/vulnerabilities/wazuh/csv",
+        {
+          method: "POST",
+          body: JSON.stringify({ asset_ids: ["asset-1", "asset-2"] }),
+        },
+      ),
+    );
   });
 
   it("shows the existing error alert when download fails", async () => {
